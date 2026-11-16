@@ -40,6 +40,27 @@
 - **NE 内存上限很紧**：Packet Tunnel 历史上限约 15 MB，近年有报道放宽到约 50 MB，大规则集、MITM、GeoIP 都可能触发 Jetsam 被杀。先做最小可用代理，不要一上来就开 MITM / 大规则集。
 - **必须真机测试**：模拟器测不了 Network Extension。
 
+## FlClash 界面复刻（2026-11-16，SwiftUI 原生实现）
+
+本仓库的界面是对 [chen08209/FlClash](https://github.com/chen08209/FlClash)（Concord 官方 UI）的 SwiftUI 复刻，不是 Flutter。FlClash 的页面与功能按如下方式映射到 iOS：
+
+| FlClash 页面 | iOS 页面 | 接入的 Concord 方法 |
+| --- | --- | --- |
+| Dashboard（仪表盘卡片） | `Views/DashboardView.swift` | `engine.start/stop`、`tun.start/stop`、`traffic.watch`、`probe.outboundIp`、`core.stats` |
+| Proxies（代理组/节点/测速/排序） | `Views/ProxiesView.swift` | `proxy.groups`、`proxy.select`、`delay.test` |
+| Profiles（订阅导入/更新/预览/切换） | `Views/ProfilesView.swift` | `config.apply`、`profile.inspect`、`convert.subscription`、`provider.update` |
+| Rules（规则/规则提供方） | `Views/RulesView.swift` | `rule.list`、`provider.list` |
+| Requests（实时连接/断开） | `Views/ConnectionsView.swift` | `connection.watch`、`connection.close` |
+| Logs（日志/级别过滤/导出） | `Views/LogsView.swift` | `log.watch`、`core.lastWarnings` |
+| Tools → DNS 查询 | `SettingsView.swift` 内 `DnsQueriesView` | `dns.watch`、`dns.clearCache`、`dns.flushFakeIp` |
+| Tools → 设置（通用/TUN/DNS/MITM/提供方/资源） | `Views/SettingsView.swift`（含 `ProvidersView`、`ResourcesView`） | `config.general`、`config.patch`、`provider.list`、`core.stats` |
+
+数据层在 `Models/`：`ConcordClient.swift` 是 JSON-RPC 2.0 客户端（按上游 `schema/api.json` 的 68 个方法建模），`ConcordSampleData.swift` 是内置示例数据，`ProxyStore` / `TrafficStore` / `ConnectionStore` / `LogStore` / `DnsStore` / `ProfileStore` / `RuleStore` / `SettingsStore` 分别对应各页面。
+
+> **重要：目前所有页面显示的都是示例数据**，界面上有橙色「示例数据」徽标。客户端默认跑 `.sample` 模式；切到 `.live` 模式后调用会报 `coreNotLinked`，因为真实核心尚未链接。**这个 App 目前还不能代理流量。**
+
+FlClash 里 Concord API 没有的功能（应用级备份/恢复、主题、快捷键、IP 质量页、桌面编辑器）不在复刻范围内；MITM 在 iOS 上标记为不可用（需要核心的 `mitm` 能力，尚未验证）。
+
 ## 目录结构
 
 ```
@@ -52,11 +73,29 @@ concord-ios/
 ├── ConcordiOS.xcodeproj/
 │   └── project.pbxproj            # 两个 target: ConcordiOS + PacketTunnel
 ├── ConcordiOS/                    # 主 App (SwiftUI)
-│   ├── ConcordiOSApp.swift
-│   ├── ContentView.swift          # 首页/代理/规则/连接/流量/日志/设置 7 个 Tab
+│   ├── ConcordiOSApp.swift        # 一个共享 ConcordClient，注入全部 Store
+│   ├── ContentView.swift          # 7 个 Tab：仪表盘/代理/订阅/规则/连接/日志/设置
 │   ├── Models/
-│   │   ├── ProxyStore.swift       # 代理组 / 节点状态 (占位数据)
+│   │   ├── ConcordClient.swift    # JSON-RPC 2.0 客户端（示例模式 + 待链接的实时模式）
+│   │   ├── ConcordSampleData.swift# 内置示例数据 + 格式化工具
+│   │   ├── ProxyStore.swift       # 代理组 / 节点 / 测速 / 选择
+│   │   ├── TrafficStore.swift     # 实时流量、历史曲线、出口 IP、核心内存
+│   │   ├── ConnectionStore.swift  # 实时连接、搜索/排序、断开
+│   │   ├── LogStore.swift         # 日志、级别过滤、导出
+│   │   ├── DnsStore.swift         # DNS 查询记录、清缓存
+│   │   ├── ProfileStore.swift     # 订阅、激活、更新、预览
+│   │   ├── RuleStore.swift        # 规则、规则提供方
+│   │   ├── SettingsStore.swift    # 通用/TUN/DNS/MITM 设置
 │   │   └── ConfigStore.swift      # 配置 / 订阅导入 (App Group 共享)
+│   ├── Views/
+│   │   ├── SharedViews.swift      # 示例数据徽标、统计卡片、流量曲线、延迟芯片
+│   │   ├── DashboardView.swift    # 仪表盘
+│   │   ├── ProxiesView.swift      # 代理（分组、搜索、测速、排序、网格/列表）
+│   │   ├── ProfilesView.swift     # 订阅（添加、更新、预览、激活）
+│   │   ├── RulesView.swift        # 规则
+│   │   ├── ConnectionsView.swift  # 连接
+│   │   ├── LogsView.swift         # 日志
+│   │   └── SettingsView.swift     # 设置（通用/TUN/DNS/MITM/提供方/资源/关于）
 │   └── ConcordiOS.entitlements   # App Groups
 ├── PacketTunnel/                  # Network Extension
 │   ├── PacketTunnelProvider.swift # NEPacketTunnelProvider，数据面 TODO
@@ -136,10 +175,11 @@ zip 包里不含任何真实证书、密码或描述文件，只有 Secrets 的�
 2. **跑通未签名构建**：推到 GitHub，看 `unsigned-ipa` job 能不能在 Actions 上编过。这是成本最低的冒烟测试。
 3. **验证 Concord iOS 入口（2026-11-16 已核实，结论仍是未知/TODO）**：读了 Concord 的 `schema/api.json`（2026-11-16 抓取）：它确实有 `core.init`、`config.apply`、`engine.start` / `engine.stop`、`tun.start`（参数是 `$ref: #/$defs/TunStartParams`）/ `tun.stop` 等方法，但 `TunStartParams` 的完整定义在页面提取文本里看不到，全文也没有 `packet` 这个词；官方文档也只说嵌入方式是“桌面子进程或 Android 的 `libconcord.so`，走 JSON-RPC 2.0”，平台表只有 macOS / Linux / Windows / Android，没有 iOS，没有发现任何 iOS FFI / staticlib / 外部包流接口。所以**目前没有已验证的办法把 NEPacketTunnelProvider 的包喂给 Concord**，`PacketTunnelProvider.swift` 仍保持 TODO，不伪造可用数据面。下一步必须直接读 Concord 源码里的 `tun.start` 实现（而不是只看 api.json 的方法名），确认它能否接受外部提供的 packet flow / TUN fd，还是只会自己创建 TUN 设备（iOS 不允许）；同时验证 Rust 能否为 `aarch64-apple-ios` 编出静态库，BoringSSL 在 `iphoneos` SDK 下能否编译（见 `rust/concord-ios-ffi/README.md`，未核实）。
 4. **真机跑通最小数据面**：只做“开 VPN、走一条直连/代理规则、能联网”，再逐步加订阅、代理组、规则、流量统计。
-5. **再补完整界面**：`ContentView.swift` 里的 7 个 Tab 目前是骨架 + 占位数据，按验证结果逐个接通真实数据。
+5. **接通真实核心**：界面已按 FlClash 复刻完成（见上），下一步是把 `ConcordClient` 的 `.live` 模式接通真实核心（静态库链接 + TUN 桥，见 TUN_INVESTIGATION.md），再逐个页面把示例数据换成真实数据。
 
 ## 已知阻塞 / 未核实项
 
+- [x] FlClash 界面复刻（SwiftUI 原生）：仪表盘/代理/订阅/规则/连接/日志/设置 7 个页面 + DNS 查询/提供方/资源子页，数据层按 `schema/api.json` 建模；但全部显示示例数据（有「示例数据」徽标），真实核心未链接。
 - [ ] Concord 没有 iOS FFI / staticlib 入口，`tun.start` 接口未知。2026-11-16 核实：`schema/api.json` 只有方法名和 `$ref`，`TunStartParams` 定义未在提取文本中看到，全文无 `packet`，官方嵌入方式只有桌面子进程 / Android `libconcord.so`，无 iOS 接口。
 - [ ] BoringSSL 在 iOS SDK 下的构建是否通过，未核实。
 - [ ] 签名资格（付费 vs 免费、provisioning 是否含 `packet-tunnel-provider`）未核实。用户已确认是付费 Apple Developer Program 账号，这是利好，但描述文件里是否含该权限仍未核实；`ExportOptions.plist` 是模板，`YOUR_TEAM_ID` / 两个描述文件名必须替换，且整个 signed-ipa 流程未在 Mac / Xcode 上验证过。

@@ -12,7 +12,20 @@ struct DashboardView: View {
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var tunnelManager: TunnelManager
     @EnvironmentObject private var client: ConcordClient
+
+    private var tunnelStatusText: String {
+        switch tunnelManager.status {
+        case .connected: return "已连接"
+        case .connecting: return "连接中"
+        case .disconnecting: return "断开中"
+        case .disconnected: return "已断开"
+        case .reasserting: return "重新协商"
+        case .invalid: return "未配置"
+        @unknown default: return "未知"
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -95,7 +108,7 @@ struct DashboardView: View {
                         StatCard(title: "当前订阅", value: profileStore.activeProfile?.name ?? "无", subtitle: profileStore.activeProfile?.updatedAt.map { "更新于 \($0.formatted(date: .abbreviated, time: .shortened))" })
                         StatCard(title: "代理组", value: "\(proxyStore.groups.count) 组 · \(proxyStore.allNodes.count) 节点", subtitle: "proxy.groups")
                         StatCard(title: "出口 IP", value: trafficStore.outboundIp ?? "—", subtitle: trafficStore.outboundChains.isEmpty ? "probe.outboundIp" : "经由 \(trafficStore.outboundChains.joined(separator: " → "))")
-                        StatCard(title: "核心模式", value: client.mode.rawValue, subtitle: client.mode == .live ? "已链接真实核心" : "示例数据，核心未链接")
+                        StatCard(title: "核心模式", value: client.mode.rawValue, subtitle: client.mode == .live ? "经 PacketTunnel 扩展链接（未验证）" : "示例数据，核心未链接")
                     }
 
                     // Service status (FlClash ServiceStatusCard)
@@ -104,9 +117,12 @@ struct DashboardView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         LabeledContent("引擎", value: proxyStore.isRunning ? "已启动" : "已停止")
+                        LabeledContent("VPN 隧道", value: tunnelStatusText)
                         LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
                         LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
-                        Text("TUN 数据面仍是 TODO：核心尚未链接，VPN 开关目前只切换界面状态，不转发流量。见 TUN_INVESTIGATION.md。")
+                        Text(client.mode == .live
+                             ? "数据面：PacketTunnel 扩展内的 Concord 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
+                             : "示例模式：VPN 开关只切换界面状态，不转发流量。切到实时核心并启动 VPN 后由扩展转发流量。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

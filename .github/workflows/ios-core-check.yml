@@ -111,6 +111,7 @@ jobs:
           rustup target add aarch64-apple-ios
           # Fails loudly if BoringSSL / aws-lc-sys / rquickjs cannot
           # build for the iphoneos SDK — that failure is the gate.
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path) --target=arm64-apple-ios"
           cargo build --release --target aarch64-apple-ios -p concord-ios
 
       - name: Verify staticlib is arm64

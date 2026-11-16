@@ -72,7 +72,7 @@ struct LogsView: View {
                             .id(entry.id)
                         }
                         .listStyle(.plain)
-                        .onChange(of: logStore.filtered.count) { _ in
+                        .onChange(of: logStore.filtered.count) { _, _ in
                             if logStore.autoScroll, let last = logStore.filtered.last {
                                 proxy.scrollTo(last.id, anchor: .bottom)
                             }

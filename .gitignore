@@ -21,6 +21,9 @@ rust/concord-ios-ffi/target/
 target/
 Cargo.lock
 
+# Inspection-only upstream checkout (never upload; see patches/README.md)
+upstream/
+
 # macOS / editor
 .DS_Store
 *.swp

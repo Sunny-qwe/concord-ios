@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Network Extension: required for NEPacketTunnelProvider.
+	     NOTE: this entitlement is normally only available to paid
+	     Apple Developer Program members. Verify your provisioning
+	     profile actually contains `packet-tunnel-provider` before
+	     assuming the signed build will run. -->
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
+	<!-- TODO: replace with your real App Group. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.sunny-qwe.concord-ios</string>
+	</array>
+</dict>
+</plist>

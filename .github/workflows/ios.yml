@@ -72,6 +72,7 @@ jobs:
           # 1.99.0) without aarch64-apple-ios in its targets; install
           # the target for the pinned toolchain here (see unsigned job).
           rustup target add aarch64-apple-ios
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path) --target=arm64-apple-ios"
           cargo build --release --target aarch64-apple-ios -p concord-ios
 
       - name: Build Rust FFI wrapper
@@ -182,6 +183,7 @@ jobs:
           # 1.99.0) without aarch64-apple-ios in its targets; install
           # the target for the pinned toolchain here (see unsigned job).
           rustup target add aarch64-apple-ios
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path) --target=arm64-apple-ios"
           cargo build --release --target aarch64-apple-ios -p concord-ios
 
       - name: Build Rust FFI wrapper

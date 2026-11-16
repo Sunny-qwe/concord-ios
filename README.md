@@ -6,7 +6,7 @@
 
 ## 已上线与待办（2026-11-16，Swift 侧）
 
-> **诚实声明：以下“已上线”指代码已按真实 API 写好、尚未在 macOS runner / 真机上验证。iOS 静态库能否编出（BoringSSL / aws-lc-sys / rquickjs 在 iphoneos SDK 下）、packet-channel 桥接能否真的转发流量、扩展内存是否放得下，都要等 `.github/workflows/ios-core-check.yml` 在 macOS runner 上跑通、再上真机测试。**在那之前，不要声称这个 App 能代理流量。**
+> **诚实声明：以下“已上线”指代码已按真实 API 写好、尚未在 macOS runner / 真机上验证。BoringSSL / aws-lc-sys / rquickjs 已在 `ios-core-check` run #2 里为 `aarch64-apple-ios` 编过（那次失败在 nix 0.31.3，见下），packet-channel 桥接能否真的转发流量、扩展内存是否放得下，都要等 `.github/workflows/ios-core-check.yml` 在 macOS runner 上跑通、再上真机测试。**在那之前，不要声称这个 App 能代理流量。**
 
 ### 已上线（代码已写，未验证）
 
@@ -19,7 +19,7 @@
 
 ### 仍是 TODO / 未核实
 
-- [ ] `ios-core-check.yml` 尚未跑过：静态库 `libconcord_ios.a` 能否为 `aarch64-apple-ios` 编出（BoringSSL 5.4 / aws-lc-sys / rquickjs）仍是第一道关。
+- [ ] `ios-core-check.yml` run #2（2026-11-16）：BoringSSL / aws-lc-sys / rquickjs 已编过，但失败在 nix 0.31.3（`SYSPROTO_CONTROL` / `UTUN_OPT_IFNAME` 在 iOS libc 里不存在）。已修：`patches/04-nix-ios-fix.patch` 把 nix 0.31.3 整个 vendored 进来并把那几个 utun 项改成 macOS-only（本地已用 `cargo check --target aarch64-apple-ios` 验证 nix 本身和 `concord-proxy` 能编过，之后只卡在 Linux 上没有 Apple SDK 的 `xcrun`）。等补丁上传后重新跑 `ios-core-check` 验证。
 - [ ] **注意：`ios.yml` 的 unsigned-ipa / signed-ipa 任务现在会在链接期失败**，因为 `project.pbxproj` 已要求链接 `libconcord_ios.a`，而 `ios.yml` 只构建 FFI wrapper、不检出上游、不编核心。修复办法（需改 workflow，本次未动）：把 `ios-core-check.yml` 里的「Checkout upstream / Apply patches / Build Concord staticlib」三步复制到 `ios.yml` 的 archive 步骤之前；pbxproj 里已有的搜索路径与 `-l` 标志无需再在命令行重复传。`ios-core-check.yml` 本身不受影响（它本来就编核心、也传了同样的命令行标志，命令行会覆盖 pbxproj 的同名设置）。
 - [ ] 真机数据面未验证：channel 桥接、tun.start 的 `address`（目前传 `198.18.0.1/32`，按 `Prefix::parse` 要求必须是 CIDR）、`core.init` 的 `home` 相对路径解析、快照 JSON 的实际形状，都只按源码推断，未实测。
 - [ ] 扩展内存上限未实测（核心 + 规则/Geo 数据是否放得进 NE 进程）。

@@ -1,7 +1,8 @@
 # Concord iOS — GitHub Actions build
 # Runs on macOS runners because iOS builds need Xcode / iOS SDK.
-# This workflow does NOT run on Linux and has NOT been verified yet.
-# First goal: get the unsigned-ipa job green. Signing comes second.
+# Builds the REAL Concord core: upstream chen08209/concord is checked
+# out at the pinned commit below, patches/ are applied, and the full
+# staticlib is built for aarch64-apple-ios and linked into the app.
 name: iOS
 
 on:
@@ -17,6 +18,12 @@ env:
   # TODO: replace with your real Bundle IDs / Team ID after verifying signing.
   APP_BUNDLE_ID: com.sunny-qwe.concord-ios
   TUNNEL_BUNDLE_ID: com.sunny-qwe.concord-ios.PacketTunnel
+  UPSTREAM_REPO: chen08209/concord
+  # Pinned upstream commit the patches in patches/ are diffs against.
+  UPSTREAM_REF: 187ac9d1e9282f07c05c49eb2ea9d4bc0ef243b6
+  STATICLIB_DIR: upstream/target/aarch64-apple-ios/release
+  STATICLIB: upstream/target/aarch64-apple-ios/release/libconcord_ios.a
+  FFI_LIB_DIR: rust/concord-ios-ffi/target/aarch64-apple-ios/release
 
 jobs:
   unsigned-ipa:
@@ -37,13 +44,35 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Build Rust staticlib placeholder
-        working-directory: rust/concord-ios-ffi
+      - name: Checkout upstream Concord at pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_REF }}
+          path: upstream
+
+      - name: Apply patches in order
         run: |
-          # TODO: this builds the FFI *stub* only. The real Concord
-          # staticlib wiring goes here once its iOS entry point is defined.
-          # BoringSSL under the iphoneos SDK is unverified — see rust/concord-ios-ffi/README.md
-          cargo build --release --target aarch64-apple-ios
+          cd upstream
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "${{ env.UPSTREAM_REF }}" || {
+            echo "upstream checkout is not at the pinned commit; patches are diffs against ${{ env.UPSTREAM_REF }}"
+            exit 1
+          }
+          for p in ../patches/*.patch; do
+            echo "=== applying $p ==="
+            git apply "$p" || exit 1
+          done
+          git status --short
+
+      - name: Build Concord staticlib (full workspace, no trimming)
+        working-directory: upstream
+        run: |
+          cargo build --release --target aarch64-apple-ios -p concord-ios
+
+      - name: Build Rust FFI wrapper
+        working-directory: rust/concord-ios-ffi
+        run: cargo build --release --target aarch64-apple-ios
 
       - name: Archive (unsigned)
         run: |
@@ -52,6 +81,8 @@ jobs:
           # team and fails with "Signing for ... requires a development
           # team". Force manual signing with no identity for the
           # unsigned archive.
+          # NOTE on quoting: `\$(inherited)` must reach xcodebuild
+          # literally (it expands the setting itself).
           xcodebuild -project "$XCODE_PROJECT" \
             -scheme "$APP_SCHEME" \
             -configuration Release \
@@ -60,6 +91,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="" \
+            "LIBRARY_SEARCH_PATHS=\$(inherited) $PWD/$STATICLIB_DIR $PWD/$FFI_LIB_DIR" \
+            "OTHER_LDFLAGS=\$(inherited) -lconcord_ios -lconcord_ios_ffi" \
             archive
 
       - name: Export unsigned IPA
@@ -114,7 +147,36 @@ jobs:
         run: |
           rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 
-      - name: Build Rust staticlib placeholder
+      - name: Checkout upstream Concord at pinned commit
+        if: steps.check.outputs.has_secrets == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_REF }}
+          path: upstream
+
+      - name: Apply patches in order
+        if: steps.check.outputs.has_secrets == 'true'
+        run: |
+          cd upstream
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "${{ env.UPSTREAM_REF }}" || {
+            echo "upstream checkout is not at the pinned commit; patches are diffs against ${{ env.UPSTREAM_REF }}"
+            exit 1
+          }
+          for p in ../patches/*.patch; do
+            echo "=== applying $p ==="
+            git apply "$p" || exit 1
+          done
+          git status --short
+
+      - name: Build Concord staticlib (full workspace, no trimming)
+        if: steps.check.outputs.has_secrets == 'true'
+        working-directory: upstream
+        run: |
+          cargo build --release --target aarch64-apple-ios -p concord-ios
+
+      - name: Build Rust FFI wrapper
         if: steps.check.outputs.has_secrets == 'true'
         working-directory: rust/concord-ios-ffi
         run: cargo build --release --target aarch64-apple-ios
@@ -149,6 +211,8 @@ jobs:
             -configuration Release \
             -destination "generic/platform=iOS" \
             -archivePath build/ConcordiOS.xcarchive \
+            "LIBRARY_SEARCH_PATHS=\$(inherited) $PWD/$STATICLIB_DIR $PWD/$FFI_LIB_DIR" \
+            "OTHER_LDFLAGS=\$(inherited) -lconcord_ios -lconcord_ios_ffi" \
             archive
 
       - name: Export signed IPA

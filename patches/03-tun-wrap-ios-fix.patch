@@ -1,0 +1,39 @@
+From ebe87f552585651a36109f6ff4a21b243aca958b Mon Sep 17 00:00:00 2001
+From: Muse <muse@local>
+Date: Mon, 16 Nov 2026 03:40:28 +0000
+Subject: [PATCH 3/3] tun: cfg-gate TunDevice::wrap name lookup off iOS/illumos
+
+The generic unix DeviceImpl (vendor/tun-rs, used on iOS) defines
+neither name() nor if_index(), so wrap() does not compile for
+aarch64-apple-ios as-is. The empty name / None index is what the
+Android path already uses.
+---
+ crates/tun/src/device/mod.rs | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/crates/tun/src/device/mod.rs b/crates/tun/src/device/mod.rs
+index 02acef6..4f09d18 100644
+--- a/crates/tun/src/device/mod.rs
++++ b/crates/tun/src/device/mod.rs
+@@ -329,9 +329,16 @@ impl TunDevice {
+     }
+ 
+     fn wrap(inner: tun_rs::AsyncDevice) -> Self {
+-        #[cfg(not(target_os = "android"))]
++        // `name()` / `if_index()` exist only on the linux/macos/windows/
++        // freebsd/openbsd/netbsd device impls. The generic unix impl (used on
++        // iOS and illumos, `vendor/tun-rs/src/platform/mod.rs`: "A TUN device
++        // for Android/iOS/…") defines neither, so reading them there does not
++        // compile for `aarch64-apple-ios`. A channel or an adopted socket fd
++        // has no interface name anyway; the empty name / `None` index is what
++        // the Android path already uses, and routes are a no-op on iOS.
++        #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "illumos")))]
+         let (name, index) = (inner.name().unwrap_or_default(), inner.if_index().ok());
+-        #[cfg(target_os = "android")]
++        #[cfg(any(target_os = "android", target_os = "ios", target_os = "illumos"))]
+         let (name, index) = (String::new(), None);
+         TunDevice {
+             inner: DeviceIo::Tokio(inner),
+-- 
+2.43.0
+

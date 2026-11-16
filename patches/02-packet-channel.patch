@@ -1,0 +1,788 @@
+From 67acc6a8712311291692fce9bea688e9572a5bab Mon Sep 17 00:00:00 2001
+From: Muse <muse@local>
+Date: Mon, 16 Nov 2026 03:40:22 +0000
+Subject: [PATCH 2/3] tun: add production packet-channel DeviceSource (Option
+ B)
+
+Promotes the FakeDevice pattern of crates/tun/src/testing.rs to a
+production channel device (crates/tun/src/channel.rs), adds
+DeviceSource::Channel and TunSource::channel (schema/api.json), a
+PacketChannels registry in crates/api, Engine::start_channel_tun, and
+the concord_packet_channel_open/write/read/close FFI. iOS feeds
+packetFlow packets through the channel; no file descriptor is involved.
+---
+ crates/api/Cargo.toml          |   1 +
+ crates/api/src/channels.rs     |  68 ++++++++++++
+ crates/api/src/control.rs      |  43 ++++++++
+ crates/api/src/lib.rs          |   2 +
+ crates/engine/src/engine.rs    |  52 ++++++++-
+ crates/ffi/src/abi.rs          |  56 ++++++++++
+ crates/ffi/src/hub.rs          |  30 ++++++
+ crates/ffi/src/lib.rs          |   4 +-
+ crates/proto/src/types/live.rs |  12 ++-
+ crates/tun/src/channel.rs      | 187 +++++++++++++++++++++++++++++++++
+ crates/tun/src/lib.rs          |   2 +
+ crates/tun/src/runner.rs       |  67 +++++++++---
+ schema/api.json                |  21 +++-
+ 13 files changed, 527 insertions(+), 18 deletions(-)
+ create mode 100644 crates/api/src/channels.rs
+ create mode 100644 crates/tun/src/channel.rs
+
+diff --git a/crates/api/Cargo.toml b/crates/api/Cargo.toml
+index 704d763..0ac40cf 100644
+--- a/crates/api/Cargo.toml
++++ b/crates/api/Cargo.toml
+@@ -19,6 +19,7 @@ debug = []
+ concord-common = { workspace = true, features = ["io"] }
+ concord-engine = { workspace = true }
+ concord-proto = { workspace = true }
++concord-tun = { workspace = true }
+ tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+ futures-util = { workspace = true }
+ serde_json = { workspace = true }
+diff --git a/crates/api/src/channels.rs b/crates/api/src/channels.rs
+new file mode 100644
+index 0000000..185103c
+--- /dev/null
++++ b/crates/api/src/channels.rs
+@@ -0,0 +1,68 @@
++use std::collections::HashMap;
++use std::sync::Arc;
++use std::sync::Mutex;
++use std::sync::atomic::{AtomicU64, Ordering};
++
++use concord_common::sync::lock;
++use concord_tun::channel::{ChannelDevice, ChannelNet, channel_pair};
++
++/// Packet channels a host opened for the core and registered before
++/// `tun.start` names them. Mirrors `AdoptedFds`, but for the Option B
++/// channel device: the device half is taken by `tun.start` (once), the net
++/// half stays for `concord_packet_write` / `concord_packet_read` until the
++/// channel is closed. Registering hands over the device half's ownership
++/// only when `tun.start` takes it; closing a channel never stops a runner
++/// that already took its device.
++#[derive(Default)]
++pub struct PacketChannels {
++    next: AtomicU64,
++    held: Mutex<HashMap<u64, ChannelEntry>>,
++}
++
++struct ChannelEntry {
++    device: Option<ChannelDevice>,
++    net: Arc<ChannelNet>,
++}
++
++impl PacketChannels {
++    /// Creates a channel pair and returns its handle (never 0).
++    pub fn create(&self) -> u64 {
++        let handle = self.next.fetch_add(1, Ordering::Relaxed) + 1;
++        let (device, net) = channel_pair();
++        {
++            let mut held = lock(&self.held);
++            held.insert(
++                handle,
++                ChannelEntry {
++                    device: Some(device),
++                    net: Arc::new(net),
++                },
++            );
++        }
++        handle
++    }
++
++    /// Takes the device half for `tun.start`. `None` when the handle is
++    /// unknown or its device was already taken.
++    pub fn take_device(&self, handle: u64) -> Option<ChannelDevice> {
++        lock(&self.held).get_mut(&handle)?.device.take()
++    }
++
++    /// The host half for packet I/O. `None` when the handle is unknown.
++    pub fn net(&self, handle: u64) -> Option<Arc<ChannelNet>> {
++        lock(&self.held).get(&handle).map(|entry| entry.net.clone())
++    }
++
++    /// Drops a channel. A runner that already took the device is unaffected.
++    pub fn close(&self, handle: u64) {
++        lock(&self.held).remove(&handle);
++    }
++
++    pub fn len(&self) -> usize {
++        lock(&self.held).len()
++    }
++
++    pub fn is_empty(&self) -> bool {
++        self.len() == 0
++    }
++}
+diff --git a/crates/api/src/control.rs b/crates/api/src/control.rs
+index d2138b6..e14b671 100644
+--- a/crates/api/src/control.rs
++++ b/crates/api/src/control.rs
+@@ -20,6 +20,7 @@ use crate::stream::Subscription;
+ use crate::watch as streams;
+ 
+ #[cfg(unix)]
++use crate::channels::PacketChannels;
+ use crate::fds::AdoptedFds;
+ 
+ /// What the process that embeds the core knows and the core cannot find out.
+@@ -54,6 +55,7 @@ pub struct Control {
+     reloading: AsyncMutex<()>,
+     #[cfg(unix)]
+     fds: AdoptedFds,
++    channels: PacketChannels,
+ }
+ 
+ fn empty_update() -> UpdateRequest {
+@@ -160,6 +162,7 @@ impl Control {
+             reloading: AsyncMutex::new(()),
+             #[cfg(unix)]
+             fds: AdoptedFds::default(),
++            channels: PacketChannels::default(),
+         })
+     }
+ 
+@@ -420,6 +423,11 @@ impl Control {
+         &self.fds
+     }
+ 
++    /// The packet channels the host registered; see `channels::PacketChannels`.
++    pub fn packet_channels(&self) -> &PacketChannels {
++        &self.channels
++    }
++
+     pub async fn shutdown(&self) {
+         self.engine.shutdown().await;
+         self.configured.store(false, Ordering::SeqCst);
+@@ -1195,6 +1203,41 @@ impl ControlService for Control {
+                     ));
+                 }
+             }
++            TunSource::Channel { handle } => {
++                #[cfg(unix)]
++                {
++                    let Some(device) = self.channels.take_device(handle) else {
++                        return Err(ApiError::not_found("handle", handle.to_string()));
++                    };
++                    let options = serde_json::json!({
++                        "mtu": params.mtu.unwrap_or(0),
++                        "congestion-controller": params.congestion_controller.unwrap_or_default(),
++                    });
++                    let started = self
++                        .engine
++                        .start_channel_tun(
++                            device,
++                            concord_engine::VpnTunRequest {
++                                stack: params.stack.unwrap_or_default(),
++                                address: params.address.join(","),
++                                dns: params.dns.join(","),
++                                options: options.to_string(),
++                            },
++                        )
++                        .await;
++                    if !started {
++                        return Err(ApiError::unavailable("tun", "the TUN device did not start"));
++                    }
++                }
++                #[cfg(not(unix))]
++                {
++                    let _ = handle;
++                    return Err(ApiError::unsupported_capability(
++                        "tun.channel",
++                        "this platform has no packet channels",
++                    ));
++                }
++            }
+         }
+         self.refresh();
+         Ok(Empty {})
+diff --git a/crates/api/src/lib.rs b/crates/api/src/lib.rs
+index a291995..5d6f5d1 100644
+--- a/crates/api/src/lib.rs
++++ b/crates/api/src/lib.rs
+@@ -2,6 +2,7 @@
+ //! adapting to the engine. Nothing here knows frames, JSON-RPC or a transport.
+ 
+ mod bus;
++mod channels;
+ mod control;
+ mod convert;
+ mod fds;
+@@ -11,6 +12,7 @@ mod stream;
+ mod watch;
+ 
+ pub use bus::EventBus;
++pub use channels::PacketChannels;
+ pub use concord_common::Origin;
+ pub use concord_common::sync;
+ pub use concord_engine::local_utc_offset;
+diff --git a/crates/engine/src/engine.rs b/crates/engine/src/engine.rs
+index aaad9f2..bc36168 100644
+--- a/crates/engine/src/engine.rs
++++ b/crates/engine/src/engine.rs
+@@ -23,7 +23,7 @@ use concord_platform::{HomeDir, Platform, mmap};
+ use concord_rules::compile_rule_set;
+ use concord_rules::geo::GeoStore;
+ use concord_tls::TrustStore;
+-use concord_tun::{Congestion, DeviceSource, Prefix, TunRunner};
++use concord_tun::{ChannelDevice, Congestion, DeviceSource, Prefix, TunRunner};
+ use concord_tunnel::{ConnTable, LiveOptions, Tunnel, TunnelStatus};
+ use serde_json::{Value, json};
+ use tokio::runtime::Handle;
+@@ -662,6 +662,56 @@ impl Engine {
+         true
+     }
+ 
++    /// `handleStartTun` for a packet channel: takes the device (its ring is
++    /// dropped, and the stack stops, on every failing path). Mirrors
++    /// `start_vpn_tun`, but there is no descriptor to adopt or close.
++    #[cfg(unix)]
++    pub async fn start_channel_tun(&self, device: ChannelDevice, request: VpnTunRequest) -> bool {
++        self.shared.sockets.protect_held().await;
++        let started = {
++            let mut slot = self.tun.lock().await;
++            self.close_tun(&mut slot).await;
++            let built = vpn_options(&request);
++            match built {
++                Ok((options, congestion)) => {
++                    match start_runner(
++                        &self.shared.tunnel,
++                        &self.shared.sockets,
++                        &options,
++                        DeviceSource::Channel(device),
++                        congestion,
++                        None,
++                    )
++                    .await
++                    {
++                        Ok(runner) => {
++                            *slot = Some(runner);
++                            true
++                        }
++                        Err(err) => {
++                            tracing::error!("TUN: {err}");
++                            false
++                        }
++                    }
++                }
++                Err(err) => {
++                    tracing::error!("TUN: {err}");
++                    false
++                }
++            }
++        };
++        if !started {
++            return false;
++        }
++        if self.running.load(Ordering::SeqCst) {
++            self.reset_resolver_connections();
++            self.route.reset(self.is_running());
++        } else if let Err(err) = self.start_listeners().await {
++            tracing::error!("start listeners: {err:?}");
++        }
++        true
++    }
++
+     /// `StopTun`.
+     pub async fn stop_vpn_tun(&self) {
+         {
+diff --git a/crates/ffi/src/abi.rs b/crates/ffi/src/abi.rs
+index 06d33c3..4ae4534 100644
+--- a/crates/ffi/src/abi.rs
++++ b/crates/ffi/src/abi.rs
+@@ -82,3 +82,59 @@ pub extern "C" fn concord_adopt_fd(fd: i32) -> u64 {
+     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+     guarded(move || hub().map_or(0, |hub| hub.adopt_fd(fd)))
+ }
++
++/// Creates a packet channel (Option B) and returns its handle, or 0 when the
++/// core is not up. The handle is what `tun.start` names as
++/// `{"kind":"channel","handle":…}`; packets flow through
++/// `concord_packet_write` / `concord_packet_read` until
++/// `concord_packet_channel_close`.
++#[unsafe(no_mangle)]
++pub extern "C" fn concord_packet_channel_open() -> u64 {
++    guarded(|| hub().map_or(0, |hub| hub.packet_channel_open()))
++}
++
++/// Writes one IP packet (bare, no utun header) into the channel for the stack
++/// to read. Returns 1 when queued, 0 when the ring is full (retry the packet),
++/// -1 when the handle is unknown or the core is not up.
++///
++/// # Safety
++/// `data` must point to `len` readable bytes.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn concord_packet_write(handle: u64, data: *const u8, len: usize) -> i32 {
++    let packet = if len == 0 {
++        Vec::new()
++    } else {
++        // SAFETY: forwarded from this function's contract.
++        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
++    };
++    guarded(move || hub().map_or(-1, |hub| hub.packet_write(handle, &packet)))
++}
++
++/// Reads one packet the stack wrote, non-blocking, into `buf`. Returns the
++/// byte count, 0 when no packet is waiting, -1 when the handle is unknown,
++/// the core is not up, or `buf` is null. Poll from the host's pump loop.
++///
++/// # Safety
++/// `buf` must point to `cap` writable bytes.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn concord_packet_read(handle: u64, buf: *mut u8, cap: usize) -> i32 {
++    if buf.is_null() {
++        return -1;
++    }
++    guarded(move || {
++        hub().map_or(-1, |hub| {
++            // SAFETY: `buf` was checked non-null and `cap` is its capacity.
++            hub.packet_read(handle, unsafe { std::slice::from_raw_parts_mut(buf, cap) })
++        })
++    })
++}
++
++/// Drops a packet channel. A runner that already took the device is unaffected.
++#[unsafe(no_mangle)]
++pub extern "C" fn concord_packet_channel_close(handle: u64) {
++    guarded(|| {
++        if let Some(hub) = hub() {
++            hub.packet_channel_close(handle);
++        }
++    });
++}
+diff --git a/crates/ffi/src/hub.rs b/crates/ffi/src/hub.rs
+index d673aa6..c9c0c31 100644
+--- a/crates/ffi/src/hub.rs
++++ b/crates/ffi/src/hub.rs
+@@ -128,6 +128,36 @@ impl Hub {
+     pub fn adopt_fd(&self, fd: OwnedFd) -> u64 {
+         self.control.adopted_fds().adopt(fd)
+     }
++
++    /// Creates a packet channel; see `concord_packet_channel_open`.
++    pub fn packet_channel_open(&self) -> u64 {
++        self.control.packet_channels().create()
++    }
++
++    /// Writes one packet into the channel. 1 when queued, 0 when the ring is
++    /// full, -1 when the handle is unknown.
++    pub fn packet_write(&self, handle: u64, packet: &[u8]) -> i32 {
++        match self.control.packet_channels().net(handle) {
++            Some(net) => i32::from(net.inject(packet)),
++            None => -1,
++        }
++    }
++
++    /// Reads one packet the stack wrote, non-blocking. The byte count, or 0
++    /// when no packet is waiting, or -1 when the handle is unknown.
++    pub fn packet_read(&self, handle: u64, out: &mut [u8]) -> i32 {
++        match self.control.packet_channels().net(handle) {
++            Some(net) => net
++                .try_take(out)
++                .map_or(0, |n| i32::try_from(n).unwrap_or(-1)),
++            None => -1,
++        }
++    }
++
++    /// Drops a packet channel; a runner that took its device is unaffected.
++    pub fn packet_channel_close(&self, handle: u64) {
++        self.control.packet_channels().close(handle);
++    }
+ }
+ 
+ static HUB: OnceLock<Arc<Hub>> = OnceLock::new();
+diff --git a/crates/ffi/src/lib.rs b/crates/ffi/src/lib.rs
+index fdaabde..4c87a42 100644
+--- a/crates/ffi/src/lib.rs
++++ b/crates/ffi/src/lib.rs
+@@ -16,7 +16,9 @@ mod hub;
+ #[cfg(unix)]
+ pub use abi::concord_adopt_fd;
+ pub use abi::{
+-    concord_close, concord_init_dart_api, concord_open, concord_open_callback, concord_send,
++    concord_close, concord_init_dart_api, concord_open, concord_open_callback,
++    concord_packet_channel_close, concord_packet_channel_open, concord_packet_read,
++    concord_packet_write, concord_send,
+ };
+ pub use callback::{Deliver, Release};
+ pub use hub::{Hub, Receiver, hub, install, set_notice};
+diff --git a/crates/proto/src/types/live.rs b/crates/proto/src/types/live.rs
+index fbe9941..a2ea6a9 100644
+--- a/crates/proto/src/types/live.rs
++++ b/crates/proto/src/types/live.rs
+@@ -297,8 +297,8 @@ pub enum EngineState {
+     Failed,
+ }
+ 
+-/// A device the core creates itself, or a descriptor the host opened and
+-/// registered beforehand.
++/// A device the core creates itself, a descriptor the host opened and
++/// registered beforehand, or a packet channel the host feeds.
+ #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+ #[serde(tag = "kind", rename_all = "snake_case")]
+ pub enum TunSource {
+@@ -309,6 +309,14 @@ pub enum TunSource {
+     Inherited {
+         handle: u64,
+     },
++    /// A packet channel registered with `concord_packet_channel_open`,
++    /// fed with `concord_packet_write` and drained with
++    /// `concord_packet_read`. The iOS `NEPacketTunnelProvider` path: the
++    /// host pumps `packetFlow` packets through the channel instead of
++    /// handing over a descriptor.
++    Channel {
++        handle: u64,
++    },
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+diff --git a/crates/tun/src/channel.rs b/crates/tun/src/channel.rs
+new file mode 100644
+index 0000000..838b396
+--- /dev/null
++++ b/crates/tun/src/channel.rs
+@@ -0,0 +1,187 @@
++//! A channel-backed device for driving the stack without a TUN interface,
++//! in production code. This is the `FakeDevice`/`FakeNet` shape of
++//! `testing.rs`, promoted out of the test gate: packets arrive from the host
++//! through `ChannelNet::inject` and leave through `ChannelNet::take`, with
++//! no file descriptor anywhere. The iOS host (`NEPacketTunnelProvider`)
++//! feeds it with `concord_packet_write` and drains it with
++//! `concord_packet_read` (see `crates/ffi/src/abi.rs`).
++//!
++//! Unlike `testing.rs`, this module has no batching/offload/queue variants:
++//! one device, one ring pair, the smallest surface that carries packets.
++//! `testing.rs` keeps its own copy for tests; the two are intentionally not
++//! shared, so production never depends on test-gated code.
++
++use std::future::poll_fn;
++use std::io;
++use std::sync::{Arc, Mutex};
++use std::task::{Context, Poll};
++
++use concord_common::sync::lock;
++use futures_util::task::AtomicWaker;
++
++use crate::device::Device;
++
++/// How many packets each direction holds before `inject`/`poll_send` report
++/// full. 64 slots of up to 64 KiB is ~8 MiB worst case for both rings; the
++/// NetworkExtension memory budget is tight, so this stays small. A full ring
++/// drops the packet (`inject` returns `false`) rather than growing.
++pub const CHANNEL_SLOTS: usize = 64;
++/// Largest single packet: an IPv6 jumbogram-free maximum. Packets longer
++/// than this are truncated on `push`, as in `testing.rs`.
++pub const CHANNEL_SLOT_SIZE: usize = 65_535;
++
++struct Ring {
++    slots: Vec<Box<[u8]>>,
++    lens: Vec<usize>,
++    head: usize,
++    count: usize,
++}
++
++impl Ring {
++    fn new(slots: usize, slot_size: usize) -> Self {
++        Ring {
++            slots: (0..slots)
++                .map(|_| vec![0u8; slot_size].into_boxed_slice())
++                .collect(),
++            lens: vec![0; slots],
++            head: 0,
++            count: 0,
++        }
++    }
++
++    fn push(&mut self, packet: &[u8]) -> bool {
++        if self.count == self.slots.len() {
++            return false;
++        }
++        let index = (self.head + self.count) % self.slots.len();
++        let (Some(slot), Some(len)) = (self.slots.get_mut(index), self.lens.get_mut(index)) else {
++            return false;
++        };
++        let n = packet.len().min(slot.len());
++        if let (Some(target), Some(source)) = (slot.get_mut(..n), packet.get(..n)) {
++            target.copy_from_slice(source);
++        }
++        *len = n;
++        self.count += 1;
++        true
++    }
++
++    fn pop(&mut self, out: &mut [u8]) -> Option<usize> {
++        if self.count == 0 {
++            return None;
++        }
++        let slot = self.slots.get(self.head)?;
++        let len = *self.lens.get(self.head)?;
++        let n = len.min(out.len());
++        out.get_mut(..n)?.copy_from_slice(slot.get(..n)?);
++        self.head = (self.head + 1) % self.slots.len();
++        self.count -= 1;
++        Some(n)
++    }
++}
++
++struct Inner {
++    to_stack: Mutex<Ring>,
++    from_stack: Mutex<Ring>,
++    stack_rx: AtomicWaker,
++    stack_tx: AtomicWaker,
++    host_rx: AtomicWaker,
++}
++
++/// What the stack runs on.
++pub struct ChannelDevice {
++    inner: Arc<Inner>,
++}
++
++/// The host's end: writes packets the stack will read, and reads what it wrote.
++#[derive(Clone)]
++pub struct ChannelNet {
++    inner: Arc<Inner>,
++}
++
++/// Neither end allocates after this returns.
++pub fn channel_pair() -> (ChannelDevice, ChannelNet) {
++    channel_pair_with(CHANNEL_SLOTS, CHANNEL_SLOT_SIZE)
++}
++
++/// As `channel_pair`, with explicit ring sizes (tests and the macOS harness).
++pub fn channel_pair_with(slots: usize, slot_size: usize) -> (ChannelDevice, ChannelNet) {
++    let inner = Arc::new(Inner {
++        to_stack: Mutex::new(Ring::new(slots, slot_size)),
++        from_stack: Mutex::new(Ring::new(slots, slot_size)),
++        stack_rx: AtomicWaker::new(),
++        stack_tx: AtomicWaker::new(),
++        host_rx: AtomicWaker::new(),
++    });
++    (
++        ChannelDevice {
++            inner: Arc::clone(&inner),
++        },
++        ChannelNet { inner },
++    )
++}
++
++impl Device for ChannelDevice {
++    fn poll_recv(&self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
++        self.inner.stack_rx.register(cx.waker());
++        match lock(&self.inner.to_stack).pop(buf) {
++            Some(n) => Poll::Ready(Ok(n)),
++            None => Poll::Pending,
++        }
++    }
++
++    fn poll_send(&self, cx: &mut Context<'_>, packet: &[u8]) -> Poll<io::Result<usize>> {
++        self.inner.stack_tx.register(cx.waker());
++        if lock(&self.inner.from_stack).push(packet) {
++            self.inner.host_rx.wake();
++            Poll::Ready(Ok(packet.len()))
++        } else {
++            Poll::Pending
++        }
++    }
++}
++
++impl ChannelNet {
++    /// `false` when the ring is full; the packet is dropped.
++    pub fn inject(&self, packet: &[u8]) -> bool {
++        let pushed = lock(&self.inner.to_stack).push(packet);
++        self.inner.stack_rx.wake();
++        pushed
++    }
++
++    /// Non-blocking drain: `None` when no packet is waiting.
++    pub fn try_take(&self, out: &mut [u8]) -> Option<usize> {
++        let taken = lock(&self.inner.from_stack).pop(out);
++        if taken.is_some() {
++            self.inner.stack_tx.wake();
++        }
++        taken
++    }
++
++    /// Waits for a packet the stack wrote, then copies it into `out`.
++    pub async fn take(&self, out: &mut [u8]) -> usize {
++        poll_fn(|cx| {
++            self.inner.host_rx.register(cx.waker());
++            match self.try_take(out) {
++                Some(n) => Poll::Ready(n),
++                None => Poll::Pending,
++            }
++        })
++        .await
++    }
++
++    /// Waits for a packet and returns it owned.
++    pub async fn take_vec(&self) -> Vec<u8> {
++        let mut buf = vec![0u8; CHANNEL_SLOT_SIZE];
++        let n = self.take(&mut buf).await;
++        buf.truncate(n);
++        buf
++    }
++
++    /// How many packets are queued for the stack / for the host. Diagnostics only.
++    pub fn queued(&self) -> (usize, usize) {
++        let to_stack = lock(&self.inner.to_stack).count;
++        let from_stack = lock(&self.inner.from_stack).count;
++        (to_stack, from_stack)
++    }
++}
+diff --git a/crates/tun/src/lib.rs b/crates/tun/src/lib.rs
+index a1b444c..216b1d2 100644
+--- a/crates/tun/src/lib.rs
++++ b/crates/tun/src/lib.rs
+@@ -1,5 +1,6 @@
+ #![deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+ 
++pub mod channel;
+ mod device;
+ mod dns;
+ mod options;
+@@ -17,6 +18,7 @@ mod wintun;
+ #[doc(hidden)]
+ pub mod testing;
+ 
++pub use channel::{CHANNEL_SLOT_SIZE, CHANNEL_SLOTS, ChannelDevice, ChannelNet, channel_pair};
+ pub use device::{Device, TunDevice};
+ pub use dns::{DnsHijack, DnsMatcher, DnsRuleError};
+ pub use options::{IdRange, Prefix, TunOptions};
+diff --git a/crates/tun/src/runner.rs b/crates/tun/src/runner.rs
+index efc36a7..434b5e3 100644
+--- a/crates/tun/src/runner.rs
++++ b/crates/tun/src/runner.rs
+@@ -6,6 +6,7 @@ use async_trait::async_trait;
+ use tokio::task::JoinHandle;
+ use tokio_util::sync::CancellationToken;
+ 
++use crate::channel::ChannelDevice;
+ use crate::device::{Device, TunDevice};
+ use crate::dns::{DnsHijack, DnsMatcher};
+ use crate::options::TunOptions;
+@@ -45,6 +46,11 @@ pub enum DeviceSource {
+     /// The descriptor of an Android `VpnService` interface.
+     #[cfg(unix)]
+     Adopt(std::os::fd::OwnedFd),
++    /// A channel-backed device: packets arrive via `ChannelNet::inject` and
++    /// leave via `ChannelNet::take`, with no file descriptor. The iOS
++    /// packet-channel path (`TunSource::Channel`); also usable on any host
++    /// that pumps packets itself instead of handing over a descriptor.
++    Channel(ChannelDevice),
+ }
+ 
+ pub struct TunDeps {
+@@ -135,21 +141,40 @@ impl TunRunner {
+         deps: TunDeps,
+     ) -> Result<Self, StartError> {
+         let dns = dns_config(options, &deps)?;
+-        let device = match source {
+-            DeviceSource::Create => TunDevice::create(options),
++        match source {
++            DeviceSource::Create => {
++                let device = TunDevice::create(options).map_err(device_error)?;
++                let iface = iface_of(&device);
++                Self::start_with_device(options, device, iface, deps, dns).await
++            }
+             #[cfg(unix)]
+-            DeviceSource::Adopt(fd) => TunDevice::adopt(fd),
++            DeviceSource::Adopt(fd) => {
++                let device = TunDevice::adopt(fd).map_err(device_error)?;
++                let iface = iface_of(&device);
++                Self::start_with_device(options, device, iface, deps, dns).await
++            }
++            DeviceSource::Channel(device) => {
++                // No interface backs a channel: the name stays empty and the
++                // index 0, as on the Android adopt path; routes are a no-op
++                // wherever no backend claims the platform (iOS: NullBackend).
++                let iface = IfaceInfo {
++                    name: String::new(),
++                    index: 0,
++                };
++                Self::start_with_device(options, device, iface, deps, dns).await
++            }
+         }
+-        .map_err(|err| StartError {
+-            step: StartStep::Device,
+-            kind: err.kind(),
+-            detail: err.to_string(),
+-            undo_failures: 0,
+-        })?;
+-        let iface = IfaceInfo {
+-            name: device.name().to_owned(),
+-            index: device.index().unwrap_or(0),
+-        };
++    }
++
++    /// The shared tail of `start` once the device exists: backend, platform,
++    /// then the generic `start_with`.
++    async fn start_with_device<D: Device>(
++        options: &TunOptions,
++        device: D,
++        iface: IfaceInfo,
++        deps: TunDeps,
++        dns: Option<Arc<DnsConfig>>,
++    ) -> Result<Self, StartError> {
+         let backend = platform_backend().map_err(|err| StartError {
+             step: StartStep::Routes,
+             kind: err.kind(),
+@@ -318,6 +343,22 @@ impl Drop for TunRunner {
+     }
+ }
+ 
++fn device_error(err: io::Error) -> StartError {
++    StartError {
++        step: StartStep::Device,
++        kind: err.kind(),
++        detail: err.to_string(),
++        undo_failures: 0,
++    }
++}
++
++fn iface_of(device: &TunDevice) -> IfaceInfo {
++    IfaceInfo {
++        name: device.name().to_owned(),
++        index: device.index().unwrap_or(0),
++    }
++}
++
+ fn dns_config(options: &TunOptions, deps: &TunDeps) -> Result<Option<Arc<DnsConfig>>, StartError> {
+     let Some(handler) = deps.dns.clone() else {
+         return Ok(None);
+diff --git a/schema/api.json b/schema/api.json
+index 5676f68..fdac7a8 100644
+--- a/schema/api.json
++++ b/schema/api.json
+@@ -4153,9 +4153,28 @@
+             "kind",
+             "handle"
+           ]
++        },
++        {
++          "type": "object",
++          "properties": {
++            "kind": {
++              "type": "string",
++              "const": "channel"
++            },
++            "handle": {
++              "type": "integer",
++              "format": "uint64",
++              "minimum": 0
++            }
++          },
++          "required": [
++            "kind",
++            "handle"
++          ],
++          "description": "A packet channel registered with `concord_packet_channel_open`,\nfed with `concord_packet_write` and drained with\n`concord_packet_read`. The iOS `NEPacketTunnelProvider` path: the\nhost pumps `packetFlow` packets through the channel instead of\nhanding over a descriptor."
+         }
+       ],
+-      "description": "A device the core creates itself, or a descriptor the host opened and\nregistered beforehand."
++      "description": "A device the core creates itself, a descriptor the host opened and\nregistered beforehand, or a packet channel the host feeds."
+     },
+     "RouteCheckParams": {
+       "type": "object",
+-- 
+2.43.0
+

@@ -6,7 +6,7 @@
 
 ## 已上线与待办（2026-11-16，Swift 侧）
 
-> **诚实声明：以下“已上线”指代码已按真实 API 写好、尚未在 macOS runner / 真机上验证。BoringSSL / aws-lc-sys / rquickjs 已在 `ios-core-check` run #2 里为 `aarch64-apple-ios` 编过（那次失败在 nix 0.31.3，见下），packet-channel 桥接能否真的转发流量、扩展内存是否放得下，都要等 `.github/workflows/ios-core-check.yml` 在 macOS runner 上跑通、再上真机测试。**在那之前，不要声称这个 App 能代理流量。**
+> **诚实声明：以下“已上线”指代码已按真实 API 写好、尚未在 macOS runner / 真机上验证。BoringSSL / aws-lc-sys 已在 `ios-core-check` run #2 里为 `aarch64-apple-ios` 编过；rquickjs-sys 在 run #4 才真正碰到并失败（0.14.0 没有 iOS 预生成绑定），已用 `patches/05-rquickjs-ios-fix.patch`（iOS 开 `bindgen`，与 Android 同款）修，待 runner 验证。packet-channel 桥接能否真的转发流量、扩展内存是否放得下，都要等 `.github/workflows/ios-core-check.yml` 在 macOS runner 上跑通、再上真机测试。**在那之前，不要声称这个 App 能代理流量。**
 
 ### 已上线（代码已写，未验证）
 
@@ -19,7 +19,7 @@
 
 ### 仍是 TODO / 未核实
 
-- [ ] `ios-core-check.yml` run #2（2026-11-16）：BoringSSL / aws-lc-sys / rquickjs 已编过，但失败在 nix 0.31.3（`SYSPROTO_CONTROL` / `UTUN_OPT_IFNAME` 在 iOS libc 里不存在）。已修：`patches/04-nix-ios-fix.patch` 把 nix 0.31.3 整个 vendored 进来并把那几个 utun 项改成 macOS-only（本地已用 `cargo check --target aarch64-apple-ios` 验证 nix 本身和 `concord-proxy` 能编过，之后只卡在 Linux 上没有 Apple SDK 的 `xcrun`）。等补丁上传后重新跑 `ios-core-check` 验证。
+- [ ] `ios-core-check.yml` run #2（2026-11-16）：BoringSSL / aws-lc-sys 已编过，但失败在 nix 0.31.3（`SYSPROTO_CONTROL` / `UTUN_OPT_IFNAME` 在 iOS libc 里不存在）。已修：`patches/04-nix-ios-fix.patch` 把 nix 0.31.3 整个 vendored 进来并把那几个 utun 项改成 macOS-only（本地已用 `cargo check --target aarch64-apple-ios` 验证 nix 本身和 `concord-proxy` 能编过，之后只卡在 Linux 上没有 Apple SDK 的 `xcrun`）。nix 修好后 run #4（2026-11-16 14:15）又失败在 `rquickjs-sys` 0.14.0：没有 `aarch64-apple-ios` 预生成绑定（`src/lib.rs:19` 找不到 `bindings/aarch64-apple-ios.rs`）。已修：`patches/05-rquickjs-ios-fix.patch`，在 `crates/mitm/Cargo.toml` 里给 iOS 开 `rquickjs` 的 `bindgen` feature（照抄同一文件里 Android 那两行）；本地已验证 feature 接线正确、用本地 libclang 跑 bindgen 生成的绑定与自带 darwin 绑定除一个 typedef 别名外完全一致，之后只卡在 Linux 没有 `xcrun`/iOS SDK。**还差一步 workflow 改动（本次未动，需改两个文件）**：在 `ios-core-check.yml` 和 `ios.yml` 的 "Build Concord staticlib" 步骤里加一行 `export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path) --target=arm64-apple-ios"`，让 bindgen 按 iPhoneOS SDK 解析头文件（与上游 CI 给 Android 设 `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android` 同款做法；`LIBCLANG_PATH` 不需要，clang-sys 会自己找到 Xcode 的 libclang）。等补丁 + workflow 改动上传后重新跑 `ios-core-check` 验证。
 - [ ] **注意：`ios.yml` 的 unsigned-ipa / signed-ipa 任务现在会在链接期失败**，因为 `project.pbxproj` 已要求链接 `libconcord_ios.a`，而 `ios.yml` 只构建 FFI wrapper、不检出上游、不编核心。修复办法（需改 workflow，本次未动）：把 `ios-core-check.yml` 里的「Checkout upstream / Apply patches / Build Concord staticlib」三步复制到 `ios.yml` 的 archive 步骤之前；pbxproj 里已有的搜索路径与 `-l` 标志无需再在命令行重复传。`ios-core-check.yml` 本身不受影响（它本来就编核心、也传了同样的命令行标志，命令行会覆盖 pbxproj 的同名设置）。
 - [ ] 真机数据面未验证：channel 桥接、tun.start 的 `address`（目前传 `198.18.0.1/32`，按 `Prefix::parse` 要求必须是 CIDR）、`core.init` 的 `home` 相对路径解析、快照 JSON 的实际形状，都只按源码推断，未实测。
 - [ ] 扩展内存上限未实测（核心 + 规则/Geo 数据是否放得进 NE 进程）。

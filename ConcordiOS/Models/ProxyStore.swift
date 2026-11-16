@@ -32,9 +32,20 @@ final class ProxyStore: ObservableObject {
     @Published var lastUpdated: Date?
 
     let client: ConcordClient
+    private var cancellables = Set<AnyCancellable>()
 
     init(client: ConcordClient = ConcordClient()) {
         self.client = client
+        // In live mode the running state follows the system VPN, so a
+        // disconnect from outside the app (e.g. iOS Settings) is
+        // reflected here too.
+        TunnelManager.shared.$status
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard let self, self.client.mode == .live else { return }
+                self.isRunning = status == .connected || status == .connecting || status == .reasserting
+            }
+            .store(in: &cancellables)
     }
 
     var selectedOutbound: String? {
@@ -134,12 +145,30 @@ final class ProxyStore: ObservableObject {
         }
     }
 
-    // Engine lifecycle. In `.live` mode this calls engine.start/stop and
-    // tun.start/stop on the real core; in `.sample` mode it only flips
-    // local UI state and the VPN switch in the app must still be wired to
-    // NEVPNManager (see PacketTunnelProvider).
+    // Engine lifecycle.
+    //
+    // `.live`: the Dashboard start/stop button drives the SYSTEM VPN
+    // (TunnelManager -> NETunnelProviderManager). The extension's
+    // startTunnel boots the core (engine.start + tun.start) and its
+    // stopTunnel tears it down; isRunning follows the tunnel status.
+    // `.sample`: only flips local UI state, as before.
     @MainActor
     func toggle() async {
+        if client.mode == .live {
+            if TunnelManager.shared.isRunning {
+                await TunnelManager.shared.stop()
+                isRunning = false
+            } else {
+                do {
+                    try await TunnelManager.shared.start()
+                    isRunning = true
+                    lastError = nil
+                } catch {
+                    lastError = error.localizedDescription
+                }
+            }
+            return
+        }
         if isRunning {
             do {
                 try await client.tunStop()

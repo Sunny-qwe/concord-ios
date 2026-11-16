@@ -9,6 +9,28 @@ import Combine
 final class ConfigStore: ObservableObject {
     static let appGroupID = "group.com.sunny-qwe.concord-ios" // TODO: replace with your real App Group
     static let configFileName = "config.yaml"
+    static let mitmFileName = "mitm.json"
+    static let tunnelSettingsFileName = "tunnel.json"
+
+    /// Snapshot files the PacketTunnel extension writes for the app's
+    /// live transport (see PacketTunnelProvider.swift):
+    ///   snapshots/traffic.json | connections.json | logs.json | dns.json
+    /// Each file is {"updatedAt": <epoch ms>, "data": <payload>}.
+    static func snapshotURL(name: String) -> URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
+            .appendingPathComponent("snapshots")
+            .appendingPathComponent("\(name).json")
+    }
+
+    /// Shared MITM choices (mitm.json) and tunnel parameters
+    /// (tunnel.json) the extension reads. Both are plain JSON files in
+    /// the App Group container; the extension merges mitm.json into
+    /// config.apply's overlay and reads tunnel.json for tun.start /
+    /// the tunnel interface settings.
+    static func sharedFileURL(name: String) -> URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
+            .appendingPathComponent(name)
+    }
 
     @Published var subscriptionURLString = ""
     @Published var statusMessage = "尚未导入配置"

@@ -13,6 +13,7 @@ struct SettingsView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var client: ConcordClient
+    @State private var mitmIssueHost = ""
 
     var body: some View {
         NavigationStack {
@@ -42,6 +43,14 @@ struct SettingsView: View {
                     Button("从核心读取当前配置") {
                         Task { await settingsStore.refreshFromCore() }
                     }
+                    Button("应用通用设置到核心（config.patch）") {
+                        Task { await settingsStore.applyGeneralToCore() }
+                    }
+                    if let message = settingsStore.generalApplyMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("TUN（PacketTunnel 扩展参数）") {
@@ -55,7 +64,7 @@ struct SettingsView: View {
                     TextField("TUN DNS（逗号分隔）", text: $settingsStore.tunDns)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Text("iOS 上 TUN 由系统 NetworkExtension 拥有，核心不会自己创建 TUN 设备（见 TUN_INVESTIGATION.md）。这些参数会传给 tun.start 的 inherited 路径。")
+                    Text("iOS 上 TUN 由系统 NetworkExtension 拥有，核心不会自己创建 TUN 设备（见 TUN_INVESTIGATION.md）。这些参数会写入共享 tunnel.json，扩展启动时传给 tun.start（packet-channel 路径）并用于配置隧道接口。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -78,9 +87,66 @@ struct SettingsView: View {
                 Section("MITM") {
                     Toggle("启用 MITM", isOn: $settingsStore.mitmEnabled)
                         .disabled(!settingsStore.mitmAvailable)
-                    Text("MITM 在 iOS 上暂不可用：需要核心的 mitm 能力（mitm.certificate / generateCertificate / runScript），尚未验证。")
+                        .onChange(of: settingsStore.mitmEnabled) { _, _ in settingsStore.save() }
+                    TextField("解密主机名（逗号分隔，如 *.example.com）", text: $settingsStore.mitmHostnames)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmHostnames) { _, _ in settingsStore.save() }
+                    Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
+                    if let info = settingsStore.mitmCertificate {
+                        LabeledContent("CA 主题", value: info.subject)
+                        LabeledContent("CA 指纹", value: info.fingerprint)
+                        LabeledContent("有效期", value: "\(info.notBefore) 至 \(info.notAfter)")
+                        ShareLink("分享 CA 证书（PEM）", item: info.pem)
+                    } else {
+                        Text("尚未生成 CA 证书。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("生成 CA 证书（mitm.generateCertificate）") {
+                        Task { await settingsStore.generateMitmCertificate() }
+                    }
+                    .disabled(!settingsStore.mitmAvailable)
+                    Button("验证 MITM 配置（mitm.validate）") {
+                        Task { await settingsStore.validateMitmConfig() }
+                    }
+                    .disabled(!settingsStore.mitmAvailable)
+                    Button("应用 MITM 设置（重新应用配置）") {
+                        Task { await settingsStore.applyMitmSettings() }
+                    }
+                    .disabled(!settingsStore.mitmAvailable)
+                    TextField("签发叶证书的主机名", text: $mitmIssueHost)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .disabled(!settingsStore.mitmAvailable)
+                    Button("签发叶证书（mitm.issueCertificate）") {
+                        Task { await settingsStore.issueMitmCertificate(host: mitmIssueHost) }
+                    }
+                    .disabled(!settingsStore.mitmAvailable)
+                    if let pem = settingsStore.mitmIssuedPem {
+                        ShareLink("分享叶证书（PEM）", item: pem)
+                    }
+                    if !settingsStore.mitmIssues.isEmpty {
+                        ForEach(settingsStore.mitmIssues, id: \.self) { issue in
+                            Text(issue).font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                    if let message = settingsStore.mitmStatusMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("安装 CA 到系统信任（必须手动完成）：App 无法以编程方式安装受信任 CA。分享上面的 CA 证书，在 iPhone「设置 → 通用 → VPN 与设备管理」里安装，再到「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任。未安装时 HTTPS 只做透传，仅明文 HTTP 可改写。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if !settingsStore.mitmAvailable {
+                        Text("MITM 当前不可用：核心未报告 mitm 能力（core.capabilities features.mitm），或隧道未运行。请先启动 VPN。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("提供方（provider.list）") {
@@ -109,7 +175,7 @@ struct SettingsView: View {
                     }
                     Text(client.mode == .sample
                          ? "示例数据模式：所有页面显示的都是内置示例数据，不是真实核心数据。"
-                         : "实时核心模式：需要先链接 Concord 静态库，否则调用会报错。")
+                         : "实时核心模式：数据来自 PacketTunnel 扩展内的真实核心（需先启动 VPN）。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -118,17 +184,22 @@ struct SettingsView: View {
                     LabeledContent("版本", value: "Concord iOS 0.2.0（FlClash 风格界面）")
                     LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
                     LabeledContent("界面来源", value: "chen08209/FlClash（GPL-3.0）")
-                    Text("本 App 是 FlClash 界面的 SwiftUI 复刻，核心尚未链接，不能代理流量。数据面、签名与核心链接仍是 TODO。")
+                    Text("本 App 是 FlClash 界面的 SwiftUI 复刻，核心经 PacketTunnel 扩展链接（packet-channel 数据面），但静态库构建与真机数据面尚未验证，见 README 的「已上线与待办」一节。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("设置")
-            .onChange(of: settingsStore.mode) { _ in settingsStore.save() }
-            .onChange(of: settingsStore.logLevel) { _ in settingsStore.save() }
-            .onChange(of: settingsStore.allowLan) { _ in settingsStore.save() }
-            .onChange(of: settingsStore.ipv6) { _ in settingsStore.save() }
-            .onChange(of: settingsStore.tunEnabled) { _ in settingsStore.save() }
+            .onChange(of: settingsStore.mode) { _, _ in settingsStore.save() }
+            .onChange(of: settingsStore.logLevel) { _, _ in settingsStore.save() }
+            .onChange(of: settingsStore.allowLan) { _, _ in settingsStore.save() }
+            .onChange(of: settingsStore.ipv6) { _, _ in settingsStore.save() }
+            .onChange(of: settingsStore.tunEnabled) { _, _ in settingsStore.save() }
+            .task {
+                if client.mode == .live {
+                    await settingsStore.refreshMitmStatus()
+                }
+            }
         }
     }
 }

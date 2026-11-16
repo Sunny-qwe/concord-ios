@@ -1,0 +1,106 @@
+import Foundation
+import Combine
+
+// MARK: - Traffic store (FlClash: Dashboard network-speed card + traffic)
+// Backed by Concord traffic.watch (stream) / traffic.reset and
+// probe.outboundIp / core.stats. In `.sample` mode the rates come from
+// the mock snapshot with a small amount of jitter so the chart moves;
+// the totals are the mock totals. Sample values are labelled in the UI.
+
+struct TrafficPoint: Identifiable {
+    let id = UUID()
+    let date: Date
+    let up: Int64
+    let down: Int64
+}
+
+final class TrafficStore: ObservableObject {
+    @Published var current = ConcordTraffic(up: 0, down: 0, totalUp: 0, totalDown: 0)
+    @Published var history: [TrafficPoint] = []
+    @Published var outboundIp: String?
+    @Published var outboundChains: [String] = []
+    @Published var coreMemoryBytes: UInt64?
+    @Published var lastError: String?
+
+    let client: ConcordClient
+    private var timer: AnyCancellable?
+    private let maxHistory = 60
+
+    init(client: ConcordClient = ConcordClient()) {
+        self.client = client
+    }
+
+    var maxDown: Int64 { history.map { $0.down }.max() ?? 1 }
+    var maxUp: Int64 { history.map { $0.up }.max() ?? 1 }
+
+    func start() {
+        stop()
+        timer = Timer.publish(every: 1.0, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                Task { await self?.refresh() }
+            }
+        Task { await refresh() }
+        Task { await probe() }
+        Task { await refreshMemory() }
+    }
+
+    func stop() {
+        timer?.cancel()
+        timer = nil
+    }
+
+    @MainActor
+    func refresh() async {
+        do {
+            var traffic = try await client.trafficSnapshot()
+            if client.mode == .sample {
+                // Sample mode: jitter the snapshot so the live chart moves.
+                // The underlying snapshot is still the mock's fixed value.
+                traffic = ConcordTraffic(
+                    up: max(0, traffic.up + Int64.random(in: -20_000...40_000)),
+                    down: max(0, traffic.down + Int64.random(in: -200_000...400_000)),
+                    totalUp: traffic.totalUp,
+                    totalDown: traffic.totalDown
+                )
+            }
+            current = traffic
+            history.append(TrafficPoint(date: Date(), up: traffic.up, down: traffic.down))
+            if history.count > maxHistory { history.removeFirst(history.count - maxHistory) }
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    func probe() async {
+        do {
+            let result = try await client.probeOutboundIp()
+            outboundIp = result.body
+            outboundChains = result.chains
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    func refreshMemory() async {
+        do {
+            coreMemoryBytes = try await client.coreStats().rss
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    func resetTotals() async {
+        do {
+            try await client.trafficReset()
+            history.removeAll()
+            current = ConcordTraffic(up: 0, down: 0, totalUp: 0, totalDown: 0)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+}

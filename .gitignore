@@ -1,0 +1,28 @@
+# Secrets — never commit these
+*.p12
+*.mobileprovision
+*.key
+*.pem
+secrets/
+.env
+
+# Xcode / build outputs
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Rust
+rust/concord-ios-ffi/target/
+target/
+Cargo.lock
+
+# macOS / editor
+.DS_Store
+*.swp
+.vscode/
+.idea/

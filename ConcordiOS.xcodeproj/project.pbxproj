@@ -23,7 +23,6 @@
 		111111111111111111111104 /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111111111111111111111114; };
 		222222222222222222222201 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 222222222222222222222221; };
 		222222222222222222222202 /* PacketTunnel.entitlements in Resources */ = {isa = PBXBuildFile; fileRef = 222222222222222222222222; };
-		222222222222222222222203 /* Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 222222222222222222222223; };
 		333333333333333333333333 /* PacketTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 333333333333333333333332; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -46,11 +45,10 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		555555555555555555555551 /* ConcordiOS */ = {isa = PBXGroup; children = (555555555555555555555552, 555555555555555555555553, 555555555555555555555554); path = ConcordiOS; sourceTree = "<group>"; };
-		555555555555555555555552 /* ConcordiOS */ = {isa = PBXGroup; children = (111111111111111111111111, 111111111111111111111112, 111111111111111111111115); path = ConcordiOS; sourceTree = "<group>"; };
+		555555555555555555555551 /* ConcordiOS */ = {isa = PBXGroup; children = (111111111111111111111111, 111111111111111111111112, 111111111111111111111115, 555555555555555555555553); path = ConcordiOS; sourceTree = "<group>"; };
 		555555555555555555555553 /* Models */ = {isa = PBXGroup; children = (111111111111111111111113, 111111111111111111111114); path = Models; sourceTree = "<group>"; };
 		555555555555555555555554 /* PacketTunnel */ = {isa = PBXGroup; children = (222222222222222222222221, 222222222222222222222222, 222222222222222222222223); path = PacketTunnel; sourceTree = "<group>"; };
-		555555555555555555555555 = {isa = PBXGroup; children = (555555555555555555555551, 555555555555555555555556); sourceTree = "<group>"; };
+		555555555555555555555555 = {isa = PBXGroup; children = (555555555555555555555551, 555555555555555555555554, 555555555555555555555556); sourceTree = "<group>"; };
 		555555555555555555555556 /* Products */ = {isa = PBXGroup; children = (333333333333333333333331, 333333333333333333333332); name = Products; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
@@ -71,7 +69,7 @@
 
 /* Begin PBXResourcesBuildPhase section */
 		777777777777777777777773 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		777777777777777777777774 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (222222222222222222222202, 222222222222222222222203); runOnlyForDeploymentPostprocessing = 0; };
+		777777777777777777777774 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (222222222222222222222202); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */

@@ -42,7 +42,7 @@ struct ContentView: View {
             await logStore.refresh()
             trafficStore.start()
         }
-        .onChange(of: client.mode) { _ in
+        .onChange(of: client.mode) { _, _ in
             Task {
                 await proxyStore.refresh()
                 await ruleStore.refresh()

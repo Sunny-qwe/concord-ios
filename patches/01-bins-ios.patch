@@ -1,0 +1,692 @@
+From e0af1997ab75a4dd61e8eac11cf20eba9bae1c71 Mon Sep 17 00:00:00 2001
+From: Muse <muse@local>
+Date: Mon, 16 Nov 2026 03:40:20 +0000
+Subject: [PATCH 1/3] ios: add bins/ios staticlib crate (concord_start, iOS
+ platform, socketpair bridge)
+
+Mirrors bins/android as libconcord_ios.a (crate-type staticlib+rlib):
+concord_start() with no thread hook, Core with EngineConfig
+{ android: false } and capabilities [tun.inherited, tun.channel], an
+IosPlatform with no host callbacks (protect is a no-op true, find_owner
+is None), a SOCK_DGRAM socketpair bridge (Option A), and a hand-written
+concord_ios.h. Full upstream workspace, no feature trimming.
+---
+ Cargo.toml               |   1 +
+ bins/ios/Cargo.toml      |  37 ++++++++++
+ bins/ios/README.md       |  50 ++++++++++++++
+ bins/ios/concord_ios.h   | 116 +++++++++++++++++++++++++++++++
+ bins/ios/src/abi.rs      |  46 +++++++++++++
+ bins/ios/src/bridge.rs   | 144 +++++++++++++++++++++++++++++++++++++++
+ bins/ios/src/core.rs     |  78 +++++++++++++++++++++
+ bins/ios/src/lib.rs      |  38 +++++++++++
+ bins/ios/src/log.rs      |  12 ++++
+ bins/ios/src/platform.rs |  68 ++++++++++++++++++
+ 10 files changed, 590 insertions(+)
+ create mode 100644 bins/ios/Cargo.toml
+ create mode 100644 bins/ios/README.md
+ create mode 100644 bins/ios/concord_ios.h
+ create mode 100644 bins/ios/src/abi.rs
+ create mode 100644 bins/ios/src/bridge.rs
+ create mode 100644 bins/ios/src/core.rs
+ create mode 100644 bins/ios/src/lib.rs
+ create mode 100644 bins/ios/src/log.rs
+ create mode 100644 bins/ios/src/platform.rs
+
+diff --git a/Cargo.toml b/Cargo.toml
+index bea75bb..e0dc10f 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -26,6 +26,7 @@ members = [
+     "crates/test-support",
+     "bins/desktop",
+     "bins/android",
++    "bins/ios",
+     "tools/api-bench",
+     "tools/bench",
+     "xtask",
+diff --git a/bins/ios/Cargo.toml b/bins/ios/Cargo.toml
+new file mode 100644
+index 0000000..314a63c
+--- /dev/null
++++ b/bins/ios/Cargo.toml
+@@ -0,0 +1,37 @@
++[package]
++name = "concord-ios"
++version.workspace = true
++edition.workspace = true
++rust-version.workspace = true
++license.workspace = true
++publish.workspace = true
++description = "Concord as an iOS static library with a C ABI"
++repository.workspace = true
++
++[lib]
++name = "concord_ios"
++crate-type = ["staticlib", "rlib"]
++doctest = false
++
++[dependencies]
++concord-common = { workspace = true, features = ["io"] }
++concord-api = { workspace = true }
++concord-controller = { workspace = true }
++concord-engine = { workspace = true }
++concord-ffi = { workspace = true }
++concord-platform = { workspace = true }
++concord-rpc = { workspace = true }
++arc-swap = { workspace = true }
++async-trait = { workspace = true }
++tokio = { workspace = true, features = ["full"] }
++tracing = { workspace = true, features = ["release_max_level_debug"] }
++# Never called here: it caps the `log` records that dependencies such as rustls compile in.
++log = { workspace = true, features = ["release_max_level_debug"] }
++tracing-subscriber = { workspace = true }
++libc = { workspace = true }
++
++[dev-dependencies]
++serde_json = { workspace = true }
++
++[lints]
++workspace = true
+diff --git a/bins/ios/README.md b/bins/ios/README.md
+new file mode 100644
+index 0000000..b28542d
+--- /dev/null
++++ b/bins/ios/README.md
+@@ -0,0 +1,50 @@
++# bins/ios — Concord as an iOS static library
++
++`libconcord_ios.a` for a `NEPacketTunnelProvider` (NetworkExtension) target,
++mirroring `bins/android` (`libconcord.so`). Upstream commit:
++`187ac9d1e9282f07c05c49eb2ea9d4bc0ef243b6` (shallow clone, 2026-11-16).
++
++## Layout
++
++| File | What it is |
++|---|---|
++| `Cargo.toml` | `crate-type = ["staticlib", "rlib"]`, lib name `concord_ios`, same core deps as `bins/android` + `libc` (for the socketpair bridge). |
++| `src/lib.rs` | Crate docs + re-exports. |
++| `src/abi.rs` | `concord_start() -> i32` — builds the core once per process (no thread hook; there is no JVM on iOS). |
++| `src/core.rs` | `Core`: multi-thread tokio runtime, `EngineConfig { android: false, … }`, capabilities `["tun.inherited", "tun.channel"]` (NOT `tun.device`), `ControlOptions { privileged: false, profile_controller: false }`. |
++| `src/platform.rs` | `IosPlatform` implementing `concord_platform::Platform` directly. No `PlatformHost` trait, no `concord_set_platform_host`: `protect` is a no-op returning `true`, `find_owner` returns `None` (iOS exposes no per-flow owner to an extension), `default_interface`/`system_dns` are empty, `fd_pressure` uses `FdPressure` as on Android. |
++| `src/log.rs` | `eprintln!` logging (same fallback as Android's logcat off-Android). |
++| `src/bridge.rs` | Option A socketpair bridge: `concord_ios_bridge_open/close`. See its docs for the four caveats and the verdict (sound in principle, second choice behind Option B). |
++| `concord_ios.h` | Hand-written C header for the whole C ABI (see its top comment on why hand-written, and that cbindgen would be better long-term). |
++
++## JSON-RPC flow
++
++`core.hello` → `core.init {"home": "<app-group dir>"}` (`sdk_int` unset → 0)
++→ `config.apply` → `engine.start` → `tun.start`. `core.hello` reports
++`"os": "ios"` automatically (`EngineConfig.android == false` →
++`std::env::consts::OS`, `crates/api/src/control.rs:589-594`).
++
++TUN sources on iOS: `{"kind": "channel", "handle": H}` (Option B, preferred)
++or `{"kind": "inherited", "handle": H}` (Option A socketpair). Never
++`{"kind": "device"}` — the core must not create its own TUN device inside a
++NetworkExtension.
++
++## Depends on the Option B patch
++
++This crate is written against the patched tree:
++
++* `crates/tun/src/channel.rs` + `DeviceSource::Channel` + `TunSource::channel`
++  + `concord_packet_channel_*` FFI (the Option B patch) — for `"tun.channel"`.
++* The `TunDevice::wrap` iOS compile fix in `crates/tun/src/device/mod.rs`
++  (the generic unix `DeviceImpl` has no `name()`/`if_index()`, so the
++  unpatched `wrap()` does not compile for `aarch64-apple-ios` at all).
++* `Cargo.toml` workspace members must include `"bins/ios"`.
++
++## First gate (unverified)
++
++`cargo build --target aarch64-apple-ios -p concord-ios` on a macOS runner
++with the iphoneos SDK. BoringSSL 5.4 (`boring-sys`, cmake + bindgen) and
++`aws-lc-sys` for `aarch64-apple-ios` have never been built in this workspace;
++if they fail, nothing else matters. Then prove the packet bridge on macOS
++before wiring the NE extension (see `TUN_INVESTIGATION.md` §7 in the
++scaffold repo).
+diff --git a/bins/ios/concord_ios.h b/bins/ios/concord_ios.h
+new file mode 100644
+index 0000000..c16ea87
+--- /dev/null
++++ b/bins/ios/concord_ios.h
+@@ -0,0 +1,116 @@
++/* concord_ios.h — C API of libconcord_ios.a (bins/ios).
++ *
++ * Hand-written: there is no cbindgen step in upstream Concord (no cbindgen
++ * config, no generated header for the Android .so either). A hand-written
++ * header is the deliverable; if cbindgen is ever added to the workspace it
++ * should generate this file from bins/ios + crates/ffi instead — cbindgen
++ * would be better long-term (it cannot drift from the Rust signatures), but
++ * it is a new workspace dependency and build step, so the hand-written
++ * header ships first and must be kept in sync by hand.
++ *
++ * The symbols fall into three groups:
++ *   1. concord_start — defined in bins/ios (src/abi.rs).
++ *   2. concord_open / concord_open_callback / concord_send / concord_close /
++ *      concord_adopt_fd — defined in crates/ffi (src/abi.rs), linked into
++ *      the staticlib through the bins/ios dependency on concord-ffi.
++ *   3. concord_packet_channel_* — defined in crates/ffi by the Option B
++ *      patch (packet channel). They only exist in a patched tree; linking
++ *      against an unpatched libconcord_ios.a leaves them unresolved.
++ *   4. concord_ios_bridge_* — Option A socketpair bridge, bins/ios
++ *      (src/bridge.rs). Works in a patched tree only as far as the
++ *      TunDevice::wrap iOS compile fix is applied (see bridge.rs).
++ *
++ * JSON-RPC flow over a session opened with concord_open_callback:
++ *   core.hello → core.init {"home": "<app-group dir>"} → config.apply →
++ *   engine.start → tun.start {"source": {"kind": "channel", "handle": H}}
++ *   (Option B) or {"source": {"kind": "inherited", "handle": H}} (Option A,
++ *   H from concord_ios_bridge_open). Sessions carry one JSON-RPC 2.0 message
++ *   per concord_send; replies/subscription events arrive via the Deliver
++ *   callback. See schema/api.json in the upstream tree for the full method
++ *   list. `core.init` takes no sdk_int on iOS (pass none → 0).
++ *
++ * Threading: the Deliver callback runs on a core thread, one message at a
++ * time; the bytes are valid only during the call. Copy them (e.g. into
++ * NSData) before returning. Return false from Deliver once the host is gone;
++ * that ends the session.
++ */
++
++#ifndef CONCORD_IOS_H
++#define CONCORD_IOS_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* Starts the core, once per process. Returns 0 when it runs, -1 on failure.
++ * Later calls only report whether it runs. No thread hook (unlike Android:
++ * there is no JVM to attach). */
++int32_t concord_start(void);
++
++/* --- Sessions (crates/ffi) --- */
++
++/* Deliver callback: `data`/`len` are one complete JSON-RPC message, valid
++ * only during the call. Return false once the host is gone. */
++typedef bool (*ConcordDeliver)(void *context, const uint8_t *data, size_t len);
++/* Runs once when the core no longer holds the session (or right away when
++ * the open fails because the core is not up). May be NULL. */
++typedef void (*ConcordRelease)(void *context);
++
++/* Opens a session whose messages are handed to `deliver` with `context`.
++ * Returns the session id (never 0), or 0 when the core is not up. */
++uint64_t concord_open_callback(ConcordDeliver deliver, void *context,
++                               ConcordRelease release);
++
++/* Copies one complete JSON-RPC message onto a session. Returns 1 when the
++ * session exists, 0 when it does not. */
++int32_t concord_send(uint64_t session, const uint8_t *data, size_t len);
++
++/* Ends a session. Closing twice is harmless. */
++void concord_close(uint64_t session);
++
++/* Hands a descriptor to the core, which closes it. Returns the handle
++ * `tun.start` names as {"kind": "inherited", "handle": …}, or 0 when the
++ * core is not up (the descriptor is closed either way). */
++uint64_t concord_adopt_fd(int32_t fd);
++
++/* --- Option B packet channel (patched tree only) --- */
++
++/* Creates a packet channel and returns its handle (never 0), or 0 on
++ * failure. The handle is what `tun.start` names as
++ * {"kind": "channel", "handle": …}. */
++uint64_t concord_packet_channel_open(void);
++
++/* Writes one IP packet (bare, no utun header) into the channel for the
++ * stack to read. Returns 1 when queued, 0 when the ring is full (retry),
++ * -1 when the handle is unknown. */
++int32_t concord_packet_write(uint64_t handle, const uint8_t *data, size_t len);
++
++/* Reads one packet the stack wrote, non-blocking, into `buf` (capacity
++ * `cap`). Returns the byte count, 0 when no packet is waiting, -1 when the
++ * handle is unknown or `buf` is NULL. Poll from the packetFlow pump loop. */
++int32_t concord_packet_read(uint64_t handle, uint8_t *buf, size_t cap);
++
++/* Drops a channel: the device end is released (a running tun.start keeps
++ * its own reference) and the packet end stops accepting packets. */
++void concord_packet_channel_close(uint64_t handle);
++
++/* --- Option A socketpair bridge (bins/ios) --- */
++
++/* Creates a SOCK_DGRAM socketpair, adopts one end into the core, returns 0
++ * and writes the host-side fd to `host_fd` and the tun.start handle to
++ * `handle`; returns -1 on failure. Pump bare IP packets through `host_fd`
++ * with send/recv (the core adds/strips the 4-byte utun header itself). */
++int32_t concord_ios_bridge_open(int32_t *host_fd, uint64_t *handle);
++
++/* Closes the host end of a bridge. The core end is owned by the core. */
++void concord_ios_bridge_close(int32_t host_fd);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* CONCORD_IOS_H */
+diff --git a/bins/ios/src/abi.rs b/bins/ios/src/abi.rs
+new file mode 100644
+index 0000000..2c10f06
+--- /dev/null
++++ b/bins/ios/src/abi.rs
+@@ -0,0 +1,46 @@
++use std::panic::{AssertUnwindSafe, catch_unwind};
++use std::sync::OnceLock;
++
++use concord_api::LogBridge;
++use tracing_subscriber::layer::SubscriberExt;
++
++use crate::core::Core;
++use crate::log;
++
++/// Everything one `libconcord_ios.a` holds: the runtime that carries the flows,
++/// the control surface on it, and the hub through which the extension opens sessions.
++static CORE: OnceLock<Option<Core>> = OnceLock::new();
++
++/// Starts the core, once per process; later calls only report whether it runs.
++/// Returns 0 when the core runs, -1 when it could not start.
++///
++/// Unlike Android's `concord_start` there is no thread hook: there is no JVM
++/// to attach, and the core's threads need no per-thread host setup.
++#[unsafe(no_mangle)]
++pub extern "C" fn concord_start() -> i32 {
++    let started = catch_unwind(AssertUnwindSafe(|| CORE.get_or_init(start).is_some()));
++    if started.unwrap_or(false) { 0 } else { -1 }
++}
++
++fn start() -> Option<Core> {
++    std::panic::set_hook(Box::new(|info| log::error(&format!("panic: {info}"))));
++    #[cfg(unix)]
++    concord_platform::ignore_sigpipe();
++    concord_platform::raise_fd_limit();
++    match Core::new() {
++        Ok(core) => {
++            let bus = core.control().bus();
++            let bridge = LogBridge::new(bus.gate().clone(), bus.clone(), false);
++            let _ = tracing::subscriber::set_global_default(
++                tracing_subscriber::registry().with(bridge),
++            );
++            concord_ffi::set_notice(log::info);
++            concord_ffi::install(core.hub().clone());
++            Some(core)
++        }
++        Err(err) => {
++            log::error(&format!("runtime: {err}"));
++            None
++        }
++    }
++}
+diff --git a/bins/ios/src/bridge.rs b/bins/ios/src/bridge.rs
+new file mode 100644
+index 0000000..594ba1e
+--- /dev/null
++++ b/bins/ios/src/bridge.rs
+@@ -0,0 +1,144 @@
++//! Option A bridge (experiment, no upstream change beyond the
++//! `TunDevice::wrap` iOS compile fix): a datagram socketpair whose one end is
++//! adopted by the core, so `packetFlow` packets can be pumped through it.
++//!
++//! Verdict: SOUND IN PRINCIPLE, BLOCKED AS A NO-UPSTREAM-CHANGE OPTION, and
++//! second choice behind Option B (the production packet channel). The four
++//! caveats, each with its exact code path:
++//!
++//! (i) Framing — SOCK_DGRAM, not SOCK_STREAM. The stack reads one packet per
++//! `poll_recv` (`crates/tun/src/device/mod.rs`, `Device::poll_recv`; the
++//! default `poll_recv_batch` calls `recv_one`, one packet per slot). A stream
++//! socketpair could return a partial or coalesced packet and corrupt the IP
++//! stream; a datagram socketpair preserves datagram boundaries, so one
++//! `recv` is one IP packet. `SOCK_DGRAM` is therefore required, and this
++//! helper creates the pair that way.
++//!
++//! (ii) The 4-byte utun header — the CORE adds/strips it, the host must NOT.
++//! On Apple targets the vendored tun-rs `Tun` wraps every read/write with a
++//! 4-byte packet-information header (`vendor/tun-rs/src/platform/unix/tun.rs`:
++//! `generate_packet_information()` returns `AF_INET`/`AF_INET6` as big-endian
++//! u32; `Tun::new` sets `ignore_packet_information = true` by default, and
++//! with it set `send()` prepends the header with `writev([header, packet])`
++//! and `recv()` strips it with `readv([head, buf])`). The iOS device path
++//! is the generic unix one (`crates/tun/src/device/mod.rs`: `other.rs`, not
++//! `apple.rs` which is `#[cfg(target_os = "macos")]` only), and that path
++//! goes through `Tun::send`/`recv`, so the header handling applies. The
++//! consequence for the host: the socketpair carries `header + IP packet` on
++//! the wire in both directions, and tun-rs does the translation — the Swift
++//! side writes BARE IP packets into its socketpair end and reads BARE IP
++//! packets out of it. (The name `ignore_packet_information` is misleading:
++//! `true` means "the caller ignores the header, tun-rs handles it". Nobody
++//! in Concord ever calls `set_ignore_packet_info`, so the default `true`
++//! holds. `DeviceBuilder::packet_information(false)` in `builder.rs:85`
++//! only affects devices built by the builder, not adopted fds.)
++//!
++//! (iii) tokio registration — a socket fd registers fine. `TunDevice::adopt`
++//! (`crates/tun/src/device/mod.rs:319-330`) calls
++//! `tun_rs::AsyncDevice::from_fd`, which goes through
++//! `vendor/tun-rs/src/async_device/unix/mod.rs:84-87` →
++//! `vendor/tun-rs/src/async_device/unix/mod.rs:84-87` →
++//! just wraps the fd in `Tun::new`) → `AsyncDevice::new_dev`
++//! (`vendor/tun-rs/src/async_device/unix/tokio.rs:255-259`), which registers
++//! the fd with `tokio::io::unix::AsyncFd::register`. `AsyncFd` only needs a
++//! pollable fd; a Unix datagram socket is pollable (readable when a datagram
++//! is queued). Nothing in that path checks that the fd is a TUN device — the
++//! `from_fd` docs say "must refer to a TUN/TAP device", but that is a
++//! framing contract (one datagram = one packet, which (i) and (ii) satisfy),
++//! not a kernel object check. UNVERIFIED on iOS: never exercised with a
++//! non-TUN fd; test on macOS first (pump a synthetic packet through).
++//!
++//! (iv) fd ownership / name lookup — tolerated, AFTER the wrap() patch.
++//! `TunDevice::adopt` takes ownership (`OwnedFd::into_raw_fd`, tun-rs closes
++//! it on failure) and `wrap()` reads `inner.name().unwrap_or_default()` and
++//! `inner.if_index().ok()`. On a socket fd a name lookup would fail, but the
++//! code tolerates failure (empty name, `None` index), and routes are a no-op
++//! on iOS anyway (`crates/tun/src/route/mod.rs`, `Os::Other` → `NullBackend`).
++//! BUT: on iOS the generic unix `DeviceImpl`
++//! (`vendor/tun-rs/src/platform/mod.rs`, "A TUN device for Android/iOS/…")
++//! defines NEITHER `name()` NOR `if_index()` — those exist only on the
++//! linux/macos/freebsd/openbsd/netbsd/windows impls — so `wrap()` does not
++//! compile for `aarch64-apple-ios` as-is. The Option B patch set therefore
++//! includes a minimal fix in `crates/tun/src/device/mod.rs` that cfg-gates
++//! the lookup to the targets that have it. Option A needs that one patch too;
++//! it is not a zero-patch option on iOS.
++//!
++//! Usage (Swift side, after `concord_start()` and `core.init`):
++//! 1. `concord_ios_bridge_open(&host_fd, &handle)` → host keeps `host_fd`.
++//! 2. `tun.start` with `{"source": {"kind": "inherited", "handle": handle}}`.
++//! 3. Pump: `packetFlow.readPackets()` → `send(host_fd, packet)`; `recv(host_fd)`
++//!    → `packetFlow.writePackets()`.
++//! 4. `tun.stop`, then `concord_ios_bridge_close(host_fd)`. The adopted end is
++//!    owned by the core and closed by it (including on every failure path).
++
++use std::ffi::{c_int, c_void};
++use std::os::fd::{FromRawFd, OwnedFd};
++
++/// Creates a `SOCK_DGRAM` Unix socketpair, adopts one end into the core, and
++/// hands the other end back. On success returns 0 and writes the host-side fd
++/// to `host_fd` and the `tun.start` handle to `handle`; on failure returns -1
++/// and closes both ends. `host_fd` / `handle` must be non-null.
++///
++/// # Safety
++/// Both pointers must be valid for writing.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn concord_ios_bridge_open(host_fd: *mut c_int, handle: *mut u64) -> c_int {
++    if host_fd.is_null() || handle.is_null() {
++        return -1;
++    }
++    // SAFETY: the pointers were checked non-null by the caller contract.
++    unsafe {
++        *host_fd = -1;
++        *handle = 0;
++    }
++    let mut pair = [-1 as c_int, -1 as c_int];
++    // SOCK_DGRAM preserves datagram boundaries: one send = one IP packet on
++    // the core side (see the module docs, caveat (i)). SOCK_CLOEXEC so the
++    // fds do not leak into any spawned process.
++    let made = unsafe {
++        libc::socketpair(
++            libc::AF_UNIX,
++            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
++            0,
++            pair.as_mut_ptr(),
++        )
++    };
++    if made != 0 {
++        return -1;
++    }
++    let [core_fd, host] = pair;
++    // Hand the core end to the core; `Hub::adopt_fd` takes ownership and
++    // returns 0 (closing the fd) when the core is not up.
++    let adopted = {
++        let fd = unsafe { OwnedFd::from_raw_fd(core_fd) };
++        match concord_ffi::hub() {
++            Some(hub) => hub.adopt_fd(fd),
++            None => 0,
++        }
++    };
++    if adopted == 0 {
++        // Core not up: `adopt_fd` already closed core_fd; close our end too.
++        unsafe { libc::close(host) };
++        return -1;
++    }
++    // SAFETY: the pointers were checked non-null above.
++    unsafe {
++        *host_fd = host;
++        *handle = adopted;
++    }
++    0
++}
++
++/// Closes the host end of a bridge opened by `concord_ios_bridge_open`.
++/// The core end is owned by the core. No-op for a negative fd.
++#[unsafe(no_mangle)]
++pub extern "C" fn concord_ios_bridge_close(host_fd: c_int) {
++    if host_fd >= 0 {
++        // SAFETY: `host_fd` is a fd this module handed out; closing it once.
++        unsafe { libc::close(host_fd) };
++    }
++}
++
++/// Unused marker so the `c_void` import in the header docs stays honest.
++#[allow(dead_code)]
++fn _unused(_: *mut c_void) {}
+diff --git a/bins/ios/src/core.rs b/bins/ios/src/core.rs
+new file mode 100644
+index 0000000..7a02b37
+--- /dev/null
++++ b/bins/ios/src/core.rs
+@@ -0,0 +1,78 @@
++use std::sync::Arc;
++
++use concord_api::{Control, ControlOptions, EventBus};
++use concord_engine::{Engine, EngineConfig};
++use concord_ffi::Hub;
++use concord_rpc::Server;
++use tokio::runtime::{Builder, Runtime};
++
++use crate::platform::IosPlatform;
++
++/// Capabilities the iOS host lets the core use. `tun.inherited` is the
++/// socketpair bridge (`concord_adopt_fd` + `tun.start` inherited);
++/// `tun.channel` is the Option B packet channel (`concord_packet_channel_open`
++/// + `tun.start` channel). `tun.device` is deliberately NOT claimed: the core
++/// must not create its own TUN device inside a NetworkExtension. There is no
++/// `host.protect` / `host.resolveUid`: iOS exposes no `VpnService`-style host
++/// callbacks (see `platform.rs`).
++const CAPABILITIES: [&str; 2] = ["tun.inherited", "tun.channel"];
++
++/// Everything one `libconcord_ios.a` holds: the runtime that carries the flows,
++/// the control surface on it, and the hub through which the extension opens sessions.
++pub struct Core {
++    _runtime: Runtime,
++    control: Arc<Control>,
++    hub: Arc<Hub>,
++}
++
++impl Core {
++    pub fn new() -> std::io::Result<Self> {
++        let workers = concord_platform::available_cpus().map_or(1, |count| count.get());
++        let mut builder = Builder::new_multi_thread();
++        builder
++            .worker_threads(workers)
++            .thread_name("concord")
++            .enable_all();
++        let runtime = builder.build()?;
++        let entered = runtime.enter();
++
++        let bus = EventBus::new();
++        let platform = Arc::new(IosPlatform::new());
++        let engine = Engine::new(EngineConfig {
++            sink: bus.clone(),
++            // iOS is not Android: `core.hello` reports "ios", `tun.device` is
++            // rejected only by the host never asking for it, `core.init`'s
++            // `sdk_int` stays 0, and `tun.stop` takes the non-Android path
++            // (`disable_tun` → `reconcile_tun` closes the runner slot).
++            android: false,
++            platform: platform.clone(),
++        });
++        let control = Control::new(
++            engine,
++            bus,
++            ControlOptions {
++                privileged: false,
++                capabilities: CAPABILITIES.map(String::from).to_vec(),
++                build: env!("CARGO_PKG_VERSION").to_owned(),
++                profile_controller: false,
++            },
++        );
++        let server = Arc::new(Server::new(control.clone()));
++        runtime.spawn(concord_controller::serve(control.clone()));
++        drop(entered);
++        let hub = Hub::new(runtime.handle().clone(), server, control.clone());
++        Ok(Core {
++            _runtime: runtime,
++            control,
++            hub,
++        })
++    }
++
++    pub fn control(&self) -> &Arc<Control> {
++        &self.control
++    }
++
++    pub fn hub(&self) -> &Arc<Hub> {
++        &self.hub
++    }
++}
+diff --git a/bins/ios/src/lib.rs b/bins/ios/src/lib.rs
+new file mode 100644
+index 0000000..e779743
+--- /dev/null
++++ b/bins/ios/src/lib.rs
+@@ -0,0 +1,38 @@
++//! `libconcord_ios.a`: the Rust core as an iOS static library, for a
++//! `NEPacketTunnelProvider` (NetworkExtension) target. Its C ABI is
++//! `concord_start`, which builds the core, and the session functions of
++//! `concord-ffi` (`concord_open_callback`, `concord_send`, `concord_close`,
++//! `concord_adopt_fd`, plus the packet-channel functions of the Option B
++//! patch). A host binds them to its own runtime; the Swift glue is the host's.
++//!
++//! The JSON-RPC flow is the same as Android's (`bins/android`):
++//! `core.init` (home dir; `sdk_int` stays unset, i.e. 0) → `config.apply` →
++//! `engine.start` → `tun.start`. The TUN source on iOS is either
++//! `{"kind": "inherited", "handle": …}` (a socketpair end adopted with
++//! `concord_adopt_fd`, see `bridge.rs`) or, once the Option B patch is
++//! applied, `{"kind": "channel", "handle": …}` (see `crates/tun/src/channel.rs`).
++//! There is no `{"kind": "device"}` on iOS: the core must not create its own
++//! TUN device inside a NetworkExtension; the system owns the tunnel interface.
++//! `core.hello` reports `"os": "ios"` (via `std::env::consts::OS`, since
++//! `EngineConfig { android: false }`) and capabilities
++//! `["tun.inherited", "tun.channel"]`.
++//!
++//! Everything here is written against the patched tree (Option B patch +
++//! the `TunDevice::wrap` iOS compile fix in `crates/tun/src/device/mod.rs`);
++//! see `bins/ios/README.md`. It has never been compiled for
++//! `aarch64-apple-ios`: BoringSSL / aws-lc-sys under the iphoneos SDK is the
++//! first gate to test on a macOS runner.
++
++#![allow(
++    unsafe_code,
++    reason = "the exported C functions, a descriptor handed over by the host and os_log"
++)]
++
++mod abi;
++pub mod bridge;
++pub mod core;
++mod log;
++pub mod platform;
++
++pub use abi::concord_start;
++pub use bridge::{concord_ios_bridge_close, concord_ios_bridge_open};
+diff --git a/bins/ios/src/log.rs b/bins/ios/src/log.rs
+new file mode 100644
+index 0000000..18d653a
+--- /dev/null
++++ b/bins/ios/src/log.rs
+@@ -0,0 +1,12 @@
++//! Log lines for the iOS core. `eprintln!` is the portable fallback (the
++//! same branch `bins/android/src/logcat.rs` takes off Android); in a
++//! NetworkExtension stderr lands in the system log. A future step could
++//! route these through `os_log` instead.
++
++pub fn info(message: &str) {
++    eprintln!("{message}");
++}
++
++pub fn error(message: &str) {
++    eprintln!("[ERROR] {message}");
++}
+diff --git a/bins/ios/src/platform.rs b/bins/ios/src/platform.rs
+new file mode 100644
+index 0000000..b2f9e3f
+--- /dev/null
++++ b/bins/ios/src/platform.rs
+@@ -0,0 +1,68 @@
++use std::net::SocketAddr;
++
++use async_trait::async_trait;
++use concord_common::{FlowKey, ProcessInfo, RawSocket};
++use concord_platform::{FdPressure, InterfaceInfo, Platform};
++
++/// What the iOS host answers for the core. There is no `VpnService`-style
++/// host on iOS, so there is no `PlatformHost` trait instance and no
++/// `concord_set_platform_host`: the answers below are the whole platform.
++///
++/// The three Android host callbacks (`bins/android/src/platform.rs`,
++/// `PlatformHost::{protect, resolve_uid, resolve_package}`) have no iOS
++/// equivalent, and each is replaced as follows:
++///
++/// * `protect` — no-op that answers `true`. A NetworkExtension's own
++///   outbound sockets are not routed back into the tunnel by the system, so
++///   there is nothing to exclude; answering `true` also stops the core
++///   retrying the socket on the next TUN start (see `Platform::protect`:
++///   `false` means "owed but could not be done now"). UNVERIFIED: whether an
++///   NE provider's own sockets can ever loop back into the tunnel is not
++///   addressed anywhere in upstream Concord and was not tested here.
++/// * `resolve_uid` / `resolve_package` — no owner info. iOS does not expose
++///   the owning app of a flow to the extension, so `find_owner` returns
++///   `None` and connection lists show no process owner. `FlowKey` owner
++///   lookups are best-effort UI data, not needed for proxying.
++pub struct IosPlatform {
++    pressure: FdPressure,
++}
++
++impl IosPlatform {
++    pub fn new() -> Self {
++        IosPlatform {
++            pressure: FdPressure::new(),
++        }
++    }
++}
++
++impl Default for IosPlatform {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++
++#[async_trait]
++impl Platform for IosPlatform {
++    fn protect(&self, _socket: RawSocket) -> bool {
++        // No VpnService.protect on iOS; the extension's sockets stay outside
++        // the tunnel by the system. See the struct docs.
++        true
++    }
++
++    async fn find_owner(&self, _flow: &FlowKey) -> Option<ProcessInfo> {
++        // iOS exposes no per-flow owning process to a NetworkExtension.
++        None
++    }
++
++    fn default_interface(&self) -> Option<InterfaceInfo> {
++        None
++    }
++
++    fn system_dns(&self) -> Vec<SocketAddr> {
++        Vec::new()
++    }
++
++    fn fd_pressure(&self) -> bool {
++        self.pressure.should_block()
++    }
++}
+-- 
+2.43.0
+

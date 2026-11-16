@@ -103,6 +103,12 @@ jobs:
       - name: Build Concord staticlib (full workspace, no trimming)
         working-directory: upstream
         run: |
+          # Upstream pins its toolchain (rust-toolchain.toml, channel
+          # 1.99.0) and that toolchain does NOT list aarch64-apple-ios
+          # among its targets, so entering upstream/ switches rustup to
+          # 1.99.0 and the target installed for the default toolchain
+          # does not apply. Install it for the pinned toolchain here.
+          rustup target add aarch64-apple-ios
           # Fails loudly if BoringSSL / aws-lc-sys / rquickjs cannot
           # build for the iphoneos SDK — that failure is the gate.
           cargo build --release --target aarch64-apple-ios -p concord-ios

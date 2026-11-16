@@ -47,12 +47,19 @@ jobs:
 
       - name: Archive (unsigned)
         run: |
+          # CODE_SIGNING_ALLOWED=NO alone is not enough: with
+          # CODE_SIGN_STYLE=Automatic Xcode still demands a development
+          # team and fails with "Signing for ... requires a development
+          # team". Force manual signing with no identity for the
+          # unsigned archive.
           xcodebuild -project "$XCODE_PROJECT" \
             -scheme "$APP_SCHEME" \
             -configuration Release \
             -destination "generic/platform=iOS" \
             -archivePath build/ConcordiOS.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="" \
             archive
 
       - name: Export unsigned IPA

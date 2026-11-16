@@ -70,29 +70,50 @@ jobs:
 
   signed-ipa:
     name: Build signed IPA
-    # Only runs when all signing secrets are present.
-    # The job is skipped (not failed) if any secret is missing.
-    if: ${{ secrets.IOS_P12_BASE64 != '' && secrets.IOS_P12_PASSWORD != '' && secrets.IOS_MOBILEPROVISION_APP != '' && secrets.IOS_MOBILEPROVISION_TUNNEL != '' }}
+    # GitHub does not allow the `secrets` context in a job-level `if:`,
+    # so the secret check is done in the first step instead (step-level
+    # `if:` can use step outputs). The job is skipped step-by-step when
+    # any secret is missing.
     runs-on: macos-latest
     needs: unsigned-ipa
     steps:
+      - name: Check signing secrets
+        id: check
+        env:
+          IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
+          IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+          IOS_MOBILEPROVISION_APP: ${{ secrets.IOS_MOBILEPROVISION_APP }}
+          IOS_MOBILEPROVISION_TUNNEL: ${{ secrets.IOS_MOBILEPROVISION_TUNNEL }}
+        run: |
+          if [ -n "$IOS_P12_BASE64" ] && [ -n "$IOS_P12_PASSWORD" ] && [ -n "$IOS_MOBILEPROVISION_APP" ] && [ -n "$IOS_MOBILEPROVISION_TUNNEL" ]; then
+            echo "has_secrets=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_secrets=false" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets are missing; skipping signed build."
+          fi
+
       - name: Checkout
+        if: steps.check.outputs.has_secrets == 'true'
         uses: actions/checkout@v4
 
       - name: Select Xcode
+        if: steps.check.outputs.has_secrets == 'true'
         run: |
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
 
       - name: Install Rust targets for iOS
+        if: steps.check.outputs.has_secrets == 'true'
         run: |
           rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 
       - name: Build Rust staticlib placeholder
+        if: steps.check.outputs.has_secrets == 'true'
         working-directory: rust/concord-ios-ffi
         run: cargo build --release --target aarch64-apple-ios
 
       - name: Import signing certificate and profiles
+        if: steps.check.outputs.has_secrets == 'true'
         env:
           IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
           IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
@@ -114,6 +135,7 @@ jobs:
           rm /tmp/cert.p12
 
       - name: Archive (signed)
+        if: steps.check.outputs.has_secrets == 'true'
         run: |
           xcodebuild -project "$XCODE_PROJECT" \
             -scheme "$APP_SCHEME" \
@@ -123,6 +145,7 @@ jobs:
             archive
 
       - name: Export signed IPA
+        if: steps.check.outputs.has_secrets == 'true'
         run: |
           # ExportOptions.plist is a TEMPLATE in the repo root.
           # Before this job can succeed you MUST replace YOUR_TEAM_ID and
@@ -145,6 +168,7 @@ jobs:
           ls -lh build/ConcordiOS-signed.ipa
 
       - name: Upload signed IPA
+        if: steps.check.outputs.has_secrets == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ConcordiOS-signed

@@ -1,1 +1,35 @@
-RnJvbSA1OTJhYTMxY2NmNTFhMjNmMDM1NjMzNGIxODNiNzk1OTJjNmM3NGU3IE1vbiBTZXAgMTcgMDA6MDA6MDAgMjAwMQpGcm9tOiBNdXNlIDxtdXNlQGxvY2FsPgpEYXRlOiBNb24sIDE2IE5vdiAyMDI2IDA2OjM1OjA3ICswMDAwClN1YmplY3Q6IFtQQVRDSF0gbWl0bTogZW5hYmxlIHJxdWlja2pzIGJpbmRnZW4gZmVhdHVyZSBmb3IgaU9TIChubwogcHJlLWdlbmVyYXRlZCBiaW5kaW5ncykKCi0tLQogY3JhdGVzL21pdG0vQ2FyZ28udG9tbCB8IDExICsrKysrKysrKysrCiAxIGZpbGUgY2hhbmdlZCwgMTEgaW5zZXJ0aW9ucygrKQoKZGlmZiAtLWdpdCBhL2NyYXRlcy9taXRtL0NhcmdvLnRvbWwgYi9jcmF0ZXMvbWl0bS9DYXJnby50b21sCmluZGV4IDYxMGUyNjMuLjFlZWE4ZDYgMTAwNjQ0Ci0tLSBhL2NyYXRlcy9taXRtL0NhcmdvLnRvbWwKKysrIGIvY3JhdGVzL21pdG0vQ2FyZ28udG9tbApAQCAtNTMsNiArNTMsMTcgQEAgcnF1aWNranMgPSB7IHdvcmtzcGFjZSA9IHRydWUsIG9wdGlvbmFsID0gdHJ1ZSB9CiBbdGFyZ2V0LidjZmcodGFyZ2V0X29zID0gImFuZHJvaWQiKScuZGVwZW5kZW5jaWVzXQogcnF1aWNranMgPSB7IHdvcmtzcGFjZSA9IHRydWUsIG9wdGlvbmFsID0gdHJ1ZSwgZmVhdHVyZXMgPSBbImJpbmRnZW4iXSB9CiAKKyMgaU9TLCBsaWtlIEFuZHJvaWQsIGhhcyBubyBwcmUtZ2VuZXJhdGVkIHJxdWlja2pzLXN5cyBiaW5kaW5ncworIyAoc3JjL2JpbmRpbmdzLyBzaGlwcyBkYXJ3aW4vbGludXgvd2luZG93cy93YXNtIG9ubHkpLCBzbyBnZW5lcmF0ZSB0aGVtCisjIGF0IGJ1aWxkIHRpbWUuIGJpbmRnZW4gZmluZHMgWGNvZGUncyBsaWJjbGFuZyBpdHNlbGYgKGNsYW5nLXN5cworIyBzZWFyY2hlcyBgeGNvZGUtc2VsZWN0IC0tcHJpbnQtcGF0aGAvVG9vbGNoYWlucy8uLi4pLiBQYXNzIHRoZSBpUGhvbmVPUworIyBTREsgdG8gYmluZGdlbiB3aXRoIEJJTkRHRU5fRVhUUkFfQ0xBTkdfQVJHU19hYXJjaDY0X2FwcGxlX2lvcywgYXMKKyMgdXBzdHJlYW0gQ0kgZG9lcyBmb3IgQW5kcm9pZAorIyAoY2kueWFtbCwgQklOREdFTl9FWFRSQV9DTEFOR19BUkdTX2FhcmNoNjRfbGludXhfYW5kcm9pZCksIHNvIHRoZQorIyBiaW5kaW5ncyBhcmUgcGFyc2VkIGFnYWluc3QgdGhlIGlPUyBoZWFkZXJzIHJhdGhlciB0aGFuIHRoZSBtYWNPUyBTREsuCitbdGFyZ2V0LidjZmcodGFyZ2V0X29zID0gImlvcyIpJy5kZXBlbmRlbmNpZXNdCitycXVpY2tqcyA9IHsgd29ya3NwYWNlID0gdHJ1ZSwgb3B0aW9uYWwgPSB0cnVlLCBmZWF0dXJlcyA9IFsiYmluZGdlbiJdIH0KKwogW2Rldi1kZXBlbmRlbmNpZXNdCiBjb25jb3JkLXRlc3Qtc3VwcG9ydCA9IHsgd29ya3NwYWNlID0gdHJ1ZSB9CiB0b2tpbyA9IHsgd29ya3NwYWNlID0gdHJ1ZSwgZmVhdHVyZXMgPSBbImZ1bGwiLCAidGVzdC11dGlsIl0gfQotLSAKMi40My4wCgo=
+From 592aa31ccf51a23f0356334b183b79592c6c74e7 Mon Sep 17 00:00:00 2001
+From: Muse <muse@local>
+Date: Mon, 16 Nov 2026 06:35:07 +0000
+Subject: [PATCH] mitm: enable rquickjs bindgen feature for iOS (no
+ pre-generated bindings)
+
+---
+ crates/mitm/Cargo.toml | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/crates/mitm/Cargo.toml b/crates/mitm/Cargo.toml
+index 610e263..1eea8d6 100644
+--- a/crates/mitm/Cargo.toml
++++ b/crates/mitm/Cargo.toml
+@@ -53,6 +53,17 @@ rquickjs = { workspace = true, optional = true }
+ [target.'cfg(target_os = "android")'.dependencies]
+ rquickjs = { workspace = true, optional = true, features = ["bindgen"] }
+ 
++# iOS, like Android, has no pre-generated rquickjs-sys bindings
++# (src/bindings/ ships darwin/linux/windows/wasm only), so generate them
++# at build time. bindgen finds Xcode's libclang itself (clang-sys
++# searches `xcode-select --print-path`/Toolchains/...). Pass the iPhoneOS
++# SDK to bindgen with BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios, as
++# upstream CI does for Android
++# (ci.yaml, BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android), so the
++# bindings are parsed against the iOS headers rather than the macOS SDK.
++[target.'cfg(target_os = "ios")'.dependencies]
++rquickjs = { workspace = true, optional = true, features = ["bindgen"] }
++
+ [dev-dependencies]
+ concord-test-support = { workspace = true }
+ tokio = { workspace = true, features = ["full", "test-util"] }
+-- 
+2.43.0
+

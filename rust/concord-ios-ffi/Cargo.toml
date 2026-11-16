@@ -1,0 +1,16 @@
+[package]
+name = "concord-ios-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "FFI placeholder for embedding chen08209/concord as a staticlib on iOS. NOT a working Concord integration yet."
+
+[lib]
+name = "concord_ios_ffi"
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# TODO: add the real Concord crates here once an iOS entry point is defined.
+# Concord today has no iOS target / FFI / staticlib crate — do not assume
+# `concord` can be added as a dependency and built for aarch64-apple-ios.
+# In particular, its BoringSSL build under the iphoneos SDK is unverified.

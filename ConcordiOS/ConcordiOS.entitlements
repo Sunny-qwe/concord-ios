@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- TODO: replace with your real App Group. The App Group must exist in
+	     your Apple Developer account and be enabled in both provisioning
+	     profiles (app + tunnel). -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.sunny-qwe.concord-ios</string>
+	</array>
+</dict>
+</plist>

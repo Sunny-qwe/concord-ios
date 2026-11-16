@@ -57,13 +57,13 @@ struct StatCard: View {
 struct TrafficChartView: View {
     let history: [TrafficPoint]
 
-    private func path(for values: [Int64], max: Int64, in size: CGSize) -> Path {
+    private func path(for values: [Int64], maxValue: Int64, in size: CGSize) -> Path {
         var path = Path()
-        guard values.count > 1, max > 0 else { return path }
-        let stepX = size.width / CGFloat(max(values.count - 1, 1))
+        guard values.count > 1, maxValue > 0 else { return path }
+        let stepX = size.width / CGFloat(Swift.max(values.count - 1, 1))
         for (index, value) in values.enumerated() {
             let x = CGFloat(index) * stepX
-            let y = size.height - (CGFloat(value) / CGFloat(max)) * size.height
+            let y = size.height - (CGFloat(value) / CGFloat(maxValue)) * size.height
             if index == 0 { path.move(to: CGPoint(x: x, y: y)) }
             else { path.addLine(to: CGPoint(x: x, y: y)) }
         }
@@ -73,9 +73,9 @@ struct TrafficChartView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                path(for: history.map { $0.down }, max: max(history.map { $0.down }.max() ?? 1, 1), in: geometry.size)
+                path(for: history.map { $0.down }, maxValue: Swift.max(history.map { $0.down }.max() ?? 1, 1), in: geometry.size)
                     .stroke(Color.blue, lineWidth: 1.5)
-                path(for: history.map { $0.up }, max: max(history.map { $0.down }.max() ?? 1, 1), in: geometry.size)
+                path(for: history.map { $0.up }, maxValue: Swift.max(history.map { $0.down }.max() ?? 1, 1), in: geometry.size)
                     .stroke(Color.green, lineWidth: 1.5)
             }
         }

@@ -2,8 +2,12 @@ import SwiftUI
 
 // Concord iOS — main app entry point.
 // One shared ConcordClient feeds every store; the stores are the single
-// source of truth for their page. The client runs in `.sample` mode until
-// the real core is linked (see ConcordClient.swift).
+// source of truth for their page. The client runs in `.live` mode by
+// default: the real core lives in the PacketTunnel extension process
+// and the app reaches it through TunnelManager (sendProviderMessage)
+// plus the App Group snapshot files — the app never loads the core
+// itself (see ConcordClient.swift and PacketTunnelProvider.swift).
+// `.sample` is an explicit, labelled fallback only.
 
 @main
 struct ConcordiOSApp: App {
@@ -44,6 +48,7 @@ struct ConcordiOSApp: App {
                 .environmentObject(ruleStore)
                 .environmentObject(settingsStore)
                 .environmentObject(dnsStore)
+                .environmentObject(TunnelManager.shared)
         }
     }
 }

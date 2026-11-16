@@ -68,6 +68,10 @@ jobs:
       - name: Build Concord staticlib (full workspace, no trimming)
         working-directory: upstream
         run: |
+          # Upstream pins its toolchain (rust-toolchain.toml, channel
+          # 1.99.0) without aarch64-apple-ios in its targets; install
+          # the target for the pinned toolchain here (see unsigned job).
+          rustup target add aarch64-apple-ios
           cargo build --release --target aarch64-apple-ios -p concord-ios
 
       - name: Build Rust FFI wrapper
@@ -174,6 +178,10 @@ jobs:
         if: steps.check.outputs.has_secrets == 'true'
         working-directory: upstream
         run: |
+          # Upstream pins its toolchain (rust-toolchain.toml, channel
+          # 1.99.0) without aarch64-apple-ios in its targets; install
+          # the target for the pinned toolchain here (see unsigned job).
+          rustup target add aarch64-apple-ios
           cargo build --release --target aarch64-apple-ios -p concord-ios
 
       - name: Build Rust FFI wrapper

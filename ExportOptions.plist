@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ExportOptions.plist — TEMPLATE, not ready to use as-is.
+  Replace every YOUR_* placeholder with your real values before
+  running the signed-ipa job in GitHub Actions:
+    - YOUR_TEAM_ID: your Apple Developer Team ID (paid Individual account).
+      Find it at developer.apple.com/account — do NOT put a certificate,
+      password, or .mobileprovision file in this repo.
+    - YOUR_APP_PROVISIONING_PROFILE_NAME: the *name* of the provisioning
+      profile for com.sunny-qwe.concord-ios (as shown in the Developer
+      portal, not the file name). It must contain packet-tunnel-provider
+      / App Groups as applicable.
+    - YOUR_TUNNEL_PROVISIONING_PROFILE_NAME: same, for
+      com.sunny-qwe.concord-ios.PacketTunnel.
+  Bundle IDs below are placeholders — replace them if you changed the
+  Bundle IDs in ConcordiOS.xcodeproj/project.pbxproj.
+  Method "development" is for personal self-signing with a paid
+  Developer Program account. Do not use "app-store" / "ad-hoc" unless
+  you know your certificate type matches.
+  NOTE: project.pbxproj currently uses CODE_SIGN_STYLE = Automatic.
+  If the export fails with a manual-signing error, set CODE_SIGN_STYLE
+  to Manual in Xcode for both targets (or pass it on the xcodebuild
+  archive command) so archive and export agree. This has NOT been
+  verified on a Mac / in Xcode — see README.md / SIGNING.md.
+-->
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>development</string>
+	<key>teamID</key>
+	<string>YOUR_TEAM_ID</string>
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>stripSwiftSymbols</key>
+	<true/>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.sunny-qwe.concord-ios</key>
+		<string>YOUR_APP_PROVISIONING_PROFILE_NAME</string>
+		<key>com.sunny-qwe.concord-ios.PacketTunnel</key>
+		<string>YOUR_TUNNEL_PROVISIONING_PROFILE_NAME</string>
+	</dict>
+</dict>
+</plist>

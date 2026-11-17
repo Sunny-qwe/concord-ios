@@ -190,7 +190,7 @@ struct JSONRPCError: Decodable {
 }
 
 struct EmptyParams: Encodable {}
-struct EmptyResult: Decodable {}
+struct EmptyResult: Codable {}
 
 // MARK: - Concord types (field names follow schema/api.json $defs;
 // wire keys are snake_case — see the header comment)
@@ -664,12 +664,12 @@ struct ConcordProxyStates: Codable {
 // then `done` — upstream crates/api/src/watch.rs). The extension
 // accumulates the events into snapshots/delay.json; the app polls it.
 
-struct DelayRunStart: Decodable {
+struct DelayRunStart: Codable {
     let sub: Int
     let snapshot: EmptyResult?
 }
 
-struct DelayRunSnapshot: Decodable {
+struct DelayRunSnapshot: Codable {
     let runId: Int?
     let done: Bool
     let results: [ConcordDelayResult]

@@ -104,8 +104,8 @@ struct SetOutboundModeIntent: AppIntent {
     static var title: LocalizedStringResource = "切换出站模式"
     static var description = IntentDescription("把出站模式切换为规则、全局或直连。")
 
-    @Parameter(title: "出站模式")
-    var mode: ConcordModeChoice = .rule
+    @Parameter(title: "出站模式", default: .rule)
+    var mode: ConcordModeChoice
 
     func perform() async throws -> some IntentResult {
         let outbound = OutboundMode(rawValue: mode.rawValue) ?? .rule

@@ -1,6 +1,5 @@
 import Foundation
 import Combine
-import SystemConfiguration
 
 // MARK: - Connections store (FlClash: Requests / connections page)
 // Backed by Concord connection.watch (stream) / connection.close.
@@ -135,7 +134,7 @@ final class ConnectionStore: ObservableObject {
     }
 
     /// Tells the core the system network changed (network.update).
-    /// Reads the current system DNS servers via SystemConfiguration
+    /// Reads the current system DNS servers from /etc/resolv.conf
     /// and sends them as `dnsServers`; `interfaceChanged` means the
     /// default network changed, so connections over the old one are
     /// closed. The extension does not yet notify the core
@@ -154,17 +153,20 @@ final class ConnectionStore: ObservableObject {
         }
     }
 
-    /// The DNS servers iOS currently uses (from SystemConfiguration's
-    /// global DNS state), as socket addresses. Returns nil when they
-    /// cannot be read (nil = "unchanged" to the core).
+    /// The DNS servers iOS currently uses, read from /etc/resolv.conf
+    /// (SCDynamicStore is macOS-only and unavailable on iOS), as socket
+    /// addresses. Returns nil when they cannot be read (nil = "unchanged"
+    /// to the core — the core still processes the network change).
     static func systemDnsServers() -> [String]? {
-        guard let store = SCDynamicStoreCreate(nil, "ConcordiOS" as CFString, nil, nil),
-              let state = SCDynamicStoreCopyValue(store, "State:/Network/Global/DNS" as CFString) as? [String: Any],
-              let servers = state["ServerAddresses"] as? [String], !servers.isEmpty else {
+        guard let text = try? String(contentsOfFile: "/etc/resolv.conf", encoding: .utf8) else {
             return nil
         }
-        return servers.map { server in
-            server.contains(":") ? "[\(server)]:53" : "\(server):53"
+        let servers = text.split(separator: "\n").compactMap { line -> String? in
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard parts.count >= 2, parts[0] == "nameserver" else { return nil }
+            let server = String(parts[1])
+            return server.contains(":") ? "[\(server)]:53" : "\(server):53"
         }
+        return servers.isEmpty ? nil : servers
     }
 }

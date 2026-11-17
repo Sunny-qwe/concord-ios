@@ -220,6 +220,15 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("App 图标") {
+                    NavigationLink("切换 App 图标") {
+                        AppIconPickerView()
+                    }
+                    Text("在 App 内切换主屏幕图标（默认 / 墨黑 / 曜青 / 雪白），用的是系统公开接口。切换失败时页面会显示完整错误信息。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if settingsStore.developerMode {
                     Section("开发者（core.capabilities）") {
                         Button("读取核心能力") {
@@ -276,7 +285,7 @@ struct SettingsView: View {
                 }
 
                 Section("关于") {
-                    LabeledContent("版本", value: "Concord iOS 0.2.0（FlClash 风格界面）")
+                    LabeledContent("版本", value: "Concord iOS 0.2.5（FlClash 风格界面）")
                     LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
                     LabeledContent("界面来源", value: "chen08209/FlClash（GPL-3.0）")
                     Text("本 App 是 FlClash 界面的 SwiftUI 复刻，核心经 PacketTunnel 扩展链接（packet-channel 数据面），但静态库构建与真机数据面尚未验证，见 README 的「已上线与待办」一节。")

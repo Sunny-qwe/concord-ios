@@ -1,0 +1,49 @@
+From 756f6639443dc5baa2f2f0f83d852edca844626d Mon Sep 17 00:00:00 2001
+From: Muse <muse@local>
+Date: Tue, 17 Nov 2026 09:36:37 +0800
+Subject: [PATCH] ios: drop SOCK_CLOEXEC on Apple targets (libc has no such
+ constant there)
+
+libc::SOCK_CLOEXEC exists on Linux but not on Apple targets, so the
+socketpair call in concord_ios_bridge_open fails for
+aarch64-apple-ios with E0425 (ios-core-check run #9, attempt 2).
+Apple targets get plain SOCK_DGRAM; the fds stay in-process (one end
+is adopted by the core, the other is held by the extension), so
+nothing can leak them into a spawned process anyway.
+---
+ bins/ios/src/bridge.rs | 19 ++++++++++---------
+ 1 file changed, 10 insertions(+), 9 deletions(-)
+
+diff --git a/bins/ios/src/bridge.rs b/bins/ios/src/bridge.rs
+index 594ba1e..a356c7b 100644
+--- a/bins/ios/src/bridge.rs
++++ b/bins/ios/src/bridge.rs
+@@ -94,15 +94,16 @@ pub unsafe extern "C" fn concord_ios_bridge_open(host_fd: *mut c_int, handle: *m
+     let mut pair = [-1 as c_int, -1 as c_int];
+     // SOCK_DGRAM preserves datagram boundaries: one send = one IP packet on
+     // the core side (see the module docs, caveat (i)). SOCK_CLOEXEC so the
+-    // fds do not leak into any spawned process.
+-    let made = unsafe {
+-        libc::socketpair(
+-            libc::AF_UNIX,
+-            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+-            0,
+-            pair.as_mut_ptr(),
+-        )
+-    };
++    // fds do not leak into any spawned process — but libc has no
++    // SOCK_CLOEXEC on Apple targets (E0425), so there it is just
++    // SOCK_DGRAM; the fds stay in-process (one end is adopted by the core,
++    // the other is held by the extension), so nothing can leak them into a
++    // spawned process anyway.
++    #[cfg(not(target_vendor = "apple"))]
++    let socktype = libc::SOCK_DGRAM | libc::SOCK_CLOEXEC;
++    #[cfg(target_vendor = "apple")]
++    let socktype = libc::SOCK_DGRAM;
++    let made = unsafe { libc::socketpair(libc::AF_UNIX, socktype, 0, pair.as_mut_ptr()) };
+     if made != 0 {
+         return -1;
+     }
+-- 
+2.43.0
+

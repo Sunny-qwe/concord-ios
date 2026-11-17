@@ -53,6 +53,11 @@ final class ProfileStore: ObservableObject {
     @Published var inspect: ConcordProfileInspect?
     @Published var applyWarnings: [ConcordWarning] = []
     @Published var validationIssues: [ConcordIssue] = []
+    /// Decrypted text of the last config.decrypt call (never persisted;
+    /// the key is never stored either). Saved as a new profile only
+    /// through saveDecryptedAsProfile, an explicit user action.
+    @Published var decryptResult: String?
+    @Published var decryptMessage: String?
 
     let client: ConcordClient
     private let storageKey = "ConcordiOS.profiles.v1"
@@ -395,5 +400,75 @@ final class ProfileStore: ObservableObject {
         } catch {
             return .failure(error)
         }
+    }
+
+    /// Extracts every proxy-group `filter:` expression from the active
+    /// profile's effective config (config.read). No read API exposes
+    /// filter lists directly, so they are derived from the config the
+    /// core itself parsed: each pair is (group name, filter). An
+    /// empty result just means this config has no group filters.
+    @MainActor
+    func extractActiveProfileFilters() async -> Result<[(group: String, filter: String)], Error> {
+        guard let profile = activeProfile,
+              let absolutePath = absolutePath(for: profile) else {
+            return .failure(NSError(domain: "ConcordiOS", code: 1, userInfo: [NSLocalizedDescriptionKey: "没有已激活的订阅"]))
+        }
+        do {
+            let config = try await client.configRead(profilePath: absolutePath)
+            guard let groups = config.config.objectValue?["proxy-groups"]?.arrayValue else {
+                return .success([])
+            }
+            var out: [(group: String, filter: String)] = []
+            for group in groups {
+                guard let obj = group.objectValue,
+                      let name = obj["name"]?.stringValue,
+                      let filter = obj["filter"]?.stringValue,
+                      !filter.isEmpty else { continue }
+                out.append((group: name, filter: filter))
+            }
+            return .success(out)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// Decrypts an encrypted profile file with its key
+    /// (config.decrypt). The key is passed for this one call and never
+    /// stored; the plaintext is kept only in memory until the user
+    /// saves it as a new profile. The core runs in the extension, so
+    /// the tunnel must be running in live mode.
+    @MainActor
+    func decryptProfile(_ profile: Profile, key: String) async {
+        guard let absolutePath = absolutePath(for: profile) else {
+            decryptMessage = "该订阅没有本地文件"
+            return
+        }
+        guard !key.isEmpty else {
+            decryptMessage = "请先输入解密密钥"
+            return
+        }
+        if client.mode == .live, !TunnelManager.shared.isRunning {
+            decryptMessage = "需先启动 VPN：解密由扩展内的核心执行"
+            return
+        }
+        do {
+            decryptResult = try await client.configDecrypt(profilePath: absolutePath, key: key)
+            decryptMessage = decryptResult?.isEmpty == true ? "解密结果为空" : "解密成功，可另存为新订阅"
+            lastError = nil
+        } catch {
+            decryptResult = nil
+            decryptMessage = "解密失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Saves the last decrypted text as a new local profile. The
+    /// decrypted text is a plain Clash / mihomo YAML document, so it
+    /// goes through the same sanity check as any other import.
+    @MainActor
+    func saveDecryptedAsProfile(name: String) {
+        guard let text = decryptResult, !text.isEmpty else { return }
+        addFromFile(name: name, data: Data(text.utf8))
+        decryptResult = nil
+        decryptMessage = "已保存为新订阅「\(name)」"
     }
 }

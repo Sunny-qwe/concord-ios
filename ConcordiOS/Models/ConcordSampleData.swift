@@ -15,7 +15,8 @@ enum ConcordSampleData {
         switch method {
         case "core.init", "engine.start", "engine.stop", "tun.start", "tun.stop",
              "traffic.reset", "dns.clearCache", "dns.flushFakeIp", "provider.update",
-             "config.patch", "network.reset", "core.releaseMemory", "geo.update":
+             "config.patch", "network.reset", "core.releaseMemory", "geo.update",
+             "core.setPressure", "debug.crash":
             result = AnyEncodable(EmptyResultJSON())
         case "config.validate":
             result = AnyEncodable(ConcordConfigValidateResult(issues: []))
@@ -32,6 +33,14 @@ enum ConcordSampleData {
             result = AnyEncodable(ConcordProxyList(proxies: sampleProxyObjects))
         case "validate.proxies":
             result = AnyEncodable(ConcordIssueList(issues: []))
+        case "validate.filters":
+            result = AnyEncodable(ConcordIssueList(issues: []))
+        case "route.check":
+            result = AnyEncodable(ConcordRouteCheckResult(epoch: 1, version: 1, held: [true]))
+        case "config.decrypt":
+            result = AnyEncodable(ConcordTextResult(
+                text: "# 示例解密配置（config.decrypt）\nmode: rule\nproxies: []\nproxy-groups: []\nrules: []\n",
+                file: nil, size: nil))
         case "profile.build":
             result = AnyEncodable(ConcordTextResult(
                 text: "# 示例生效配置（profile.build）\nmode: rule\nmixed-port: 7890\nproxies: 4 个节点\nproxy-groups: GLOBAL / PROXY / Streaming / DIRECT\nrules: 20 条\n",
@@ -195,7 +204,7 @@ enum ConcordSampleData {
     static var sampleServices: [ConcordServiceItem] {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         return [
-            ConcordServiceItem(name: "google", status: "available", region: "US", delay: 132, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil),
+            ConcordServiceItem(name: "google", status: "available", region: "US", delay: 132, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: [ConcordRouteHit(host: "www.google.com:443", proxy: "示例节点-香港-01", exit: "\"示例节点-香港-01\" Shadowsocks 203.0.113.42")]),
             ConcordServiceItem(name: "github", status: "available", region: "", delay: 98, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil),
             ConcordServiceItem(name: "youtube", status: "restricted", region: "HK", delay: 210, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil),
             ConcordServiceItem(name: "netflix", status: "blocked", region: nil, delay: nil, chains: nil, checkedAt: now, epoch: 1, version: 1, hits: nil),
@@ -235,6 +244,7 @@ enum ConcordSampleData {
         g.allowLan = false; g.mode = "rule"; g.logLevel = "info"
         g.ipv6 = true; g.tcpConcurrent = true; g.unifiedDelay = false
         g.sniffing = true; g.globalUa = ""; g.keepAliveIdle = 600
+        g.tun = ConcordTunState(enable: true, device: "packet-channel", stack: "gvisor", autoRoute: false, autoDetectInterface: false, dnsHijack: [], mtu: 1500)
         return g
     }
 

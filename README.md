@@ -24,15 +24,16 @@
   - **规则与提供方**：规则提供方点开可看转储（`ruleSet.dump`），左滑可重新编译（`ruleSet.compile`）；提供方页新增地理数据库更新菜单（`geo.update`，MMDB/ASN/GEOSITE），更新失败现在显示错误（以前被吞掉）；资源页新增「释放核心内存」（`core.releaseMemory`）。
   - **MITM 界面**：新增 `MitmView`（运行脚本 `mitm.runScript`、按连接过滤的拦截记录 `mitm.exchanges`、详情 `mitm.exchange`、请求/响应体 `mitm.body`），从设置页 MITM 区和连接详情页进入；仪表盘新增服务检测卡片（`probe.services`，13 个内置服务名）。
   - **设置持久化**：`SettingsStore` 现在自动保存（以前只有少数几个控件调了 `save()`，大部分设置改完不保存）；通用设置写共享 `general.json`，扩展启动时在 `engine.start` 之后发一次 `config.patch`；出站模式切换立即 `config.patch`；自动更新订阅开关现在真的在启动时跑 `profileStore.updateAll()`；开发者模式打开后设置页显示 `core.capabilities` 能力表。
-  - 以上全部仍是“代码已写、未验证”：没有 Xcode / 真机，Swift 语法未编译过，静态库与数据面仍待 runner 与真机验证。
+  - **其余 6 个曾跳过的方法全部接线（2026-11-17，待 runner 验证）**：规则页新增过滤表达式校验（`validate.filters`，可从当前配置提取各分组的 filter，或手动输入多行表达式）与路由复核（`route.check`，用 `probe.services` 的 hits 重新验证，显示每条仍有效/已变化）；订阅页新增解密加密配置（`config.decrypt`，密钥用 SecureField、永不保存，解密后可另存为订阅）；设置页开发者区新增 MITM 内存压力（`core.setPressure`，0–3 级）与“让核心崩溃”（`debug.crash`，需二次确认；注：iOS 发布版核心未编译 debug 功能，调用会被拒绝）；`config.patch` 的 `tun` 字段**不发送**（TUN 由扩展拥有），设置页 TUN 区改为只读显示核心的 TUN 状态（`config.general` 的 `tun`）。
+  - 以上全部仍是“代码已写、未验证”：没有 Xcode / 真机，Swift 语法未编译过，静态库与数据面仍待 runner 与真机验证。（2026-11-17 10:47 更新：iOS run #68 已证明该批 Swift 代码编译通过；但 6 个新方法的代码尚未编译过，待下一次 run 验证。）
 
 ### 仍是 TODO / 未核实
 
 - [ ] `ios-core-check.yml` run #2（2026-11-16）：BoringSSL / aws-lc-sys 已编过，但失败在 nix 0.31.3（`SYSPROTO_CONTROL` / `UTUN_OPT_IFNAME` 在 iOS libc 里不存在）。已修：`patches/04-nix-ios-fix.patch` 把 nix 0.31.3 整个 vendored 进来并把那几个 utun 项改成 macOS-only（本地已用 `cargo check --target aarch64-apple-ios` 验证 nix 本身和 `concord-proxy` 能编过，之后只卡在 Linux 上没有 Apple SDK 的 `xcrun`）。nix 修好后 run #4（2026-11-16 14:15）又失败在 `rquickjs-sys` 0.14.0：没有 `aarch64-apple-ios` 预生成绑定（`src/lib.rs:19` 找不到 `bindings/aarch64-apple-ios.rs`）。已修：`patches/05-rquickjs-ios-fix.patch`，在 `crates/mitm/Cargo.toml` 里给 iOS 开 `rquickjs` 的 `bindgen` feature（照抄同一文件里 Android 那两行）；本地已验证 feature 接线正确、用本地 libclang 跑 bindgen 生成的绑定与自带 darwin 绑定除一个 typedef 别名外完全一致，之后只卡在 Linux 没有 `xcrun`/iOS SDK。workflow 的 BINDGEN 改动已于 2026-11-16 15:01 上传（`ios-core-check.yml` ff3dbb1、`ios.yml` 12b511e）：在三个 "Build Concord staticlib" 步骤里加了 `export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path) --target=arm64-apple-ios"`。run #8（2026-11-16 15:01，2分59秒）验证 rquickjs 已通过，但又失败在 `concord-tun`：`tun_rs::DeviceBuilder` 在 iOS 上不存在（tun-rs 只给 windows/linux/macos/BSD/illumos 编 builder）。已修：`patches/06-tun-devicebuilder-ios-fix.patch`，把 `TunDevice::create`/`build` 用 cfg 从 iOS 上拿掉、加一个返回 `Unsupported` 的 iOS stub（照抄 Android 的 stub；iOS 本来就不建设备，走 packet-channel 或 adopt fd，`AsyncDevice::from_fd` 在 iOS 上是有的）；本地 `cargo check -p concord-tun --target aarch64-apple-ios` 通过，macOS（`x86_64-apple-darwin`）也通过无回归，补丁 01–06 在全新 clone 上重放与 `ios-port` 分支逐字节一致。run #9（2026-11-17 09:33，第 2 次尝试，仓库改公开后计费拦路已解除，跑了 9 分 37 秒）又失败在 `concord-ios` 自身：`bins/ios/src/bridge.rs:101` 用的 `libc::SOCK_CLOEXEC` 在 Apple libc 里不存在（E0425）——这是我们自己 patch 01 桥接代码的 bug，不是上游代码。已修：`patches/07-sock-cloexec-ios-fix.patch`，Apple 上只用 `SOCK_DGRAM`（那两个 fd 只在进程内用，本来也不会泄漏到子进程）；本地 `rustfmt` 已过，`cargo check` 仍卡在 Linux 没有 `xcrun`/iOS SDK，所以这次只能等 runner 验证。等补丁上传后重新跑 `ios-core-check` 验证。
-- [ ] **注意：`ios.yml` 的 unsigned-ipa / signed-ipa 任务现在会在链接期失败**，因为 `project.pbxproj` 已要求链接 `libconcord_ios.a`，而 `ios.yml` 只构建 FFI wrapper、不检出上游、不编核心。修复办法（需改 workflow，本次未动）：把 `ios-core-check.yml` 里的「Checkout upstream / Apply patches / Build Concord staticlib」三步复制到 `ios.yml` 的 archive 步骤之前；pbxproj 里已有的搜索路径与 `-l` 标志无需再在命令行重复传。`ios-core-check.yml` 本身不受影响（它本来就编核心、也传了同样的命令行标志，命令行会覆盖 pbxproj 的同名设置）。
+- [x] ~~注意：`ios.yml` 的 unsigned-ipa / signed-ipa 任务现在会在链接期失败，因为 `project.pbxproj` 已要求链接 `libconcord_ios.a`，而 `ios.yml` 只构建 FFI wrapper、不检出上游、不编核心。修复办法（需改 workflow，本次未动）：把 `ios-core-check.yml` 里的「Checkout upstream / Apply patches / Build Concord staticlib」三步复制到 `ios.yml` 的 archive 步骤之前；pbxproj 里已有的搜索路径与 `-l` 标志无需再在命令行重复传。~~ 已过时：`ios.yml` 实际在 archive 前就编静态库（run #64 证明），且 `project.pbxproj` 已加 `-lc++`（commit 3413c0a，解决 BoringSSL 的 C++ 符号链接失败）；iOS run #68（2026-11-17 10:47 CST，5 分 24 秒）全绿，已产出未签名 IPA（ConcordiOS-unsigned-v0.2.0-core.ipa，12.2 MB，真核心已链接进扩展）。`ios-core-check.yml` 同样不受影响。
 - [ ] 真机数据面未验证：channel 桥接、tun.start 的 `address`（目前传 `198.18.0.1/32`，按 `Prefix::parse` 要求必须是 CIDR；IPv6 开时另传 `fdfe:dcba:9876::1/126`）、`core.init` 的 `home` 相对路径解析、快照 JSON 的实际形状，都只按源码推断，未实测。
 - [ ] 扩展内存上限未实测（核心 + 规则/Geo 数据是否放得进 NE 进程）。
-- [ ] 本仓库未在 macOS / Xcode 上构建验证过，也没有产出过新 IPA。
+- [x] ~~本仓库未在 macOS / Xcode 上构建验证过，也没有产出过新 IPA。~~ 已验证：iOS run #68（2026-11-17 10:47 CST）全绿并产出未签名 IPA（ConcordiOS-unsigned-v0.2.0-core.ipa，12.2 MB）；真机数据面仍待验证。
 
 ### 哪些页面是实时数据，哪些仍是示例数据
 
@@ -228,12 +229,12 @@ zip 包里不含任何真实证书、密码或描述文件，只有 Secrets 的�
 
 - [x] FlClash 界面复刻（SwiftUI 原生）：仪表盘/代理/订阅/规则/连接/日志/设置 7 个页面 + DNS 查询/提供方/资源子页，数据层按 `schema/api.json` 建模；实时模式为默认，示例模式为显式回退（有「示例数据」徽标）。
 - [x] Swift 侧接线完成（未验证）：PacketTunnel 扩展内核心 + Option B packet-channel 数据面 + 扩展↔主 App IPC（sendProviderMessage + App Group 快照文件）+ MITM 接线 + PacketTunnel target 链接两个静态库。见「已上线与待办」。
-- [ ] **ios.yml 会因缺少 `libconcord_ios.a` 在链接期失败**，直到它获得上游检出 + 补丁 + 核心构建步骤（见「已上线与待办」里的修复办法）。
-- [ ] BoringSSL 在 iOS SDK 下的构建是否通过，未核实（`ios-core-check.yml` 是第一道关）。
+- [x] ~~**ios.yml 会因缺少 `libconcord_ios.a` 在链接期失败**，直到它获得上游检出 + 补丁 + 核心构建步骤（见「已上线与待办」里的修复办法）。~~ 已过时：`ios.yml` 在 archive 前就编静态库（run #64 证明），`project.pbxproj` 已加 `-lc++`；iOS run #68（2026-11-17）全绿并产出未签名 IPA。
+- [x] ~~BoringSSL 在 iOS SDK 下的构建是否通过，未核实（`ios-core-check.yml` 是第一道关）。~~ 已核实：BoringSSL / aws-lc-sys 在 iOS 下构建通过（run #2 起即通过，run #68 全绿）。
 - [ ] 签名资格（付费 vs 免费、provisioning 是否含 `packet-tunnel-provider`）未核实。用户已确认是付费 Apple Developer Program 账号，这是利好，但描述文件里是否含该权限仍未核实；`ExportOptions.plist` 是模板，`YOUR_TEAM_ID` / 两个描述文件名必须替换，且整个 signed-ipa 流程未在 Mac / Xcode 上验证过。
 - [ ] Packet Tunnel 数据面已按真实 API 写好，但未在真机验证。
 - [ ] NE 内存上限、大规则集、MITM 在真机上的表现未实测；IPv6 默认关闭（开关在设置 → 通用），打开后才进隧道。
-- [ ] 本仓库未在 macOS / Xcode 上构建验证过，也没有产出过新 IPA。
+- [x] ~~本仓库未在 macOS / Xcode 上构建验证过，也没有产出过新 IPA。~~ 已验证：iOS run #68（2026-11-17 10:47 CST）全绿并产出未签名 IPA（ConcordiOS-unsigned-v0.2.0-core.ipa，12.2 MB）；真机数据面仍待验证。
 
 ## 许可证
 

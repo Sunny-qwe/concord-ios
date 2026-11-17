@@ -85,6 +85,18 @@ final class SettingsStore: ObservableObject {
     @Published var dnsApplyMessage: String?
     @Published var capabilities: ConcordCapabilities?
     @Published var developerInfoMessage: String?
+    /// MITM memory-pressure level (core.setPressure): 0 none, 1 stop
+    /// scripts, 2 stop bodies, 3 relay-only. A transient diagnostic
+    /// control, not persisted: the core only ever raises the level
+    /// and lifts it itself after a hold.
+    @Published var pressureLevel: Int = 0
+    @Published var pressureMessage: String?
+    @Published var crashMessage: String?
+    /// The core's TUN state (config.general `tun`). Display-only: TUN
+    /// is owned by the PacketTunnel extension, so the app never sends
+    /// config.patch `tun`.
+    @Published var tunState: ConcordTunState?
+    @Published var tunStateMessage: String?
 
     /// The MITM config as the core expects it (RawConfig keys, kebab-case).
     var mitmConfig: MitmConfig {
@@ -429,6 +441,81 @@ final class SettingsStore: ObservableObject {
             developerInfoMessage = nil
         } catch {
             developerInfoMessage = "读取失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Reads the core's TUN state (config.general `tun`). Display-only:
+    /// TUN is owned by the PacketTunnel extension (tun.start/tun.stop +
+    /// tunnel.json); sending config.patch `tun` would fight it — the
+    /// patch would disable or replace the device the extension is
+    /// pumping packets through — so the app never sends tun patches.
+    /// `device` is meaningless on iOS (the device is the packet
+    /// channel, not a named interface) and `autoRoute` is owned by
+    /// NetworkExtension, not the core.
+    @MainActor
+    func refreshTunState() async {
+        do {
+            tunState = try await client.configGeneral().tun
+            tunStateMessage = tunState == nil ? "核心未报告 TUN 状态" : nil
+        } catch {
+            tunState = nil
+            tunStateMessage = "读取失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Raises the MITM memory-pressure level (core.setPressure).
+    /// Levels: 0 none, 1 stop scripts, 2 stop bodies, 3 relay-only.
+    /// The core clamps to 0…3 and only ever raises; the level lifts
+    /// itself after a hold. Only affects MITM capture shedding, so it
+    /// is a no-op while MITM is off.
+    @MainActor
+    func setPressure(level: Int) async {
+        guard client.mode == .live else {
+            pressureMessage = "示例模式：不会发往核心"
+            return
+        }
+        guard TunnelManager.shared.isRunning else {
+            pressureMessage = "需先启动 VPN"
+            return
+        }
+        do {
+            try await client.coreSetPressure(level: Int32(level))
+            pressureLevel = level
+            pressureMessage = "已设置内存压力等级 \(level)（\(Self.pressureLabel(level))）"
+        } catch {
+            pressureMessage = "设置失败：\(error.localizedDescription)"
+        }
+    }
+
+    static func pressureLabel(_ level: Int) -> String {
+        switch level {
+        case 1: return "停止脚本"
+        case 2: return "停止保存请求体"
+        case 3: return "仅中继"
+        default: return "无压力"
+        }
+    }
+
+    /// Intentionally aborts the core process (debug.crash). Only built
+    /// into debug cores (concord-api `debug` feature, off in release
+    /// packages); the iOS staticlib does not enable it, so the core
+    /// answers "method not found" and nothing crashes. The UI asks
+    /// for confirmation first and shows the core's answer here.
+    @MainActor
+    func crashCore() async {
+        guard client.mode == .live else {
+            crashMessage = "示例模式：不会真的崩溃"
+            return
+        }
+        guard TunnelManager.shared.isRunning else {
+            crashMessage = "需先启动 VPN"
+            return
+        }
+        do {
+            try await client.debugCrash()
+            crashMessage = "核心已崩溃（debug.crash 已发送，隧道将断开）"
+        } catch {
+            crashMessage = "未崩溃：\(error.localizedDescription)"
         }
     }
 

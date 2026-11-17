@@ -14,6 +14,7 @@ struct SettingsView: View {
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var client: ConcordClient
     @State private var mitmIssueHost = ""
+    @State private var showCrashConfirm = false
 
     var body: some View {
         NavigationStack {
@@ -71,6 +72,22 @@ struct SettingsView: View {
                         Text("TUN 已关闭：iOS 上 TUN 是唯一的数据面，关闭后启动 VPN 会直接报错。请重新打开后再启动。")
                             .font(.caption)
                             .foregroundStyle(.orange)
+                    }
+                    Button("从核心读取 TUN 状态（config.general）") {
+                        Task { await settingsStore.refreshTunState() }
+                    }
+                    if let tun = settingsStore.tunState {
+                        LabeledContent("核心 TUN", value: tun.enable == true ? "已启用" : "未启用")
+                        LabeledContent("设备", value: tun.device ?? "—")
+                        LabeledContent("协议栈", value: tun.stack ?? "—")
+                        LabeledContent("自动路由", value: tun.autoRoute == true ? "开" : "关")
+                        LabeledContent("MTU", value: tun.mtu.map { "\($0)" } ?? "—")
+                        Text("以上是核心报告的 TUN 状态，仅供查看：iOS 上 TUN 由扩展拥有（tun.start / tunnel.json），App 不会发 config.patch tun——那样会停用或替换扩展正在用的 TUN 设备。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let message = settingsStore.tunStateMessage {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
                     }
                 }
 
@@ -222,6 +239,35 @@ struct SettingsView: View {
                         }
                         if let message = settingsStore.developerInfoMessage {
                             Text(message).font(.caption).foregroundStyle(.red)
+                        }
+                        Picker("MITM 内存压力（core.setPressure）", selection: $settingsStore.pressureLevel) {
+                            Text("0 无压力").tag(0)
+                            Text("1 停止脚本").tag(1)
+                            Text("2 停止保存请求体").tag(2)
+                            Text("3 仅中继").tag(3)
+                        }
+                        Button("设置内存压力") {
+                            Task { await settingsStore.setPressure(level: settingsStore.pressureLevel) }
+                        }
+                        if let message = settingsStore.pressureMessage {
+                            Text(message).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("压力只升不降（核心在一段时间后自动解除），只影响 MITM 抓包的内存占用：等级 1 停止运行脚本、2 停止保存请求体、3 仅中继流量。MITM 关闭时不起作用。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("让核心崩溃（debug.crash）", role: .destructive) {
+                            showCrashConfirm = true
+                        }
+                        .alert("确定要让核心崩溃吗？", isPresented: $showCrashConfirm) {
+                            Button("崩溃", role: .destructive) {
+                                Task { await settingsStore.crashCore() }
+                            }
+                            Button("取消", role: .cancel) { }
+                        } message: {
+                            Text("debug.crash 会让核心进程立即中止，VPN 隧道随之断开，仅用于调试。注意：iOS 的发布版核心没有编译 debug 功能，调用会被核心拒绝，实际不会崩溃。")
+                        }
+                        if let message = settingsStore.crashMessage {
+                            Text(message).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }

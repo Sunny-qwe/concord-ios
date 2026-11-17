@@ -16,6 +16,9 @@ struct ProfilesView: View {
     @State private var previewProfile: Profile?
     @State private var isUpdating = false
     @State private var validationMessage: String?
+    @State private var decryptProfileID: UUID?
+    @State private var decryptKey = ""
+    @State private var decryptSaveName = ""
 
     private func validateActiveProfile() async {
         switch await profileStore.validateActiveProfile() {
@@ -122,6 +125,43 @@ struct ProfilesView: View {
                     }
                 }
 
+                if !profileStore.profiles.isEmpty {
+                    Section("解密加密配置（config.decrypt）") {
+                        Picker("配置文件", selection: $decryptProfileID) {
+                            ForEach(profileStore.profiles) { profile in
+                                Text(profile.name).tag(profile.id as UUID?)
+                            }
+                        }
+                        SecureField("解密密钥（仅用于本次调用，不保存）", text: $decryptKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Button("解密") {
+                            guard let id = decryptProfileID,
+                                  let profile = profileStore.profiles.first(where: { $0.id == id }) else { return }
+                            Task { await profileStore.decryptProfile(profile, key: decryptKey) }
+                        }
+                        .disabled(decryptProfileID == nil || decryptKey.isEmpty)
+                        if let message = profileStore.decryptMessage {
+                            Text(message).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let result = profileStore.decryptResult, !result.isEmpty {
+                            Text(result)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .lineLimit(12)
+                            HStack {
+                                TextField("另存为订阅名", text: $decryptSaveName)
+                                Button("保存为新订阅") {
+                                    profileStore.saveDecryptedAsProfile(name: decryptSaveName.isEmpty ? "解密后的配置" : decryptSaveName)
+                                }
+                            }
+                        }
+                        Text("加密配置需用密钥解密后才能使用。解密由扩展内的核心执行，需先启动 VPN；密钥只发给本次调用，不会保存。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section {
                     Text(profileStore.statusMessage)
                         .font(.caption)
@@ -161,6 +201,15 @@ struct ProfilesView: View {
                 if case .success(let url) = result,
                    let data = try? Data(contentsOf: url) {
                     profileStore.addFromFile(name: url.lastPathComponent, data: data)
+                }
+            }
+            .task {
+                // Default the decrypt target to a local file profile
+                // (encrypted configs are imported as files), else the
+                // active profile.
+                if decryptProfileID == nil {
+                    decryptProfileID = profileStore.profiles.first(where: { $0.kind == .file })?.id
+                        ?? profileStore.activeProfile?.id
                 }
             }
         }

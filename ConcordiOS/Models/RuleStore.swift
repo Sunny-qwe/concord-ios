@@ -20,6 +20,15 @@ final class RuleStore: ObservableObject {
     /// Dumped rules of one rule-set provider (ruleSet.dump).
     @Published var dumpedRuleSetText: String?
     @Published var dumpedRuleSetName: String?
+    /// Filter validation (validate.filters): the issues of the last
+    /// check, plus a one-line summary for the Rules page.
+    @Published var filterIssues: [ConcordIssue] = []
+    @Published var filterCheckMessage: String?
+    /// Route re-check (route.check): the last answer, the service name
+    /// of each route (aligned with `held`), and a summary line.
+    @Published var routeCheckResult: ConcordRouteCheckResult?
+    @Published var routeCheckLabels: [String] = []
+    @Published var routeCheckMessage: String?
 
     let client: ConcordClient
 
@@ -98,6 +107,50 @@ final class RuleStore: ObservableObject {
             providerActionMessage = "地理数据库 \(kind) 更新已开始（后台进行）"
             lastError = nil
         } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Validates filter expressions (validate.filters). A filter is
+    /// one backtick-separated regex list, the `filter:` value proxy
+    /// groups use (e.g. `(?i)港|hk`, `hk`jp`). Empty strings are
+    /// valid. Issues carry the index of the offending expression.
+    @MainActor
+    func validateFilters(_ filters: [String]) async {
+        do {
+            filterIssues = try await client.validateFilters(filters: filters)
+            filterCheckMessage = filterIssues.isEmpty
+                ? "全部 \(filters.count) 条过滤表达式有效"
+                : "发现 \(filterIssues.count) 个问题"
+            lastError = nil
+        } catch {
+            filterCheckMessage = nil
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Re-validates probed routes (route.check). Each route is one
+    /// probe answer's hits — `labels[i]` names the route (a service
+    /// name) and `held[i]` says whether it still leaves where it did,
+    /// against the returned epoch/version stamp. A route.check is not
+    /// a URL tester: the hits must come from an earlier probe, so the
+    /// caller passes the services probe.services just returned.
+    @MainActor
+    func routeCheck(routes: [[ConcordRouteHit]], labels: [String]) async {
+        guard !routes.isEmpty else {
+            routeCheckMessage = "暂无可复核的路由：先在仪表盘运行服务检测（probe.services），探测会记录路由命中"
+            return
+        }
+        do {
+            routeCheckResult = try await client.routeCheck(routes: routes)
+            routeCheckLabels = labels
+            if let result = routeCheckResult {
+                let held = result.held.filter { $0 }.count
+                routeCheckMessage = "已复核 \(result.held.count) 条路由：\(held) 条仍有效，\(result.held.count - held) 条已变化（epoch \(result.epoch) / version \(result.version)）"
+            }
+            lastError = nil
+        } catch {
+            routeCheckMessage = nil
             lastError = error.localizedDescription
         }
     }

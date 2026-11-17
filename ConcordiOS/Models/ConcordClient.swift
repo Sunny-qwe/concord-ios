@@ -270,6 +270,24 @@ struct ConcordGeneralState: Codable {
     var globalUa: String?
     var keepAliveIdle: UInt32?
     var keepAliveInterval: UInt32?
+    /// The core's TUN state (config.general `tun`, upstream
+    /// crates/proto TunState). Display-only on iOS: the PacketTunnel
+    /// extension owns the TUN device (tun.start/tun.stop +
+    /// tunnel.json), so the app never sends config.patch `tun` — it
+    /// would fight the extension's tun.start. All fields optional:
+    /// older cores may omit the whole object.
+    var tun: ConcordTunState?
+}
+
+/// The core's TUN state (upstream crates/proto TunState).
+struct ConcordTunState: Codable {
+    let enable: Bool?
+    let device: String?
+    let stack: String?
+    let autoRoute: Bool?
+    let autoDetectInterface: Bool?
+    let dnsHijack: [String]?
+    let mtu: UInt32?
 }
 
 struct ConcordCoreStats: Codable {
@@ -386,6 +404,9 @@ struct ConcordConnection: Codable, Identifiable {
     let download: Int64?
     let rule: String?
     let proxy: String?
+    /// Present since the upstream 83bfbae schema (ConnectionInfo
+    /// `rematchName`); older cores omit it and it decodes as nil.
+    let rematchName: String? = nil
 
     // Wire keys are snake_case (upstream crates/proto/src/types/live.rs:
     // ConnectionInfo). Explicit keys because the synthesized ones would
@@ -408,6 +429,7 @@ struct ConcordConnection: Codable, Identifiable {
         case uid, process
         case processPath = "process_path"
         case upload, download, rule, proxy
+        case rematchName = "rematch_name"
     }
 }
 
@@ -478,6 +500,11 @@ struct ConcordOutboundIp: Codable {
     let error: String?
     let epoch: UInt64
     let version: UInt64
+    /// The routing decisions this probe recorded (upstream
+    /// crates/engine/src/probe/hits.rs). route.check re-validates
+    /// them later; nil on cores that do not report hits.
+    let hits: [ConcordRouteHit]? = nil
+    let nodeHits: [ConcordRouteHit]? = nil
 }
 
 enum ConcordTunSource: Codable {
@@ -599,6 +626,10 @@ struct ConcordIssue: Codable {
     let line: UInt32?
     let column: UInt32?
     let message: String
+    /// The position of the offending item (validate.filters /
+    /// validate.proxies, upstream IndexedIssue). Nil for config
+    /// validation issues, which carry path/line/column instead.
+    let index: UInt32? = nil
 }
 
 struct ConcordConfigValidateResult: Codable {
@@ -703,10 +734,23 @@ struct ConcordDnsQueryResult: Codable {
     let additionals: [ConcordDnsRecord]
 }
 
+/// One routing decision a probe recorded (upstream
+/// crates/proto RouteHit). `proxy` is a plain string on the wire —
+/// the core omits it when empty and rejects JSON null — so it
+/// defaults to "" here instead of being Optional.
 struct ConcordRouteHit: Codable {
     let host: String
-    let proxy: String?
+    let proxy: String = ""
     let exit: String
+}
+
+/// The answer to route.check (upstream crates/proto RouteCheckResult).
+/// `held[i]` says route i still leaves where it did; `epoch` and
+/// `version` are the stamp the answers were checked against.
+struct ConcordRouteCheckResult: Codable {
+    let epoch: UInt64
+    let version: UInt64
+    let held: [Bool]
 }
 
 struct ConcordServiceItem: Codable, Identifiable {
@@ -1108,6 +1152,62 @@ final class ConcordClient: ObservableObject {
     func validateProxies(proxies: [JSONValue]) async throws -> [ConcordIssue] {
         struct ValidateProxiesParams: Encodable { let proxies: [JSONValue] }
         return try await call(method: "validate.proxies", params: ValidateProxiesParams(proxies: proxies), resultType: ConcordIssueList.self).issues
+    }
+
+    // MARK: - Remaining APIs (validate.filters / route.check /
+    // core.setPressure / debug.crash / config.decrypt)
+
+    /// Validates proxy-group filter expressions (validate.filters).
+    /// A filter is one backtick-separated regex list, e.g.
+    /// `(?i)港|hk` or `hk`jp` (upstream crates/config/src/filter.rs
+    /// CompiledFilter). Returns one issue per invalid expression.
+    func validateFilters(filters: [String]) async throws -> [ConcordIssue] {
+        struct ValidateFiltersParams: Encodable { let filters: [String] }
+        return try await call(method: "validate.filters", params: ValidateFiltersParams(filters: filters), resultType: ConcordIssueList.self).issues
+    }
+
+    /// Re-validates previously probed routes (route.check). Each route
+    /// is one probe answer's hits (see ConcordRouteHit); `held[i]`
+    /// says route i still leaves where it did, against the returned
+    /// epoch/version stamp. A route.check is not a URL tester — the
+    /// hits must come from an earlier probe (probe.services /
+    /// probe.outboundIp record them).
+    func routeCheck(routes: [[ConcordRouteHit]]) async throws -> ConcordRouteCheckResult {
+        struct RouteCheckParams: Encodable { let routes: [[ConcordRouteHit]] }
+        return try await call(method: "route.check", params: RouteCheckParams(routes: routes), resultType: ConcordRouteCheckResult.self)
+    }
+
+    /// Raises the MITM memory-pressure level (core.setPressure).
+    /// Levels are 0 (none) … 3 (relay); the core clamps to 0…3 and
+    /// only ever raises — the level lifts itself after a hold
+    /// (upstream crates/mitm/src/limits.rs PRESSURE_*). Shedding only
+    /// applies while MITM captures are active.
+    func coreSetPressure(level: Int32) async throws {
+        struct SetPressureParams: Encodable { let level: Int32 }
+        _ = try await call(method: "core.setPressure", params: SetPressureParams(level: level), resultType: EmptyResult.self)
+    }
+
+    /// Intentionally aborts the core process (debug.crash). Only built
+    /// into debug cores (concord-api `debug` feature, off in release
+    /// packages); the iOS staticlib does NOT enable it, so the core
+    /// answers "method not found" and nothing crashes. The UI
+    /// surfaces that error instead of crashing anything.
+    func debugCrash() async throws {
+        _ = try await call(method: "debug.crash", resultType: EmptyResult.self)
+    }
+
+    /// Decrypts an encrypted profile with its key (config.decrypt).
+    /// `profilePath` must be an absolute path inside the core's home
+    /// directory; the key is passed for this one call and never
+    /// stored. Returns the plaintext (inline output).
+    func configDecrypt(profilePath: String, key: String) async throws -> String {
+        struct ConfigDecryptParams: Encodable {
+            let profile: ConcordProfileRef
+            let key: String
+            let output: ConcordOutputInline
+        }
+        let result = try await call(method: "config.decrypt", params: ConfigDecryptParams(profile: ConcordProfileRef(path: profilePath), key: key, output: ConcordOutputInline(inline: true)), resultType: ConcordTextResult.self)
+        return result.text ?? ""
     }
 
     /// Builds the effective config text from a profile + overlay

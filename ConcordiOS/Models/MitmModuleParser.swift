@@ -433,7 +433,7 @@ private func scriptLine(_ line: String) -> (name: String, type: String, params: 
         params = nil
     }
     let space = line.firstIndex(where: { $0 == " " || $0 == "\t" })
-    let keyword = space.map { String(line[..<space!]).lowercased() } ?? ""
+    let keyword = space.map { _ in String(line[..<space!]).lowercased() } ?? ""
     if params?["type"] == nil && scriptTypes.contains(keyword) {
         guard let space else { return nil }
         let rest = String(line[line.index(after: space)...]).trimmingCharacters(in: .whitespaces)
@@ -489,7 +489,7 @@ func mitmResourceName(source: String, bytes: Data) -> String {
 private func cidr(_ text: String) -> String? {
     if text.contains("%") { return nil }
     let slash = text.firstIndex(of: "/")
-    let address = slash.map { String(text[..<slash!]) } ?? text
+    let address = slash.map { _ in String(text[..<slash!]) } ?? text
     let max = address.contains(":") ? 128 : 32
     var prefix = max
     if let slash {
@@ -735,9 +735,9 @@ private final class MitmModuleParserEngine {
         }
         for item in splitArguments(meta["arguments"] ?? "") {
             let colon = item.firstIndex(of: ":")
-            let name = (colon.map { String(item[..<colon!]) } ?? item).trimmingCharacters(in: .whitespaces)
+            let name = (colon.map { _ in String(item[..<colon!]) } ?? item).trimmingCharacters(in: .whitespaces)
             if name.isEmpty { continue }
-            let defaultValue = colon.map { unquote(String(item[item.index(after: colon!)...]).trimmingCharacters(in: .whitespaces)) } ?? ""
+            let defaultValue = colon.map { _ in unquote(String(item[item.index(after: colon!)...]).trimmingCharacters(in: .whitespaces)) } ?? ""
             surgeArguments.append(MitmModuleArgument(
                 name: name, defaultValue: defaultValue,
                 type: defaultValue == "true" || defaultValue == "false" ? .toggle : .input
@@ -1321,7 +1321,7 @@ private final class MitmModuleParserEngine {
             fields = [("type", "event"), ("event-name", "network-changed")]
         }
         addScript(section, line: line, name: params["tag"] ?? "",
-                  path: (comma.map { String(rest[..<comma!]) } ?? rest).trimmingCharacters(in: .whitespaces),
+                  path: (comma.map { _ in String(rest[..<comma!]) } ?? rest).trimmingCharacters(in: .whitespaces),
                   fields: fields, after: [("timeout", qxTaskTimeout)])
     }
 }
@@ -1869,11 +1869,11 @@ extension MitmModuleParserEngine {
             let escaped = groups[1] ?? ""
             let name = groups[2] ?? ""
             let json = groups[3]
-            let argument = stashArguments.first { $0.name == name }
-            if !escaped.isEmpty || argument == nil {
+            let foundArgument = stashArguments.first { $0.name == name }
+            if !escaped.isEmpty || foundArgument == nil {
                 return String(whole.dropFirst(escaped.count))
             }
-            let argument = argument!
+            let argument = foundArgument!
             let value = valueOf(argument)
             if json == nil { return value }
             if argument.type == .toggle { return value == "true" ? "true" : "false" }

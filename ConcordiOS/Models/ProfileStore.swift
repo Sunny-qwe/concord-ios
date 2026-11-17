@@ -367,6 +367,82 @@ final class ProfileStore: ObservableObject {
         save()
     }
 
+    /// Re-read the profile list from UserDefaults (used after a
+    /// backup restore so the page shows the restored profiles
+    /// without restarting the app).
+    func reload() {
+        load()
+        seedSampleIfNeeded()
+    }
+
+    // MARK: Config editor (ConfigEditorView)
+
+    /// The active profile's YAML text, if it has a file.
+    func activeProfileYAML() -> String? {
+        guard let profile = activeProfile, let url = fileURL(for: profile) else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// The editor's local sanity check (same bar as import): the text
+    /// must be non-empty UTF-8 and look like a Clash / mihomo
+    /// document at all. Returns the problem, or nil when it passes.
+    static func localSanityCheckText(_ text: String) -> String? {
+        localSanityCheck(Data(text.utf8))
+    }
+
+    /// Validates edited YAML with the core (config.validate). The
+    /// text goes to a temporary file inside the App Group — the core
+    /// reads it with a plain fs::read in the extension process, so a
+    /// path in the app's own tmp would be invisible to it. The temp
+    /// file is deleted on return. Only call when live + tunnel
+    /// running; otherwise the core is unreachable.
+    @MainActor
+    func validateYAMLText(_ text: String) async throws -> [ConcordIssue] {
+        guard let dir = profilesDirectory else {
+            throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "App Group 容器不可用"])
+        }
+        let tempURL = dir.appendingPathComponent(".editor-validate.yaml")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try text.write(to: tempURL, atomically: true, encoding: .utf8)
+        return try await client.configValidate(profilePath: tempURL.path)
+    }
+
+    /// Saves edited YAML over the active profile's file AND the
+    /// shared config.yaml, then re-applies live when the tunnel is
+    /// running. Call only after validation (see ConfigEditorView).
+    /// Returns a message for the editor to show.
+    @MainActor
+    func saveActiveProfileYAML(_ text: String) async -> String {
+        guard let profile = activeProfile, let url = fileURL(for: profile) else {
+            return "没有已激活的订阅，无法保存"
+        }
+        guard let data = text.data(using: .utf8) else {
+            return "配置不是有效的 UTF-8 文本"
+        }
+        do {
+            try saveProfileFile(profile: profile, data: data)
+            if let shared = ConfigStore.sharedFileURL(name: ConfigStore.configFileName) {
+                try FileManager.default.createDirectory(
+                    at: shared.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: shared, options: .atomic)
+            }
+        } catch {
+            return "保存失败：\(error.localizedDescription)"
+        }
+        if client.mode == .live, TunnelManager.shared.isRunning {
+            do {
+                let result = try await client.configApply(profilePath: absolutePath(for: profile))
+                applyWarnings = result.warnings
+                return "已保存并立即应用到核心"
+            } catch {
+                return "已保存到文件，但实时应用失败：\(error.localizedDescription)（下次启动 VPN 时生效）"
+            }
+        }
+        return "已保存，下次启动 VPN 时生效"
+    }
+
     private func saveProfileFile(profile: Profile, data: Data) throws {
         guard let dir = profilesDirectory, let url = fileURL(for: profile) else {
             throw NSError(domain: "ConcordiOS", code: 1, userInfo: [NSLocalizedDescriptionKey: "App Group 容器不可用"])

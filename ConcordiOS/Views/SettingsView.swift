@@ -229,6 +229,24 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("主题") {
+                    NavigationLink("外观与主题色") {
+                        ThemePickerView()
+                    }
+                    Text("浅色 / 深色 / 跟随系统，外加 5 种主题色。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("备份与恢复") {
+                    NavigationLink("备份与恢复") {
+                        BackupView()
+                    }
+                    Text("把全部订阅、设置和 MITM 模块导出成一个备份文件，或从备份文件恢复。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if settingsStore.developerMode {
                     Section("开发者（core.capabilities）") {
                         Button("读取核心能力") {
@@ -285,7 +303,7 @@ struct SettingsView: View {
                 }
 
                 Section("关于") {
-                    LabeledContent("版本", value: "Concord iOS 0.2.5（FlClash 风格界面）")
+                    LabeledContent("版本", value: "Concord iOS 0.2.6（FlClash 风格界面）")
                     LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
                     LabeledContent("界面来源", value: "chen08209/FlClash（GPL-3.0）")
                     Text("本 App 是 FlClash 界面的 SwiftUI 复刻，核心经 PacketTunnel 扩展链接（packet-channel 数据面），但静态库构建与真机数据面尚未验证，见 README 的「已上线与待办」一节。")

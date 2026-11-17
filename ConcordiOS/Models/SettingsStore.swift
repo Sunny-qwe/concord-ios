@@ -233,6 +233,45 @@ final class SettingsStore: ObservableObject {
         saveSharedFiles()
     }
 
+    /// Re-read the settings from UserDefaults and rewrite the shared
+    /// files (used after a backup restore so the pages and the
+    /// extension see the restored settings without restarting).
+    func reload() {
+        load()
+        saveSharedFiles()
+    }
+
+    /// Persist a mode change made outside this store's instance (the
+    /// Shortcuts mode intent runs without the app's stores): update
+    /// the saved settings blob AND the shared general.json, so the
+    /// mode is consistent wherever it is read next.
+    static func persistMode(_ mode: OutboundMode) {
+        if let data = UserDefaults.standard.data(forKey: "ConcordiOS.settings.v1"),
+           var saved = try? JSONDecoder().decode(Saved.self, from: data) {
+            saved.mode = mode.rawValue
+            if let encoded = try? JSONEncoder().encode(saved) {
+                UserDefaults.standard.set(encoded, forKey: "ConcordiOS.settings.v1")
+            }
+        }
+        writeGeneralJSONMode(mode)
+    }
+
+    /// Merge just the mode into the shared general.json (read what is
+    /// there, change one key, write it back) so an intent-side mode
+    /// change never wipes the other general settings.
+    private static func writeGeneralJSONMode(_ mode: OutboundMode) {
+        guard let url = ConfigStore.sharedFileURL(name: ConfigStore.generalSettingsFileName) else { return }
+        var general: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            general = object
+        }
+        general["mode"] = mode.rawValue
+        if let data = try? JSONSerialization.data(withJSONObject: general) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
     /// Writes the files the PacketTunnel extension reads:
     /// tunnel.json (tun.start + interface settings), mitm.json
     /// (merged into config.apply's overlay), dns.json (ditto) and

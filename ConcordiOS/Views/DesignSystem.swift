@@ -13,19 +13,25 @@ import Darwin
 // info, not core data).
 
 enum ConcordTheme {
-    /// Page background, ~#F2F2F7.
-    static let pageBackground = Color(red: 0.949, green: 0.949, blue: 0.969)
-    static let cardBackground = Color.white
+    /// Page background: the system grouped background — #F2F2F7 in
+    /// light mode, dark in dark mode. (ThemeStore drives the colour
+    /// scheme; these semantic colours follow it automatically.)
+    static let pageBackground = Color(.systemGroupedBackground)
+    /// Card background: secondary system grouped background — white
+    /// in light mode, dark grey in dark mode.
+    static let cardBackground = Color(.secondarySystemGroupedBackground)
     /// Main card corner radius.
     static let cardRadius: CGFloat = 28
     /// Inner panel corner radius (speed halves, mode pills).
     static let panelRadius: CGFloat = 20
-    /// Primary blue, ~#007AFF.
-    static let accent = Color(red: 0.0, green: 0.478, blue: 1.0)
-    /// Pale grey fill for unselected pills / inner panels, ~#F0F0F3.
-    static let softFill = Color(red: 0.941, green: 0.941, blue: 0.953)
-    /// Selected-tab capsule fill in the floating bar, ~#EBECF0.
-    static let tabSelectedFill = Color(red: 0.922, green: 0.929, blue: 0.945)
+    /// Primary accent — the theme's accent colour (default blue
+    /// #007AFF). Read from ThemeStore so a theme change recolours
+    /// every page that uses it.
+    static var accent: Color { ThemeStore.shared.accentColor }
+    /// Pale grey fill for unselected pills / inner panels.
+    static let softFill = Color(.secondarySystemFill)
+    /// Selected-tab capsule fill in the floating bar.
+    static let tabSelectedFill = Color(.systemFill)
     /// Unselected tab icon/label grey.
     static let tabUnselected = Color(red: 0.25, green: 0.25, blue: 0.28)
     /// Soft card shadow.

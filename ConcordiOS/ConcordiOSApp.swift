@@ -24,6 +24,7 @@ struct ConcordiOSApp: App {
     @StateObject private var mitmStore: MitmStore
     @StateObject private var eventStore: EventStore
     @StateObject private var mitmModuleStore: MitmModuleStore
+    @StateObject private var themeStore: ThemeStore
 
     init() {
         let client = ConcordClient()
@@ -45,6 +46,10 @@ struct ConcordiOSApp: App {
         let mitmModuleStore = MitmModuleStore()
         mitmModuleStore.onModulesChanged = { await profileStore.reapplyActive() }
         _mitmModuleStore = StateObject(wrappedValue: mitmModuleStore)
+        // The theme store is a singleton (DesignSystem reads the
+        // accent from it); the app owns the same instance so a theme
+        // change re-renders the root.
+        _themeStore = StateObject(wrappedValue: ThemeStore.shared)
     }
 
     var body: some Scene {
@@ -63,7 +68,42 @@ struct ConcordiOSApp: App {
                 .environmentObject(mitmStore)
                 .environmentObject(eventStore)
                 .environmentObject(mitmModuleStore)
+                .environmentObject(themeStore)
                 .environmentObject(TunnelManager.shared)
+                .onOpenURL { url in
+                    Task { await handleOpenURL(url) }
+                }
+        }
+    }
+
+    /// Handles the `concord://` URL scheme (see ShortcutsView): the
+    /// fallback the Shortcuts intents name when they cannot act
+    /// without the app. concord://vpn/on|off|toggle and
+    /// concord://mode/rule|global|direct.
+    @MainActor
+    private func handleOpenURL(_ url: URL) async {
+        guard url.scheme == "concord", let host = url.host else { return }
+        let action = url.pathComponents.dropFirst().first
+        if host == "vpn" {
+            switch action {
+            case "on":
+                try? await TunnelManager.shared.start()
+            case "off":
+                await TunnelManager.shared.stop()
+            case "toggle":
+                if TunnelManager.shared.isRunning {
+                    await TunnelManager.shared.stop()
+                } else {
+                    try? await TunnelManager.shared.start()
+                }
+            default:
+                break
+            }
+        } else if host == "mode", let raw = action,
+                  let mode = OutboundMode(rawValue: raw) {
+            settingsStore.mode = mode
+            settingsStore.save()
+            await settingsStore.applyGeneralToCore()
         }
     }
 }

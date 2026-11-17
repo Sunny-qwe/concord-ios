@@ -41,6 +41,7 @@ struct ContentView: View {
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var client: ConcordClient
+    @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var selectedTab: AppTab = .dashboard
 
@@ -60,6 +61,8 @@ struct ContentView: View {
                 .tabItem { Label("工具", systemImage: "briefcase.fill") }
         }
         .toolbar(.hidden, for: .tabBar)
+        .tint(themeStore.accentColor)
+        .preferredColorScheme(themeStore.colorScheme)
         .safeAreaInset(edge: .bottom) {
             floatingTabBar
                 .padding(.horizontal, 16)
@@ -116,7 +119,7 @@ struct ContentView: View {
             }
         }
         .padding(8)
-        .background(Color.white, in: RoundedRectangle(cornerRadius: 32))
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 32))
         .shadow(color: .black.opacity(0.10), radius: 16, x: 0, y: 6)
     }
 }

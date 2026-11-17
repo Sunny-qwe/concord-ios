@@ -72,6 +72,32 @@ struct ProfilesView: View {
                         }
                         .padding(.vertical, 4)
                     }
+                    Divider()
+                    NavigationLink {
+                        ConfigEditorView()
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "square.and.pencil")
+                                .font(.title3)
+                                .foregroundStyle(.white)
+                                .frame(width: 40, height: 40)
+                                .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("编辑当前配置")
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+                                Text("直接改当前订阅的 YAML，保存前先用核心校验")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .disabled(profileStore.activeProfile == nil)
                 }
                 if profileStore.profiles.isEmpty {
                     ContentUnavailableView("暂无订阅", systemImage: "list.clipboard", description: Text("添加一个订阅链接或导入本地配置文件"))

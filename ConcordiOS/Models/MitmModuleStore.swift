@@ -148,6 +148,13 @@ final class MitmModuleStore: ObservableObject {
         modules = decoded.sorted { ($0.order, $0.id) < ($1.order, $1.id) }
     }
 
+    /// Re-read the module list from disk (used after a backup
+    /// restore so the page shows the restored modules without
+    /// restarting the app).
+    func reload() {
+        load()
+    }
+
     private func persist() {
         guard let dir = modulesDirectoryURL, let url = modulesFileURL,
               let data = try? JSONEncoder().encode(modules) else { return }

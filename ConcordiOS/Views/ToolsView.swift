@@ -38,6 +38,22 @@ struct ToolsView: View {
                             MitmModulesView()
                         }
                     }
+                    toolSection(title: "更多") {
+                        toolLink(icon: "location.circle", tint: .red,
+                                 title: "IP 质量", subtitle: "出口 IP 的归属与位置") {
+                            IPQualityView()
+                        }
+                        Divider().padding(.leading, 52)
+                        toolLink(icon: "archivebox", tint: .cyan,
+                                 title: "备份与恢复", subtitle: "导出 / 导入全部数据") {
+                            BackupView()
+                        }
+                        Divider().padding(.leading, 52)
+                        toolLink(icon: "command", tint: .mint,
+                                 title: "快捷指令", subtitle: "Shortcuts 动作与 URL 动作") {
+                            ShortcutsView()
+                        }
+                    }
                     toolSection(title: "管理") {
                         toolLink(icon: "gear", tint: .gray,
                                  title: "设置", subtitle: "通用、TUN、DNS、MITM") {

@@ -1145,6 +1145,15 @@ final class ConcordClient: ObservableObject {
         }
     }
 
+    /// Re-read the persisted core mode (used after a backup restore:
+    /// the restore writes the key behind this client's back).
+    func reloadMode() {
+        if let saved = UserDefaults.standard.string(forKey: Self.modeStorageKey),
+           let savedMode = ConcordMode(rawValue: saved) {
+            mode = savedMode
+        }
+    }
+
     func call<Result: Decodable>(method: String, params: Encodable, resultType: Result.Type) async throws -> Result {
         let paramsData = try Self.requestEncoder.encode(AnyEncodable(params))
         return try await transport.send(method: method, paramsData: paramsData, resultType: resultType)

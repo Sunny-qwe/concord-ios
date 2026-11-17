@@ -84,13 +84,24 @@ import os
 //   "ca-fingerprint": ...} — the RawConfig keys of
 // crates/mitm/src/config.rs); this extension merges it as
 // {"mitm": <mitm.json>} into every config.apply that has no overlay of
-// its own, including its own startup apply. The DNS choices travel the
-// same way: the app writes dns.json (DnsConfig keys, kebab-case —
-// "enhanced-mode", "fake-ip-range", upstream crates/config/src/dns.rs)
-// and the extension merges it as {"dns": <dns.json>} alongside mitm.
-// General settings travel as general.json (ConfigPatchParams wire keys,
-// snake_case) and are sent as config.patch once at startup, after
-// engine.start, so saved settings take effect on the next VPN start.
+// its own, including its own startup apply. MITM modules add a second
+// file, module-mitm.json (MitmModuleStore: the merged lists + rules of
+// the enabled modules, in order); mergedMitmOverlay() puts the user's
+// hostnames first and appends the modules' lists, and the module rules
+// travel as the overlay's top-level "rules" — the core prepends
+// overlay rules before the profile's own (upstream
+// crates/config/src/merge.rs: rules_after), exactly like FlClash's
+// rawConfig['rules'] = [...mitm.rules, ...rules]. Module scripts and
+// map-local files live in <home>/mitm/resources/ (the core's resources
+// directory, home being this container), so the core reads them by the
+// content-hash names the module-mitm.json lines name. The DNS choices
+// travel the same way: the app writes dns.json (DnsConfig keys,
+// kebab-case — "enhanced-mode", "fake-ip-range", upstream
+// crates/config/src/dns.rs) and the extension merges it as
+// {"dns": <dns.json>} alongside mitm. General settings travel as
+// general.json (ConfigPatchParams wire keys, snake_case) and are sent
+// as config.patch once at startup, after engine.start, so saved
+// settings take effect on the next VPN start.
 //
 // Memory: the extension runs under the NetworkExtension memory limit
 // (historically ~15 MB, reported ~50 MB more recently). The pump reuses
@@ -115,6 +126,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let appGroupID = "group.com.sunny-qwe.concord-ios"
     private let configFileName = "config.yaml"
     private let mitmFileName = "mitm.json"
+    private let moduleMitmFileName = "module-mitm.json"
     private let dnsFileName = "dns.json"
     private let generalSettingsFileName = "general.json"
     private let tunnelSettingsFileName = "tunnel.json"
@@ -323,8 +335,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // header comment).
         var applyParams: [String: Any] = ["profile": ["path": configURL.path]]
         var overlay: [String: Any] = [:]
-        if let mitm = readSharedJSON(name: mitmFileName) {
+        if let mitm = mergedMitmOverlay() {
             overlay["mitm"] = mitm
+        }
+        if let rules = moduleRules() {
+            overlay["rules"] = rules
         }
         if let dns = readSharedJSON(name: dnsFileName) {
             overlay["dns"] = dns
@@ -476,13 +491,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
         }
         // config.apply with no overlay gets the MITM + DNS overlays
-        // merged in from the shared mitm.json / dns.json (see header
-        // comment). A request that already carries an overlay is
-        // forwarded untouched.
+        // merged in from the shared mitm.json / module-mitm.json /
+        // dns.json (see header comment). A request that already
+        // carries an overlay is forwarded untouched.
         if (request["method"] as? String) == "config.apply" && request["overlay"] == nil {
             var overlay: [String: Any] = [:]
-            if let mitm = readSharedJSON(name: mitmFileName) {
+            if let mitm = mergedMitmOverlay() {
                 overlay["mitm"] = mitm
+            }
+            if let rules = moduleRules() {
+                overlay["rules"] = rules
             }
             if let dns = readSharedJSON(name: dnsFileName) {
                 overlay["dns"] = dns
@@ -1058,6 +1076,39 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address)
         }
         return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126")
+    }
+
+    /// The MITM overlay for config.apply: the user's own mitm.json
+    /// first, then the enabled modules' merged lists from
+    /// module-mitm.json (user hostnames first, so an exclusion the
+    /// user wrote holds against any module — FlClash's
+    /// mergeMitmModules). Nil when neither file exists.
+    private func mergedMitmOverlay() -> [String: Any]? {
+        let user = readSharedJSON(name: mitmFileName)
+        let modules = readSharedJSON(name: moduleMitmFileName)
+        guard user != nil || modules != nil else { return nil }
+        var mitm = user ?? [:]
+        let hosts = (user?["hostname"] as? [String] ?? [])
+            + (modules?["hostname"] as? [String] ?? [])
+        mitm["hostname"] = hosts
+        for key in ["url-rewrite", "header-rewrite", "body-rewrite", "map-local", "script"] {
+            let merged = (user?[key] as? [String] ?? []) + (modules?[key] as? [String] ?? [])
+            if merged.isEmpty {
+                mitm.removeValue(forKey: key)
+            } else {
+                mitm[key] = merged
+            }
+        }
+        return mitm
+    }
+
+    /// The enabled modules' merged rules, for the overlay's
+    /// top-level "rules" (the core prepends them before the
+    /// profile's own rules). Nil when there are none.
+    private func moduleRules() -> [String]? {
+        guard let modules = readSharedJSON(name: moduleMitmFileName),
+              let rules = modules["rules"] as? [String], !rules.isEmpty else { return nil }
+        return rules
     }
 
     private func readSharedJSON(name: String) -> [String: Any]? {

@@ -23,6 +23,7 @@ struct ConcordiOSApp: App {
     @StateObject private var dnsStore: DnsStore
     @StateObject private var mitmStore: MitmStore
     @StateObject private var eventStore: EventStore
+    @StateObject private var mitmModuleStore: MitmModuleStore
 
     init() {
         let client = ConcordClient()
@@ -31,12 +32,19 @@ struct ConcordiOSApp: App {
         _trafficStore = StateObject(wrappedValue: TrafficStore(client: client))
         _connectionStore = StateObject(wrappedValue: ConnectionStore(client: client))
         _logStore = StateObject(wrappedValue: LogStore(client: client))
-        _profileStore = StateObject(wrappedValue: ProfileStore(client: client))
+        let profileStore = ProfileStore(client: client)
+        _profileStore = StateObject(wrappedValue: profileStore)
         _ruleStore = StateObject(wrappedValue: RuleStore(client: client))
         _settingsStore = StateObject(wrappedValue: SettingsStore(client: client))
         _dnsStore = StateObject(wrappedValue: DnsStore(client: client))
         _mitmStore = StateObject(wrappedValue: MitmStore(client: client))
         _eventStore = StateObject(wrappedValue: EventStore(client: client))
+        // A module change rewrites the merged files; re-apply the
+        // active profile live when the tunnel is running, so the
+        // change takes effect without a VPN restart.
+        let mitmModuleStore = MitmModuleStore()
+        mitmModuleStore.onModulesChanged = { await profileStore.reapplyActive() }
+        _mitmModuleStore = StateObject(wrappedValue: mitmModuleStore)
     }
 
     var body: some Scene {
@@ -54,6 +62,7 @@ struct ConcordiOSApp: App {
                 .environmentObject(dnsStore)
                 .environmentObject(mitmStore)
                 .environmentObject(eventStore)
+                .environmentObject(mitmModuleStore)
                 .environmentObject(TunnelManager.shared)
         }
     }

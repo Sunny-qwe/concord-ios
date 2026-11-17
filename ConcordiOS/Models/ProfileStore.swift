@@ -338,6 +338,28 @@ final class ProfileStore: ObservableObject {
         lastError = nil
     }
 
+    /// Re-applies the active profile live (config.apply with no
+    /// overlay — the extension merges the fresh mitm.json /
+    /// module-mitm.json / dns.json overlays). Used when something
+    /// other than a profile switch changes what the core should
+    /// receive, e.g. a MITM module toggle. Returns a message to show,
+    /// or nil when the tunnel is stopped: the files are already
+    /// written, so the change takes effect at the next VPN start.
+    @MainActor
+    func reapplyActive() async -> String? {
+        guard client.mode == .live, TunnelManager.shared.isRunning,
+              let profile = activeProfile, let path = absolutePath(for: profile) else {
+            return nil
+        }
+        do {
+            let result = try await client.configApply(profilePath: path)
+            applyWarnings = result.warnings
+            return "已重新应用（含模块改动）"
+        } catch {
+            return "重新应用失败：\(error.localizedDescription)（文件已保存，下次启动 VPN 时生效）"
+        }
+    }
+
     private func markActive(_ profile: Profile) {
         for index in profiles.indices {
             profiles[index].isActive = profiles[index].id == profile.id

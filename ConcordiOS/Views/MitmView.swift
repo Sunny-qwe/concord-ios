@@ -51,6 +51,23 @@ struct MitmView: View {
                 .listRowBackground(Color.clear)
             }
 
+            Section("模块") {
+                NavigationLink {
+                    MitmModulesView()
+                } label: {
+                    HStack {
+                        Text("MITM 模块")
+                        Spacer()
+                        Text("Surge / Loon / QX")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("模块把规则、重写、脚本和解密域名打包在一起，整体开关。MITM 拦截本身就是为模块服务的：模块里的重写和脚本要靠它才能改 HTTPS 请求的内容。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("运行脚本（mitm.runScript）") {
                 TextField("脚本名", text: $mitmStore.scriptName)
                     .textInputAutocapitalization(.never)

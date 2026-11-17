@@ -32,6 +32,11 @@ struct ToolsView: View {
                                  title: "MITM 拦截", subtitle: "拦截记录与脚本") {
                             MitmView()
                         }
+                        Divider().padding(.leading, 52)
+                        toolLink(icon: "puzzlepiece.extension", tint: .brown,
+                                 title: "MITM 模块", subtitle: "Surge / Loon / QX 模块") {
+                            MitmModulesView()
+                        }
                     }
                     toolSection(title: "管理") {
                         toolLink(icon: "gear", tint: .gray,

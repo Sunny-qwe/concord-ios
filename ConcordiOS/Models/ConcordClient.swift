@@ -582,6 +582,15 @@ struct MitmConfig: Codable {
     var decryptTls: Bool = true
     var caFingerprint: String = ""
     var h2: Bool = false
+    /// The core's MITM lists (RawConfig keys, kebab-case). The
+    /// Settings page only fills hostname; the merged module lists
+    /// (MitmModuleStore.mergedConfig) fill these for mitm.validate.
+    /// Empty lists encode as [] and the core treats them as absent.
+    var urlRewrite: [String] = []
+    var headerRewrite: [String] = []
+    var bodyRewrite: [String] = []
+    var mapLocal: [String] = []
+    var script: [String] = []
 
     enum CodingKeys: String, CodingKey {
         case enable, hostname
@@ -589,6 +598,11 @@ struct MitmConfig: Codable {
         case decryptTls = "decrypt-tls"
         case caFingerprint = "ca-fingerprint"
         case h2
+        case urlRewrite = "url-rewrite"
+        case headerRewrite = "header-rewrite"
+        case bodyRewrite = "body-rewrite"
+        case mapLocal = "map-local"
+        case script
     }
 }
 

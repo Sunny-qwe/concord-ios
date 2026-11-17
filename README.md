@@ -14,6 +14,7 @@
 - **扩展 ↔ 主 App IPC**：主 App 永不加载核心。App → 扩展：`TunnelManager`（`NETunnelProviderManager`）经 `sendProviderMessage` 每次传一条 JSON-RPC 2.0 请求，扩展 `handleAppMessage` 转发给进程内核心会话并回传响应（扩展会把请求 id 改写到自己的 id 空间再还原；无 overlay 的 `config.apply` 会并入共享 `mitm.json`）。扩展 → App：扩展订阅 `traffic.watch` / `connection.watch` / `log.watch` / `dns.watch` / `proxy.watch` / `route.watch` / `events.watch` / `engine.state`（并按 `$/credit` 回填流量）后，把最新快照写到 App Group 的 `snapshots/{traffic,connections,logs,dns,proxies,route,events,engine}.json`（`{"updatedAt": 毫秒, "data": …}`），主 App 的 live transport 读这些文件。流式协议细节（`{"sub", "snapshot"}` + `$/event` 通知）已按上游 `crates/rpc` 核实。
 - **实时模式为默认**：`ConcordClient` 默认 `.live`，`.sample` 只作为显式回退（选择会持久化）。68 个 JSON-RPC 方法中界面用到的都有 live 路径；另有两个按源码核实后修正的线格式问题：`connection.close` 的参数是 `{ids: [...], all: bool}`（不是单个 `id`），核心的键全是 snake_case（`total_up`、`source_ip`……），live 编解码已相应改用 snake_case 策略。
 - **MITM 已接线**：`mitm.certificate` / `generateCertificate` / `validate` / `issueCertificate` / `runScript` / `exchanges` / `exchange` / `body` 八个方法都在客户端里；设置页有启用开关、解密主机名列表、解密 TLS 开关、CA 生成/校验/签发/分享、以及 CA 指纹与有效期显示。MITM 开关与主机名存在共享 `mitm.json`，由扩展并入 `config.apply` 的 overlay 生效（`config.patch` 没有 mitm 字段、且不应改写用户 YAML）。**CA 安装到系统信任必须用户手动完成**：App 没有任何 API 可以安装受信任 CA，需在「设置 → 通用 → VPN 与设备管理」安装证书，再到「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任；未安装时 HTTPS 只做透传。
+- **MITM 模块（2026-11-17，待 runner 验证）**：工具页新增「MITM 模块」（`Models/MitmModuleParser.swift` + `Models/MitmModuleStore.swift` + `Views/MitmModulesView.swift`），按 FlClash 的 `mitm_module.dart` 移植：Surge `.sgmodule`、Loon `.plugin`、Quantumult X 片段、Stash 覆写都能导入（链接、安装链接或粘贴文本），解析成核心的 MITM 行（解密域名、URL/头/正文重写、本地映射、脚本）与 Clash 规则；带不走的行会列在详情页并注明原因（不支持的段/设置/脚本类型/条件写法、jq、JSON 正文、原始头、本地数据未附加、资源未下载等）。启用的模块按顺序合并进配置：用户自己的解密域名永远在最前，模块规则插在订阅规则前面；脚本与本地映射文件按内容哈希存在核心的 `mitm/resources/` 里。带脚本的模块默认停用、需手动确认才启用；更新带来新脚本时会先暂停。详见「MITM 模块」一节。
 - **静态库链接**：PacketTunnel target 的 `LIBRARY_SEARCH_PATHS` / `OTHER_LDFLAGS`（`-lconcord_ios -lconcord_ios_ffi`）与 `SWIFT_OBJC_BRIDGING_HEADER = PacketTunnel/ConcordFFI.h` 已写入 `project.pbxproj`；主 App target 不链接核心。桥接头声明的是 `rust/concord-ios-ffi` 的真实符号名（注意：`concord_ios_packet_write` / `concord_ios_packet_read` 没有 "channel" 中缀，与任务简述里的写法不同，以 `src/lib.rs` 为准）。
 - **小修复**：`PacketTunnel.entitlements` 已移出扩展的 Copy Bundle Resources 阶段（之前引起 Actions 警告）；`LogsView`、`SettingsView`、`ContentView` 的 `onChange(of:perform:)` 已改用 iOS 17 的双参数形式；`SettingsStore.tunMtu` 默认值由 9000 改为 1500。
 - **2026-11-17：其余“有 UI 没逻辑”的功能全部接线（代码已写，未验证）**：
@@ -45,6 +46,26 @@
 - 客户端切到 `.sample` 模式时，所有页面都显示示例数据（徽标按模式显示）。
 - 订阅页的本地订阅列表是 App 自己的元数据，不是核心数据；首次启动时内置的那条「示例订阅」通过备注文字标注为示例。
 - 实时模式但隧道未运行时，各页面显示空数据 + “VPN 隧道未运行”错误，不会静默回落到示例数据。
+
+## MITM 模块（2026-11-17，待 runner / 真机验证）
+
+**这是什么：** FlClash 的 MITM 模块功能 —— Surge 模块（`.sgmodule`）、Loon 插件（`.plugin`）、Quantumult X 片段、Stash 覆写，都可以作为“模块”导入：一个模块把一组规则、重写、脚本和解密域名打包在一起，整体开关、整体更新。入口在「工具 → MITM 模块」，MITM 拦截页也有入口。
+
+**MITM 是不是为了模块用的：** 是。模块里的 URL 重写、头/正文重写、本地映射和脚本，改的都是 HTTP(S) 请求的内容；HTTPS 请求要改内容，必须先由 MITM 解密 —— 没有 MITM，这些行对 HTTPS 流量不起作用（只对明文 HTTP 生效）。所以模块功能和 MITM 是一体的：模块提供“改什么”，MITM 提供“能改”的能力（解密 + CA 信任，仍需用户手动安装并信任 CA，见上）。
+
+**怎么合进配置（与 FlClash 同款）：** App 不改写用户订阅的 YAML。启用的模块由 `MitmModuleStore` 解析并合并，写进共享的 `module-mitm.json`（合并后的 MITM 行 + 规则）；扩展在每次 `config.apply` 时把它并进 overlay：用户的解密域名在最前，然后是各模块的 `%INSERT%` 域名、普通域名；URL/头/正文重写、本地映射、脚本按模块顺序拼接；模块规则放在 overlay 的 `rules` 里，核心会把它们插在订阅规则前面（上游 `crates/config/src/merge.rs` 的 `rules_after`）。VPN 运行时改动模块会立即重新应用（`ProfileStore.reapplyActive`），未运行时下次启动生效。
+
+**脚本怎么跑：** 核心的 MITM 脚本是 QuickJS（rquickjs），iOS 静态库默认就编进去了（`concord-mitm` 的默认 feature `script`，经 `concord-engine` 默认开启），所以模块脚本在 iOS 上能跑 —— 不是摆设。脚本文件按内容哈希存在核心的资源目录 `<App Group>/mitm/resources/` 里，核心读脚本只认这个目录。定时（cron）与事件（`network-changed` / `engine-started` / `profile-reloaded`）脚本由核心自己按计划跑；也可以在 MITM 拦截页按名字立即运行一个。
+
+**支持的格式：** `[Rule]` / `[URL Rewrite]` / `[Header Rewrite]` / `[Body Rewrite]` / `[Map Local]` / `[Rewrite]`（Loon）/ `[MITM]` / `[Script]` / `[Argument]` 各段；`#!name` / `#!desc` / `#!system` / `#!arguments` 与 Loon 的 `#!input` / `#!select`；参数（Surge `{{{参数}}}`、Loon `${参数}`、Stash `${args.参数}`，含 `|json` 与 `$$` 转义）；`%APPEND%` / `%INSERT%` 解密域名；Quantumult X 的 `rewrite_local` / `filter_local` / `task_local` 与无段落的裸行（`hostname=`、过滤器、任务、重写）；Stash 覆写的 `http` / `cron` / `rules` / `arguments` / `script-providers`；安装链接（`surge://install-module`、`loon://import`、`shadowrocket://install`、`stash://install-override`、`quantumult-x` 的 `rewrite_remote`）。带不走的行会进详情页的“跳过的行”，并注明原因。
+
+**诚实说明（哪些做不到）：**
+- Stash 覆写用一个只覆盖常见写法的 YAML 子集解析器读；写得特别复杂的覆写会被当成普通分段文本解析，带不走的行会如实列出来，不会假装读懂。
+- 不支持本地文件附件：模块里 `map-local` 引用的本地数据文件如果不是下载链接，会跳过（原因“本地数据文件未附加”）；脚本与映射数据只能来自模块里写的 http(s) 链接，由 App 下载后交给核心。
+- 不支持 DNS 脚本、规则脚本、`jq` 改写、JSON 正文改写、原始头改写、条件写法（`if` / `then script(`）、`url-and-header` —— 这些在详情页都会列为跳过，和 FlClash 一致。
+- 核心只认它能解析的行：`mitm.validate` 可以在 VPN 运行时校验合并后的 MITM 配置，指出核心读不懂的行（详情页「校验合并后的 MITM 配置」）；校验不通过的行核心会跳过，不会让整个配置失效。
+- 模块脚本是任意代码：带脚本的模块默认停用，需手动确认才启用；更新带来新脚本时会先暂停，等用户再确认。
+- 最新上游（83bfbae 之后）给 MITM 加了 `skip-server-cert-verify-hostname`、`client-source-address`、`request_body_mock` 等新列表，当前锁定核心（187ac9d）没有这些字段，模块解析器不产生它们。
 
 ## 架构
 

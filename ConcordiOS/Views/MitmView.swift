@@ -107,7 +107,7 @@ struct MitmView: View {
                                     .font(.body)
                                     .lineLimit(1)
                                 Spacer()
-                                if exchange.pending {
+                                if exchange.pending ?? false {
                                     Text("进行中").font(.caption).foregroundStyle(.orange)
                                 } else {
                                     Text("\(exchange.status)")
@@ -175,7 +175,7 @@ struct MitmExchangeDetailView: View {
                 Section("请求") {
                     LabeledContent("方法", value: summary.method)
                     LabeledContent("URL", value: summary.url)
-                    LabeledContent("状态", value: summary.pending ? "进行中" : "\(summary.status)")
+                    LabeledContent("状态", value: (summary.pending ?? false) ? "进行中" : "\(summary.status)")
                     LabeledContent("耗时", value: "\(summary.duration) ms")
                     LabeledContent("上行", value: ConcordFormat.bytes(summary.requestSize))
                     LabeledContent("下行", value: ConcordFormat.bytes(summary.responseSize))

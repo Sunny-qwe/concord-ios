@@ -7,6 +7,13 @@ import Foundation
 // running — the unified importer says so honestly instead of failing
 // silently.
 
+/// A parse/import failure carrying a human-readable reason.
+/// Swift's Result requires its Failure type to conform to Error,
+/// and String does not — so the reason travels inside this type.
+struct NodeLinkError: Error {
+    let message: String
+}
+
 /// One YAML scalar / collection value inside a proxy definition.
 enum NodeYamlValue {
     case string(String)
@@ -59,14 +66,14 @@ enum NodeLinkParser {
     static let localSchemes = ["ss://", "vmess://", "trojan://", "vless://"]
 
     /// Parses one share-link line. The failure reason is user-facing.
-    static func parse(_ line: String) -> Result<ParsedNode, String> {
+    static func parse(_ line: String) -> Result<ParsedNode, NodeLinkError> {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
         if lower.hasPrefix("ss://") { return parseSS(String(trimmed.dropFirst(5))) }
         if lower.hasPrefix("vmess://") { return parseVmess(String(trimmed.dropFirst(8))) }
         if lower.hasPrefix("trojan://") { return parseTrojan(String(trimmed.dropFirst(9))) }
         if lower.hasPrefix("vless://") { return parseVless(String(trimmed.dropFirst(8))) }
-        return .failure("不支持的链接格式（本地只解析 ss / vmess / trojan / vless）")
+        return .failure(NodeLinkError(message: "不支持的链接格式（本地只解析 ss / vmess / trojan / vless）"))
     }
 
     // MARK: - YAML rendering
@@ -199,26 +206,26 @@ enum NodeLinkParser {
 
     // MARK: - Shadowsocks
 
-    private static func parseSS(_ body: String) -> Result<ParsedNode, String> {
+    private static func parseSS(_ body: String) -> Result<ParsedNode, NodeLinkError> {
         let (noFragment, name) = splitFragment(body)
         let (mainRaw, query) = splitQuery(noFragment)
         let main = mainRaw.hasSuffix("/") ? String(mainRaw.dropLast()) : mainRaw
         if main.contains("@") {
             // Form 2: BASE64(method:password)@host:port
             guard let at = main.firstIndex(of: "@") else {
-                return .failure("ss 链接格式不对")
+                return .failure(NodeLinkError(message: "ss 链接格式不对"))
             }
             let encoded = String(main[..<at])
             let hostPort = String(main[main.index(after: at)...])
             guard let data = decodeBase64(encoded),
                   let credential = String(data: data, encoding: .utf8),
                   let colon = credential.firstIndex(of: ":") else {
-                return .failure("ss 链接的账号部分不是有效的 base64（应为 method:password）")
+                return .failure(NodeLinkError(message: "ss 链接的账号部分不是有效的 base64（应为 method:password）"))
             }
             let method = String(credential[..<colon])
             let password = String(credential[credential.index(after: colon)...])
             guard let (host, port) = splitHostPort(hostPort) else {
-                return .failure("ss 链接没有有效的服务器地址")
+                return .failure(NodeLinkError(message: "ss 链接没有有效的服务器地址"))
             }
             return makeSS(name: name, method: method, password: password, host: host, port: port, query: query)
         }
@@ -226,25 +233,25 @@ enum NodeLinkParser {
         guard let data = decodeBase64(main),
               let plain = String(data: data, encoding: .utf8),
               let at = plain.lastIndex(of: "@") else {
-            return .failure("ss 链接不是有效的 base64（应为 method:password@服务器:端口）")
+            return .failure(NodeLinkError(message: "ss 链接不是有效的 base64（应为 method:password@服务器:端口）"))
         }
         let credential = String(plain[..<at])
         let hostPort = String(plain[plain.index(after: at)...])
         guard let colon = credential.firstIndex(of: ":") else {
-            return .failure("ss 链接的账号格式不对（应为 method:password）")
+            return .failure(NodeLinkError(message: "ss 链接的账号格式不对（应为 method:password）"))
         }
         let method = String(credential[..<colon])
         let password = String(credential[credential.index(after: colon)...])
         guard let (host, port) = splitHostPort(hostPort) else {
-            return .failure("ss 链接没有有效的服务器地址")
+            return .failure(NodeLinkError(message: "ss 链接没有有效的服务器地址"))
         }
         return makeSS(name: name, method: method, password: password, host: host, port: port, query: query)
     }
 
     private static func makeSS(name: String?, method: String, password: String,
-                               host: String, port: Int, query: [String: String]) -> Result<ParsedNode, String> {
-        guard !method.isEmpty else { return .failure("ss 链接没有加密方式") }
-        guard !password.isEmpty else { return .failure("ss 链接的密码为空") }
+                               host: String, port: Int, query: [String: String]) -> Result<ParsedNode, NodeLinkError> {
+        guard !method.isEmpty else { return .failure(NodeLinkError(message: "ss 链接没有加密方式")) }
+        guard !password.isEmpty else { return .failure(NodeLinkError(message: "ss 链接的密码为空")) }
         let nodeName = name ?? "\(host):\(port)"
         var fields: [(key: String, value: NodeYamlValue)] = [
             ("name", .string(nodeName)),
@@ -269,21 +276,21 @@ enum NodeLinkParser {
 
     // MARK: - VMess
 
-    private static func parseVmess(_ body: String) -> Result<ParsedNode, String> {
+    private static func parseVmess(_ body: String) -> Result<ParsedNode, NodeLinkError> {
         let (noFragment, name) = splitFragment(body)
         let clean = noFragment.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let data = decodeBase64(clean),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return .failure("vmess 链接不是有效的 base64 JSON")
+            return .failure(NodeLinkError(message: "vmess 链接不是有效的 base64 JSON"))
         }
         guard let server = nonEmpty(obj["add"] as? String) else {
-            return .failure("vmess 链接缺少服务器地址 (add)")
+            return .failure(NodeLinkError(message: "vmess 链接缺少服务器地址 (add)"))
         }
         guard let uuid = nonEmpty(obj["id"] as? String) else {
-            return .failure("vmess 链接缺少 UUID (id)")
+            return .failure(NodeLinkError(message: "vmess 链接缺少 UUID (id)"))
         }
         guard let port = intValue(obj["port"]), (1...65535).contains(port) else {
-            return .failure("vmess 链接的端口无效")
+            return .failure(NodeLinkError(message: "vmess 链接的端口无效"))
         }
         let nodeName = name ?? nonEmpty(obj["ps"] as? String) ?? "\(server):\(port)"
         let tls = ((obj["tls"] as? String) ?? "").lowercased() == "tls"
@@ -326,16 +333,16 @@ enum NodeLinkParser {
 
     // MARK: - Trojan
 
-    private static func parseTrojan(_ body: String) -> Result<ParsedNode, String> {
+    private static func parseTrojan(_ body: String) -> Result<ParsedNode, NodeLinkError> {
         let (noFragment, name) = splitFragment(body)
         let (main, query) = splitQuery(noFragment)
         guard let at = main.lastIndex(of: "@") else {
-            return .failure("trojan 链接里没有服务器地址")
+            return .failure(NodeLinkError(message: "trojan 链接里没有服务器地址"))
         }
         let password = percentDecode(String(main[..<at]))
-        guard !password.isEmpty else { return .failure("trojan 链接的密码为空") }
+        guard !password.isEmpty else { return .failure(NodeLinkError(message: "trojan 链接的密码为空")) }
         guard let (host, port) = splitHostPort(String(main[main.index(after: at)...])) else {
-            return .failure("trojan 链接没有有效的服务器地址")
+            return .failure(NodeLinkError(message: "trojan 链接没有有效的服务器地址"))
         }
         let nodeName = name ?? "\(host):\(port)"
         let sni = nonEmpty(query["sni"]) ?? nonEmpty(query["peer"]) ?? host
@@ -356,16 +363,16 @@ enum NodeLinkParser {
 
     // MARK: - VLESS
 
-    private static func parseVless(_ body: String) -> Result<ParsedNode, String> {
+    private static func parseVless(_ body: String) -> Result<ParsedNode, NodeLinkError> {
         let (noFragment, name) = splitFragment(body)
         let (main, query) = splitQuery(noFragment)
         guard let at = main.lastIndex(of: "@") else {
-            return .failure("vless 链接里没有服务器地址")
+            return .failure(NodeLinkError(message: "vless 链接里没有服务器地址"))
         }
         let uuid = percentDecode(String(main[..<at]))
-        guard !uuid.isEmpty else { return .failure("vless 链接缺少 UUID") }
+        guard !uuid.isEmpty else { return .failure(NodeLinkError(message: "vless 链接缺少 UUID")) }
         guard let (host, port) = splitHostPort(String(main[main.index(after: at)...])) else {
-            return .failure("vless 链接没有有效的服务器地址")
+            return .failure(NodeLinkError(message: "vless 链接没有有效的服务器地址"))
         }
         let nodeName = name ?? "\(host):\(port)"
         let security = (query["security"] ?? "none").lowercased()

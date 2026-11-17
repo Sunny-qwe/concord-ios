@@ -163,7 +163,7 @@ final class UnifiedImporter: ObservableObject {
     // MARK: - Single subscription (reuses addFromURL)
 
     @MainActor
-    private func importSubscriptionURL(_ urlString: String) async -> Result<Profile, String> {
+    private func importSubscriptionURL(_ urlString: String) async -> Result<Profile, NodeLinkError> {
         let beforeCount = profileStore.profiles.count
         await profileStore.addFromURL(name: "", urlString: urlString)
         if profileStore.profiles.count > beforeCount,
@@ -171,7 +171,7 @@ final class UnifiedImporter: ObservableObject {
            let created = profileStore.profiles.last {
             return .success(created)
         }
-        return .failure(profileStore.lastError ?? "导入失败（原因未知）")
+        return .failure(NodeLinkError(message: profileStore.lastError ?? "导入失败（原因未知）"))
     }
 
     // MARK: - Whole YAML document
@@ -204,8 +204,8 @@ final class UnifiedImporter: ObservableObject {
                 case .success(let profile):
                     results.append(ImportLineResult(order: index, line: line, kind: .subscription, succeeded: true, message: "已导入订阅「\(profile.name)」"))
                     successProfiles.append((order: index, profile: profile))
-                case .failure(let reason):
-                    results.append(ImportLineResult(order: index, line: line, kind: .subscription, succeeded: false, message: "导入失败：\(reason)"))
+                case .failure(let error):
+                    results.append(ImportLineResult(order: index, line: line, kind: .subscription, succeeded: false, message: "导入失败：\(error.message)"))
                 }
             case .nodeLink:
                 nodeLines.append((index: index, line: line))
@@ -228,8 +228,8 @@ final class UnifiedImporter: ObservableObject {
             switch NodeLinkParser.parse(line) {
             case .success(let node):
                 localParsed.append((index: index, line: line, node: node))
-            case .failure(let reason):
-                failed.append((index: index, line: line, reason: reason))
+            case .failure(let error):
+                failed.append((index: index, line: line, reason: error.message))
             }
         }
         // Core fallback (convert.decodeLinks) for lines the local

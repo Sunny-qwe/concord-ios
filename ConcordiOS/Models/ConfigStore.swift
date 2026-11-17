@@ -25,7 +25,7 @@ import Combine
 // the shared paths, so nothing here pretends to talk to the core.
 
 final class ConfigStore: ObservableObject {
-    static let appGroupID = "group.com.sunny-qwe.concord-ios"
+    static let appGroupID = "group.434fff4c253add77.1"
     static let configFileName = "config.yaml"
     static let mitmFileName = "mitm.json"
     static let moduleMitmFileName = "module-mitm.json"

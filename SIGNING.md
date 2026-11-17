@@ -19,10 +19,10 @@ security cms -D -i 你的描述文件.mobileprovision | grep -A 5 -i "packet-tun
 
 要看到 `packet-tunnel-provider` 才算过关，同时两个描述文件都要包含：
 
-- App Groups：`group.com.sunny-qwe.concord-ios`（或你替换后的真实 App Group）
+- App Groups：`group.434fff4c253add77.1`（已按你的描述文件改好）
 - Bundle ID 与工程里的一致：
-  - App：`com.sunny-qwe.concord-ios`
-  - 扩展：`com.sunny-qwe.concord-ios.PacketTunnel`
+  - App：`app.forest5669.sapodilla72`
+  - 扩展：`app.forest5669.sapodilla72.PacketTunnel`
 
 如果没有，先去 Apple Developer 后台的 Identifiers 里给这两个 Bundle ID 开启 Network Extension + App Groups，再重新下载描述文件。不要用免费 Personal Team 的描述文件去跑这一步。
 
@@ -70,7 +70,7 @@ git push -u origin main
 
 - `.p12` 必须是**付费账号**导出的 Development 或 Distribution 证书，与上面两个描述文件是同一 Team、同一账号。
 - 签名 job 只有 4 个 Secrets 都存在时才会跑。
-- `ExportOptions.plist` 已在仓库根目录，是**模板**：必须先把里面的 `YOUR_TEAM_ID` 换成你真实的 Team ID，把 `YOUR_APP_PROVISIONING_PROFILE_NAME` 和 `YOUR_TUNNEL_PROVISIONING_PROFILE_NAME` 换成 Developer 后台里显示的两个描述文件**名称**（不是文件名），再跑签名 job。`method` 是 `development`，`signingStyle` 是 `manual`，Bundle ID 是 `com.sunny-qwe.concord-ios` 和 `com.sunny-qwe.concord-ios.PacketTunnel`（如果你改了 Bundle ID，这里也要同步改）。
+- `ExportOptions.plist` 已在仓库根目录，2026-11-17 已按你的证书填好：Team ID 是 `65ZBN43KNV`，`method` 是 `ad-hoc`（你的描述文件是 Ad Hoc 类型），App 描述文件名称是 `00008110-000C04112E06801E3ME3Z2`。还差扩展的描述文件名称：先在 Developer 后台给 `app.forest5669.sapodilla72.PacketTunnel` 做一份描述文件（开 App Groups + Network Extension，选同一张证书），再把它的**名称**（不是文件名）填进 `YOUR_TUNNEL_PROVISIONING_PROFILE_NAME`，然后才能跑签名 job。`signingStyle` 是 `manual`，Bundle ID 是 `app.forest5669.sapodilla72` 和 `app.forest5669.sapodilla72.PacketTunnel`。
 - 工作流现在会跑 `xcodebuild -exportArchive -exportOptionsPlist ExportOptions.plist`，不再是以前那个 `exit 1` 的占位步骤。但整个 signed-ipa 流程**没有在 Mac / Xcode 上验证过**。另外注意：`project.pbxproj` 目前是 `CODE_SIGN_STYLE = Automatic`，如果导出报手动签名错误，需要先把两个 target 的签名方式改成 Manual 再试。
 
 ## 4. 拿已签名 IPA

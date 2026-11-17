@@ -78,7 +78,7 @@
 │  （sendProviderMessage + 快照文件）与扩展通信，          │
 │  永不加载核心                                            │
 └──────────────────────┬──────────────────────────────────┘
-                       │ App Group: group.com.sunny-qwe.concord-ios
+                       │ App Group: group.434fff4c253add77.1
                        │  config.yaml / mitm.json / tunnel.json
                        │  snapshots/{traffic,connections,logs,dns}.json
                        ▼
@@ -182,9 +182,9 @@ concord-ios/
 
 | 项目 | 当前占位值 | 说明 |
 | --- | --- | --- |
-| App Bundle ID | `com.sunny-qwe.concord-ios` | 换成你自己的 Bundle ID |
-| Tunnel Bundle ID | `com.sunny-qwe.concord-ios.PacketTunnel` | 换成你自己的 |
-| App Group | `group.com.sunny-qwe.concord-ios` | 换成你自己的 App Group |
+| App Bundle ID | `app.forest5669.sapodilla72` | 与你的描述文件一致（2026-11-17 已按证书改好） |
+| Tunnel Bundle ID | `app.forest5669.sapodilla72.PacketTunnel` | 需要再做一份描述文件（见 SIGNING.md） |
+| App Group | `group.434fff4c253add77.1` | 与你的描述文件一致（2026-11-17 已按证书改好） |
 | Team ID | `YOUR_TEAM_ID`（在 `ExportOptions.plist` 里） | 换成你真实的 Apple Developer Team ID |
 | 描述文件名 | `YOUR_APP_PROVISIONING_PROFILE_NAME` / `YOUR_TUNNEL_PROVISIONING_PROFILE_NAME`（在 `ExportOptions.plist` 里） | 换成 Developer 后台里显示的两个描述文件**名称**，不是文件名 |
 | GitHub 仓库 | `github.com/sunny-qwe/concord-ios` | 见下 |

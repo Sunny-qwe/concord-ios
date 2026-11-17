@@ -20,6 +20,9 @@ final class TrafficStore: ObservableObject {
     @Published var outboundIp: String?
     @Published var outboundChains: [String] = []
     @Published var coreMemoryBytes: UInt64?
+    @Published var services: [ConcordServiceItem] = []
+    @Published var isProbingServices = false
+    @Published var servicesError: String?
     @Published var lastError: String?
 
     let client: ConcordClient
@@ -101,6 +104,23 @@ final class TrafficStore: ObservableObject {
             current = ConcordTraffic(up: 0, down: 0, totalUp: 0, totalDown: 0)
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    /// Checks the known services (google, github, youtube, …) through
+    /// one proxy (probe.services). The status strings are the core's
+    /// contract ("available", "blocked", "restricted", "timeout",
+    /// "failed", … — upstream crates/engine/src/probe/services.rs).
+    @MainActor
+    func probeServices(proxy: String) async {
+        guard !isProbingServices else { return }
+        isProbingServices = true
+        defer { isProbingServices = false }
+        do {
+            services = try await client.probeServices(proxy: proxy)
+            servicesError = nil
+        } catch {
+            servicesError = error.localizedDescription
         }
     }
 }

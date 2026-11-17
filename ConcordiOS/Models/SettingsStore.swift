@@ -82,6 +82,9 @@ final class SettingsStore: ObservableObject {
     @Published var mitmIssues: [String] = []
     @Published var mitmIssuedPem: String?
     @Published var generalApplyMessage: String?
+    @Published var dnsApplyMessage: String?
+    @Published var capabilities: ConcordCapabilities?
+    @Published var developerInfoMessage: String?
 
     /// The MITM config as the core expects it (RawConfig keys, kebab-case).
     var mitmConfig: MitmConfig {
@@ -103,10 +106,22 @@ final class SettingsStore: ObservableObject {
 
     let client: ConcordClient
     private let storageKey = "ConcordiOS.settings.v1"
+    private var autosaveCancellable: AnyCancellable?
 
     init(client: ConcordClient = ConcordClient()) {
         self.client = client
         load()
+        // Autosave: every toggle / field change persists to UserDefaults
+        // and rewrites the shared files the extension reads. Before this
+        // only a handful of controls saved on change — most settings
+        // (ports, sniffing, DNS, TUN stack/MTU, auto-update, developer
+        // mode, …) were silently lost on restart. objectWillChange fires
+        // before the change lands, so the save is deferred to the next
+        // main-actor turn, when the new values are in place. save()
+        // itself mutates no @Published property, so this cannot loop.
+        autosaveCancellable = objectWillChange.sink { [weak self] _ in
+            Task { @MainActor [weak self] in self?.save() }
+        }
     }
 
     // MARK: Persistence (UserDefaults; the core reads these via config.patch
@@ -207,17 +222,22 @@ final class SettingsStore: ObservableObject {
     }
 
     /// Writes the files the PacketTunnel extension reads:
-    /// tunnel.json (tun.start + interface settings) and mitm.json
-    /// (merged into config.apply's overlay). Silently skipped when the
-    /// App Group container is unavailable.
+    /// tunnel.json (tun.start + interface settings), mitm.json
+    /// (merged into config.apply's overlay), dns.json (ditto) and
+    /// general.json (patched into the core at tunnel start via
+    /// config.patch, so saved general settings take effect on the next
+    /// VPN start even without tapping "apply"). Silently skipped when
+    /// the App Group container is unavailable.
     private func saveSharedFiles() {
         let dnsServers = tunDns.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         let tunnel: [String: Any] = [
+            "enabled": tunEnabled,
             "stack": tunStack,
             "mtu": tunMtu,
             "dns": dnsServers.isEmpty ? ["223.5.5.5", "8.8.8.8"] : dnsServers,
+            "ipv6": ipv6,
         ]
         if let url = ConfigStore.sharedFileURL(name: ConfigStore.tunnelSettingsFileName),
            let data = try? JSONSerialization.data(withJSONObject: tunnel) {
@@ -234,6 +254,59 @@ final class SettingsStore: ObservableObject {
         if let url = ConfigStore.sharedFileURL(name: ConfigStore.mitmFileName),
            let data = try? JSONSerialization.data(withJSONObject: mitm) {
             try? data.write(to: url, options: .atomic)
+        }
+        // dns.json likewise: the core's DnsConfig keys are kebab-case
+        // ("enhanced-mode", "fake-ip-range" — upstream
+        // crates/config/src/dns.rs), so the extension passes it as the
+        // "dns" overlay value unchanged. Keys are only written when
+        // they carry a usable value, so an empty nameserver field or
+        // an invalid fake-ip-range never overrides the profile's DNS
+        // with something broken.
+        var dns: [String: Any] = [
+            "enable": dnsEnabled,
+            "enhanced-mode": dnsFakeIpEnabled ? "fake-ip" : "normal",
+            "ipv6": ipv6,
+        ]
+        let nameserver = dnsNameserver.trimmingCharacters(in: .whitespaces)
+        if !nameserver.isEmpty {
+            dns["nameserver"] = [nameserver]
+        }
+        let fakeIpRange = dnsFakeIpRange.trimmingCharacters(in: .whitespaces)
+        if Self.isValidIPv4CIDR(fakeIpRange) {
+            dns["fake-ip-range"] = fakeIpRange
+        }
+        if let url = ConfigStore.sharedFileURL(name: ConfigStore.dnsFileName),
+           let data = try? JSONSerialization.data(withJSONObject: dns) {
+            try? data.write(to: url, options: .atomic)
+        }
+        // general.json: the general settings in ConfigPatchParams wire
+        // keys (snake_case), patched by the extension at tunnel start.
+        let general: [String: Any] = [
+            "mode": mode.rawValue,
+            "log_level": logLevel.rawValue,
+            "mixed_port": mixedPort,
+            "allow_lan": allowLan,
+            "ipv6": ipv6,
+            "tcp_concurrent": tcpConcurrent,
+            "unified_delay": unifiedDelay,
+        ]
+        if let url = ConfigStore.sharedFileURL(name: ConfigStore.generalSettingsFileName),
+           let data = try? JSONSerialization.data(withJSONObject: general) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// Strict-enough check for "a.b.c.d/n" (Clash fake-ip-range form).
+    static func isValidIPv4CIDR(_ value: String) -> Bool {
+        let parts = value.split(separator: "/")
+        guard parts.count == 2,
+              let prefix = Int(parts[1]), (0...32).contains(prefix) else { return false }
+        let octets = parts[0].split(separator: ".")
+        guard octets.count == 4 else { return false }
+        return octets.allSatisfy { octet in
+            !octet.isEmpty && octet.count <= 3
+                && octet.allSatisfy(\.isNumber)
+                && (Int(octet).map { (0...255).contains($0) } ?? false)
         }
     }
 
@@ -291,10 +364,18 @@ final class SettingsStore: ObservableObject {
     /// Push the general settings to the core (config.patch). Only the
     /// fields ConfigPatchParams accepts are sent (see ConcordClient);
     /// SOCKS port and sniffing, for example, are not patchable.
+    /// When the tunnel is stopped the core is unreachable: the settings
+    /// stay saved (locally + in the shared general.json, which the
+    /// extension patches in at the next VPN start) and the message says
+    /// so instead of reporting a failure.
     @MainActor
     func applyGeneralToCore() async {
         guard client.mode == .live else {
             generalApplyMessage = "示例模式：设置仅保存在本地，切换到实时核心后可应用到核心"
+            return
+        }
+        guard TunnelManager.shared.isRunning else {
+            generalApplyMessage = "已保存在本地：启动 VPN 后会自动应用到核心（也可现在点「从核心读取当前配置」确认）"
             return
         }
         do {
@@ -305,6 +386,49 @@ final class SettingsStore: ObservableObject {
             generalApplyMessage = "通用设置已应用到核心"
         } catch {
             generalApplyMessage = "应用失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Validates the DNS fields, saves them (dns.json, merged into
+    /// config.apply's overlay by the extension) and re-applies the
+    /// active config so the new DNS takes effect. When the tunnel is
+    /// stopped the settings are still saved and take effect at the
+    /// next VPN start.
+    @MainActor
+    func applyDnsSettings() async {
+        let nameserver = dnsNameserver.trimmingCharacters(in: .whitespaces)
+        let fakeIpRange = dnsFakeIpRange.trimmingCharacters(in: .whitespaces)
+        if !fakeIpRange.isEmpty, !Self.isValidIPv4CIDR(fakeIpRange) {
+            dnsApplyMessage = "Fake-IP 段格式不对，应为 a.b.c.d/n，例如 198.18.0.1/16"
+            return
+        }
+        save()
+        guard client.mode == .live else {
+            dnsApplyMessage = "示例模式：DNS 设置已保存在本地，切换到实时核心并重启 VPN 后生效"
+            return
+        }
+        guard TunnelManager.shared.isRunning else {
+            dnsApplyMessage = "DNS 设置已保存，下次启动 VPN 时生效"
+            return
+        }
+        do {
+            _ = try await client.configApply(profilePath: nil)
+            dnsApplyMessage = "DNS 设置已应用（立即生效）"
+        } catch {
+            dnsApplyMessage = "应用失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Reads core.capabilities for the developer section (and refreshes
+    /// the MITM availability flag as a side effect).
+    @MainActor
+    func refreshDeveloperInfo() async {
+        do {
+            capabilities = try await client.coreCapabilities()
+            mitmAvailable = capabilities?.features.mitm ?? false
+            developerInfoMessage = nil
+        } catch {
+            developerInfoMessage = "读取失败：\(error.localizedDescription)"
         }
     }
 
@@ -387,8 +511,8 @@ final class SettingsStore: ObservableObject {
 
     /// Persists the MITM choices (mitm.json, merged by the extension
     /// into config.apply's overlay) and re-applies the active profile
-    /// so the new overlay takes effect. A running tunnel needs a
-    /// restart for the new MITM config to apply.
+    /// so the new overlay takes effect. When the tunnel is stopped the
+    /// settings are still saved and take effect at the next VPN start.
     @MainActor
     func applyMitmSettings() async {
         save()
@@ -396,9 +520,13 @@ final class SettingsStore: ObservableObject {
             mitmStatusMessage = "示例模式：MITM 设置已保存在本地，切换到实时核心并重启 VPN 后生效"
             return
         }
+        guard TunnelManager.shared.isRunning else {
+            mitmStatusMessage = "MITM 设置已保存，下次启动 VPN 时生效"
+            return
+        }
         do {
             _ = try await client.configApply(profilePath: nil)
-            mitmStatusMessage = "MITM 设置已应用（重启 VPN 后生效）"
+            mitmStatusMessage = "MITM 设置已应用（立即生效）"
         } catch {
             mitmStatusMessage = "应用失败：\(error.localizedDescription)"
         }

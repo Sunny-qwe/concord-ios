@@ -14,6 +14,7 @@ struct ContentView: View {
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var logStore: LogStore
     @EnvironmentObject private var ruleStore: RuleStore
+    @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var client: ConcordClient
 
     var body: some View {
@@ -41,6 +42,11 @@ struct ContentView: View {
             await connectionStore.refresh()
             await logStore.refresh()
             trafficStore.start()
+            // "自动更新订阅" is a real switch now: refresh remote
+            // profiles on launch (updateAll re-applies the active one).
+            if settingsStore.autoUpdateProfiles {
+                await profileStore.updateAll()
+            }
         }
         .onChange(of: client.mode) { _, _ in
             Task {

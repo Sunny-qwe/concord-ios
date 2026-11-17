@@ -64,9 +64,14 @@ struct SettingsView: View {
                     TextField("TUN DNS（逗号分隔）", text: $settingsStore.tunDns)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    Text("iOS 上 TUN 由系统 NetworkExtension 拥有，核心不会自己创建 TUN 设备（见 TUN_INVESTIGATION.md）。这些参数会写入共享 tunnel.json，扩展启动时传给 tun.start（packet-channel 路径）并用于配置隧道接口。")
+                    Text("iOS 上 TUN 由系统 NetworkExtension 拥有，核心不会自己创建 TUN 设备（见 TUN_INVESTIGATION.md）。这些参数会写入共享 tunnel.json，扩展启动时传给 tun.start（packet-channel 路径）并用于配置隧道接口。改动后需重启 VPN 生效。IPv6 开关（通用里）打开时，隧道接口会同时配置 IPv6 地址 fdfe:dcba:9876::1/126 并接管 IPv6 默认路由；关闭时 IPv6 流量不进隧道。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if !settingsStore.tunEnabled {
+                        Text("TUN 已关闭：iOS 上 TUN 是唯一的数据面，关闭后启动 VPN 会直接报错。请重新打开后再启动。")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
 
                 Section("DNS") {
@@ -79,6 +84,17 @@ struct SettingsView: View {
                     TextField("Fake-IP 段", text: $settingsStore.dnsFakeIpRange)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    Button("应用 DNS 设置（重新应用配置）") {
+                        Task { await settingsStore.applyDnsSettings() }
+                    }
+                    if let message = settingsStore.dnsApplyMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("DNS 设置会写入共享 dns.json，扩展把它并进 config.apply 的 overlay（会覆盖订阅自带的 DNS）。Fake-IP 段须为 a.b.c.d/n 格式。改动后下次启动 VPN 生效；VPN 运行时点「应用」可立即生效。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     NavigationLink("DNS 查询记录") {
                         DnsQueriesView()
                     }
@@ -142,6 +158,10 @@ struct SettingsView: View {
                     Text("安装 CA 到系统信任（必须手动完成）：App 无法以编程方式安装受信任 CA。分享上面的 CA 证书，在 iPhone「设置 → 通用 → VPN 与设备管理」里安装，再到「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任。未安装时 HTTPS 只做透传，仅明文 HTTP 可改写。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    NavigationLink("MITM 拦截记录") {
+                        MitmView()
+                    }
+                    .disabled(!settingsStore.mitmAvailable)
                     if !settingsStore.mitmAvailable {
                         Text("MITM 当前不可用：核心未报告 mitm 能力（core.capabilities features.mitm），或隧道未运行。请先启动 VPN。")
                             .font(.caption)
@@ -180,6 +200,32 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if settingsStore.developerMode {
+                    Section("开发者（core.capabilities）") {
+                        Button("读取核心能力") {
+                            Task { await settingsStore.refreshDeveloperInfo() }
+                        }
+                        if let capabilities = settingsStore.capabilities {
+                            LabeledContent("实现", value: "\(capabilities.implementation) \(capabilities.version)")
+                            LabeledContent("代理类型", value: capabilities.proxyTypes.joined(separator: ", "))
+                            LabeledContent("传输", value: capabilities.transports.joined(separator: ", "))
+                            LabeledContent("规则类型", value: capabilities.ruleTypes.joined(separator: ", "))
+                            LabeledContent("MITM", value: capabilities.features.mitm ? "支持" : "不支持")
+                            LabeledContent("ECH", value: capabilities.features.ech ? "支持" : "不支持")
+                            LabeledContent("系统协议栈", value: capabilities.features.systemStack ? "支持" : "不支持")
+                            LabeledContent("SS 插件", value: capabilities.ssPlugins.isEmpty ? "—" : capabilities.ssPlugins.joined(separator: ", "))
+                            LabeledContent("拥塞控制", value: capabilities.congestionControllers.isEmpty ? "—" : capabilities.congestionControllers.joined(separator: ", "))
+                        } else {
+                            Text("点「读取核心能力」查看核心报告的能力（需 VPN 运行）。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let message = settingsStore.developerInfoMessage {
+                            Text(message).font(.caption).foregroundStyle(.red)
+                        }
+                    }
+                }
+
                 Section("关于") {
                     LabeledContent("版本", value: "Concord iOS 0.2.0（FlClash 风格界面）")
                     LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
@@ -209,6 +255,8 @@ struct SettingsView: View {
 struct DnsQueriesView: View {
     @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var client: ConcordClient
+    @State private var queryName = ""
+    @State private var queryType = "A"
 
     var body: some View {
         List {
@@ -220,6 +268,45 @@ struct DnsQueriesView: View {
                         .foregroundStyle(.secondary)
                 }
                 .listRowBackground(Color.clear)
+            }
+            Section("手动查询（dns.query）") {
+                HStack {
+                    TextField("域名，如 www.google.com", text: $queryName)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    Picker("类型", selection: $queryType) {
+                        Text("A").tag("A")
+                        Text("AAAA").tag("AAAA")
+                        Text("MX").tag("MX")
+                        Text("TXT").tag("TXT")
+                        Text("CNAME").tag("CNAME")
+                    }
+                    .pickerStyle(.menu)
+                }
+                Button("查询") {
+                    Task { await dnsStore.query(name: queryName, qtype: queryType) }
+                }
+                .disabled(queryName.trimmingCharacters(in: .whitespaces).isEmpty)
+                if let result = dnsStore.queriedResult {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("返回码 \(result.rcode) · 应答 \(result.answers.count) 条")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(result.answers, id: \.data) { record in
+                            Text("\(record.name) → \(record.data)（TTL \(record.ttl)）")
+                                .font(.caption)
+                        }
+                        if !result.authorities.isEmpty {
+                            Text("权威记录 \(result.authorities.count) 条")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if let error = dnsStore.queryError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
             }
             Section {
                 Button("清除 DNS 缓存（dns.clearCache）") {
@@ -321,16 +408,41 @@ struct ProvidersView: View {
                                 try await client.providerUpdate(name: provider.name)
                                 await ruleStore.refresh()
                             } catch {
-                                // provider.update errors surface on the Rules page.
+                                ruleStore.lastError = error.localizedDescription
                             }
                         }
                     }
                     .tint(.orange)
                 }
             }
+            if let message = ruleStore.providerActionMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear)
+            }
+            if let error = ruleStore.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .listRowBackground(Color.clear)
+            }
         }
         .navigationTitle("提供方")
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu("地理数据库") {
+                    Button("更新 GeoIP（MMDB）") {
+                        Task { await ruleStore.geoUpdate(kind: "MMDB") }
+                    }
+                    Button("更新 ASN（ASN）") {
+                        Task { await ruleStore.geoUpdate(kind: "ASN") }
+                    }
+                    Button("更新 GeoSite（GEOSITE）") {
+                        Task { await ruleStore.geoUpdate(kind: "GEOSITE") }
+                    }
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await ruleStore.refresh() } } label: {
                     Image(systemName: "arrow.clockwise")
@@ -347,6 +459,8 @@ struct ResourcesView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var ruleStore: RuleStore
+    @EnvironmentObject private var client: ConcordClient
+    @State private var releaseMessage: String?
 
     var body: some View {
         List {
@@ -355,6 +469,20 @@ struct ResourcesView: View {
                 Text("core.stats 只暴露 rss。NetworkExtension 进程内存上限很紧（历史约 15–50 MB），大规则集与 GeoIP 可能触发 Jetsam。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button("释放核心内存（core.releaseMemory）") {
+                    Task {
+                        do {
+                            try await client.coreReleaseMemory()
+                            await trafficStore.refreshMemory()
+                            releaseMessage = "已请求核心释放内存"
+                        } catch {
+                            releaseMessage = "释放失败：\(error.localizedDescription)"
+                        }
+                    }
+                }
+                if let message = releaseMessage {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("已加载") {
                 LabeledContent("代理组", value: "\(proxyStore.groups.count)")

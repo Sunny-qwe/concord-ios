@@ -183,11 +183,14 @@ struct ProxiesView: View {
     }
 }
 
-// Node detail sheet (FlClash proxy card detail).
+// Node detail sheet (FlClash proxy card detail). Loads the node's
+// configured definition (proxy.definition) and live state
+// (proxy.states) from the core when it opens.
 struct NodeDetailView: View {
     let node: ProxyNode
     @EnvironmentObject private var proxyStore: ProxyStore
     @Environment(\.dismiss) private var dismiss
+    @State private var detail: ProxyStore.NodeDetail?
 
     var body: some View {
         NavigationStack {
@@ -197,16 +200,32 @@ struct NodeDetailView: View {
                     LabeledContent("类型", value: node.type)
                     LabeledContent("提供方", value: node.provider ?? "—")
                     LabeledContent("延迟", value: ConcordFormat.latency(node.latencyMs))
+                    if let state = detail?.state {
+                        LabeledContent("存活", value: state.alive ? "是" : "否")
+                        LabeledContent("UDP", value: state.udp ? "支持" : "不支持")
+                        if let last = state.history.last {
+                            LabeledContent("上次延迟", value: last.delay == 0 ? "失败" : "\(last.delay) ms")
+                        }
+                    }
                 }
                 Section {
                     Button("测速") {
                         Task { await proxyStore.testLatency(node: node) }
                     }
                 }
-                Section {
-                    Text("节点详情来自 proxy.groups / delay.test。真实核心链接后，这里会显示该节点的完整配置与历史延迟。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if let definition = detail?.definition {
+                    Section("配置（proxy.definition）") {
+                        JSONValueView(value: definition)
+                            .frame(minHeight: 120)
+                    }
+                } else if let error = detail?.error {
+                    Section {
+                        Text(error).font(.caption).foregroundStyle(.orange)
+                    }
+                } else {
+                    Section {
+                        ProgressView()
+                    }
                 }
             }
             .navigationTitle("节点详情")
@@ -215,6 +234,9 @@ struct NodeDetailView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }
                 }
+            }
+            .task {
+                detail = await proxyStore.fetchNodeDetail(name: node.name)
             }
         }
     }

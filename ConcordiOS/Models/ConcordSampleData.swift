@@ -14,8 +14,74 @@ enum ConcordSampleData {
         let result: AnyEncodable
         switch method {
         case "core.init", "engine.start", "engine.stop", "tun.start", "tun.stop",
-             "traffic.reset", "dns.clearCache", "dns.flushFakeIp", "provider.update":
+             "traffic.reset", "dns.clearCache", "dns.flushFakeIp", "provider.update",
+             "config.patch", "network.reset", "core.releaseMemory", "geo.update":
             result = AnyEncodable(EmptyResultJSON())
+        case "config.validate":
+            result = AnyEncodable(ConcordConfigValidateResult(issues: []))
+        case "config.read":
+            result = AnyEncodable(ConcordConfigReadResult(
+                config: .object([
+                    "mode": .string("rule"),
+                    "proxies": .array(sampleProxyObjects),
+                    "proxy-groups": .array([.string("GLOBAL"), .string("PROXY")]),
+                    "rules": .array(sampleRules.map { .string("\($0.type),\($0.payload),\($0.target)") }),
+                ]),
+                file: nil, size: nil))
+        case "convert.subscription":
+            result = AnyEncodable(ConcordProxyList(proxies: sampleProxyObjects))
+        case "validate.proxies":
+            result = AnyEncodable(ConcordIssueList(issues: []))
+        case "profile.build":
+            result = AnyEncodable(ConcordTextResult(
+                text: "# 示例生效配置（profile.build）\nmode: rule\nmixed-port: 7890\nproxies: 4 个节点\nproxy-groups: GLOBAL / PROXY / Streaming / DIRECT\nrules: 20 条\n",
+                file: nil, size: nil))
+        case "ruleSet.dump":
+            result = AnyEncodable(ConcordTextResult(
+                text: sampleRules.map { "\($0.type),\($0.payload),\($0.target)" }.joined(separator: "\n"),
+                file: nil, size: nil))
+        case "ruleSet.compile":
+            result = AnyEncodable(ConcordRuleSetInfo(behavior: "domain", format: "yaml"))
+        case "proxy.definition":
+            result = AnyEncodable(ConcordProxyDefinition(proxy: sampleProxyDefinition(paramsData: paramsData)))
+        case "proxy.states":
+            result = AnyEncodable(ConcordProxyStates(proxies: sampleProxyStates))
+        case "proxy.watch":
+            result = AnyEncodable(sampleProxyGroups)
+        case "delay.run":
+            result = AnyEncodable(DelayRunStart(sub: 1, snapshot: nil))
+        case "delay.run.poll":
+            result = AnyEncodable(DelayRunSnapshot(runId: 1, done: true, results: sampleProxyGroups.nodes.map {
+                ConcordDelayResult(name: $0.name, url: "http://www.gstatic.com/generate_204", value: sampleLatency(for: $0.name))
+            }))
+        case "dns.query":
+            result = AnyEncodable(sampleDnsQuery(paramsData: paramsData))
+        case "probe.services":
+            result = AnyEncodable(ConcordServiceList(items: sampleServices))
+        case "core.capabilities":
+            result = AnyEncodable(ConcordCapabilities(
+                implementation: "concord", version: "示例",
+                proxyTypes: [], transports: [], ruleTypes: [], ssPlugins: [],
+                congestionControllers: [],
+                features: ConcordFeatures(mitm: false, ech: false, systemStack: false)))
+        case "mitm.certificate", "mitm.generateCertificate":
+            result = AnyEncodable(ConcordMitmCertificate(certificate: nil))
+        case "mitm.validate":
+            result = AnyEncodable(ConcordMitmValidateResult(issues: [:]))
+        case "mitm.issueCertificate":
+            result = AnyEncodable(ConcordMitmPem(pem: ""))
+        case "mitm.runScript":
+            result = AnyEncodable(ConcordMitmResult(result: .object([
+                "output": .string("示例脚本输出：规则已应用（示例数据）"),
+            ])))
+        case "mitm.exchanges":
+            result = AnyEncodable(ConcordMitmResult(result: jsonValue(sampleExchangeList)))
+        case "mitm.exchange":
+            result = AnyEncodable(ConcordMitmResult(result: sampleExchangeDetail))
+        case "mitm.body":
+            result = AnyEncodable(ConcordMitmResult(result: jsonValue(MitmBody(
+                data: Data("示例响应正文：{\"ok\":true}".utf8).base64EncodedString(),
+                truncated: false, encoding: ""))))
         case "config.apply":
             result = AnyEncodable(ConcordConfigApplyResult(warnings: [
                 ConcordWarning(level: "warning", code: "unknown_key", path: "proxies[0]", message: "示例警告：某个节点类型在当前核心版本不受支持，已跳过")
@@ -65,6 +131,100 @@ enum ConcordSampleData {
         let jsonrpc = "2.0"
         let id = 1
         let result: AnyEncodable
+    }
+
+    /// Re-encodes a typed value as open JSON (used for the MITM mock
+    /// results, whose client type is JSONValue).
+    static func jsonValue<T: Encodable>(_ value: T) -> JSONValue {
+        guard let data = try? JSONEncoder().encode(value),
+              let decoded = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+            return .null
+        }
+        return decoded
+    }
+
+    /// The sample nodes as open JSON proxy mappings (config.read /
+    /// convert.subscription shape).
+    static var sampleProxyObjects: [JSONValue] {
+        [
+            .object(["name": .string("示例节点-香港-01"), "type": .string("vless"), "server": .string("hk.example.com"), "port": .int(443)]),
+            .object(["name": .string("示例节点-日本-02"), "type": .string("trojan"), "server": .string("jp.example.com"), "port": .int(443)]),
+            .object(["name": .string("示例节点-美国-03"), "type": .string("ss"), "server": .string("us.example.com"), "port": .int(8388)]),
+            .object(["name": .string("示例节点-新加坡-04"), "type": .string("vmess"), "server": .string("sg.example.com"), "port": .int(443)]),
+        ]
+    }
+
+    static func sampleProxyDefinition(paramsData: Data) -> JSONValue {
+        struct P: Decodable { let name: String }
+        let name = (try? JSONDecoder().decode(P.self, from: paramsData))?.name ?? "示例节点"
+        let base = sampleProxyObjects.first { $0.objectValue?["name"]?.stringValue == name }
+            ?? .object(["name": .string(name), "type": .string("vless"), "server": .string("example.com"), "port": .int(443)])
+        var object = base.objectValue ?? [:]
+        object["udp"] = .bool(true)
+        object["skip-cert-verify"] = .bool(false)
+        return .object(object)
+    }
+
+    static var sampleProxyStates: [ConcordProxyState] {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        return sampleProxyGroups.nodes.filter { $0.type != "DIRECT" }.map { node in
+            let alive = node.name != "示例节点-新加坡-04"
+            return ConcordProxyState(
+                name: node.name, udp: true, alive: alive,
+                history: [ConcordDelayRecord(time: now - 60_000, delay: UInt16(sampleLatency(for: node.name)))],
+                extra: [ConcordUrlHealth(url: "http://www.gstatic.com/generate_204", alive: alive, history: [])])
+        }
+    }
+
+    static func sampleDnsQuery(paramsData: Data) -> ConcordDnsQueryResult {
+        struct P: Decodable { let name: String; let qtype: String? }
+        let params = try? JSONDecoder().decode(P.self, from: paramsData)
+        let name = params?.name ?? "example.com"
+        let qtype = params?.qtype ?? "A"
+        let qtypeCode: UInt16 = qtype.uppercased() == "AAAA" ? 28 : 1
+        let answerData = qtype.uppercased() == "AAAA" ? "2606:2800:220:1:248:1893:25c8:1946" : "93.184.216.34"
+        return ConcordDnsQueryResult(
+            rcode: 0,
+            questions: [ConcordDnsQuestion(name: name, qtype: qtypeCode, qclass: 1)],
+            truncated: false, recursionDesired: true, recursionAvailable: true,
+            authenticData: false, checkingDisabled: false,
+            answers: [ConcordDnsRecord(name: name, rtype: qtypeCode, ttl: 300, data: answerData)],
+            authorities: [], additionals: [])
+    }
+
+    static var sampleServices: [ConcordServiceItem] {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        return [
+            ConcordServiceItem(name: "google", status: "available", region: "US", delay: 132, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil),
+            ConcordServiceItem(name: "github", status: "available", region: "", delay: 98, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil),
+            ConcordServiceItem(name: "youtube", status: "restricted", region: "HK", delay: 210, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil),
+            ConcordServiceItem(name: "netflix", status: "blocked", region: nil, delay: nil, chains: nil, checkedAt: now, epoch: 1, version: 1, hits: nil),
+        ]
+    }
+
+    static var sampleExchangeList: MitmExchangeList {
+        MitmExchangeList(capturing: true, since: nil, exchanges: [
+            MitmExchangeSummary(exchangeId: 1, start: "2026-11-17T09:00:00Z", pending: false, duration: 87, method: "GET", url: "https://www.google.com/", status: 200, requestSize: 512, responseSize: 2048, error: nil),
+            MitmExchangeSummary(exchangeId: 2, start: "2026-11-17T09:00:05Z", pending: true, duration: 0, method: "POST", url: "https://api.github.com/user", status: 0, requestSize: 128, responseSize: 0, error: nil),
+        ])
+    }
+
+    static var sampleExchangeDetail: JSONValue {
+        .object([
+            "id": .int(1),
+            "start": .string("2026-11-17T09:00:00Z"),
+            "duration": .int(87),
+            "method": .string("GET"),
+            "url": .string("https://www.google.com/"),
+            "status": .int(200),
+            "request-size": .int(512),
+            "response-size": .int(2048),
+            "proto": .string("HTTP/1.1"),
+            "ttfb": .int(42),
+            "request-header": .object(["user-agent": .string("示例"), "accept": .string("*/*")]),
+            "response-header": .object(["content-type": .string("text/html")]),
+            "actions": .array([.object(["kind": .string("allow"), "phase": .string("request"), "detail": .string("")])]),
+        ])
     }
 
     // MARK: Sample values

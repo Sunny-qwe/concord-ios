@@ -10,6 +10,8 @@ final class DnsStore: ObservableObject {
     @Published var searchText = ""
     @Published var lastError: String?
     @Published var lastActionMessage: String?
+    @Published var queriedResult: ConcordDnsQueryResult?
+    @Published var queryError: String?
 
     let client: ConcordClient
 
@@ -57,6 +59,24 @@ final class DnsStore: ObservableObject {
             lastActionMessage = "Fake-IP 映射已清除"
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    /// Runs one query through the core's resolver (dns.query) and keeps
+    /// the full answer for the query box.
+    @MainActor
+    func query(name: String, qtype: String) async {
+        let host = name.trimmingCharacters(in: .whitespaces)
+        guard !host.isEmpty else {
+            queryError = "请输入要查询的域名"
+            return
+        }
+        do {
+            queriedResult = try await client.dnsQuery(name: host, qtype: qtype)
+            queryError = nil
+        } catch {
+            queriedResult = nil
+            queryError = error.localizedDescription
         }
     }
 }

@@ -27,6 +27,33 @@ struct DashboardView: View {
         }
     }
 
+    /// probe.services status strings are part of the core's contract
+    /// (upstream crates/engine/src/probe/services.rs).
+    private func serviceStatusLabel(_ status: String) -> String {
+        switch status {
+        case "available": return "可用"
+        case "unavailable": return "不可用"
+        case "restricted": return "受限"
+        case "disallowed-isp": return "运营商限制"
+        case "blocked": return "被墙"
+        case "unsupported-region": return "地区不支持"
+        case "originals-only": return "仅自制剧"
+        case "coming-soon": return "即将推出"
+        case "timeout": return "超时"
+        case "failed": return "失败"
+        case "": return "未判断"
+        default: return status
+        }
+    }
+
+    private func serviceStatusColor(_ status: String) -> Color {
+        switch status {
+        case "available": return .green
+        case "blocked", "failed", "timeout", "unavailable": return .red
+        default: return .orange
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -87,6 +114,9 @@ struct DashboardView: View {
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
 
                     // Outbound mode (FlClash OutboundModeCard)
+                    // Changing the mode applies it to the core live
+                    // (config.patch) when the tunnel runs; otherwise it
+                    // is saved and applied at the next VPN start.
                     HStack {
                         Text("出站模式")
                         Spacer()
@@ -97,6 +127,65 @@ struct DashboardView: View {
                         }
                         .pickerStyle(.segmented)
                         .frame(width: 220)
+                    }
+                    .padding()
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                    .onChange(of: settingsStore.mode) { _, _ in
+                        Task { await settingsStore.applyGeneralToCore() }
+                    }
+                    if let message = settingsStore.generalApplyMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 4)
+                    }
+
+                    // Service check (FlClash service check card,
+                    // probe.services through the current outbound)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("服务检测")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("检测") {
+                                Task {
+                                    if let proxy = proxyStore.selectedOutbound {
+                                        await trafficStore.probeServices(proxy: proxy)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
+                        }
+                        if trafficStore.isProbingServices {
+                            ProgressView()
+                        }
+                        if let error = trafficStore.servicesError {
+                            Text(error).font(.caption).foregroundStyle(.red)
+                        }
+                        if trafficStore.services.isEmpty {
+                            Text("通过当前出站检测 Google / GitHub / YouTube 等服务的可用性（probe.services）。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(trafficStore.services) { service in
+                                HStack {
+                                    Text(service.name).font(.subheadline)
+                                    Spacer()
+                                    if let region = service.region, !region.isEmpty {
+                                        Text(region).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Text(service.delay.map { "\($0) ms" } ?? "—").font(.caption)
+                                    Text(serviceStatusLabel(service.status))
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(serviceStatusColor(service.status))
+                                }
+                            }
+                        }
                     }
                     .padding()
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))

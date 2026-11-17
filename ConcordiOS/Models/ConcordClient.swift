@@ -46,14 +46,19 @@ import Combine
 //   Dashboard outbound IP     probe.outboundIp
 //   Dashboard core memory     core.stats (rss)
 //   Proxies                   proxy.groups, proxy.watch, proxy.select,
+//                             proxy.definition, proxy.states,
 //                             delay.test / delay.run, validate.proxies
-//   Profiles                  config.apply, config.validate, profile.inspect,
+//   Profiles                  config.apply, config.validate, config.read,
+//                             profile.inspect, profile.build,
 //                             convert.subscription, provider.list/update
-//   Rules                     rule.list, provider.list
+//   Rules                     rule.list, provider.list, ruleSet.dump /
+//                             compile, geo.update
 //   Connections               connection.watch, connection.close, network.reset
 //   Logs                      log.watch, core.lastWarnings
 //   DNS queries               dns.watch, dns.query, dns.clearCache,
 //                             dns.flushFakeIp
+//   Dashboard                 probe.outboundIp, probe.services, core.stats,
+//                             core.releaseMemory
 //   Settings (general)        config.general, config.patch
 //   MITM                      mitm.certificate / generateCertificate /
 //                             validate / issueCertificate / runScript /
@@ -582,6 +587,229 @@ struct ConcordMitmResult: Codable {
     let result: JSONValue
 }
 
+// MARK: - Validation / config-read types (config.validate,
+// config.read, convert.subscription, validate.proxies)
+//
+// config.validate returns at most one issue: the profile's parse
+// error as a plain message (upstream crates/api/src/control.rs
+// maps ops::validate_config's Option<String> through Issue::message).
+
+struct ConcordIssue: Codable {
+    let path: String?
+    let line: UInt32?
+    let column: UInt32?
+    let message: String
+}
+
+struct ConcordConfigValidateResult: Codable {
+    let issues: [ConcordIssue]
+}
+
+struct ConcordIssueList: Codable {
+    let issues: [ConcordIssue]
+}
+
+struct ConcordConfigReadResult: Codable {
+    let config: JSONValue
+    let file: String?
+    let size: UInt64?
+}
+
+struct ConcordProxyList: Codable {
+    let proxies: [JSONValue]
+}
+
+struct ConcordTextResult: Codable {
+    let text: String?
+    let file: String?
+    let size: UInt64?
+}
+
+struct ConcordOutputInline: Encodable {
+    let inline: Bool
+}
+
+// MARK: - Proxy definition / states (proxy.definition, proxy.states)
+
+struct ConcordProxyDefinition: Codable {
+    let proxy: JSONValue
+}
+
+struct ConcordDelayRecord: Codable {
+    let time: Int64
+    /// 0 is a failed test.
+    let delay: UInt16
+}
+
+struct ConcordUrlHealth: Codable {
+    let url: String
+    let alive: Bool
+    let history: [ConcordDelayRecord]
+}
+
+struct ConcordProxyState: Codable, Identifiable {
+    var id: String { name }
+    let name: String
+    let udp: Bool
+    let alive: Bool
+    let history: [ConcordDelayRecord]
+    let extra: [ConcordUrlHealth]
+}
+
+struct ConcordProxyStates: Codable {
+    let proxies: [ConcordProxyState]
+}
+
+// MARK: - delay.run (stream; snapshot is empty, events are results
+// then `done` — upstream crates/api/src/watch.rs). The extension
+// accumulates the events into snapshots/delay.json; the app polls it.
+
+struct DelayRunStart: Decodable {
+    let sub: Int
+    let snapshot: EmptyResult?
+}
+
+struct DelayRunSnapshot: Decodable {
+    let runId: Int?
+    let done: Bool
+    let results: [ConcordDelayResult]
+}
+
+// MARK: - DNS query / probe.services / geo / rule sets
+
+struct ConcordDnsQuestion: Codable {
+    let name: String
+    let qtype: UInt16
+    let qclass: UInt16
+}
+
+struct ConcordDnsRecord: Codable {
+    let name: String
+    let rtype: UInt16
+    let ttl: UInt32
+    let data: String
+}
+
+struct ConcordDnsQueryResult: Codable {
+    let rcode: UInt16
+    let questions: [ConcordDnsQuestion]
+    let truncated: Bool
+    let recursionDesired: Bool
+    let recursionAvailable: Bool
+    let authenticData: Bool
+    let checkingDisabled: Bool
+    let answers: [ConcordDnsRecord]
+    let authorities: [ConcordDnsRecord]
+    let additionals: [ConcordDnsRecord]
+}
+
+struct ConcordRouteHit: Codable {
+    let host: String
+    let proxy: String?
+    let exit: String
+}
+
+struct ConcordServiceItem: Codable, Identifiable {
+    var id: String { name }
+    let name: String
+    let status: String
+    let region: String?
+    let delay: Int64?
+    let chains: [String]?
+    let checkedAt: Int64
+    let epoch: UInt64
+    let version: UInt64
+    let hits: [ConcordRouteHit]?
+}
+
+struct ConcordServiceList: Codable {
+    let items: [ConcordServiceItem]
+}
+
+struct ConcordRuleSetInfo: Codable {
+    let behavior: String
+    let format: String
+}
+
+/// The service names the core's prober knows (upstream
+/// crates/engine/src/probe/services.rs `default_checkers`, in the
+/// order the FlClash UI expects).
+let concordProbeServiceNames = [
+    "google", "github", "youtube", "chatgpt", "claude", "gemini",
+    "netflix", "disney-plus", "prime-video", "spotify", "tiktok",
+    "discord", "bilibili",
+]
+
+// MARK: - MITM capture types (mitm.exchanges / exchange / body)
+//
+// Wire keys are kebab-case ("request-size", "original-url",
+// "request-header") — spelled out, NOT the snake_case the live
+// encoder would produce (upstream crates/mitm/src/capture.rs).
+
+struct MitmExchangeSummary: Codable, Identifiable {
+    var id: Int64 { exchangeId }
+    let exchangeId: Int64
+    /// RFC 3339 timestamp.
+    let start: String
+    let pending: Bool?
+    /// Milliseconds.
+    let duration: Int64
+    let method: String
+    let url: String
+    let status: Int32
+    let requestSize: Int64
+    let responseSize: Int64
+    let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case exchangeId = "id"
+        case start, pending, duration, method, url, status
+        case requestSize = "request-size"
+        case responseSize = "response-size"
+        case error
+    }
+}
+
+struct MitmExchangeList: Codable {
+    let capturing: Bool
+    let since: String?
+    let exchanges: [MitmExchangeSummary]
+}
+
+struct MitmBody: Codable {
+    /// Base64-encoded body bytes.
+    let data: String
+    let truncated: Bool?
+    let encoding: String?
+
+    /// Decoded body as text when it is valid UTF-8, else nil.
+    var text: String? {
+        guard let bytes = Data(base64Encoded: data) else { return nil }
+        return String(data: bytes, encoding: .utf8)
+    }
+}
+
+extension JSONValue {
+    /// Re-decodes this open JSON value as a typed struct (used for
+    /// mitm.exchanges / exchange, whose results are open JSON).
+    func decoded<T: Decodable>(as type: T.Type) throws -> T {
+        let data = try JSONEncoder().encode(self)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// Pretty-printed JSON for the detail views.
+    var prettyPrinted: String {
+        guard let data = try? JSONEncoder().encode(self),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let pretty = try? JSONSerialization.data(
+                withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: pretty, encoding: .utf8) else {
+            return displayString
+        }
+        return text
+    }
+}
+
 // MARK: - Transports
 
 protocol ConcordTransport {
@@ -637,11 +865,17 @@ final class ExtensionConcordTransport: ConcordTransport {
     /// Traffic / connections go stale fast (10 s); logs / dns only
     /// change when an event arrives, so any existing file is the latest
     /// known buffer (a missing file means the tunnel never wrote one).
+    /// proxy.watch is the same: groups change rarely, and the extension
+    /// rewrites the file on every subscribe, so any existing file is
+    /// the last known table. delay.run.poll reads the run accumulator
+    /// the extension writes while a batch delay test is in flight.
     private static let streamSnapshots: [String: (file: String, maxAgeSeconds: TimeInterval?)] = [
         "traffic.watch": ("traffic", 10),
         "connection.watch": ("connections", 10),
         "log.watch": ("logs", nil),
         "dns.watch": ("dns", nil),
+        "proxy.watch": ("proxies", nil),
+        "delay.run.poll": ("delay", nil),
     ]
 
     private struct SnapshotFile<Payload: Decodable>: Decodable {
@@ -787,15 +1021,105 @@ final class ConcordClient: ObservableObject {
         try await call(method: "proxy.groups", resultType: ConcordProxyGroups.self)
     }
 
+    /// proxy.watch as the extension serves it: the extension subscribes
+    /// once at startup and writes snapshots/proxies.json on every
+    /// snapshot / delta; this reads that file (see
+    /// ExtensionConcordTransport.streamSnapshots). Use it for refreshes;
+    /// fall back to proxy.groups when the file is missing.
+    func proxyWatchSnapshot() async throws -> ConcordProxyGroups {
+        try await call(method: "proxy.watch", resultType: ConcordProxyGroups.self)
+    }
+
     func proxySelect(group: String, proxy: String) async throws -> ConcordProxySelectResult {
         try await call(method: "proxy.select", params: ConcordProxySelectParams(group: group, proxy: proxy), resultType: ConcordProxySelectResult.self)
+    }
+
+    /// The node definition as the profile wrote it (proxy.definition
+    /// returns the configured mapping as open JSON).
+    func proxyDefinition(name: String) async throws -> JSONValue {
+        struct ProxyDefinitionParams: Encodable { let name: String }
+        return try await call(method: "proxy.definition", params: ProxyDefinitionParams(name: name), resultType: ConcordProxyDefinition.self).proxy
+    }
+
+    /// Liveness / delay history per node (proxy.states). `names` nil
+    /// lists every name proxy.groups lists.
+    func proxyStates(names: [String]? = nil) async throws -> [ConcordProxyState] {
+        struct ProxyStatesParams: Encodable { let names: [String]? }
+        return try await call(method: "proxy.states", params: ProxyStatesParams(names: names), resultType: ConcordProxyStates.self).proxies
     }
 
     func delayTest(proxy: String, url: String? = nil, timeout: UInt64? = nil) async throws -> ConcordDelayResult {
         try await call(method: "delay.test", params: ConcordDelayTestParams(proxy: proxy, url: url, timeout: timeout, expected: nil), resultType: ConcordDelayResult.self)
     }
 
+    /// Starts a batch delay test (delay.run, a stream). The reply is
+    /// the subscription ({sub, snapshot}); the results arrive as events
+    /// the extension accumulates into snapshots/delay.json — poll them
+    /// with delayRunPoll(). The run ends by itself with a `done` event.
+    func delayRunStart(proxies: [String], url: String? = nil, timeout: UInt64? = nil, concurrency: UInt32? = nil) async throws -> DelayRunStart {
+        struct DelayRunParams: Encodable {
+            let proxies: [String]
+            let url: String?
+            let timeout: UInt64?
+            let concurrency: UInt32?
+        }
+        return try await call(method: "delay.run", params: DelayRunParams(proxies: proxies, url: url, timeout: timeout, concurrency: concurrency), resultType: DelayRunStart.self)
+    }
+
+    /// Polls the delay.run accumulator file (see delayRunStart). Throws
+    /// TunnelError.notRunning while the extension has not written the
+    /// file yet — the caller should keep polling briefly, not fail.
+    func delayRunPoll() async throws -> DelayRunSnapshot {
+        try await call(method: "delay.run.poll", resultType: DelayRunSnapshot.self)
+    }
+
     // MARK: Profiles / providers / rules
+
+    /// Validates a profile file (config.validate). The core only parses
+    /// the file, so the result is at most one issue: the parse error as
+    /// a plain message. `profilePath` must be absolute: the core reads
+    /// it with a plain fs::read in the extension process, where a
+    /// relative path would resolve against an undocumented working
+    /// directory (upstream crates/engine/src/ops.rs).
+    func configValidate(profilePath: String) async throws -> [ConcordIssue] {
+        struct ConfigValidateParams: Encodable { let profile: ConcordProfileRef }
+        return try await call(method: "config.validate", params: ConfigValidateParams(profile: ConcordProfileRef(path: profilePath)), resultType: ConcordConfigValidateResult.self).issues
+    }
+
+    /// Reads a profile file back as parsed JSON (config.read). Used to
+    /// fetch the `proxies` array for validate.proxies.
+    func configRead(profilePath: String) async throws -> ConcordConfigReadResult {
+        struct ConfigReadParams: Encodable {
+            let profile: ConcordProfileRef
+            let output: ConcordOutputInline
+        }
+        return try await call(method: "config.read", params: ConfigReadParams(profile: ConcordProfileRef(path: profilePath), output: ConcordOutputInline(inline: true)), resultType: ConcordConfigReadResult.self)
+    }
+
+    /// Converts a subscription file into its proxy definitions
+    /// (convert.subscription) — the node list a profile actually yields.
+    func convertSubscription(profilePath: String) async throws -> [JSONValue] {
+        struct ConvertSubscriptionParams: Encodable { let profile: ConcordProfileRef }
+        return try await call(method: "convert.subscription", params: ConvertSubscriptionParams(profile: ConcordProfileRef(path: profilePath)), resultType: ConcordProxyList.self).proxies
+    }
+
+    /// Validates proxy mappings (validate.proxies). The mappings come
+    /// from config.read's `proxies` array.
+    func validateProxies(proxies: [JSONValue]) async throws -> [ConcordIssue] {
+        struct ValidateProxiesParams: Encodable { let proxies: [JSONValue] }
+        return try await call(method: "validate.proxies", params: ValidateProxiesParams(proxies: proxies), resultType: ConcordIssueList.self).issues
+    }
+
+    /// Builds the effective config text from a profile + overlay
+    /// (profile.build) — the merged YAML the core would apply.
+    func profileBuild(profilePath: String, overlay: JSONValue = .object([:])) async throws -> String {
+        struct ProfileBuildParams: Encodable {
+            let profile: ConcordProfileRef
+            let overlay: JSONValue
+            let output: ConcordOutputInline
+        }
+        return try await call(method: "profile.build", params: ProfileBuildParams(profile: ConcordProfileRef(path: profilePath), overlay: overlay, output: ConcordOutputInline(inline: true)), resultType: ConcordTextResult.self).text ?? ""
+    }
 
     func profileInspect(path: String) async throws -> ConcordProfileInspect {
         // profile.inspect takes ProfileParams { path } in the schema.
@@ -814,6 +1138,31 @@ final class ConcordClient: ObservableObject {
 
     func ruleList() async throws -> ConcordRuleList {
         try await call(method: "rule.list", resultType: ConcordRuleList.self)
+    }
+
+    /// Dumps one rule-set file's rules as text (ruleSet.dump).
+    /// `path` is the provider file inside the core's home directory —
+    /// pass an absolute path, as for config.validate.
+    func ruleSetDump(path: String) async throws -> String {
+        struct RuleSetDumpParams: Encodable {
+            let profile: ConcordProfileRef
+            let output: ConcordOutputInline
+        }
+        return try await call(method: "ruleSet.dump", params: RuleSetDumpParams(profile: ConcordProfileRef(path: path), output: ConcordOutputInline(inline: true)), resultType: ConcordTextResult.self).text ?? ""
+    }
+
+    /// Recompiles a stored rule-set (ruleSet.compile). `url` empty
+    /// compiles the file already stored under that name.
+    func ruleSetCompile(name: String, url: String? = nil) async throws -> ConcordRuleSetInfo {
+        struct RuleSetCompileParams: Encodable { let name: String; let url: String? }
+        return try await call(method: "ruleSet.compile", params: RuleSetCompileParams(name: name, url: url), resultType: ConcordRuleSetInfo.self)
+    }
+
+    /// Updates a geo database (geo.update). `kind` is one of "MMDB",
+    /// "ASN", "GEOSITE" (upstream crates/engine/src/resources.rs).
+    func geoUpdate(kind: String) async throws {
+        struct GeoUpdateParams: Encodable { let type: String }
+        _ = try await call(method: "geo.update", params: GeoUpdateParams(type: kind), resultType: EmptyResult.self)
     }
 
     // MARK: Traffic / connections / logs / DNS
@@ -870,15 +1219,46 @@ final class ConcordClient: ObservableObject {
         _ = try await call(method: "dns.flushFakeIp", resultType: EmptyResult.self)
     }
 
+    /// Runs one DNS query through the core's resolver (dns.query).
+    /// `qtype` is a record type such as "A" or "AAAA" (default "A").
+    func dnsQuery(name: String, qtype: String? = nil) async throws -> ConcordDnsQueryResult {
+        struct DnsQueryParams: Encodable { let name: String; let qtype: String? }
+        return try await call(method: "dns.query", params: DnsQueryParams(name: name, qtype: qtype), resultType: ConcordDnsQueryResult.self)
+    }
+
+    /// Resets the resolver connections (network.reset) — drops the
+    /// core's open resolver connections so the next lookup re-dials.
+    func networkReset() async throws {
+        _ = try await call(method: "network.reset", resultType: EmptyResult.self)
+    }
+
     // MARK: Dashboard helpers
 
     func coreStats() async throws -> ConcordCoreStats {
         try await call(method: "core.stats", resultType: ConcordCoreStats.self)
     }
 
+    /// Asks the core to release cached memory (core.releaseMemory).
+    /// Worth a button in Resources: the NetworkExtension process runs
+    /// under a tight memory limit.
+    func coreReleaseMemory() async throws {
+        _ = try await call(method: "core.releaseMemory", resultType: EmptyResult.self)
+    }
+
     func probeOutboundIp(url: String? = nil) async throws -> ConcordOutboundIp {
         struct OutboundIpParams: Encodable { let url: String? }
         return try await call(method: "probe.outboundIp", params: OutboundIpParams(url: url), resultType: ConcordOutboundIp.self)
+    }
+
+    /// Checks the known services through one proxy (probe.services).
+    /// `names` are the registry names in concordProbeServiceNames.
+    func probeServices(proxy: String, names: [String] = concordProbeServiceNames, timeout: UInt64? = nil) async throws -> [ConcordServiceItem] {
+        struct ServicesParams: Encodable {
+            let proxy: String
+            let names: [String]
+            let timeout: UInt64?
+        }
+        return try await call(method: "probe.services", params: ServicesParams(proxy: proxy, names: names, timeout: timeout), resultType: ConcordServiceList.self).items
     }
 
     func lastWarnings() async throws -> [ConcordWarning] {

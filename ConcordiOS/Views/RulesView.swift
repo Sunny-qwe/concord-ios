@@ -30,19 +30,36 @@ struct RulesView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(ruleStore.ruleProviders) { provider in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(provider.name)
-                                    Text("\(provider.behavior ?? provider.format ?? "") · \(provider.count) 条")
+                            Button {
+                                Task { await ruleStore.dumpRuleSet(provider) }
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(provider.name)
+                                        Text("\(provider.behavior ?? provider.format ?? "") · \(provider.count) 条")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(provider.vehicleType)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
                                 }
-                                Spacer()
-                                Text(provider.vehicleType)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button("重新编译") {
+                                    Task { await ruleStore.compileRuleSet(provider) }
+                                }
+                                .tint(.orange)
                             }
                         }
+                    }
+                    if let message = ruleStore.providerActionMessage {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
                     }
                 }
 
@@ -107,6 +124,38 @@ struct RulesView: View {
             }
             .refreshable { await ruleStore.refresh() }
             .task { if ruleStore.rules.isEmpty { await ruleStore.refresh() } }
+            .sheet(isPresented: Binding(
+                get: { ruleStore.dumpedRuleSetName != nil },
+                set: { if !$0 { ruleStore.dumpedRuleSetName = nil } }
+            )) {
+                RuleSetDumpView(name: ruleStore.dumpedRuleSetName ?? "", text: ruleStore.dumpedRuleSetText ?? "")
+            }
+        }
+    }
+}
+
+// Dumped rules of one rule-set provider (ruleSet.dump).
+struct RuleSetDumpView: View {
+    let name: String
+    let text: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(text.isEmpty ? "该规则集没有可显示的规则" : text)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .navigationTitle(name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
         }
     }
 }

@@ -29,7 +29,7 @@ import os
 //      The socketpair / inherited-fd Option A (concord_ios_adopt_fd) is
 //      NOT used: the channel is the supported path.
 //   5. Configure the tunnel interface (NEPacketTunnelNetworkSettings)
-//      from tunnel.json / defaults, subscribe to the four live streams,
+//      from tunnel.json / defaults, subscribe to the five live streams,
 //      start the packet pump.
 //
 // Packet pump (Option B, no fd involved):
@@ -54,12 +54,14 @@ import os
 //     overlay merged in from the shared mitm.json (see below).
 //   * Extension -> app (live data): the extension subscribes once, at
 //     startup, to traffic.watch / connection.watch / log.watch /
-//     dns.watch and writes the latest snapshot to the App Group
-//     container as JSON files the app polls:
+//     dns.watch / proxy.watch and writes the latest snapshot to the App
+//     Group container as JSON files the app polls:
 //       snapshots/traffic.json      {"updatedAt": <ms>, "data": <Traffic>}
 //       snapshots/connections.json  {"updatedAt": <ms>, "data": {"connections": [...]}}
 //       snapshots/logs.json         {"updatedAt": <ms>, "data": {"entries": [...]}}
 //       snapshots/dns.json          {"updatedAt": <ms>, "data": {"entries": [...]}}
+//       snapshots/proxies.json      {"updatedAt": <ms>, "data": <ProxyGroups>}
+//       snapshots/delay.json        {"updatedAt": <ms>, "data": {"runId": N, "done": bool, "results": [...]}}
 //     Stream events arrive as `$/event` notifications
 //     {"sub": N, "seq": M, "data": [...]}; traffic events are full
 //     Traffic values, connection events are ConnectionDelta
@@ -82,7 +84,13 @@ import os
 //   "ca-fingerprint": ...} — the RawConfig keys of
 // crates/mitm/src/config.rs); this extension merges it as
 // {"mitm": <mitm.json>} into every config.apply that has no overlay of
-// its own, including its own startup apply.
+// its own, including its own startup apply. The DNS choices travel the
+// same way: the app writes dns.json (DnsConfig keys, kebab-case —
+// "enhanced-mode", "fake-ip-range", upstream crates/config/src/dns.rs)
+// and the extension merges it as {"dns": <dns.json>} alongside mitm.
+// General settings travel as general.json (ConfigPatchParams wire keys,
+// snake_case) and are sent as config.patch once at startup, after
+// engine.start, so saved settings take effect on the next VPN start.
 //
 // Memory: the extension runs under the NetworkExtension memory limit
 // (historically ~15 MB, reported ~50 MB more recently). The pump reuses
@@ -107,6 +115,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let appGroupID = "group.com.sunny-qwe.concord-ios"
     private let configFileName = "config.yaml"
     private let mitmFileName = "mitm.json"
+    private let dnsFileName = "dns.json"
+    private let generalSettingsFileName = "general.json"
     private let tunnelSettingsFileName = "tunnel.json"
 
     // The tunnel interface address. tun.start takes CIDR prefixes
@@ -151,6 +161,27 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var dnsBuffer: [[String: Any]] = []
     private let maxBufferedEntries = 500
 
+    // proxy.watch table: the latest ProxyGroups, kept as the group's
+    // order plus the group / node arrays so ProxyDelta events (whole
+    // changed groups / nodes + removed names) can be applied in place
+    // by name while preserving order.
+    private var proxyOrder: [String] = []
+    private var proxyGroups: [[String: Any]] = []
+    private var proxyNodes: [[String: Any]] = []
+
+    // delay.run accumulator: one batch delay test at a time. The app
+    // starts a run with delay.run; its Result/Done events accumulate
+    // here and are written to snapshots/delay.json for the app to poll.
+    // A new run replaces the accumulator; the old stream's late events
+    // are ignored (its sub no longer matches) and the run ends by
+    // itself with its Done event.
+    private struct DelayRunAccumulator {
+        let sub: Int
+        var results: [[String: Any]] = []
+        var done: Bool = false
+    }
+    private var delayRun: DelayRunAccumulator?
+
     // Packet pump.
     private var readBuffer = [UInt8](repeating: 0, count: 65535)
     private var drainTimer: DispatchSourceTimer?
@@ -167,12 +198,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private enum StreamKind: String {
-        case traffic, connection, log, dns
+        case traffic, connection, log, dns, proxy
     }
 
     private enum TunnelSetupError: LocalizedError {
         case noAppGroup
         case noConfig
+        case tunDisabled
         case coreStartFailed
         case sessionFailed
         case channelFailed
@@ -184,6 +216,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 return "App Group 容器不可用，请检查 entitlements 与 App Group 配置"
             case .noConfig:
                 return "尚未导入订阅：请先在主 App 里导入一个订阅（config.yaml），再启动 VPN"
+            case .tunDisabled:
+                return "TUN 已在设置中关闭：iOS 上 TUN 是唯一的数据面，请在主 App 设置里重新启用 TUN 后再启动"
             case .coreStartFailed:
                 return "Concord 核心启动失败（concord_ios_start 返回非 0）"
             case .sessionFailed:
@@ -273,40 +307,85 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         ])
 
         // config.apply: the profile path is absolute (home is the App
-        // Group container); the MITM overlay comes from mitm.json when
-        // the user configured MITM in the app (see header comment).
+        // Group container); the MITM + DNS overlays come from mitm.json
+        // / dns.json when the user configured them in the app (see
+        // header comment).
         var applyParams: [String: Any] = ["profile": ["path": configURL.path]]
+        var overlay: [String: Any] = [:]
         if let mitm = readSharedJSON(name: mitmFileName) {
-            applyParams["overlay"] = ["mitm": mitm]
+            overlay["mitm"] = mitm
+        }
+        if let dns = readSharedJSON(name: dnsFileName) {
+            overlay["dns"] = dns
+        }
+        if !overlay.isEmpty {
+            applyParams["overlay"] = overlay
         }
         _ = try await sendCoreRequest(method: "config.apply", params: applyParams)
         _ = try await sendCoreRequest(method: "engine.start", params: [:])
 
+        // General settings saved in the app (general.json) are patched
+        // in once at startup, so they take effect on the next VPN start
+        // without the user tapping "apply". A failure here must not fail
+        // the tunnel: the settings can still be applied live later.
+        if let general = readSharedJSON(name: generalSettingsFileName), !general.isEmpty {
+            do {
+                _ = try await sendCoreRequest(method: "config.patch", params: general)
+            } catch {
+                Self.log.error("startup config.patch failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
         // Option B packet channel (NOT the socketpair / inherited fd).
+        // TUN must be enabled first: on iOS it is the only data plane,
+        // and a disabled TUN fails the tunnel before any channel exists.
+        let tun = readTunnelSettings(container: container)
+        guard tun.enabled else {
+            throw TunnelSetupError.tunDisabled
+        }
         let handle = concord_ios_packet_channel_open()
         guard handle != 0 else {
             throw TunnelSetupError.channelFailed
         }
         channelHandle = handle
 
-        let tun = readTunnelSettings(container: container)
+        var addresses = ["\(tunnelAddress)/32"]
+        if tun.ipv6 {
+            // The core parses each address as a CIDR prefix and sorts
+            // IPv4 into inet4_address, IPv6 into inet6_address
+            // (upstream crates/engine/src/tun.rs vpn_options); the
+            // default below is the core's own DEFAULT_INET6.
+            addresses.append(tun.ipv6Address)
+        }
         _ = try await sendCoreRequest(method: "tun.start", params: [
             "source": ["kind": "channel", "handle": handle],
             "stack": tun.stack,
             "mtu": tun.mtu,
-            "address": ["\(tunnelAddress)/32"],
+            "address": addresses,
             "dns": tun.dns,
         ])
 
         // Tunnel interface: the system owns routing; the core must not
         // install routes (upstream: Os::Other -> NullBackend on iOS).
-        // IPv4 only for now: no IPv6 settings are configured, so IPv6
-        // traffic bypasses the tunnel until IPv6 is added (known gap).
+        // IPv6 is configured from tunnel.json when the user enabled it
+        // in Settings: the same address the core got in tun.start, plus
+        // the IPv6 default route, so IPv6 traffic enters the tunnel
+        // instead of bypassing it.
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: tunnelAddress)
         settings.mtu = NSNumber(value: tun.mtu)
         let ipv4 = NEIPv4Settings(addresses: [tunnelAddress], subnetMasks: ["255.255.0.0"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
         settings.ipv4Settings = ipv4
+        if tun.ipv6 {
+            let parts = tun.ipv6Address.split(separator: "/")
+            if parts.count == 2, let prefixLength = Int(parts[1]) {
+                let ipv6 = NEIPv6Settings(
+                    addresses: [String(parts[0])],
+                    networkPrefixLengths: [NSNumber(value: prefixLength)])
+                ipv6.includedRoutes = [NEIPv6Route.default()]
+                settings.ipv6Settings = ipv6
+            }
+        }
         settings.dnsSettings = NEDNSSettings(servers: tun.dns)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             self.setTunnelNetworkSettings(settings) { error in
@@ -361,6 +440,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         pending.removeAll()
         subscriptions.removeAll()
+        delayRun = nil
     }
 
     override func sleep(completionHandler: @escaping () -> Void) {
@@ -384,12 +464,48 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             completionHandler?(nil)
             return
         }
-        // config.apply with no overlay gets the MITM overlay merged in
-        // from the shared mitm.json (see header comment). A request that
-        // already carries an overlay is forwarded untouched.
-        if (request["method"] as? String) == "config.apply" && request["overlay"] == nil,
-           let mitm = readSharedJSON(name: mitmFileName) {
-            request["overlay"] = ["mitm": mitm]
+        // config.apply with no overlay gets the MITM + DNS overlays
+        // merged in from the shared mitm.json / dns.json (see header
+        // comment). A request that already carries an overlay is
+        // forwarded untouched.
+        if (request["method"] as? String) == "config.apply" && request["overlay"] == nil {
+            var overlay: [String: Any] = [:]
+            if let mitm = readSharedJSON(name: mitmFileName) {
+                overlay["mitm"] = mitm
+            }
+            if let dns = readSharedJSON(name: dnsFileName) {
+                overlay["dns"] = dns
+            }
+            if !overlay.isEmpty {
+                request["overlay"] = overlay
+            }
+        }
+        // delay.run is a stream, not a plain request: forward it, then
+        // register the accumulator on the sub it returns so its Result /
+        // Done events land in snapshots/delay.json for the app to poll
+        // (see handleStreamEvent). The app gets the normal subscribe
+        // reply back.
+        if (request["method"] as? String) == "delay.run" {
+            Task {
+                do {
+                    let response = try await self.forwardAppRequest(request, appID: appID)
+                    if let object = try? JSONSerialization.jsonObject(with: response) as? [String: Any],
+                       let result = object["result"] as? [String: Any],
+                       let sub = (result["sub"] as? NSNumber)?.intValue {
+                        self.coreQueue.async {
+                            // A new run supersedes any previous one; the
+                            // old stream's late events no longer match
+                            // the accumulator's sub and are ignored.
+                            self.delayRun = DelayRunAccumulator(sub: sub)
+                            self.writeDelaySnapshot()
+                        }
+                    }
+                    completionHandler?(response)
+                } catch {
+                    completionHandler?(self.errorEnvelope(id: appID, message: error.localizedDescription))
+                }
+            }
+            return
         }
         Task {
             do {
@@ -527,6 +643,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         registerStream(result: log, kind: .log)
         let dns = try await sendCoreRequest(method: "dns.watch", params: ["credit": 8])
         registerStream(result: dns, kind: .dns)
+        // proxy.watch snapshot is the current ProxyGroups; its events
+        // are ProxyDelta {order?, groups, nodes, removed}.
+        let proxy = try await sendCoreRequest(method: "proxy.watch", params: ["credit": 8])
+        registerStream(result: proxy, kind: .proxy)
     }
 
     private func registerStream(result: Any, kind: StreamKind) {
@@ -558,6 +678,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 case .connection: params = ["counters": true, "credit": 8]
                 case .log: params = ["credit": 8]
                 case .dns: params = ["credit": 8]
+                case .proxy: params = ["credit": 8]
                 }
                 let result = try await self.sendCoreRequest(method: "\(kind.rawValue).watch", params: params)
                 self.coreQueue.async { self.registerStream(result: result, kind: kind) }
@@ -569,8 +690,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private func handleStreamEvent(params: [String: Any]?) {
         guard let params,
-              let sub = (params["sub"] as? NSNumber)?.intValue,
-              let kind = subscriptions[sub] else {
+              let sub = (params["sub"] as? NSNumber)?.intValue else {
+            return
+        }
+        // delay.run events arrive on their own sub, separate from the
+        // five startup subscriptions (see handleAppMessage).
+        if delayRun?.sub == sub {
+            guard let items = params["data"] as? [Any] else { return }
+            handleDelayRunEvent(items: items, sub: sub)
+            return
+        }
+        guard let kind = subscriptions[sub] else {
             return
         }
         if params["resync"] as? Bool == true {
@@ -609,10 +739,94 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
             trimBuffer(&dnsBuffer)
             writeSnapshot(name: "dns", data: ["entries": dnsBuffer])
+        case .proxy:
+            // Each event is a ProxyDelta {order?, groups, nodes, removed}.
+            for item in items {
+                guard let delta = item as? [String: Any] else { continue }
+                applyProxyDelta(delta)
+            }
+            writeProxySnapshot()
         }
         // Refill one unit of credit per batch consumed; without this
         // the server pump stops after the initial credit.
         sendCoreNotification(method: "$/credit", params: ["sub": sub, "n": 1])
+    }
+
+    private func handleDelayRunEvent(items: [Any], sub: Int) {
+        // Runs on coreQueue. Events are {type: "result", name, url,
+        // value} and a final {type: "done"}; dropping the stream aborts
+        // the remaining tests, so the app simply stops polling.
+        guard var run = delayRun, run.sub == sub else { return }
+        for item in items {
+            guard let event = item as? [String: Any],
+                  let type = event["type"] as? String else { continue }
+            switch type {
+            case "result":
+                run.results.append(event)
+            case "done":
+                run.done = true
+            default:
+                break
+            }
+        }
+        delayRun = run
+        writeDelaySnapshot()
+        // Refill one unit of credit per batch consumed, like the other
+        // streams; without this the server pump stops after the
+        // initial credit.
+        sendCoreNotification(method: "$/credit", params: ["sub": sub, "n": 1])
+    }
+
+    private func writeDelaySnapshot() {
+        guard let run = delayRun else { return }
+        writeSnapshot(name: "delay", data: [
+            "runId": run.sub,
+            "done": run.done,
+            "results": run.results,
+        ])
+    }
+
+    private func applyProxyDelta(_ delta: [String: Any]) {
+        // Whole changed groups / nodes replace the entry of the same
+        // name (appended when new); removed names drop out of the
+        // tables and the order list.
+        if let order = delta["order"] as? [String] {
+            proxyOrder = order
+        }
+        if let groups = delta["groups"] as? [[String: Any]] {
+            for group in groups {
+                upsertNamed(&proxyGroups, entry: group)
+            }
+        }
+        if let nodes = delta["nodes"] as? [[String: Any]] {
+            for node in nodes {
+                upsertNamed(&proxyNodes, entry: node)
+            }
+        }
+        if let removed = delta["removed"] as? [String] {
+            for name in removed {
+                proxyGroups.removeAll { ($0["name"] as? String) == name }
+                proxyNodes.removeAll { ($0["name"] as? String) == name }
+                proxyOrder.removeAll { $0 == name }
+            }
+        }
+    }
+
+    private func upsertNamed(_ table: inout [[String: Any]], entry: [String: Any]) {
+        guard let name = entry["name"] as? String else { return }
+        if let index = table.firstIndex(where: { ($0["name"] as? String) == name }) {
+            table[index] = entry
+        } else {
+            table.append(entry)
+        }
+    }
+
+    private func writeProxySnapshot() {
+        writeSnapshot(name: "proxies", data: [
+            "order": proxyOrder,
+            "groups": proxyGroups,
+            "nodes": proxyNodes,
+        ])
     }
 
     private func applyStreamSnapshot(kind: StreamKind, snapshot: Any) {
@@ -632,6 +846,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         case .log, .dns:
             // log/dns.watch have no snapshot; nothing to apply.
             break
+        case .proxy:
+            guard let snapshot = snapshot as? [String: Any] else { return }
+            proxyOrder = snapshot["order"] as? [String] ?? []
+            proxyGroups = snapshot["groups"] as? [[String: Any]] ?? []
+            proxyNodes = snapshot["nodes"] as? [[String: Any]] ?? []
+            writeProxySnapshot()
         }
     }
 
@@ -765,21 +985,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // MARK: - Shared files (App Group)
 
     private struct TunnelSettings {
+        let enabled: Bool
         let stack: String
         let mtu: Int
         let dns: [String]
+        // IPv6 (Settings > 通用): disabled by default. When enabled, the
+        // core gets the address below in tun.start and the interface gets
+        // the same address plus the IPv6 default route. The default is
+        // the core's own DEFAULT_INET6 (upstream crates/engine/src/tun.rs).
+        let ipv6: Bool
+        let ipv6Address: String
     }
 
     private func readTunnelSettings(container: URL) -> TunnelSettings {
         let file = container.appendingPathComponent(tunnelSettingsFileName)
         if let data = try? Data(contentsOf: file),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let enabled = json["enabled"] as? Bool ?? true
             let stack = json["stack"] as? String ?? "gvisor"
             let mtu = (json["mtu"] as? NSNumber)?.intValue ?? 1500
             let dns = json["dns"] as? [String] ?? ["223.5.5.5", "8.8.8.8"]
-            return TunnelSettings(stack: stack, mtu: mtu, dns: dns)
+            let ipv6 = json["ipv6"] as? Bool ?? false
+            let ipv6Address = json["ipv6-address"] as? String ?? "fdfe:dcba:9876::1/126"
+            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address)
         }
-        return TunnelSettings(stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"])
+        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126")
     }
 
     private func readSharedJSON(name: String) -> [String: Any]? {

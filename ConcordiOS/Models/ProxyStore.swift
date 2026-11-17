@@ -60,7 +60,17 @@ final class ProxyStore: ObservableObject {
     @MainActor
     func refresh() async {
         do {
-            let result = try await client.proxyGroups()
+            // proxy.watch is the live table: the extension subscribes
+            // once at startup and rewrites snapshots/proxies.json on
+            // every change, so this is fresher than a one-shot
+            // proxy.groups call. Fall back to proxy.groups when the
+            // snapshot file is missing (tunnel never subscribed yet).
+            let result: ConcordProxyGroups
+            do {
+                result = try await client.proxyWatchSnapshot()
+            } catch {
+                result = try await client.proxyGroups()
+            }
             let nodeTypes = Dictionary(uniqueKeysWithValues: result.nodes.map { ($0.name, $0) })
             groups = result.groups.filter { !$0.hidden }.map { g in
                 ProxyGroup(
@@ -94,11 +104,53 @@ final class ProxyStore: ObservableObject {
         }
     }
 
+    /// Batch latency test for every node. In live mode this uses
+    /// delay.run: one stream tests all nodes at once and the extension
+    /// accumulates the results into snapshots/delay.json, which is
+    /// polled here until the run reports `done` (up to ~60 s). If the
+    /// run cannot start, or the poll never completes, it falls back to
+    /// sequential delay.test calls — the same results, just slower.
     @MainActor
     func testLatency() async {
         guard !isTesting else { return }
         isTesting = true
         defer { isTesting = false }
+        if client.mode == .live {
+            let names = allNodes.filter { $0.type != "DIRECT" }.map { $0.name }
+            if !names.isEmpty {
+                do {
+                    _ = try await client.delayRunStart(proxies: names)
+                    var polls = 0
+                    while polls < 120, !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        polls += 1
+                        do {
+                            let snapshot = try await client.delayRunPoll()
+                            for result in snapshot.results {
+                                latencies[result.name] = result.value
+                            }
+                            applyLatencies()
+                            if snapshot.done {
+                                lastError = nil
+                                return
+                            }
+                        } catch is TunnelError {
+                            // The extension has not written the run file
+                            // yet — keep polling, do not fail.
+                            continue
+                        }
+                    }
+                    // The run is still going (or its file never appeared):
+                    // keep the partial results and let the next test
+                    // start a fresh run.
+                    lastError = nil
+                    return
+                } catch {
+                    // delay.run failed to start — fall through to the
+                    // sequential delay.test loop below.
+                }
+            }
+        }
         for group in groups {
             for node in group.nodes where node.type != "DIRECT" {
                 do {
@@ -143,6 +195,34 @@ final class ProxyStore: ObservableObject {
             }
             return g
         }
+    }
+
+    /// Full node detail for the detail sheet: the configured definition
+    /// (proxy.definition, open JSON) and the live state (proxy.states:
+    /// alive / UDP / delay history). Either may be absent — the sheet
+    /// shows what it got and says what it did not.
+    struct NodeDetail {
+        var definition: JSONValue?
+        var state: ConcordProxyState?
+        var error: String?
+    }
+
+    @MainActor
+    func fetchNodeDetail(name: String) async -> NodeDetail {
+        var detail = NodeDetail()
+        do {
+            detail.definition = try await client.proxyDefinition(name: name)
+        } catch {
+            detail.error = "读取节点配置失败：\(error.localizedDescription)"
+        }
+        do {
+            detail.state = try await client.proxyStates(names: [name]).first
+        } catch {
+            if detail.error == nil {
+                detail.error = "读取节点状态失败：\(error.localizedDescription)"
+            }
+        }
+        return detail
     }
 
     // Engine lifecycle.

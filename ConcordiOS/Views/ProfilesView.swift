@@ -15,6 +15,27 @@ struct ProfilesView: View {
     @State private var showImporter = false
     @State private var previewProfile: Profile?
     @State private var isUpdating = false
+    @State private var validationMessage: String?
+
+    private func validateActiveProfile() async {
+        switch await profileStore.validateActiveProfile() {
+        case .success(let issues):
+            profileStore.validationIssues = issues
+            validationMessage = issues.isEmpty ? "配置校验通过" : "配置校验发现 \(issues.count) 个问题"
+        case .failure(let error):
+            validationMessage = "校验失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func validateActiveProfileProxies() async {
+        switch await profileStore.validateActiveProfileProxies() {
+        case .success(let issues):
+            profileStore.validationIssues = issues
+            validationMessage = issues.isEmpty ? "节点配置全部有效" : "节点校验发现 \(issues.count) 个问题"
+        case .failure(let error):
+            validationMessage = "校验失败：\(error.localizedDescription)"
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -70,6 +91,20 @@ struct ProfilesView: View {
                             Text("匹配规则：\(inspect.matchRules.joined(separator: ", "))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                        }
+                        Button("校验配置文件（config.validate）") {
+                            Task { await validateActiveProfile() }
+                        }
+                        Button("校验节点配置（validate.proxies）") {
+                            Task { await validateActiveProfileProxies() }
+                        }
+                        if !profileStore.validationIssues.isEmpty {
+                            ForEach(profileStore.validationIssues, id: \.message) { issue in
+                                Text(issue.message).font(.caption).foregroundStyle(.orange)
+                            }
+                        }
+                        if let message = validationMessage {
+                            Text(message).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -183,19 +218,80 @@ struct AddProfileView: View {
     }
 }
 
-// Profile preview (FlClash profiles/preview.dart): shows the raw YAML.
+// Profile preview (FlClash profiles/preview.dart): three tabs — the raw
+// YAML, the node list the profile yields (convert.subscription) and
+// the merged effective config (profile.build).
 struct ProfilePreviewView: View {
     let profile: Profile
+    @EnvironmentObject private var profileStore: ProfileStore
     @Environment(\.dismiss) private var dismiss
     @State private var text = "正在读取…"
+    @State private var tab = PreviewTab.yaml
+    @State private var convertedProxies: [JSONValue]?
+    @State private var builtText: String?
+    @State private var previewError: String?
+
+    enum PreviewTab: String, CaseIterable, Identifiable {
+        case yaml = "原始 YAML"
+        case nodes = "节点列表"
+        case built = "生效配置"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                Text(text)
-                    .font(.system(.caption, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
+            VStack(spacing: 0) {
+                Picker("预览", selection: $tab) {
+                    ForEach(PreviewTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding()
+                switch tab {
+                case .yaml:
+                    ScrollView {
+                        Text(text)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                    }
+                case .nodes:
+                    List {
+                        if let error = previewError {
+                            Text(error).font(.caption).foregroundStyle(.red)
+                        } else if let proxies = convertedProxies {
+                            if proxies.isEmpty {
+                                Text("该订阅没有解析出节点").font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                ForEach(Array(proxies.enumerated()), id: \.offset) { _, proxy in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(proxy.objectValue?["name"]?.stringValue ?? "—").font(.body)
+                                        Text("\(proxy.objectValue?["type"]?.stringValue ?? "—") · \(proxy.objectValue?["server"]?.stringValue ?? "—")")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        } else {
+                            ProgressView()
+                        }
+                    }
+                    .listStyle(.plain)
+                case .built:
+                    ScrollView {
+                        if let error = previewError {
+                            Text(error).font(.caption).foregroundStyle(.red).padding()
+                        } else if let built = builtText {
+                            Text(built)
+                                .font(.system(.caption, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding()
+                        } else {
+                            ProgressView().padding()
+                        }
+                    }
+                }
             }
             .navigationTitle(profile.name)
             .navigationBarTitleDisplayMode(.inline)
@@ -213,6 +309,33 @@ struct ProfilePreviewView: View {
                     text = String(data: data, encoding: .utf8) ?? "无法以 UTF-8 解码"
                 } else {
                     text = "# \(profile.name)\n# 示例数据：该示例订阅没有本地文件。\n# 真实订阅导入后，这里会显示完整的 YAML 内容。\n# 订阅链接：\(profile.urlString ?? "—")\n"
+                }
+            }
+            .onChange(of: tab) { _, newTab in
+                Task {
+                    switch newTab {
+                    case .yaml: break
+                    case .nodes:
+                        if convertedProxies == nil {
+                            switch await profileStore.convertProfile(profile) {
+                            case .success(let proxies):
+                                convertedProxies = proxies
+                                previewError = nil
+                            case .failure(let error):
+                                previewError = error.localizedDescription
+                            }
+                        }
+                    case .built:
+                        if builtText == nil {
+                            switch await profileStore.buildProfileText(profile) {
+                            case .success(let built):
+                                builtText = built
+                                previewError = nil
+                            case .failure(let error):
+                                previewError = error.localizedDescription
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -2,19 +2,35 @@ import Foundation
 import Combine
 
 // MARK: - Config / subscription store
-// Shares config with the PacketTunnel extension via the App Group container.
-// TODO: the extension reads this file; the exact format Concord expects on
-// iOS (YAML path vs. in-memory config) is still to be defined.
+// The App Group container is the single place the app and the
+// PacketTunnel extension share files:
+//   config.yaml          the active profile YAML (written by ProfileStore)
+//   profiles/<uuid>.yaml one file per imported profile (ProfileStore)
+//   mitm.json            MITM choices, merged into config.apply's overlay
+//   dns.json             DNS choices, merged into config.apply's overlay
+//   tunnel.json          tunnel parameters (stack, MTU, DNS, IPv6)
+//   general.json         general settings, patched at tunnel start
+//   snapshots/*.json     live snapshots the extension writes for the app
+//                        (traffic / connections / logs / dns / proxies /
+//                        delay — see PacketTunnelProvider.swift)
+//
+// Profile download / import / switching lives in ProfileStore, which
+// owns the ConcordClient: importing only writes a file, switching
+// validates it and applies it via config.apply. This store only owns
+// the shared paths, so nothing here pretends to talk to the core.
 
 final class ConfigStore: ObservableObject {
-    static let appGroupID = "group.com.sunny-qwe.concord-ios" // TODO: replace with your real App Group
+    static let appGroupID = "group.com.sunny-qwe.concord-ios"
     static let configFileName = "config.yaml"
     static let mitmFileName = "mitm.json"
+    static let dnsFileName = "dns.json"
     static let tunnelSettingsFileName = "tunnel.json"
+    static let generalSettingsFileName = "general.json"
 
     /// Snapshot files the PacketTunnel extension writes for the app's
     /// live transport (see PacketTunnelProvider.swift):
     ///   snapshots/traffic.json | connections.json | logs.json | dns.json
+    ///   | proxies.json | delay.json
     /// Each file is {"updatedAt": <epoch ms>, "data": <payload>}.
     static func snapshotURL(name: String) -> URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
@@ -22,64 +38,28 @@ final class ConfigStore: ObservableObject {
             .appendingPathComponent("\(name).json")
     }
 
-    /// Shared MITM choices (mitm.json) and tunnel parameters
-    /// (tunnel.json) the extension reads. Both are plain JSON files in
-    /// the App Group container; the extension merges mitm.json into
-    /// config.apply's overlay and reads tunnel.json for tun.start /
-    /// the tunnel interface settings.
+    /// Shared files the extension reads (mitm.json, dns.json,
+    /// tunnel.json, general.json). Plain JSON in the App Group
+    /// container; the extension merges mitm.json / dns.json into
+    /// config.apply's overlay and reads tunnel.json / general.json
+    /// for tun.start / the tunnel interface settings.
     static func sharedFileURL(name: String) -> URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)?
             .appendingPathComponent(name)
     }
 
-    @Published var subscriptionURLString = ""
-    @Published var statusMessage = "尚未导入配置"
-    @Published var lastUpdated: Date?
-
-    private var sharedContainerURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupID)
+    /// Absolute path of a file inside the App Group container. The
+    /// core reads profile files with a plain fs::read in the extension
+    /// process (upstream crates/engine/src/ops.rs), where a relative
+    /// path would resolve against an undocumented working directory —
+    /// so every profile-ref call (config.validate, config.read,
+    /// profile.inspect, convert.subscription, profile.build,
+    /// ruleSet.dump) passes an absolute path built here.
+    static func absolutePath(relative path: String) -> String? {
+        sharedFileURL(name: path)?.path
     }
 
-    var sharedConfigURL: URL? {
-        sharedContainerURL?.appendingPathComponent(Self.configFileName)
-    }
-
-    /// Import a Clash/mihomo YAML subscription from a URL.
-    /// TODO: validate the YAML, apply it via Concord config.apply, and
-    /// surface Concord's config.warnings (unsupported nodes, etc.).
-    func importSubscription(from urlString: String) async {
-        guard let url = URL(string: urlString) else {
-            statusMessage = "订阅链接无效"
-            return
-        }
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            try saveConfig(data)
-            statusMessage = "已导入订阅（未验证，未接通 Concord）"
-            lastUpdated = Date()
-        } catch {
-            statusMessage = "导入失败：\(error.localizedDescription)"
-        }
-    }
-
-    /// Import a local Clash/mihomo YAML file.
-    func importLocalFile(data: Data) {
-        do {
-            try saveConfig(data)
-            statusMessage = "已导入本地配置（未验证，未接通 Concord）"
-            lastUpdated = Date()
-        } catch {
-            statusMessage = "导入失败：\(error.localizedDescription)"
-        }
-    }
-
-    private func saveConfig(_ data: Data) throws {
-        guard let url = sharedConfigURL else {
-            throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "App Group 容器不可用，请检查 entitlements 与 App Group 配置"
-            ])
-        }
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try data.write(to: url, options: .atomic)
+    static func absolutePath(url: URL) -> String {
+        url.path
     }
 }

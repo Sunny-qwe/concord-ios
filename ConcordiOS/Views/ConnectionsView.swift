@@ -79,6 +79,9 @@ struct ConnectionsView: View {
                                 Text(option.rawValue).tag(option)
                             }
                         }
+                        Button("重置解析器连接（network.reset）") {
+                            Task { await connectionStore.resetNetwork() }
+                        }
                         Button("断开全部连接", role: .destructive) {
                             Task { await connectionStore.closeAll() }
                         }
@@ -133,7 +136,10 @@ struct ConnectionDetailView: View {
                             dismiss()
                         }
                     }
-                    Text("断开调用 connection.close。")
+                    NavigationLink("MITM 拦截记录（mitm.exchanges）") {
+                        MitmView(initialConnectionId: connection.id)
+                    }
+                    Text("断开调用 connection.close；拦截记录调用 mitm.exchanges，需要 MITM 已开启并正在捕获。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

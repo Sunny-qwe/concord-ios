@@ -110,9 +110,24 @@ final class ConnectionStore: ObservableObject {
 
     @MainActor
     func closeAll() async {
-        for connection in connections {
-            try? await client.connectionClose(id: connection.id)
+        do {
+            try await client.connectionCloseAll()
+            connections.removeAll()
+        } catch {
+            lastError = error.localizedDescription
         }
-        connections.removeAll()
+    }
+
+    /// Resets the core's resolver connections (network.reset) — the
+    /// next DNS lookup re-dials. Useful when connections look stuck
+    /// after a network change.
+    @MainActor
+    func resetNetwork() async {
+        do {
+            try await client.networkReset()
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 }

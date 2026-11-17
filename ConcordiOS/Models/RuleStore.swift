@@ -14,6 +14,12 @@ final class RuleStore: ObservableObject {
     @Published var typeFilter = "全部"
     @Published var lastError: String?
     @Published var lastUpdated: Date?
+    /// Result message of a provider action (update / dump / compile /
+    /// geo update), shown on the Providers page.
+    @Published var providerActionMessage: String?
+    /// Dumped rules of one rule-set provider (ruleSet.dump).
+    @Published var dumpedRuleSetText: String?
+    @Published var dumpedRuleSetName: String?
 
     let client: ConcordClient
 
@@ -47,6 +53,49 @@ final class RuleStore: ObservableObject {
             rules = try await client.ruleList().rules
             providers = try await client.providerList().providers
             lastUpdated = Date()
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Dumps one rule provider's rules as text (ruleSet.dump). The
+    /// provider path is relative to the core's home directory, so it
+    /// is resolved to an absolute path first (see ConfigStore).
+    @MainActor
+    func dumpRuleSet(_ provider: ConcordProviderInfo) async {
+        guard let absolutePath = ConfigStore.absolutePath(relative: provider.path) else {
+            lastError = "App Group 容器不可用"
+            return
+        }
+        do {
+            dumpedRuleSetText = try await client.ruleSetDump(path: absolutePath)
+            dumpedRuleSetName = provider.name
+            providerActionMessage = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Recompiles a stored rule-set (ruleSet.compile).
+    @MainActor
+    func compileRuleSet(_ provider: ConcordProviderInfo) async {
+        do {
+            let info = try await client.ruleSetCompile(name: provider.name)
+            providerActionMessage = "已重新编译 \(provider.name)：\(info.behavior) / \(info.format)"
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Updates one geo database (geo.update). `kind` is "MMDB"
+    /// (GeoIP), "ASN" or "GEOSITE".
+    @MainActor
+    func geoUpdate(kind: String) async {
+        do {
+            try await client.geoUpdate(kind: kind)
+            providerActionMessage = "地理数据库 \(kind) 更新已开始（后台进行）"
             lastError = nil
         } catch {
             lastError = error.localizedDescription

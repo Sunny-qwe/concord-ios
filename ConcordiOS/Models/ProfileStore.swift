@@ -58,6 +58,19 @@ final class ProfileStore: ObservableObject {
     /// through saveDecryptedAsProfile, an explicit user action.
     @Published var decryptResult: String?
     @Published var decryptMessage: String?
+    /// Outbounds of the last profile.outbounds call.
+    @Published var outbounds: ConcordProfileOutbounds?
+    @Published var outboundsMessage: String?
+    @Published var clearEffectMessage: String?
+    /// Share links of the last convert.encodeLinks call.
+    @Published var encodedLinks: [String] = []
+    @Published var encodeMessage: String?
+    /// Decoded proxies of the last convert.decodeLinks call: one
+    /// entry per input line, empty when the line is not a link.
+    @Published var decodedResults: [[JSONValue]] = []
+    /// All decoded proxies flattened (for the save-as-profile action).
+    @Published var decodedProxies: [JSONValue] = []
+    @Published var decodeMessage: String?
 
     let client: ConcordClient
     private let storageKey = "ConcordiOS.profiles.v1"
@@ -470,5 +483,158 @@ final class ProfileStore: ObservableObject {
         addFromFile(name: name, data: Data(text.utf8))
         decryptResult = nil
         decryptMessage = "已保存为新订阅「\(name)」"
+    }
+
+    // MARK: - Remaining APIs, batch 2 (profile.outbounds /
+    // clearEffect, convert.encodeLinks / decodeLinks)
+
+    /// Lists the outbounds (proxies + proxy-groups) a profile
+    /// declares (profile.outbounds). The core runs in the extension,
+    /// so the tunnel must be running in live mode.
+    @MainActor
+    func loadOutbounds(_ profile: Profile) async {
+        guard let absolutePath = absolutePath(for: profile) else {
+            outboundsMessage = "该订阅没有本地文件"
+            return
+        }
+        if client.mode == .live, !TunnelManager.shared.isRunning {
+            outboundsMessage = "需先启动 VPN：出站列表由扩展内的核心读取"
+            return
+        }
+        do {
+            outbounds = try await client.profileOutbounds(profilePath: absolutePath)
+            outboundsMessage = nil
+            lastError = nil
+        } catch {
+            outbounds = nil
+            outboundsMessage = "读取出站列表失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Clears the downloaded provider files of one core-side profile
+    /// (profile.clearEffect). `profileId` is the numeric id the host
+    /// assigned that profile — the app never assigns numeric ids and
+    /// the core keeps its own provider downloads under `providers/`,
+    /// so on iOS this usually finds nothing to clear. The call
+    /// itself is the real upstream method.
+    @MainActor
+    func clearEffect(profileId: Int64) async {
+        if client.mode == .live, !TunnelManager.shared.isRunning {
+            clearEffectMessage = "需先启动 VPN：清除操作由扩展内的核心执行"
+            return
+        }
+        do {
+            try await client.profileClearEffect(profileId: profileId)
+            clearEffectMessage = "已清除订阅 #\(profileId) 的已下载提供方文件（若无此订阅则无事可做）"
+            lastError = nil
+        } catch {
+            clearEffectMessage = "清除失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Encodes the profile's proxies into share links
+    /// (convert.encodeLinks). The links are built from the effective
+    /// config's `proxies` list (config.read), so the profile must be
+    /// readable by the core.
+    @MainActor
+    func encodeLinks(_ profile: Profile) async {
+        guard let absolutePath = absolutePath(for: profile) else {
+            encodeMessage = "该订阅没有本地文件"
+            return
+        }
+        if client.mode == .live, !TunnelManager.shared.isRunning {
+            encodeMessage = "需先启动 VPN：分享链接由扩展内的核心生成"
+            return
+        }
+        do {
+            let read = try await client.configRead(profilePath: absolutePath)
+            let proxies = read.config.objectValue?["proxies"]?.arrayValue ?? []
+            encodedLinks = try await client.convertEncodeLinks(proxies: proxies)
+            encodeMessage = encodedLinks.isEmpty ? "该订阅没有可分享的节点" : nil
+            lastError = nil
+        } catch {
+            encodedLinks = []
+            encodeMessage = "生成分享链接失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Decodes pasted share links into proxy definitions
+    /// (convert.decodeLinks). The pasted lines are only sent to the
+    /// core for decoding — nowhere else. Decoded nodes can be saved
+    /// as a new local profile via `saveDecodedAsProfile`.
+    @MainActor
+    func decodeLinks(_ lines: [String]) async {
+        let trimmed = lines.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !trimmed.isEmpty else {
+            decodeMessage = "请先粘贴至少一行分享链接"
+            return
+        }
+        if client.mode == .live, !TunnelManager.shared.isRunning {
+            decodeMessage = "需先启动 VPN：链接解析由扩展内的核心执行"
+            return
+        }
+        do {
+            decodedResults = try await client.convertDecodeLinks(lines: trimmed)
+            decodedProxies = decodedResults.flatMap { $0 }
+            decodeMessage = decodedProxies.isEmpty ? "没有解析出任何节点（请检查链接格式）" : nil
+            lastError = nil
+        } catch {
+            decodedResults = []
+            decodedProxies = []
+            decodeMessage = "解析链接失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Saves the decoded proxies as a new local profile YAML file
+    /// (through the same sanity check as any other import).
+    @MainActor
+    func saveDecodedAsProfile(name: String) {
+        guard !decodedProxies.isEmpty else { return }
+        let yaml = "proxies:\n" + decodedProxies.map { "  - " + jsonValueToYaml($0, indent: 4) }.joined(separator: "\n") + "\n"
+        let fileName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "导入的节点" : name.trimmingCharacters(in: .whitespacesAndNewlines)
+        addFromFile(name: fileName, data: Data(yaml.utf8))
+        if lastError == nil {
+            decodeMessage = "已保存为新订阅「\(fileName)」"
+        }
+    }
+
+    /// Minimal JSON → YAML rendering for one decoded proxy mapping.
+    /// Nested mappings are indented; arrays become `- item` lines.
+    /// Values are quoted when they need it (strings containing
+    /// YAML-significant characters), numbers/bools are bare.
+    private func jsonValueToYaml(_ value: JSONValue, indent: Int) -> String {
+        let pad = String(repeating: " ", count: indent)
+        switch value {
+        case .null:
+            return "null"
+        case .bool(let b):
+            return b ? "true" : "false"
+        case .int(let i):
+            return "\(i)"
+        case .double(let d):
+            return "\(d)"
+        case .array(let items):
+            if items.isEmpty { return "[]" }
+            return "\n" + items.map { "\(pad)- \(jsonValueToYaml($0, indent: indent + 2))" }.joined(separator: "\n")
+        case .string(let s):
+            return yamlQuoted(s)
+        case .object(let dict):
+            if dict.isEmpty { return "{}" }
+            return "\n" + dict.sorted(by: { $0.key < $1.key }).map { key, val in
+                "\(pad)\(key): \(jsonValueToYaml(val, indent: indent + 2))"
+            }.joined(separator: "\n")
+        }
+    }
+
+    private func yamlQuoted(_ string: String) -> String {
+        let needsQuotes = string.isEmpty
+            || string.contains(": ") || string.contains(" #")
+            || string.hasPrefix("-") || string.hasPrefix("#")
+            || string.hasPrefix("[") || string.hasPrefix("{")
+            || string.contains("\n")
+            || Double(string) != nil
+            || string == "true" || string == "false" || string == "null" || string == "~"
+        guard needsQuotes else { return string }
+        return "\"" + string.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 }

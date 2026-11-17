@@ -415,6 +415,8 @@ struct DnsQueriesView: View {
 struct ProvidersView: View {
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var client: ConcordClient
+    @State private var sideLoadName = ""
+    @State private var sideLoadText = ""
 
     var body: some View {
         List {
@@ -448,6 +450,14 @@ struct ProvidersView: View {
                     }
                 }
                 .swipeActions {
+                    Button("详情") {
+                        Task { await ruleStore.loadProviderDetail(provider) }
+                    }
+                    .tint(.blue)
+                    Button("健康检查") {
+                        Task { await ruleStore.healthCheckProvider(provider) }
+                    }
+                    .tint(.green)
                     Button("更新") {
                         Task {
                             do {
@@ -460,6 +470,23 @@ struct ProvidersView: View {
                     }
                     .tint(.orange)
                 }
+            }
+            Section("本地载入提供方（provider.sideLoad）") {
+                TextField("提供方名称", text: $sideLoadName)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                TextEditor(text: $sideLoadText)
+                    .frame(minHeight: 100)
+                    .font(.system(.caption, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("载入") {
+                    Task { await ruleStore.sideLoadProvider(name: sideLoadName, data: sideLoadText) }
+                }
+                .disabled(sideLoadName.trimmingCharacters(in: .whitespaces).isEmpty || sideLoadText.isEmpty)
+                Text("把提供方文件内容（YAML / MRS / 文本）直接贴进来，核心会把它存到该名称下。只处理本地内容，不联网拉取。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             if let message = ruleStore.providerActionMessage {
                 Text(message)
@@ -496,6 +523,14 @@ struct ProvidersView: View {
             }
         }
         .refreshable { await ruleStore.refresh() }
+        .sheet(isPresented: Binding(
+            get: { ruleStore.providerDetail != nil },
+            set: { if !$0 { ruleStore.providerDetail = nil } }
+        )) {
+            if let detail = ruleStore.providerDetail {
+                ProviderDetailView(provider: detail)
+            }
+        }
     }
 }
 

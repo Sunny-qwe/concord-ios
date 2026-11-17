@@ -29,6 +29,12 @@ final class RuleStore: ObservableObject {
     @Published var routeCheckResult: ConcordRouteCheckResult?
     @Published var routeCheckLabels: [String] = []
     @Published var routeCheckMessage: String?
+    /// One provider's full detail (provider.get), incl.
+    /// `subscriptionInfo` when it is a subscription.
+    @Published var providerDetail: ConcordProviderInfo?
+    /// The latest routing stamp (route.watch).
+    @Published var routeStamp: ConcordRouteStamp?
+    @Published var routeStampMessage: String?
 
     let client: ConcordClient
 
@@ -152,6 +158,74 @@ final class RuleStore: ObservableObject {
         } catch {
             routeCheckMessage = nil
             lastError = error.localizedDescription
+        }
+    }
+
+    /// Fetches one provider's full detail (provider.get). Unlike
+    /// provider.list, the result carries `subscriptionInfo` when the
+    /// provider is a subscription.
+    @MainActor
+    func loadProviderDetail(_ provider: ConcordProviderInfo) async {
+        do {
+            providerDetail = try await client.providerGet(name: provider.name)
+            providerActionMessage = nil
+            lastError = nil
+        } catch {
+            providerDetail = nil
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Loads a provider from inline content (provider.sideLoad).
+    /// `data` is the provider file's text (YAML / MRS / text),
+    /// stored by the core under `name`. Local content only — the
+    /// method itself does no network fetch.
+    @MainActor
+    func sideLoadProvider(name: String, data: String) async {
+        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else {
+            providerActionMessage = "请先输入提供方名称"
+            return
+        }
+        guard !data.isEmpty else {
+            providerActionMessage = "请先粘贴提供方内容"
+            return
+        }
+        do {
+            try await client.providerSideLoad(name: name, data: data)
+            providerActionMessage = "已载入提供方 \(name)（本地内容）"
+            lastError = nil
+            await refresh()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Triggers a provider's health check (provider.healthCheck).
+    /// The check runs in the background; the call only reports
+    /// whether it could be started.
+    @MainActor
+    func healthCheckProvider(_ provider: ConcordProviderInfo) async {
+        do {
+            try await client.providerHealthCheck(name: provider.name)
+            providerActionMessage = "已触发 \(provider.name) 的健康检查（后台进行，稍后刷新列表查看）"
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Reads the latest routing stamp (route.watch). Latest-policy:
+    /// the extension rewrites the snapshot only when the stamp
+    /// moves, so any file is the last known stamp.
+    @MainActor
+    func refreshRouteStamp() async {
+        do {
+            routeStamp = try await client.routeSnapshot()
+            routeStampMessage = nil
+            lastError = nil
+        } catch {
+            routeStamp = nil
+            routeStampMessage = "读取路由状态失败：\(error.localizedDescription)"
         }
     }
 }

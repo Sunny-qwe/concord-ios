@@ -54,6 +54,19 @@ struct DashboardView: View {
         }
     }
 
+    /// engine.state values (upstream crates/proto EngineStatus):
+    /// created / initialized / configured / running / failed.
+    private func engineStateLabel(_ state: String) -> String {
+        switch state {
+        case "created": return "已创建"
+        case "initialized": return "已初始化"
+        case "configured": return "已配置"
+        case "running": return "运行中"
+        case "failed": return "启动失败"
+        default: return state
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -201,11 +214,35 @@ struct DashboardView: View {
                     }
 
                     // Service status (FlClash ServiceStatusCard)
+                    // The engine line shows the real engine.state from
+                    // the core (not the inferred proxyStore.isRunning)
+                    // once a snapshot has been read; before that it
+                    // falls back to the inferred value.
                     VStack(alignment: .leading, spacing: 6) {
                         Text("服务状态")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        LabeledContent("引擎", value: proxyStore.isRunning ? "已启动" : "已停止")
+                        if let engine = trafficStore.engineStatus {
+                            LabeledContent("引擎", value: engineStateLabel(engine.state))
+                            if let kind = engine.kind, !kind.isEmpty {
+                                LabeledContent("失败原因", value: kind)
+                            }
+                            if let faults = engine.faults, !faults.isEmpty {
+                                ForEach(faults, id: \.service) { fault in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("启动失败：\(fault.service)").font(.subheadline)
+                                        Text("\(fault.reason)：\(fault.message)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        } else {
+                            LabeledContent("引擎", value: proxyStore.isRunning ? "已启动" : "已停止")
+                            if let error = trafficStore.engineStatusError {
+                                Text(error).font(.caption).foregroundStyle(.red)
+                            }
+                        }
                         LabeledContent("VPN 隧道", value: tunnelStatusText)
                         LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
                         LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
@@ -241,7 +278,9 @@ struct DashboardView: View {
                 await proxyStore.refresh()
                 await connectionStore.refresh()
                 await trafficStore.refresh()
+                await trafficStore.refreshEngineStatus()
             }
+            .task { await trafficStore.refreshEngineStatus() }
         }
     }
 }

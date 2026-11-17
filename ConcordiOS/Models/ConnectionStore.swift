@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import SystemConfiguration
 
 // MARK: - Connections store (FlClash: Requests / connections page)
 // Backed by Concord connection.watch (stream) / connection.close.
@@ -56,6 +57,8 @@ final class ConnectionStore: ObservableObject {
     @Published var showOnlyActive = false
     @Published var lastError: String?
     @Published var lastUpdated: Date?
+    /// The result message of the last network.update call.
+    @Published var networkUpdateMessage: String?
 
     let client: ConcordClient
 
@@ -128,6 +131,40 @@ final class ConnectionStore: ObservableObject {
             lastError = nil
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    /// Tells the core the system network changed (network.update).
+    /// Reads the current system DNS servers via SystemConfiguration
+    /// and sends them as `dnsServers`; `interfaceChanged` means the
+    /// default network changed, so connections over the old one are
+    /// closed. The extension does not yet notify the core
+    /// automatically on network change — this is the manual trigger.
+    @MainActor
+    func networkUpdate(interfaceChanged: Bool = false) async {
+        do {
+            try await client.networkUpdate(dnsServers: Self.systemDnsServers(), interfaceChanged: interfaceChanged)
+            networkUpdateMessage = interfaceChanged
+                ? "已通知核心：网络接口已切换，旧连接已关闭"
+                : "已通知核心：DNS 服务器已更新"
+            lastError = nil
+        } catch {
+            networkUpdateMessage = nil
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// The DNS servers iOS currently uses (from SystemConfiguration's
+    /// global DNS state), as socket addresses. Returns nil when they
+    /// cannot be read (nil = "unchanged" to the core).
+    static func systemDnsServers() -> [String]? {
+        guard let store = SCDynamicStoreCreate(nil, "ConcordiOS" as CFString, nil, nil),
+              let state = SCDynamicStoreCopyValue(store, "State:/Network/Global/DNS" as CFString) as? [String: Any],
+              let servers = state["ServerAddresses"] as? [String], !servers.isEmpty else {
+            return nil
+        }
+        return servers.map { server in
+            server.contains(":") ? "[\(server)]:53" : "\(server):53"
         }
     }
 }

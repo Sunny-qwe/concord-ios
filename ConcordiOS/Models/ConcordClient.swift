@@ -466,6 +466,13 @@ struct ConcordDnsSnapshot: Decodable {
     let entries: [ConcordDnsEntry]
 }
 
+struct ConcordSubscriptionInfo: Codable {
+    let upload: Int64
+    let download: Int64
+    let total: Int64
+    let expire: Int64
+}
+
 struct ConcordProviderInfo: Codable, Identifiable {
     var id: String { name }
     let name: String
@@ -478,6 +485,12 @@ struct ConcordProviderInfo: Codable, Identifiable {
     let expectedStatus: String?
     let behavior: String?
     let format: String?
+    /// Subscription traffic info (provider.get only; provider.list
+    /// omits it). Nil on cores that do not report it. No default on
+    /// purpose: a `let` with a default is excluded from the
+    /// memberwise initializer on this toolchain (see run #69), so
+    /// every construction passes it explicitly.
+    let subscriptionInfo: ConcordSubscriptionInfo?
 }
 
 struct ConcordProviderList: Codable {
@@ -740,7 +753,7 @@ struct ConcordDnsQueryResult: Codable {
 /// defaults to "" here instead of being Optional.
 struct ConcordRouteHit: Codable {
     let host: String
-    let proxy: String = ""
+    var proxy: String = ""
     let exit: String
 }
 
@@ -768,6 +781,108 @@ struct ConcordServiceItem: Codable, Identifiable {
 
 struct ConcordServiceList: Codable {
     let items: [ConcordServiceItem]
+}
+
+// MARK: - Remaining APIs, batch 2 (profile.outbounds / clearEffect,
+// convert.encodeLinks / decodeLinks, provider.get / sideLoad /
+// healthCheck, route.watch / events.watch / engine.state,
+// network.update)
+
+/// One outbound (proxy or proxy-group) a profile declares
+/// (profile.outbounds result).
+struct ConcordOutboundRef: Codable {
+    let name: String
+    let type: String
+}
+
+struct ConcordProfileOutbounds: Codable {
+    let proxies: [ConcordOutboundRef]
+    let proxyGroups: [ConcordOutboundRef]
+}
+
+/// Encoded share links (convert.encodeLinks result).
+struct ConcordLinkList: Codable {
+    let links: [String]
+}
+
+/// Decoded links (convert.decodeLinks result): one entry per input
+/// line, empty when the line is not a link.
+struct ConcordDecodedLinks: Codable {
+    let results: [[JSONValue]]
+}
+
+/// The live routing stamp (route.watch snapshot + events).
+/// `epoch`/`version` move whenever the routing table changes;
+/// `running` says whether the listeners were running when `epoch`
+/// last moved. No default on `running` on purpose: the core always
+/// serializes it (serde `default`, no skip), and a `let` with a
+/// default is excluded from the memberwise initializer on this
+/// toolchain (see run #69).
+struct ConcordRouteStamp: Codable {
+    let epoch: UInt64
+    let version: UInt64
+    let running: Bool
+}
+
+/// One core event (events.watch). A `oneOf` in the schema — decoded
+/// here as one struct with the fields of every variant; only the
+/// fields of the event's `type` are set.
+struct ConcordCoreEvent: Codable {
+    let type: String
+    let kind: String?
+    let name: String?
+    let phase: String?
+    let error: String?
+    let url: String?
+    let value: Int32?
+    let message: String?
+    let seq: Int64?
+    let origin: String?
+    let change: JSONValue?
+
+    /// One-line summary for the events feed.
+    var summary: String {
+        switch type {
+        case "resourceUpdate":
+            let base = "提供方更新：\(name ?? "—")（\(phase ?? "—")）"
+            if let error, !error.isEmpty { return base + "：\(error)" }
+            return base
+        case "dialerLoop":
+            return "拨号循环：\(name ?? "—")"
+        case "delay":
+            return "测速：\(name ?? "—") \(url ?? "") \(value.map { "\($0) ms" } ?? "—")"
+        case "fatal":
+            return "致命错误：\(message ?? "—")"
+        case "stateChanged":
+            return "状态变化 #\(seq.map { "\($0)" } ?? "—")（来自 \(origin ?? "—")）"
+        default:
+            return type
+        }
+    }
+}
+
+/// The events.watch snapshot file: the buffered CoreEvent items.
+/// Codable (not just Decodable): the sample transport wraps it in
+/// AnyEncodable, which requires Encodable.
+struct ConcordEventSnapshot: Codable {
+    let entries: [ConcordCoreEvent]
+}
+
+/// One service that did not start (engine.state faults).
+struct ConcordServiceFault: Codable {
+    let service: String
+    let address: String?
+    let reason: String
+    let message: String
+}
+
+/// The engine status (engine.state snapshot + events). `state` is
+/// one of created / initialized / configured / running / failed;
+/// `kind` says why it is `failed`.
+struct ConcordEngineStatus: Codable {
+    let state: String
+    let kind: String?
+    let faults: [ConcordServiceFault]?
 }
 
 struct ConcordRuleSetInfo: Codable {
@@ -879,7 +994,7 @@ struct MockConcordTransport: ConcordTransport {
 
 /// Live transport: talks to the real core in the PacketTunnel extension
 /// process (see the header comment). Unary methods are one JSON-RPC
-/// request per sendProviderMessage; the four stream methods read the
+/// request per sendProviderMessage; the stream methods read the
 /// snapshot files the extension writes to the App Group container.
 ///
 /// The extension owns the stream subscriptions, so the app never sends
@@ -913,6 +1028,10 @@ final class ExtensionConcordTransport: ConcordTransport {
     /// rewrites the file on every subscribe, so any existing file is
     /// the last known table. delay.run.poll reads the run accumulator
     /// the extension writes while a batch delay test is in flight.
+    /// route.watch / engine.state are latest-policy streams too — the
+    /// file only changes when the stamp/state moves, so any existing
+    /// file is the last known value. events.watch accumulates into a
+    /// buffer like log/dns.watch.
     private static let streamSnapshots: [String: (file: String, maxAgeSeconds: TimeInterval?)] = [
         "traffic.watch": ("traffic", 10),
         "connection.watch": ("connections", 10),
@@ -920,6 +1039,9 @@ final class ExtensionConcordTransport: ConcordTransport {
         "dns.watch": ("dns", nil),
         "proxy.watch": ("proxies", nil),
         "delay.run.poll": ("delay", nil),
+        "route.watch": ("route", nil),
+        "events.watch": ("events", nil),
+        "engine.state": ("engine", nil),
     ]
 
     private struct SnapshotFile<Payload: Decodable>: Decodable {
@@ -1210,6 +1332,85 @@ final class ConcordClient: ObservableObject {
         return result.text ?? ""
     }
 
+    // MARK: - Remaining APIs, batch 2 (profile.outbounds /
+    // clearEffect, convert.encodeLinks / decodeLinks, provider.get /
+    // sideLoad / healthCheck, network.update)
+
+    /// Lists the outbounds (proxies + proxy-groups) a profile
+    /// declares (profile.outbounds). Same ProfileParams shape as
+    /// profile.inspect: an absolute path inside the core's home.
+    func profileOutbounds(profilePath: String) async throws -> ConcordProfileOutbounds {
+        struct ProfileOutboundsParams: Encodable { let profile: ConcordProfileRef }
+        return try await call(method: "profile.outbounds", params: ProfileOutboundsParams(profile: ConcordProfileRef(path: profilePath)), resultType: ConcordProfileOutbounds.self)
+    }
+
+    /// Clears the downloaded provider files of one core-side profile
+    /// (profile.clearEffect). `profileId` is the numeric id the host
+    /// assigned that profile (must be positive); the core deletes
+    /// `profiles/providers/<id>` — a missing directory is not an
+    /// error. On iOS the app never assigns numeric profile ids and
+    /// the core keeps its own provider downloads under `providers/`,
+    /// so this usually finds nothing to clear; the call itself is
+    /// still the real upstream method.
+    func profileClearEffect(profileId: Int64) async throws {
+        struct ClearEffectParams: Encodable { let profileId: Int64 }
+        _ = try await call(method: "profile.clearEffect", params: ClearEffectParams(profileId: profileId), resultType: EmptyResult.self)
+    }
+
+    /// Encodes proxy definitions into share links
+    /// (convert.encodeLinks). `proxies` are the open proxy mappings
+    /// (as in config.read's `proxies` list).
+    func convertEncodeLinks(proxies: [JSONValue]) async throws -> [String] {
+        struct EncodeLinksParams: Encodable { let proxies: [JSONValue] }
+        return try await call(method: "convert.encodeLinks", params: EncodeLinksParams(proxies: proxies), resultType: ConcordLinkList.self).links
+    }
+
+    /// Decodes pasted share links into proxy definitions
+    /// (convert.decodeLinks). One result entry per input line, empty
+    /// when the line is not a link. The lines are only sent to the
+    /// core for decoding — nowhere else.
+    func convertDecodeLinks(lines: [String]) async throws -> [[JSONValue]] {
+        struct DecodeLinksParams: Encodable { let lines: [String] }
+        return try await call(method: "convert.decodeLinks", params: DecodeLinksParams(lines: lines), resultType: ConcordDecodedLinks.self).results
+    }
+
+    /// Fetches one provider's full detail (provider.get). Unlike
+    /// provider.list, the result carries `subscriptionInfo` when the
+    /// provider is a subscription.
+    func providerGet(name: String) async throws -> ConcordProviderInfo {
+        struct ProviderNameParams: Encodable { let name: String }
+        return try await call(method: "provider.get", params: ProviderNameParams(name: name), resultType: ConcordProviderInfo.self)
+    }
+
+    /// Loads a provider from inline content (provider.sideLoad).
+    /// `data` is the provider file's text (YAML / MRS / text),
+    /// stored by the core under `name`. Local content only — the
+    /// method itself does no network fetch.
+    func providerSideLoad(name: String, data: String) async throws {
+        struct ProviderSideLoadParams: Encodable { let name: String; let data: String }
+        _ = try await call(method: "provider.sideLoad", params: ProviderSideLoadParams(name: name, data: data), resultType: EmptyResult.self)
+    }
+
+    /// Triggers a provider's health check (provider.healthCheck).
+    /// The check runs in the background; the call only reports
+    /// whether it could be started (upstream
+    /// crates/api/src/control.rs provider_health_check).
+    func providerHealthCheck(name: String) async throws {
+        struct ProviderNameParams: Encodable { let name: String }
+        _ = try await call(method: "provider.healthCheck", params: ProviderNameParams(name: name), resultType: EmptyResult.self)
+    }
+
+    /// Tells the core the system network changed (network.update).
+    /// `dnsServers` are the socket addresses of the resolvers the
+    /// system now uses (nil = unchanged); `interfaceChanged` means
+    /// the default network changed, so connections over the old one
+    /// are closed (upstream crates/api/src/control.rs
+    /// network_update).
+    func networkUpdate(dnsServers: [String]? = nil, interfaceChanged: Bool = false) async throws {
+        struct NetworkUpdateParams: Encodable { let dnsServers: [String]?; let interfaceChanged: Bool }
+        _ = try await call(method: "network.update", params: NetworkUpdateParams(dnsServers: dnsServers, interfaceChanged: interfaceChanged), resultType: EmptyResult.self)
+    }
+
     /// Builds the effective config text from a profile + overlay
     /// (profile.build) — the merged YAML the core would apply.
     func profileBuild(profilePath: String, overlay: JSONValue = .object([:])) async throws -> String {
@@ -1313,6 +1514,29 @@ final class ConcordClient: ObservableObject {
 
     func dnsClearCache() async throws {
         _ = try await call(method: "dns.clearCache", resultType: EmptyResult.self)
+    }
+
+    // MARK: Route / events / engine streams (batch 2)
+    // Like the other streams these read the snapshot files the
+    // extension writes (route.json / events.json / engine.json).
+
+    /// The latest routing stamp (route.watch). Latest-policy: the
+    /// extension rewrites the file only when the stamp moves.
+    func routeSnapshot() async throws -> ConcordRouteStamp {
+        try await call(method: "route.watch", resultType: ConcordRouteStamp.self)
+    }
+
+    /// The buffered core events (events.watch). The extension
+    /// accumulates events into the snapshot file (cap 500) because
+    /// the app only reads the file when the Events tab is opened.
+    func eventEntries() async throws -> [ConcordCoreEvent] {
+        try await call(method: "events.watch", resultType: ConcordEventSnapshot.self).entries
+    }
+
+    /// The live engine status (engine.state). Latest-policy: the
+    /// file is rewritten whenever the state or its faults change.
+    func engineSnapshot() async throws -> ConcordEngineStatus {
+        try await call(method: "engine.state", resultType: ConcordEngineStatus.self)
     }
 
     func dnsFlushFakeIp() async throws {

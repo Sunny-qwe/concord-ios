@@ -35,13 +35,33 @@ struct ConnectionsView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
                 .padding(.bottom, 4)
+                if let message = connectionStore.networkUpdateMessage {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .padding(.bottom, 4)
+                }
+                if let error = connectionStore.lastError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .padding(.bottom, 4)
+                }
 
                 if connectionStore.filtered.isEmpty {
                     ContentUnavailableView("暂无活动连接", systemImage: "arrow.left.arrow.right", description: Text("开启 VPN 后，这里的实时连接会按 host / 规则 / 代理列出"))
                 } else {
                     List(connectionStore.filtered) { connection in
                         Button { detail = connection } label: {
-                            HStack {
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(ConcordFormat.time(Int64(connection.start.timeIntervalSince1970 * 1000)))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 64, alignment: .leading)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(connection.host ?? connection.destination)
                                         .font(.body)
@@ -81,6 +101,12 @@ struct ConnectionsView: View {
                         }
                         Button("重置解析器连接（network.reset）") {
                             Task { await connectionStore.resetNetwork() }
+                        }
+                        Button("通知核心网络已变化（network.update）") {
+                            Task { await connectionStore.networkUpdate(interfaceChanged: false) }
+                        }
+                        Button("通知核心网络接口已切换（network.update）") {
+                            Task { await connectionStore.networkUpdate(interfaceChanged: true) }
                         }
                         Button("断开全部连接", role: .destructive) {
                             Task { await connectionStore.closeAll() }

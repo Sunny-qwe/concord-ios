@@ -22,6 +22,7 @@ struct ConcordiOSApp: App {
     @StateObject private var settingsStore: SettingsStore
     @StateObject private var dnsStore: DnsStore
     @StateObject private var mitmStore: MitmStore
+    @StateObject private var eventStore: EventStore
 
     init() {
         let client = ConcordClient()
@@ -35,6 +36,7 @@ struct ConcordiOSApp: App {
         _settingsStore = StateObject(wrappedValue: SettingsStore(client: client))
         _dnsStore = StateObject(wrappedValue: DnsStore(client: client))
         _mitmStore = StateObject(wrappedValue: MitmStore(client: client))
+        _eventStore = StateObject(wrappedValue: EventStore(client: client))
     }
 
     var body: some Scene {
@@ -51,6 +53,7 @@ struct ConcordiOSApp: App {
                 .environmentObject(settingsStore)
                 .environmentObject(dnsStore)
                 .environmentObject(mitmStore)
+                .environmentObject(eventStore)
                 .environmentObject(TunnelManager.shared)
         }
     }

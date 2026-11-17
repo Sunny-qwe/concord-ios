@@ -23,6 +23,11 @@ final class TrafficStore: ObservableObject {
     @Published var services: [ConcordServiceItem] = []
     @Published var isProbingServices = false
     @Published var servicesError: String?
+    /// The live engine status (engine.state): created / initialized /
+    /// configured / running / failed, plus any services that failed
+    /// to start. Read from the extension's engine.json snapshot.
+    @Published var engineStatus: ConcordEngineStatus?
+    @Published var engineStatusError: String?
     @Published var lastError: String?
 
     let client: ConcordClient
@@ -93,6 +98,20 @@ final class TrafficStore: ObservableObject {
             coreMemoryBytes = try await client.coreStats().rss
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    /// Reads the live engine status (engine.state). Latest-policy:
+    /// the extension rewrites the snapshot whenever the state or
+    /// its faults change.
+    @MainActor
+    func refreshEngineStatus() async {
+        do {
+            engineStatus = try await client.engineSnapshot()
+            engineStatusError = nil
+        } catch {
+            engineStatus = nil
+            engineStatusError = error.localizedDescription
         }
     }
 

@@ -125,6 +125,35 @@ enum ConcordSampleData {
             result = AnyEncodable(ConcordOutboundIp(url: "https://api.ip.sb/ip", body: "203.0.113.42", delay: 87, chains: ["示例节点-香港-01"], error: nil, epoch: 1, version: 1))
         case "core.lastWarnings":
             result = AnyEncodable(WarningsResult(warnings: []))
+        case "profile.outbounds":
+            result = AnyEncodable(ConcordProfileOutbounds(
+                proxies: [ConcordOutboundRef(name: "示例节点-香港-01", type: "vless"), ConcordOutboundRef(name: "示例节点-日本-02", type: "trojan")],
+                proxyGroups: [ConcordOutboundRef(name: "PROXY", type: "select"), ConcordOutboundRef(name: "auto", type: "url-test")]))
+        case "profile.clearEffect":
+            result = AnyEncodable(EmptyResultJSON())
+        case "convert.encodeLinks":
+            result = AnyEncodable(ConcordLinkList(links: ["vless://示例@hk.example.com:443#示例节点-香港-01", "trojan://示例@jp.example.com:443#示例节点-日本-02"]))
+        case "convert.decodeLinks":
+            result = AnyEncodable(ConcordDecodedLinks(results: [
+                [.object(["name": .string("示例节点-香港-01"), "type": .string("vless"), "server": .string("hk.example.com"), "port": .int(443)])],
+                [],
+            ]))
+        case "provider.get":
+            result = AnyEncodable(ConcordProviderInfo(
+                name: "airport", type: "proxy", vehicleType: "http", count: 42, path: "airport.yaml", updatedAt: 1763430000,
+                testUrl: "http://www.gstatic.com/generate_204", expectedStatus: "204", behavior: nil, format: nil,
+                subscriptionInfo: ConcordSubscriptionInfo(upload: 123_456_789, download: 9_876_543_210, total: 107_374_182_400, expire: 1796064000)))
+        case "provider.sideLoad", "provider.healthCheck", "network.update":
+            result = AnyEncodable(EmptyResultJSON())
+        case "route.watch":
+            result = AnyEncodable(ConcordRouteStamp(epoch: 5, version: 2, running: true))
+        case "events.watch":
+            result = AnyEncodable(ConcordEventSnapshot(entries: [
+                ConcordCoreEvent(type: "resourceUpdate", kind: "proxyProvider", name: "airport", phase: "updated", error: nil, url: nil, value: nil, message: nil, seq: nil, origin: nil, change: nil),
+                ConcordCoreEvent(type: "delay", kind: nil, name: "示例节点-香港-01", phase: nil, error: nil, url: "https://www.google.com/generate_204", value: 87, message: nil, seq: nil, origin: nil, change: nil),
+            ]))
+        case "engine.state":
+            result = AnyEncodable(ConcordEngineStatus(state: "running", kind: nil, faults: nil))
         default:
             result = AnyEncodable(EmptyResultJSON())
         }
@@ -204,7 +233,7 @@ enum ConcordSampleData {
     static var sampleServices: [ConcordServiceItem] {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         return [
-            ConcordServiceItem(name: "google", status: "available", region: "US", delay: 132, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: [ConcordRouteHit(host: "www.google.com:443", proxy: "示例节点-香港-01", exit: "\"示例节点-香港-01\" Shadowsocks 203.0.113.42")]),
+            ConcordServiceItem(name: "google", status: "available", region: "US", delay: 132, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: [ConcordRouteHit(host: "www.google.com:443", exit: "\"示例节点-香港-01\" Shadowsocks 203.0.113.42")]),
             ConcordServiceItem(name: "github", status: "available", region: "", delay: 98, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil),
             ConcordServiceItem(name: "youtube", status: "restricted", region: "HK", delay: 210, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil),
             ConcordServiceItem(name: "netflix", status: "blocked", region: nil, delay: nil, chains: nil, checkedAt: now, epoch: 1, version: 1, hits: nil),
@@ -306,9 +335,9 @@ enum ConcordSampleData {
 
     static var sampleProviders: [ConcordProviderInfo] {
         [
-            ConcordProviderInfo(name: "示例订阅", type: "proxy", vehicleType: "HTTP", count: 4, path: "providers/example.yaml", updatedAt: 1_764_000_000, testUrl: "http://www.gstatic.com/generate_204", expectedStatus: nil, behavior: nil, format: nil),
-            ConcordProviderInfo(name: "GeoSite-CN", type: "rule", vehicleType: "File", count: 1280, path: "rules/geosite-cn.yaml", updatedAt: 1_764_000_000, testUrl: nil, expectedStatus: nil, behavior: "domain", format: "yaml"),
-            ConcordProviderInfo(name: "GeoIP-CN", type: "rule", vehicleType: "File", count: 512, path: "rules/geoip-cn.mrs", updatedAt: 1_764_000_000, testUrl: nil, expectedStatus: nil, behavior: "ipcidr", format: "mrs"),
+            ConcordProviderInfo(name: "示例订阅", type: "proxy", vehicleType: "HTTP", count: 4, path: "providers/example.yaml", updatedAt: 1_764_000_000, testUrl: "http://www.gstatic.com/generate_204", expectedStatus: nil, behavior: nil, format: nil, subscriptionInfo: nil),
+            ConcordProviderInfo(name: "GeoSite-CN", type: "rule", vehicleType: "File", count: 1280, path: "rules/geosite-cn.yaml", updatedAt: 1_764_000_000, testUrl: nil, expectedStatus: nil, behavior: "domain", format: "yaml", subscriptionInfo: nil),
+            ConcordProviderInfo(name: "GeoIP-CN", type: "rule", vehicleType: "File", count: 512, path: "rules/geoip-cn.mrs", updatedAt: 1_764_000_000, testUrl: nil, expectedStatus: nil, behavior: "ipcidr", format: "mrs", subscriptionInfo: nil),
         ]
     }
 
@@ -374,6 +403,15 @@ enum ConcordFormat {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
         return f.string(from: date)
+    }
+
+    /// Parses an RFC 3339 timestamp (mitm exchange `start`, upstream
+    /// crates/mitm/src/capture.rs ExchangeSummary) and formats it
+    /// exactly like `time(_:)` ("HH:mm:ss", local time); falls back
+    /// to the raw string when it cannot be parsed.
+    static func time(rfc3339: String) -> String {
+        guard let date = ISO8601DateFormatter().date(from: rfc3339) else { return rfc3339 }
+        return time(Int64(date.timeIntervalSince1970 * 1000))
     }
 
     static func duration(seconds: Int64) -> String {

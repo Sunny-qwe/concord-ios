@@ -69,6 +69,14 @@ struct RulesView: View {
                             }
                             .buttonStyle(.plain)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button("详情") {
+                                    Task { await ruleStore.loadProviderDetail(provider) }
+                                }
+                                .tint(.blue)
+                                Button("健康检查") {
+                                    Task { await ruleStore.healthCheckProvider(provider) }
+                                }
+                                .tint(.green)
                                 Button("重新编译") {
                                     Task { await ruleStore.compileRuleSet(provider) }
                                 }
@@ -172,6 +180,27 @@ struct RulesView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("路由状态（route.watch）") {
+                    if let stamp = ruleStore.routeStamp {
+                        LabeledContent("epoch", value: "\(stamp.epoch)")
+                        LabeledContent("version", value: "\(stamp.version)")
+                        LabeledContent("监听器", value: stamp.running ? "运行中" : "未运行")
+                    } else {
+                        Text("尚未读取路由状态")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("刷新路由状态") {
+                        Task { await ruleStore.refreshRouteStamp() }
+                    }
+                    if let message = ruleStore.routeStampMessage {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("路由表每次变化时 epoch / version 都会推进；监听器状态表示路由监听是否在运行。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("生效规则（rule.list，按匹配顺序）") {
                     Picker("类型", selection: $ruleStore.typeFilter) {
                         ForEach(ruleStore.ruleTypes, id: \.self) { type in
@@ -232,12 +261,23 @@ struct RulesView: View {
                 }
             }
             .refreshable { await ruleStore.refresh() }
-            .task { if ruleStore.rules.isEmpty { await ruleStore.refresh() } }
+            .task {
+                if ruleStore.rules.isEmpty { await ruleStore.refresh() }
+                await ruleStore.refreshRouteStamp()
+            }
             .sheet(isPresented: Binding(
                 get: { ruleStore.dumpedRuleSetName != nil },
                 set: { if !$0 { ruleStore.dumpedRuleSetName = nil } }
             )) {
                 RuleSetDumpView(name: ruleStore.dumpedRuleSetName ?? "", text: ruleStore.dumpedRuleSetText ?? "")
+            }
+            .sheet(isPresented: Binding(
+                get: { ruleStore.providerDetail != nil },
+                set: { if !$0 { ruleStore.providerDetail = nil } }
+            )) {
+                if let detail = ruleStore.providerDetail {
+                    ProviderDetailView(provider: detail)
+                }
             }
         }
     }
@@ -259,6 +299,68 @@ struct RuleSetDumpView: View {
                     .padding()
             }
             .navigationTitle(name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// One provider's full detail (provider.get). Unlike provider.list,
+// the result carries `subscriptionInfo` when the provider is a
+// subscription.
+struct ProviderDetailView: View {
+    let provider: ConcordProviderInfo
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var ruleStore: RuleStore
+
+    var body: some View {
+        NavigationStack {
+            List {
+                LabeledContent("名称", value: provider.name)
+                LabeledContent("类型", value: provider.type)
+                LabeledContent("传输", value: provider.vehicleType)
+                LabeledContent("条目", value: "\(provider.count)")
+                LabeledContent("路径", value: provider.path)
+                if let updatedAt = provider.updatedAt {
+                    LabeledContent("更新于", value: Date(timeIntervalSince1970: TimeInterval(updatedAt)).formatted(date: .abbreviated, time: .shortened))
+                }
+                if let testUrl = provider.testUrl {
+                    LabeledContent("测速地址", value: testUrl)
+                }
+                if let expectedStatus = provider.expectedStatus {
+                    LabeledContent("期望状态码", value: expectedStatus)
+                }
+                if let behavior = provider.behavior {
+                    LabeledContent("行为", value: behavior)
+                }
+                if let format = provider.format {
+                    LabeledContent("格式", value: format)
+                }
+                if let subscription = provider.subscriptionInfo {
+                    Section("订阅流量") {
+                        LabeledContent("已上传", value: ByteCountFormatter.string(fromByteCount: subscription.upload, countStyle: .file))
+                        LabeledContent("已下载", value: ByteCountFormatter.string(fromByteCount: subscription.download, countStyle: .file))
+                        LabeledContent("总量", value: ByteCountFormatter.string(fromByteCount: subscription.total, countStyle: .file))
+                        LabeledContent("到期", value: Date(timeIntervalSince1970: TimeInterval(subscription.expire)).formatted(date: .abbreviated, time: .shortened))
+                    }
+                }
+                Section {
+                    Button("健康检查（provider.healthCheck）") {
+                        Task { await ruleStore.healthCheckProvider(provider) }
+                    }
+                    Text("健康检查在后台进行，触发后稍等再刷新列表查看。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let message = ruleStore.providerActionMessage {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle(provider.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

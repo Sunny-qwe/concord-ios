@@ -95,32 +95,38 @@ struct MitmView: View {
                 }
                 ForEach(mitmStore.exchanges) { exchange in
                     Button { detailSummary = exchange } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(exchange.method)
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.blue.opacity(0.12), in: Capsule())
-                                Text(exchange.url)
-                                    .font(.body)
-                                    .lineLimit(1)
-                                Spacer()
-                                if exchange.pending ?? false {
-                                    Text("进行中").font(.caption).foregroundStyle(.orange)
-                                } else {
-                                    Text("\(exchange.status)")
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .foregroundStyle(exchange.status >= 400 ? .red : .green)
-                                }
-                            }
-                            Text("↑ \(ConcordFormat.bytes(exchange.requestSize)) · ↓ \(ConcordFormat.bytes(exchange.responseSize)) · \(exchange.duration) ms")
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(ConcordFormat.time(rfc3339: exchange.start))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            if let error = exchange.error, !error.isEmpty {
-                                Text(error).font(.caption).foregroundStyle(.red)
+                                .frame(width: 64, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(exchange.method)
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.blue.opacity(0.12), in: Capsule())
+                                    Text(exchange.url)
+                                        .font(.body)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    if exchange.pending ?? false {
+                                        Text("进行中").font(.caption).foregroundStyle(.orange)
+                                    } else {
+                                        Text("\(exchange.status)")
+                                            .font(.caption)
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(exchange.status >= 400 ? .red : .green)
+                                    }
+                                }
+                                Text("↑ \(ConcordFormat.bytes(exchange.requestSize)) · ↓ \(ConcordFormat.bytes(exchange.responseSize)) · \(exchange.duration) ms")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if let error = exchange.error, !error.isEmpty {
+                                    Text(error).font(.caption).foregroundStyle(.red)
+                                }
                             }
                         }
                     }
@@ -173,6 +179,7 @@ struct MitmExchangeDetailView: View {
         NavigationStack {
             List {
                 Section("请求") {
+                    LabeledContent("开始时间", value: ConcordFormat.time(rfc3339: summary.start))
                     LabeledContent("方法", value: summary.method)
                     LabeledContent("URL", value: summary.url)
                     LabeledContent("状态", value: (summary.pending ?? false) ? "进行中" : "\(summary.status)")

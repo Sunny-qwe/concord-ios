@@ -159,6 +159,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var connectionTable: [UInt64: [String: Any]] = [:]
     private var logBuffer: [[String: Any]] = []
     private var dnsBuffer: [[String: Any]] = []
+    private var eventBuffer: [[String: Any]] = []
     private let maxBufferedEntries = 500
 
     // proxy.watch table: the latest ProxyGroups, kept as the group's
@@ -198,7 +199,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private enum StreamKind: String {
-        case traffic, connection, log, dns, proxy
+        case traffic, connection, log, dns, proxy, route, events, engine
+
+        /// The JSON-RPC method name. All streams are "<kind>.watch"
+        /// except engine.state, which is a stream named "engine.state"
+        /// (there is no "engine.watch").
+        var methodName: String {
+            switch self {
+            case .engine: return "engine.state"
+            default: return "\(rawValue).watch"
+            }
+        }
     }
 
     private enum TunnelSetupError: LocalizedError {
@@ -647,6 +658,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // are ProxyDelta {order?, groups, nodes, removed}.
         let proxy = try await sendCoreRequest(method: "proxy.watch", params: ["credit": 8])
         registerStream(result: proxy, kind: .proxy)
+        // route.watch snapshot is the current RouteStamp; its events
+        // are RouteStamp values (latest policy).
+        let route = try await sendCoreRequest(method: "route.watch", params: ["credit": 8])
+        registerStream(result: route, kind: .route)
+        // events.watch has NO snapshot — its CoreEvent items only
+        // arrive as events, so the extension accumulates them like
+        // log/dns.watch.
+        let events = try await sendCoreRequest(method: "events.watch", params: ["credit": 8])
+        registerStream(result: events, kind: .events)
+        // engine.state snapshot is the current EngineStatus; its
+        // events are EngineStatus values (latest policy).
+        let engine = try await sendCoreRequest(method: "engine.state", params: ["credit": 8])
+        registerStream(result: engine, kind: .engine)
     }
 
     private func registerStream(result: Any, kind: StreamKind) {
@@ -679,8 +703,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 case .log: params = ["credit": 8]
                 case .dns: params = ["credit": 8]
                 case .proxy: params = ["credit": 8]
+                case .route: params = ["credit": 8]
+                case .events: params = ["credit": 8]
+                case .engine: params = ["credit": 8]
                 }
-                let result = try await self.sendCoreRequest(method: "\(kind.rawValue).watch", params: params)
+                let result = try await self.sendCoreRequest(method: kind.methodName, params: params)
                 self.coreQueue.async { self.registerStream(result: result, kind: kind) }
             } catch {
                 Self.log.error("resubscribe \(kind.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -746,6 +773,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 applyProxyDelta(delta)
             }
             writeProxySnapshot()
+        case .route:
+            // Each event is a full RouteStamp; keep the newest.
+            if let last = items.last {
+                writeSnapshot(name: "route", data: last)
+            }
+        case .events:
+            for item in items {
+                guard let entry = item as? [String: Any] else { continue }
+                eventBuffer.append(entry)
+            }
+            trimBuffer(&eventBuffer)
+            writeSnapshot(name: "events", data: ["entries": eventBuffer])
+        case .engine:
+            // Each event is a full EngineStatus; keep the newest.
+            if let last = items.last {
+                writeSnapshot(name: "engine", data: last)
+            }
         }
         // Refill one unit of credit per batch consumed; without this
         // the server pump stops after the initial credit.
@@ -843,8 +887,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
             }
             writeSnapshot(name: "connections", data: ["connections": connections])
-        case .log, .dns:
-            // log/dns.watch have no snapshot; nothing to apply.
+        case .log, .dns, .events:
+            // log/dns/events.watch have no snapshot; nothing to apply.
             break
         case .proxy:
             guard let snapshot = snapshot as? [String: Any] else { return }
@@ -852,6 +896,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             proxyGroups = snapshot["groups"] as? [[String: Any]] ?? []
             proxyNodes = snapshot["nodes"] as? [[String: Any]] ?? []
             writeProxySnapshot()
+        case .route:
+            writeSnapshot(name: "route", data: snapshot)
+        case .engine:
+            writeSnapshot(name: "engine", data: snapshot)
         }
     }
 

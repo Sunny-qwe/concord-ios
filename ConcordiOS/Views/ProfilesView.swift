@@ -19,6 +19,12 @@ struct ProfilesView: View {
     @State private var decryptProfileID: UUID?
     @State private var decryptKey = ""
     @State private var decryptSaveName = ""
+    @State private var outboundsProfileID: UUID?
+    @State private var encodeProfileID: UUID?
+    @State private var decodeText = ""
+    @State private var decodeSaveName = ""
+    @State private var clearEffectID = ""
+    @State private var showClearEffectConfirm = false
 
     private func validateActiveProfile() async {
         switch await profileStore.validateActiveProfile() {
@@ -162,6 +168,123 @@ struct ProfilesView: View {
                     }
                 }
 
+                if !profileStore.profiles.isEmpty {
+                    Section("出站列表（profile.outbounds）") {
+                        Picker("配置文件", selection: $outboundsProfileID) {
+                            ForEach(profileStore.profiles) { profile in
+                                Text(profile.name).tag(profile.id as UUID?)
+                            }
+                        }
+                        Button("读取出站列表") {
+                            guard let id = outboundsProfileID,
+                                  let profile = profileStore.profiles.first(where: { $0.id == id }) else { return }
+                            Task { await profileStore.loadOutbounds(profile) }
+                        }
+                        .disabled(outboundsProfileID == nil)
+                        if let message = profileStore.outboundsMessage {
+                            Text(message).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let outbounds = profileStore.outbounds {
+                            if !outbounds.proxies.isEmpty {
+                                Text("代理（\(outbounds.proxies.count)）").font(.caption).foregroundStyle(.secondary)
+                                ForEach(outbounds.proxies, id: \.name) { outbound in
+                                    LabeledContent(outbound.name, value: outbound.type)
+                                }
+                            }
+                            if !outbounds.proxyGroups.isEmpty {
+                                Text("代理组（\(outbounds.proxyGroups.count)）").font(.caption).foregroundStyle(.secondary)
+                                ForEach(outbounds.proxyGroups, id: \.name) { group in
+                                    LabeledContent(group.name, value: group.type)
+                                }
+                            }
+                        }
+                    }
+
+                    Section("分享链接（convert.encodeLinks）") {
+                        Picker("配置文件", selection: $encodeProfileID) {
+                            ForEach(profileStore.profiles) { profile in
+                                Text(profile.name).tag(profile.id as UUID?)
+                            }
+                        }
+                        Button("生成分享链接") {
+                            guard let id = encodeProfileID,
+                                  let profile = profileStore.profiles.first(where: { $0.id == id }) else { return }
+                            Task { await profileStore.encodeLinks(profile) }
+                        }
+                        .disabled(encodeProfileID == nil)
+                        if let message = profileStore.encodeMessage {
+                            Text(message).font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(profileStore.encodedLinks, id: \.self) { link in
+                            ShareLink(item: link) {
+                                Text(link).font(.caption).lineLimit(2)
+                            }
+                        }
+                        Text("链接由核心从配置的 proxies 列表生成，点击可分享。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("导入分享链接（convert.decodeLinks）") {
+                        TextEditor(text: $decodeText)
+                            .frame(minHeight: 100)
+                            .font(.system(.caption, design: .monospaced))
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        Button("解析链接") {
+                            Task { await profileStore.decodeLinks(decodeText.components(separatedBy: .newlines)) }
+                        }
+                        .disabled(decodeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if let message = profileStore.decodeMessage {
+                            Text(message).font(.caption).foregroundStyle(.secondary)
+                        }
+                        ForEach(Array(profileStore.decodedProxies.enumerated()), id: \.offset) { _, proxy in
+                            HStack {
+                                Text(proxy.objectValue?["name"]?.stringValue ?? "未知节点")
+                                Spacer()
+                                Text(proxy.objectValue?["type"]?.stringValue ?? "")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        if !profileStore.decodedProxies.isEmpty {
+                            HStack {
+                                TextField("另存为订阅名", text: $decodeSaveName)
+                                Button("保存为新订阅") {
+                                    profileStore.saveDecodedAsProfile(name: decodeSaveName.isEmpty ? "导入的节点" : decodeSaveName)
+                                }
+                            }
+                        }
+                        Text("粘贴的链接只发给核心解析，不会发往任何其他地方；不是链接的行会被忽略。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Section("清除订阅生效文件（profile.clearEffect）") {
+                        TextField("订阅编号（数字）", text: $clearEffectID)
+                            .keyboardType(.numberPad)
+                        Button("清除") {
+                            showClearEffectConfirm = true
+                        }
+                        .disabled(Int64(clearEffectID) == nil)
+                        .alert("清除已下载的提供方文件？", isPresented: $showClearEffectConfirm) {
+                            Button("清除", role: .destructive) {
+                                guard let id = Int64(clearEffectID) else { return }
+                                Task { await profileStore.clearEffect(profileId: id) }
+                            }
+                            Button("取消", role: .cancel) {}
+                        } message: {
+                            Text("将删除核心侧订阅 #\(clearEffectID) 的已下载提供方文件。iOS 上订阅没有数字编号，核心通常找不到可清除的内容。")
+                        }
+                        if let message = profileStore.clearEffectMessage {
+                            Text(message).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("订阅编号是桌面端宿主给订阅分配的数字 ID；iOS 上订阅用 UUID 标识，核心侧没有对应的已下载文件，因此这个操作通常无事可做。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 Section {
                     Text(profileStore.statusMessage)
                         .font(.caption)
@@ -210,6 +333,12 @@ struct ProfilesView: View {
                 if decryptProfileID == nil {
                     decryptProfileID = profileStore.profiles.first(where: { $0.kind == .file })?.id
                         ?? profileStore.activeProfile?.id
+                }
+                if outboundsProfileID == nil {
+                    outboundsProfileID = profileStore.activeProfile?.id
+                }
+                if encodeProfileID == nil {
+                    encodeProfileID = profileStore.activeProfile?.id
                 }
             }
         }

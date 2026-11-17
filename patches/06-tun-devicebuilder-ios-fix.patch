@@ -1,0 +1,60 @@
+From 4b80f46a07b0fc9f28327f34459bc072f11a5fe5 Mon Sep 17 00:00:00 2001
+From: Muse <muse@local>
+Date: Tue, 17 Nov 2026 08:44:14 +0800
+Subject: [PATCH] tun: cfg-gate device creation off iOS (tun-rs has no
+ DeviceBuilder there)
+
+tun-rs 2.8.16 compiles its builder module only for windows/linux/macos/freebsd/openbsd/netbsd/illumos (vendor/tun-rs/src/lib.rs), so tun_rs::DeviceBuilder::new() in TunDevice::build fails for aarch64-apple-ios with E0433 (ios-core-check run #8). iOS never creates a device anyway: the NetworkExtension owns the interface and the core gets packets through the channel or an adopted descriptor. Gate create/build off iOS the way Android already is, and add an iOS create stub returning Unsupported, mirroring the Android stub.
+---
+ crates/tun/src/device/mod.rs | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/crates/tun/src/device/mod.rs b/crates/tun/src/device/mod.rs
+index 4f09d18..070cfbe 100644
+--- a/crates/tun/src/device/mod.rs
++++ b/crates/tun/src/device/mod.rs
+@@ -235,7 +235,13 @@ pub struct TunDevice {
+ impl TunDevice {
+     /// Creates the interface with the first address of each family; further addresses are
+     /// not configured.
+-    #[cfg(not(target_os = "android"))]
++    ///
++    /// Not available on Android or iOS: the host owns the interface there
++    /// and hands the core packets or a descriptor instead (see the stub
++    /// below). `tun-rs` has no device-creation path on those targets at
++    /// all — its `DeviceBuilder` is not compiled for them — so there is
++    /// nothing `build` could call.
++    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+     pub fn create(options: &TunOptions) -> io::Result<Self> {
+         #[cfg(target_os = "linux")]
+         match Self::build(options, true) {
+@@ -247,7 +253,7 @@ impl TunDevice {
+         Self::build(options, false)
+     }
+ 
+-    #[cfg(not(target_os = "android"))]
++    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+     #[cfg_attr(
+         not(target_os = "linux"),
+         allow(unused_variables, reason = "offload is Linux-only")
+@@ -316,6 +322,17 @@ impl TunDevice {
+         ))
+     }
+ 
++    /// The NetworkExtension owns the interface; the core gets packets
++    /// through the packet channel or an adopted descriptor, never by
++    /// creating a device.
++    #[cfg(target_os = "ios")]
++    pub fn create(_options: &TunOptions) -> io::Result<Self> {
++        Err(io::Error::new(
++            io::ErrorKind::Unsupported,
++            "the NetworkExtension owns the interface; use the packet channel or adopt its descriptor",
++        ))
++    }
++
+     /// Adopts the descriptor of a `VpnService` interface. The descriptor is closed on every
+     /// failure path, including the ones before tun-rs takes it over.
+     #[cfg(unix)]
+-- 
+2.43.0
+

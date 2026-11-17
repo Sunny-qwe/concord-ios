@@ -447,11 +447,10 @@ private func scriptLine(_ line: String) -> (name: String, type: String, params: 
         let http = keyword.hasPrefix("http-")
         let valued = first != nil && (http || !first!.text.contains("="))
         let legacy = scriptParams(valued ? String(rest.dropFirst(first!.end)) : rest)
-        guard let legacy, !(http && !valued) else { return nil }
+        guard var legacy, !(http && !valued) else { return nil }
         let value = valued ? first!.text : ""
         var type = keyword
         var name = legacy["tag"] ?? ""
-        var legacy = legacy
         switch keyword {
         case "http-request", "http-response":
             legacy["pattern"] = value

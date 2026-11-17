@@ -62,7 +62,7 @@ final class TunnelManager: ObservableObject {
     @MainActor
     func prepare() async throws {
         if manager != nil { return }
-        let managers = try await withCheckedThrowingContinuation { continuation in
+        let managers = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[NETunnelProviderManager], Error>) in
             NETunnelProviderManager.loadAllFromPreferences { managers, error in
                 if let error {
                     continuation.resume(throwing: error)

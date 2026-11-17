@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 // MARK: - Profiles (FlClash: ProfilesView, lib/views/profiles/)
 // FlClash profiles page: remote (URL) and local profiles, update all,
@@ -11,8 +10,7 @@ import UniformTypeIdentifiers
 struct ProfilesView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var configStore: ConfigStore
-    @State private var showAdd = false
-    @State private var showImporter = false
+    @State private var showUnifiedImport = false
     @State private var previewProfile: Profile?
     @State private var isUpdating = false
     @State private var validationMessage: String?
@@ -49,6 +47,32 @@ struct ProfilesView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section {
+                    Button {
+                        showUnifiedImport = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "square.and.arrow.down")
+                                .font(.title3)
+                                .foregroundStyle(.white)
+                                .frame(width: 40, height: 40)
+                                .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 12))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("统一导入")
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+                                Text("订阅链接 / 节点链接 / 配置文件，一次粘贴自动识别导入")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
                 if profileStore.profiles.isEmpty {
                     ContentUnavailableView("暂无订阅", systemImage: "list.clipboard", description: Text("添加一个订阅链接或导入本地配置文件"))
                 }
@@ -231,6 +255,9 @@ struct ProfilesView: View {
                             .font(.system(.caption, design: .monospaced))
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
+                            .scrollContentBackground(.hidden)
+                            .padding(8)
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                         Button("解析链接") {
                             Task { await profileStore.decodeLinks(decodeText.components(separatedBy: .newlines)) }
                         }
@@ -294,6 +321,9 @@ struct ProfilesView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(ConcordTheme.pageBackground)
+            .listStyle(.insetGrouped)
             .navigationTitle("订阅")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -309,22 +339,16 @@ struct ProfilesView: View {
                     .disabled(isUpdating)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { showAdd = true } label: {
+                    Button { showUnifiedImport = true } label: {
                         Image(systemName: "plus")
                     }
                 }
             }
-            .sheet(isPresented: $showAdd) {
-                AddProfileView(showImporter: $showImporter)
+            .sheet(isPresented: $showUnifiedImport) {
+                UnifiedImportView(profileStore: profileStore)
             }
             .sheet(item: $previewProfile) { profile in
                 ProfilePreviewView(profile: profile)
-            }
-            .fileImporter(isPresented: $showImporter, allowedContentTypes: [UTType.yaml]) { result in
-                if case .success(let url) = result,
-                   let data = try? Data(contentsOf: url) {
-                    profileStore.addFromFile(name: url.lastPathComponent, data: data)
-                }
             }
             .task {
                 // Default the decrypt target to a local file profile
@@ -385,6 +409,8 @@ struct AddProfileView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(ConcordTheme.pageBackground)
             .navigationTitle("添加订阅")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -455,7 +481,8 @@ struct ProfilePreviewView: View {
                             ProgressView()
                         }
                     }
-                    .listStyle(.plain)
+                    .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
                 case .built:
                     ScrollView {
                         if let error = previewError {
@@ -471,6 +498,7 @@ struct ProfilePreviewView: View {
                     }
                 }
             }
+            .background(ConcordTheme.pageBackground)
             .navigationTitle(profile.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

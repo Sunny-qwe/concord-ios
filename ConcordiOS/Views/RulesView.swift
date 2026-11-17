@@ -29,8 +29,10 @@ struct RulesView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        // No NavigationStack here on purpose: this page is pushed
+        // from the Tools tab, whose stack provides the navigation
+        // bar. (The sheet sub-views below keep their own stacks.)
+        List {
                 if client.mode == .sample {
                     HStack {
                         SampleDataBadge()
@@ -95,6 +97,9 @@ struct RulesView: View {
                         .font(.system(.caption, design: .monospaced))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                     Text("每行一条过滤表达式：代理组 filter: 用的反引号分隔正则列表，例如 (?i)港|hk 或 hk`jp。空行会被忽略。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -251,6 +256,9 @@ struct RulesView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(ConcordTheme.pageBackground)
+            .listStyle(.insetGrouped)
             .navigationTitle("规则")
             .searchable(text: $ruleStore.searchText, prompt: "搜索规则内容或目标")
             .toolbar {
@@ -279,7 +287,6 @@ struct RulesView: View {
                     ProviderDetailView(provider: detail)
                 }
             }
-        }
     }
 }
 
@@ -298,6 +305,7 @@ struct RuleSetDumpView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
             }
+            .background(ConcordTheme.pageBackground)
             .navigationTitle(name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -360,6 +368,8 @@ struct ProviderDetailView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(ConcordTheme.pageBackground)
             .navigationTitle(provider.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

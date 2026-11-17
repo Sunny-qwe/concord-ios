@@ -12,8 +12,10 @@ struct ConnectionsView: View {
     @State private var detail: LiveConnection?
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
+        // No NavigationStack here on purpose: this page is pushed
+        // from the Tools tab, whose stack provides the navigation
+        // bar. (ConnectionDetailView keeps its own stack as a sheet.)
+        VStack(spacing: 0) {
                 if client.mode == .sample {
                     HStack {
                         SampleDataBadge()
@@ -86,9 +88,11 @@ struct ConnectionsView: View {
                             }
                         }
                     }
-                    .listStyle(.plain)
+                    .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
                 }
             }
+            .background(ConcordTheme.pageBackground)
             .navigationTitle("连接")
             .searchable(text: $connectionStore.searchText, prompt: "搜索域名、代理或规则")
             .toolbar {
@@ -126,7 +130,6 @@ struct ConnectionsView: View {
             }
             .refreshable { await connectionStore.refresh() }
             .task { if connectionStore.connections.isEmpty { await connectionStore.refresh() } }
-        }
     }
 }
 
@@ -170,6 +173,8 @@ struct ConnectionDetailView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(ConcordTheme.pageBackground)
             .navigationTitle("连接详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -1,19 +1,49 @@
 import SwiftUI
 
-// MARK: - Dashboard (FlClash: DashboardView, lib/views/dashboard/)
-// FlClash dashboard cards: CurrentOutbound, NetworkSpeed, OutboundMode,
-// VpnButton, NetworkTakeover, ServiceStatus, Profiles, ProxyGroups,
-// ConnectionStats, IntranetIp, MemoryInfo. This page reproduces those
-// cards in a mobile list; the desktop grid layout is not used on iOS.
+// MARK: - Dashboard (reference screenshots IMG_1082 / IMG_1083)
+// Layout, top to bottom: big title + edit button; status card (big
+// blue play button); network speed; outbound mode pills; VPN card;
+// intranet IP + LAN proxy; service status (probe.services); the
+// active subscription card; proxy groups; stats row. The DATA wiring
+// is unchanged from the previous dashboard: proxyStore (running +
+// groups), trafficStore (speed + services + engine), connectionStore,
+// profileStore, ruleStore (provider list for the subscription info),
+// settingsStore, eventStore / dnsStore (stats), tunnelManager and
+// client. Only the look and the navigation changed.
 
 struct DashboardView: View {
+    /// Switches the main tab (called with .proxies / .profiles from
+    /// the card chevrons).
+    var onSelectTab: (AppTab) -> Void = { _ in }
+
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var profileStore: ProfileStore
+    @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var eventStore: EventStore
+    @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var tunnelManager: TunnelManager
     @EnvironmentObject private var client: ConcordClient
+
+    @AppStorage("ConcordiOS.dashboard.show.status") private var showStatus = true
+    @AppStorage("ConcordiOS.dashboard.show.speed") private var showSpeed = true
+    @AppStorage("ConcordiOS.dashboard.show.mode") private var showMode = true
+    @AppStorage("ConcordiOS.dashboard.show.vpn") private var showVpn = true
+    @AppStorage("ConcordiOS.dashboard.show.intranet") private var showIntranet = true
+    @AppStorage("ConcordiOS.dashboard.show.services") private var showServices = true
+    @AppStorage("ConcordiOS.dashboard.show.profile") private var showProfile = true
+    @AppStorage("ConcordiOS.dashboard.show.groups") private var showGroups = true
+    @AppStorage("ConcordiOS.dashboard.show.stats") private var showStats = true
+
+    @State private var showEditSheet = false
+    @State private var servicesExpanded = false
+    @State private var tunnelStartedAt: Date?
+    @State private var subscription: ConcordSubscriptionInfo?
+    @State private var intranetIp: String?
+
+    // MARK: - Derived data
 
     private var tunnelStatusText: String {
         switch tunnelManager.status {
@@ -67,220 +97,753 @@ struct DashboardView: View {
         }
     }
 
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 12) {
-                    // Current outbound + start/stop (FlClash CurrentOutboundCard)
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("当前出站")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            if client.mode == .sample { SampleDataBadge() }
-                        }
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(proxyStore.selectedOutbound ?? "未选择")
-                                    .font(.title3)
-                                    .fontWeight(.semibold)
-                                Text(proxyStore.isRunning ? "运行中" : "已停止")
-                                    .font(.caption)
-                                    .foregroundStyle(proxyStore.isRunning ? .green : .secondary)
-                            }
-                            Spacer()
-                            Button(proxyStore.isRunning ? "停止" : "启动") {
-                                Task { await proxyStore.toggle() }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(proxyStore.isRunning ? .red : .blue)
-                        }
-                        if let error = proxyStore.lastError {
-                            Text(error).font(.caption).foregroundStyle(.red)
-                        }
-                    }
-                    .padding()
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+    private func modeShortLabel(_ mode: OutboundMode) -> String {
+        switch mode {
+        case .rule: return "规则"
+        case .global: return "全局"
+        case .direct: return "直连"
+        }
+    }
 
-                    // Network speed (FlClash NetworkSpeedCard)
+    private func modeIcon(_ mode: OutboundMode) -> String {
+        switch mode {
+        case .rule: return "list.bullet.rectangle"
+        case .global: return "globe"
+        case .direct: return "record.circle"
+        }
+    }
+
+    private var uptimeText: String {
+        guard let started = tunnelStartedAt else { return "—" }
+        return ConcordFormat.duration(seconds: max(0, Int64(Date().timeIntervalSince(started))))
+    }
+
+    private func service(named name: String) -> ConcordServiceItem? {
+        trafficStore.services.first { $0.name.lowercased() == name }
+    }
+
+    private var serviceBadge: (text: String, tint: Color) {
+        guard !trafficStore.services.isEmpty else { return ("未检测", .gray) }
+        let available = trafficStore.services.filter { $0.status == "available" }.count
+        if available == trafficStore.services.count { return ("全部可用", .green) }
+        return ("\(available)/\(trafficStore.services.count) 可用", .orange)
+    }
+
+    /// Nodes whose last latency test failed (delay.test / delay.run
+    /// report a negative value). Shown as the orange "N 超时" badge;
+    /// hidden until at least one test has run.
+    private var timeoutCount: Int {
+        proxyStore.latencies.values.filter { $0 < 0 }.count
+    }
+
+    private var groupInitials: [String] {
+        proxyStore.groups.prefix(4).map { group in
+            group.name == "github" ? "GH" : String(group.name.prefix(1)).uppercased()
+        }
+    }
+
+    private var extraGroups: Int {
+        max(0, proxyStore.groups.count - 4)
+    }
+
+    // MARK: - Subscription traffic (provider.get subscriptionInfo)
+
+    private var usedFraction: Double {
+        guard let info = subscription, info.total > 0 else { return 0 }
+        return Double(info.upload + info.download) / Double(info.total)
+    }
+
+    private var usedPercentText: String {
+        guard subscription != nil else { return "—" }
+        return "\(Int(usedFraction * 100))%"
+    }
+
+    private var trafficText: String {
+        guard let info = subscription else { return "— / —" }
+        return "\(ConcordFormat.bytes(info.upload + info.download)) / \(ConcordFormat.bytes(info.total))"
+    }
+
+    private var remainingText: String {
+        guard let info = subscription, info.expire > 0 else { return "剩余 — 天" }
+        return "剩余 \(ConcordRelativeTime.daysUntil(epochSeconds: info.expire)) 天"
+    }
+
+    private var updatedText: String {
+        guard let date = profileStore.activeProfile?.updatedAt else { return "—" }
+        return ConcordRelativeTime.string(since: date)
+    }
+
+    /// Reads the active profile's subscription info (provider.get).
+    /// The provider whose name matches the active profile is tried
+    /// first, then the first proxy provider. provider.list does not
+    /// carry subscriptionInfo — only provider.get does — and the
+    /// result is kept in local state (not in RuleStore, whose
+    /// providerDetail also drives the Rules page sheets).
+    private func refreshSubscription() async {
+        await ruleStore.refresh()
+        guard let profile = profileStore.activeProfile else {
+            subscription = nil
+            return
+        }
+        let candidates = ruleStore.providers
+        guard let provider = candidates.first(where: { $0.name == profile.name })
+            ?? candidates.first(where: { $0.type == "proxy" }) else {
+            subscription = nil
+            return
+        }
+        do {
+            subscription = try await client.providerGet(name: provider.name).subscriptionInfo
+        } catch {
+            subscription = nil
+        }
+    }
+
+    private func refreshAll() async {
+        await proxyStore.refresh()
+        await connectionStore.refresh()
+        await trafficStore.refresh()
+        await trafficStore.refreshEngineStatus()
+        await eventStore.refresh()
+        await dnsStore.refresh()
+        await refreshSubscription()
+    }
+
+    // MARK: - Body
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                titleRow
+                if client.mode == .sample {
+                    HStack {
+                        SampleDataBadge()
+                        Text("示例数据：所有数值均为内置示例，不是真实核心数据")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if showStatus { statusCard }
+                if showSpeed { speedCard }
+                if showMode { modeCard }
+                if showVpn { vpnCard }
+                if showIntranet { intranetCard }
+                if showServices { servicesCard }
+                if showProfile { profileCard }
+                if showGroups { groupsCard }
+                if showStats { statsCard }
+                if let error = proxyStore.lastError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 16)
+        }
+        .concordPageBackground()
+        .refreshable { await refreshAll() }
+        .task {
+            if proxyStore.isRunning && tunnelStartedAt == nil {
+                tunnelStartedAt = Date()
+            }
+            intranetIp = DeviceNetwork.localIPv4Address()
+            await trafficStore.refreshEngineStatus()
+            await refreshSubscription()
+            if trafficStore.services.isEmpty,
+               let proxy = proxyStore.selectedOutbound,
+               client.mode == .sample || tunnelManager.isRunning {
+                await trafficStore.probeServices(proxy: proxy)
+            }
+        }
+        .onChange(of: proxyStore.isRunning) { _, running in
+            tunnelStartedAt = running ? (tunnelStartedAt ?? Date()) : nil
+        }
+        .onChange(of: settingsStore.mode) { _, _ in
+            Task { await settingsStore.applyGeneralToCore() }
+        }
+        .sheet(isPresented: $showEditSheet) {
+            DashboardEditSheet(
+                showStatus: $showStatus,
+                showSpeed: $showSpeed,
+                showMode: $showMode,
+                showVpn: $showVpn,
+                showIntranet: $showIntranet,
+                showServices: $showServices,
+                showProfile: $showProfile,
+                showGroups: $showGroups,
+                showStats: $showStats
+            )
+        }
+    }
+
+    // MARK: - Title
+
+    private var titleRow: some View {
+        HStack(alignment: .center) {
+            Text("仪表盘")
+                .font(.system(size: 34, weight: .bold))
+            Spacer()
+            Button { showEditSheet = true } label: {
+                Image(systemName: "pencil")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color(.label))
+                    .frame(width: 52, height: 52)
+                    .background(Color.white, in: Circle())
+                    .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("编辑仪表盘卡片")
+        }
+    }
+
+    // MARK: - Status card
+
+    private var statusCard: some View {
+        ZStack(alignment: .topTrailing) {
+            BlobShape()
+                .fill(Color(red: 0.93, green: 0.93, blue: 0.955))
+                .frame(width: 250, height: 220)
+                .offset(x: 70, y: -50)
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 8) {
+                    CardTitleRow(icon: "waveform.path.ecg", title: "状态")
+                    PillBadge(text: proxyStore.isRunning ? "运行中" : "未运行",
+                              tint: proxyStore.isRunning ? .green : .gray)
+                }
+                HStack(spacing: 16) {
+                    BlobIcon(systemName: "globe", iconColor: Color(.label),
+                             blobColor: Color(red: 0.92, green: 0.92, blue: 0.94), size: 76)
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("实时流量")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("↑ \(ConcordFormat.rate(trafficStore.current.up))  ↓ \(ConcordFormat.rate(trafficStore.current.down))")
-                                .font(.caption)
+                        Text(proxyStore.selectedOutbound ?? "未选择出站")
+                            .font(.title3)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                        Text(modeShortLabel(settingsStore.mode))
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(ConcordTheme.softFill, in: Capsule())
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        Task { await proxyStore.toggle() }
+                    } label: {
+                        Image(systemName: proxyStore.isRunning ? "stop.fill" : "play.fill")
+                            .font(.system(size: 40, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 112, height: 112)
+                            .background(ConcordTheme.accent, in: Circle())
+                            .shadow(color: ConcordTheme.accent.opacity(0.35), radius: 16, x: 0, y: 8)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(proxyStore.isRunning ? "停止 VPN" : "启动 VPN")
+                }
+                HStack(spacing: 32) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("运行时长")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TimelineView(.periodic(from: .now, by: 1)) { _ in
+                            Text(uptimeText)
+                                .font(.subheadline)
                                 .fontWeight(.semibold)
                         }
-                        TrafficChartView(history: trafficStore.history)
-                        HStack {
-                            Text("上行总量 \(ConcordFormat.bytes(trafficStore.current.totalUp))")
-                            Spacer()
-                            Text("下行总量 \(ConcordFormat.bytes(trafficStore.current.totalDown))")
-                        }
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
                     }
-                    .padding()
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-
-                    // Outbound mode (FlClash OutboundModeCard)
-                    // Changing the mode applies it to the core live
-                    // (config.patch) when the tunnel runs; otherwise it
-                    // is saved and applied at the next VPN start.
-                    HStack {
-                        Text("出站模式")
-                        Spacer()
-                        Picker("出站模式", selection: $settingsStore.mode) {
-                            ForEach(OutboundMode.allCases) { mode in
-                                Text(mode.label).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 220)
-                    }
-                    .padding()
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-                    .onChange(of: settingsStore.mode) { _, _ in
-                        Task { await settingsStore.applyGeneralToCore() }
-                    }
-                    if let message = settingsStore.generalApplyMessage {
-                        Text(message)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("组织")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 4)
+                        Text(profileStore.activeProfile?.name ?? "—")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
                     }
-
-                    // Service check (FlClash service check card,
-                    // probe.services through the current outbound)
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("服务检测")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("检测") {
-                                Task {
-                                    if let proxy = proxyStore.selectedOutbound {
-                                        await trafficStore.probeServices(proxy: proxy)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                            .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
-                        }
-                        if trafficStore.isProbingServices {
-                            ProgressView()
-                        }
-                        if let error = trafficStore.servicesError {
-                            Text(error).font(.caption).foregroundStyle(.red)
-                        }
-                        if trafficStore.services.isEmpty {
-                            Text("通过当前出站检测 Google / GitHub / YouTube 等服务的可用性（probe.services）。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(trafficStore.services) { service in
-                                HStack {
-                                    Text(service.name).font(.subheadline)
-                                    Spacer()
-                                    if let region = service.region, !region.isEmpty {
-                                        Text(region).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Text(service.delay.map { "\($0) ms" } ?? "—").font(.caption)
-                                    Text(serviceStatusLabel(service.status))
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
-                                        .foregroundStyle(serviceStatusColor(service.status))
-                                }
-                            }
-                        }
-                    }
-                    .padding()
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-
-                    // Stats grid (FlClash ConnectionStats / MemoryInfo / Profiles / ProxyGroups)
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-                        StatCard(title: "活动连接", value: "\(connectionStore.connections.count)", subtitle: "上行 \(ConcordFormat.bytes(connectionStore.totalUpload)) · 下行 \(ConcordFormat.bytes(connectionStore.totalDownload))")
-                        StatCard(title: "核心内存", value: trafficStore.coreMemoryBytes.map { ConcordFormat.bytes(Int64($0)) } ?? "—", subtitle: "core.stats rss")
-                        StatCard(title: "当前订阅", value: profileStore.activeProfile?.name ?? "无", subtitle: profileStore.activeProfile?.updatedAt.map { "更新于 \($0.formatted(date: .abbreviated, time: .shortened))" })
-                        StatCard(title: "代理组", value: "\(proxyStore.groups.count) 组 · \(proxyStore.allNodes.count) 节点", subtitle: "proxy.groups")
-                        StatCard(title: "出口 IP", value: trafficStore.outboundIp ?? "—", subtitle: trafficStore.outboundChains.isEmpty ? "probe.outboundIp" : "经由 \(trafficStore.outboundChains.joined(separator: " → "))")
-                        StatCard(title: "核心模式", value: client.mode.rawValue, subtitle: client.mode == .live ? "经 PacketTunnel 扩展链接（未验证）" : "示例数据，核心未链接")
-                    }
-
-                    // Service status (FlClash ServiceStatusCard)
-                    // The engine line shows the real engine.state from
-                    // the core (not the inferred proxyStore.isRunning)
-                    // once a snapshot has been read; before that it
-                    // falls back to the inferred value.
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("服务状态")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        if let engine = trafficStore.engineStatus {
-                            LabeledContent("引擎", value: engineStateLabel(engine.state))
-                            if let kind = engine.kind, !kind.isEmpty {
-                                LabeledContent("失败原因", value: kind)
-                            }
-                            if let faults = engine.faults, !faults.isEmpty {
-                                ForEach(faults, id: \.service) { fault in
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("启动失败：\(fault.service)").font(.subheadline)
-                                        Text("\(fault.reason)：\(fault.message)")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                            }
-                        } else {
-                            LabeledContent("引擎", value: proxyStore.isRunning ? "已启动" : "已停止")
-                            if let error = trafficStore.engineStatusError {
-                                Text(error).font(.caption).foregroundStyle(.red)
-                            }
-                        }
-                        LabeledContent("VPN 隧道", value: tunnelStatusText)
-                        LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
-                        LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
-                        Text(client.mode == .live
-                             ? "数据面：PacketTunnel 扩展内的 Concord 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
-                             : "示例模式：VPN 开关只切换界面状态，不转发流量。切到实时核心并启动 VPN 后由扩展转发流量。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding()
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                    Spacer()
                 }
-                .padding()
             }
-            .navigationTitle("仪表盘")
+            .padding(20)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
+        .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
+    }
+
+    // MARK: - Network speed card
+
+    private var speedCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            CardTitleRow(icon: "gauge.with.dots.needle.33percent", title: "网络速度")
+            HStack(spacing: 12) {
+                speedPanel(isUp: true)
+                speedPanel(isUp: false)
+            }
+        }
+        .concordCard()
+    }
+
+    private func speedPanel(isUp: Bool) -> some View {
+        let bytes = isUp ? trafficStore.current.up : trafficStore.current.down
+        let total = isUp ? trafficStore.current.totalUp : trafficStore.current.totalDown
+        let split = ConcordBytes.split(bytes)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: isUp ? "arrow.up" : "arrow.down")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(isUp ? Color(.label) : ConcordTheme.accent)
+                Text(isUp ? "上传" : "下载")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(split.number)
+                    .font(.system(size: 42, weight: .bold))
+                Text("\(split.unit)/s")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+            }
+            Text("累计 \(ConcordFormat.bytes(total))")
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    // MARK: - Outbound mode card
+
+    private var modeCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            CardTitleRow(icon: "arrow.triangle.branch", title: "出站模式")
+            HStack(spacing: 12) {
+                ForEach(OutboundMode.allCases) { mode in
+                    Button { settingsStore.mode = mode } label: {
+                        VStack(spacing: 8) {
+                            Image(systemName: modeIcon(mode))
+                                .font(.system(size: 22, weight: .semibold))
+                            Text(modeShortLabel(mode))
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(settingsStore.mode == mode ? ConcordTheme.accent : ConcordTheme.softFill,
+                                    in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+                        .foregroundStyle(settingsStore.mode == mode ? .white : Color(.label))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if let message = settingsStore.generalApplyMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .concordCard()
+    }
+
+    // MARK: - VPN card
+
+    private var vpnCard: some View {
+        HStack(spacing: 14) {
+            BlobIcon(systemName: "shield.fill", iconColor: .white,
+                     blobColor: ConcordTheme.accent, size: 64)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("VPN")
+                    .font(.headline)
+                Text(proxyStore.isRunning ? "已开启" : "已关闭")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Toggle("", isOn: Binding(
+                get: { proxyStore.isRunning },
+                set: { _ in Task { await proxyStore.toggle() } }
+            ))
+            .labelsHidden()
+            .tint(ConcordTheme.accent)
+        }
+        .concordCard(padding: 16)
+    }
+
+    // MARK: - Intranet IP card
+
+    private var intranetCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 6) {
+                Image(systemName: "network")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Text("内网 IP")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            Text(intranetIp ?? "—")
+                .font(.system(size: 32, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            HStack(spacing: 12) {
+                Image(systemName: "wifi")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Color(.label))
+                    .frame(width: 44, height: 44)
+                    .background(Color.white, in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("局域网代理")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Text(settingsStore.allowLan ? "已开启" : "已关闭")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("", isOn: $settingsStore.allowLan)
+                    .labelsHidden()
+                    .tint(ConcordTheme.accent)
+            }
+            .padding(12)
+            .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        }
+        .concordCard()
+    }
+
+    // MARK: - Service status card
+
+    private var servicesCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Button { withAnimation { servicesExpanded.toggle() } } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "shield.checkmark")
+                        .font(.system(size: 17, weight: .semibold))
+                    Text("服务状态")
+                        .font(.headline)
+                    Spacer()
+                    PillBadge(text: serviceBadge.text, tint: serviceBadge.tint)
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(servicesExpanded ? 90 : 0))
+                }
+                .foregroundStyle(Color(.label))
+            }
+            .buttonStyle(.plain)
+            HStack(spacing: 12) {
+                servicePill(for: service(named: "google"))
+                servicePill(for: service(named: "github"))
+            }
+            if servicesExpanded {
+                expandedServices
+            }
+        }
+        .concordCard()
+    }
+
+    private func servicePill(for service: ConcordServiceItem?) -> some View {
+        HStack(spacing: 10) {
+            ZStack(alignment: .bottomTrailing) {
+                Text(serviceTileText(service?.name))
+                    .font(.system(size: service?.name.lowercased() == "github" ? 15 : 22, weight: .bold))
+                    .foregroundStyle(Color(.label))
+                    .frame(width: 44, height: 44)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                    .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+                if service?.status == "available" {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                        .offset(x: 2, y: 2)
+                }
+            }
+            Text(service?.delay.map { "\($0) ms" } ?? "—")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            Spacer()
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    private func serviceTileText(_ name: String?) -> String {
+        guard let name else { return "?" }
+        if name.lowercased() == "github" { return "GH" }
+        return String(name.prefix(1)).uppercased()
+    }
+
+    private var expandedServices: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+            if trafficStore.isProbingServices {
+                ProgressView()
+            }
+            if let error = trafficStore.servicesError {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+            if trafficStore.services.isEmpty {
+                Text("通过当前出站检测 Google / GitHub / YouTube 等服务的可用性（probe.services）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(trafficStore.services) { service in
+                    HStack {
+                        Text(service.name).font(.subheadline)
+                        Spacer()
+                        if let region = service.region, !region.isEmpty {
+                            Text(region).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text(service.delay.map { "\($0) ms" } ?? "—").font(.caption)
+                        Text(serviceStatusLabel(service.status))
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(serviceStatusColor(service.status))
+                    }
+                }
+            }
+            Button("检测") {
+                Task {
+                    if let proxy = proxyStore.selectedOutbound {
+                        await trafficStore.probeServices(proxy: proxy)
+                    }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(ConcordTheme.accent)
+            .controlSize(.small)
+            .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
+            Divider()
+            LabeledContent("引擎", value: trafficStore.engineStatus.map { engineStateLabel($0.state) } ?? (proxyStore.isRunning ? "已启动" : "已停止"))
+            if let engine = trafficStore.engineStatus,
+               let faults = engine.faults, !faults.isEmpty {
+                ForEach(faults, id: \.service) { fault in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启动失败：\(fault.service)").font(.subheadline)
+                        Text("\(fault.reason)：\(fault.message)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } else if let error = trafficStore.engineStatusError {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+            LabeledContent("VPN 隧道", value: tunnelStatusText)
+            LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
+            LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
+            Text(client.mode == .live
+                 ? "数据面：PacketTunnel 扩展内的 Concord 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
+                 : "示例模式：VPN 开关只切换界面状态，不转发流量。切到实时核心并启动 VPN 后由扩展转发流量。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Subscription card
+
+    private var profileCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 17, weight: .semibold))
+                Text("配置")
+                    .font(.headline)
+                Spacer()
+                Button {
+                    Task {
+                        if let profile = profileStore.activeProfile {
+                            await profileStore.update(profile)
+                        }
+                        await refreshSubscription()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.subheadline)
+                        .foregroundStyle(Color(.label))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("更新订阅")
+                Button { onSelectTab(.profiles) } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+            HStack(spacing: 8) {
+                Text(profileStore.activeProfile?.name ?? "未选择订阅")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                Button { onSelectTab(.profiles) } label: {
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.subheadline)
+                        .foregroundStyle(Color(.label))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("切换订阅")
+            }
+            HStack {
+                Text("更新于 \(updatedText)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(remainingText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text(usedPercentText)
+                    .font(.system(size: 28, weight: .bold))
+                Text("已用")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(trafficText)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+            }
+            CapsuleProgressBar(fraction: usedFraction)
+            if subscription == nil {
+                Text("订阅流量信息：核心未提供（需订阅支持 subscription-userinfo，或先启动 VPN）。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .concordCard()
+    }
+
+    // MARK: - Proxy groups card
+
+    private var groupsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Button { onSelectTab(.proxies) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 17, weight: .semibold))
+                    Text("策略组")
+                        .font(.headline)
+                    if timeoutCount > 0 {
+                        PillBadge(text: "\(timeoutCount) 超时", tint: .orange)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.tertiary)
+                }
+                .foregroundStyle(Color(.label))
+            }
+            .buttonStyle(.plain)
+            HStack {
+                HStack(alignment: .firstTextBaseline, spacing: 2) {
+                    Text("\(proxyStore.groups.count)")
+                        .font(.system(size: 44, weight: .bold))
+                    Text("个")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "arrow.up")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                HStack(spacing: -10) {
+                    ForEach(Array(groupInitials.enumerated()), id: \.offset) { _, letter in
+                        Text(letter)
+                            .font(.headline)
+                            .foregroundStyle(Color(.label))
+                            .frame(width: 44, height: 44)
+                            .background(ConcordTheme.softFill, in: Circle())
+                            .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    }
+                    if extraGroups > 0 {
+                        Text("+\(extraGroups)")
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color(.label))
+                            .frame(width: 44, height: 44)
+                            .background(ConcordTheme.softFill, in: Circle())
+                            .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    }
+                }
+            }
+        }
+        .concordCard()
+    }
+
+    // MARK: - Stats card
+
+    private var statsCard: some View {
+        HStack(spacing: 0) {
+            statCell(value: "\(connectionStore.connections.count)", label: "实时连接")
+            statCell(value: "\(eventStore.entries.count)", label: "最近请求")
+            statCell(value: "\(dnsStore.entries.count)", label: "DNS查询")
+        }
+        .concordCard()
+    }
+
+    private func statCell(value: String, label: String) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.system(size: 28, weight: .bold))
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Dashboard edit sheet (pencil button)
+
+private struct DashboardEditSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var showStatus: Bool
+    @Binding var showSpeed: Bool
+    @Binding var showMode: Bool
+    @Binding var showVpn: Bool
+    @Binding var showIntranet: Bool
+    @Binding var showServices: Bool
+    @Binding var showProfile: Bool
+    @Binding var showGroups: Bool
+    @Binding var showStats: Bool
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("显示的卡片") {
+                    Toggle("状态", isOn: $showStatus)
+                    Toggle("网络速度", isOn: $showSpeed)
+                    Toggle("出站模式", isOn: $showMode)
+                    Toggle("VPN", isOn: $showVpn)
+                    Toggle("内网 IP", isOn: $showIntranet)
+                    Toggle("服务状态", isOn: $showServices)
+                    Toggle("配置", isOn: $showProfile)
+                    Toggle("策略组", isOn: $showGroups)
+                    Toggle("统计", isOn: $showStats)
+                }
+                Section {
+                    Text("关闭的卡片会从仪表盘隐藏，可随时再打开。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(ConcordTheme.pageBackground)
+            .navigationTitle("编辑仪表盘")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu("核心") {
-                        Picker("核心模式", selection: $client.mode) {
-                            ForEach(ConcordMode.allCases) { mode in
-                                Text(mode.rawValue).tag(mode)
-                            }
-                        }
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { Task { await trafficStore.probe() } } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
+                    Button("完成") { dismiss() }
                 }
             }
-            .refreshable {
-                await proxyStore.refresh()
-                await connectionStore.refresh()
-                await trafficStore.refresh()
-                await trafficStore.refreshEngineStatus()
-            }
-            .task { await trafficStore.refreshEngineStatus() }
         }
     }
 }

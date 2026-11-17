@@ -64,8 +64,12 @@ struct ProxiesView: View {
                             Button(group.name) {
                                 selectedGroupName = group.name
                             }
-                            .buttonStyle(.bordered)
-                            .tint(selectedGroup?.id == group.id ? .blue : .gray)
+                            .fontWeight(.semibold)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(selectedGroup?.id == group.id ? ConcordTheme.accent : Color(.secondarySystemBackground), in: Capsule())
+                            .foregroundStyle(selectedGroup?.id == group.id ? .white : Color(.label))
+                            .buttonStyle(.plain)
                         }
                     }
                     .padding(.horizontal)
@@ -93,12 +97,14 @@ struct ProxiesView: View {
                         List(filteredNodes) { node in
                             nodeRow(node, in: group)
                         }
-                        .listStyle(.plain)
+                        .listStyle(.insetGrouped)
+                        .scrollContentBackground(.hidden)
                     }
                 } else {
                     ContentUnavailableView("暂无代理组", systemImage: "globe", description: Text("请先在“订阅”页导入并激活一个订阅"))
                 }
             }
+            .background(ConcordTheme.pageBackground)
             .navigationTitle("代理")
             .searchable(text: $searchText, prompt: "搜索节点")
             .toolbar {
@@ -173,9 +179,10 @@ struct ProxiesView: View {
             Text(node.type).font(.caption).foregroundStyle(.secondary)
             LatencyChip(latencyMs: node.latencyMs)
         }
-        .padding(10)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+        .background(Color.white, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .shadow(color: ConcordTheme.cardShadow, radius: 8, x: 0, y: 2)
         .onTapGesture {
             Task { await proxyStore.select(node: node, in: group) }
         }
@@ -228,6 +235,8 @@ struct NodeDetailView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(ConcordTheme.pageBackground)
             .navigationTitle("节点详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

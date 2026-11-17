@@ -134,6 +134,9 @@ struct MitmView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
+        .listStyle(.insetGrouped)
         .navigationTitle("MITM 拦截")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -216,6 +219,8 @@ struct MitmExchangeDetailView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(ConcordTheme.pageBackground)
             .navigationTitle("拦截详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

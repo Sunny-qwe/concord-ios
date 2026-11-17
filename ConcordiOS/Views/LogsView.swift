@@ -14,8 +14,9 @@ struct LogsView: View {
     @State private var tab = LogsTab.logs
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
+        // No NavigationStack here on purpose: this page is pushed
+        // from the Tools tab, whose stack provides the navigation bar.
+        VStack(spacing: 0) {
                 if client.mode == .sample {
                     HStack {
                         SampleDataBadge()
@@ -83,7 +84,8 @@ struct LogsView: View {
                                 }
                                 .id(entry.id)
                             }
-                            .listStyle(.plain)
+                            .listStyle(.insetGrouped)
+                            .scrollContentBackground(.hidden)
                             .onChange(of: logStore.filtered.count) { _, _ in
                                 if logStore.autoScroll, let last = logStore.filtered.last {
                                     proxy.scrollTo(last.id, anchor: .bottom)
@@ -124,7 +126,8 @@ struct LogsView: View {
                                 }
                             }
                         }
-                        .listStyle(.plain)
+                        .listStyle(.insetGrouped)
+                        .scrollContentBackground(.hidden)
                     }
                     if let updated = eventStore.lastUpdated {
                         Text("上次更新：\(updated.formatted(date: .abbreviated, time: .shortened))")
@@ -142,6 +145,7 @@ struct LogsView: View {
                     }
                 }
             }
+            .background(ConcordTheme.pageBackground)
             .navigationTitle("日志")
             .searchable(text: tab == .logs ? $logStore.searchText : $eventStore.searchText, prompt: tab == .logs ? "搜索日志" : "搜索事件")
             .toolbar {
@@ -184,7 +188,6 @@ struct LogsView: View {
                     Task { await eventStore.refresh() }
                 }
             }
-        }
     }
 
     private func levelColor(_ level: String) -> Color {

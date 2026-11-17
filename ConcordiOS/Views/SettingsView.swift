@@ -17,8 +17,11 @@ struct SettingsView: View {
     @State private var showCrashConfirm = false
 
     var body: some View {
-        NavigationStack {
-            Form {
+        // No NavigationStack here on purpose: this page is pushed
+        // from the Tools tab, whose stack provides the navigation
+        // bar. (The DNS / providers / resources sub-pages below are
+        // pushed onto the same stack.)
+        Form {
                 Section("通用（config.general）") {
                     Picker("出站模式", selection: $settingsStore.mode) {
                         ForEach(OutboundMode.allCases) { mode in
@@ -281,6 +284,9 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(ConcordTheme.pageBackground)
+            .tint(ConcordTheme.accent)
             .navigationTitle("设置")
             .onChange(of: settingsStore.mode) { _, _ in settingsStore.save() }
             .onChange(of: settingsStore.logLevel) { _, _ in settingsStore.save() }
@@ -292,7 +298,6 @@ struct SettingsView: View {
                     await settingsStore.refreshMitmStatus()
                 }
             }
-        }
     }
 }
 
@@ -396,6 +401,9 @@ struct DnsQueriesView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
+        .listStyle(.insetGrouped)
         .navigationTitle("DNS 查询")
         .searchable(text: $dnsStore.searchText, prompt: "搜索域名或上游")
         .toolbar {
@@ -480,6 +488,9 @@ struct ProvidersView: View {
                     .font(.system(.caption, design: .monospaced))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                 Button("载入") {
                     Task { await ruleStore.sideLoadProvider(name: sideLoadName, data: sideLoadText) }
                 }
@@ -501,6 +512,9 @@ struct ProvidersView: View {
                     .listRowBackground(Color.clear)
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
+        .listStyle(.insetGrouped)
         .navigationTitle("提供方")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -581,6 +595,9 @@ struct ResourcesView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
+        .listStyle(.insetGrouped)
         .navigationTitle("资源")
     }
 }

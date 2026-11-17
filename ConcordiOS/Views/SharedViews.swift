@@ -47,8 +47,9 @@ struct StatCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+        .padding(16)
+        .background(Color.white, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .shadow(color: ConcordTheme.cardShadow, radius: 8, x: 0, y: 2)
     }
 }
 

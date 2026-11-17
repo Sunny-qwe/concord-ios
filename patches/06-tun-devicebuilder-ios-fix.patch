@@ -1,7 +1,7 @@
-From 4b80f46a07b0fc9f28327f34459bc072f11a5fe5 Mon Sep 17 00:00:00 2001
+From 8bdd5ac7a6baeff87383d74aeeb1bf35c3683a4f Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
-Date: Tue, 17 Nov 2026 08:44:14 +0800
-Subject: [PATCH] tun: cfg-gate device creation off iOS (tun-rs has no
+Date: Tue, 17 Nov 2026 08:34:06 +0000
+Subject: [PATCH 6/7] tun: cfg-gate device creation off iOS (tun-rs has no
  DeviceBuilder there)
 
 tun-rs 2.8.16 compiles its builder module only for windows/linux/macos/freebsd/openbsd/netbsd/illumos (vendor/tun-rs/src/lib.rs), so tun_rs::DeviceBuilder::new() in TunDevice::build fails for aarch64-apple-ios with E0433 (ios-core-check run #8). iOS never creates a device anyway: the NetworkExtension owns the interface and the core gets packets through the channel or an adopted descriptor. Gate create/build off iOS the way Android already is, and add an iOS create stub returning Unsupported, mirroring the Android stub.

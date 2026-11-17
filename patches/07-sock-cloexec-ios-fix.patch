@@ -1,7 +1,7 @@
-From 756f6639443dc5baa2f2f0f83d852edca844626d Mon Sep 17 00:00:00 2001
+From 1400727c96446953c39638ba8d559471930cdc26 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
-Date: Tue, 17 Nov 2026 09:36:37 +0800
-Subject: [PATCH] ios: drop SOCK_CLOEXEC on Apple targets (libc has no such
+Date: Tue, 17 Nov 2026 08:34:06 +0000
+Subject: [PATCH 7/7] ios: drop SOCK_CLOEXEC on Apple targets (libc has no such
  constant there)
 
 libc::SOCK_CLOEXEC exists on Linux but not on Apple targets, so the

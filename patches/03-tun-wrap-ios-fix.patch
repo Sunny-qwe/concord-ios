@@ -1,7 +1,7 @@
-From ebe87f552585651a36109f6ff4a21b243aca958b Mon Sep 17 00:00:00 2001
+From 0b0932a450bba1ae017b8bcf7ff75b06aa224437 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
-Date: Mon, 16 Nov 2026 03:40:28 +0000
-Subject: [PATCH 3/3] tun: cfg-gate TunDevice::wrap name lookup off iOS/illumos
+Date: Tue, 17 Nov 2026 08:33:53 +0000
+Subject: [PATCH 3/7] tun: cfg-gate TunDevice::wrap name lookup off iOS/illumos
 
 The generic unix DeviceImpl (vendor/tun-rs, used on iOS) defines
 neither name() nor if_index(), so wrap() does not compile for

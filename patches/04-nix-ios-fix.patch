@@ -1,13 +1,18 @@
-From 09cfb422c56ac691623e17a62f3b3879b562aa5b Mon Sep 17 00:00:00 2001
+From 1ce9c714e5a2e8110defb9bec571b748f022018d Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
-Date: Mon, 16 Nov 2026 06:10:47 +0000
-Subject: [PATCH] vendor: nix 0.31.3 with macOS-only utun gates for iOS
+Date: Tue, 17 Nov 2026 08:34:00 +0000
+Subject: [PATCH 4/7] vendor: nix 0.31.3 with macOS-only utun gates for iOS
 
 nix gates KextControl/UtunIfname on apple_targets, but libc defines
 SYSPROTO_CONTROL / UTUN_OPT_IFNAME only on macOS, so nix fails to
 compile for aarch64-apple-ios (E0425, pulled in by gotatun's unix nix
 dependency with net/socket features). Vendor nix 0.31.3 and gate those
 items (plus their GetCString helper) to target_os = "macos".
+
+Rebased onto 5f1d090: upstream added vendor/h3, so the workspace
+exclude list and vendor/PATCHES.md gained h3 rows; the patch hunks
+were re-based onto the new line numbers. The vendored nix copy itself
+is unchanged.
 ---
  Cargo.toml                                    |    7 +-
  vendor/PATCHES.md                             |   13 +
@@ -267,19 +272,19 @@ items (plus their GetCString helper) to target_os = "macos".
  create mode 100644 vendor/nix-0.31.3-ios/test/test_unistd.rs
 
 diff --git a/Cargo.toml b/Cargo.toml
-index e0dc10f..972a922 100644
+index ff05576..565ca5e 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -31,7 +31,7 @@ members = [
      "tools/bench",
      "xtask",
  ]
--exclude = ["vendor/boring", "vendor/h2", "vendor/mio", "vendor/quinn", "vendor/quinn-proto", "vendor/rustls", "vendor/shadowsocks", "vendor/tun-rs"]
-+exclude = ["vendor/boring", "vendor/h2", "vendor/mio", "vendor/nix-0.31.3-ios", "vendor/quinn", "vendor/quinn-proto", "vendor/rustls", "vendor/shadowsocks", "vendor/tun-rs"]
+-exclude = ["vendor/boring", "vendor/h3", "vendor/h2", "vendor/mio", "vendor/quinn", "vendor/quinn-proto", "vendor/rustls", "vendor/shadowsocks", "vendor/tun-rs"]
++exclude = ["vendor/boring", "vendor/h3", "vendor/h2", "vendor/mio", "vendor/nix-0.31.3-ios", "vendor/quinn", "vendor/quinn-proto", "vendor/rustls", "vendor/shadowsocks", "vendor/tun-rs"]
  
  [workspace.package]
  version = "0.1.0"
-@@ -284,5 +284,10 @@ quinn = { path = "vendor/quinn" }
+@@ -290,5 +290,10 @@ quinn = { path = "vendor/quinn" }
  quinn-proto = { path = "vendor/quinn-proto" }
  shadowsocks = { path = "vendor/shadowsocks" }
  mio = { path = "vendor/mio" }
@@ -291,18 +296,18 @@ index e0dc10f..972a922 100644
  
  rustls = { path = "vendor/rustls" }
 diff --git a/vendor/PATCHES.md b/vendor/PATCHES.md
-index c3a5468..255481b 100644
+index 2528dda..5905052 100644
 --- a/vendor/PATCHES.md
 +++ b/vendor/PATCHES.md
-@@ -30,6 +30,7 @@ crate's directory, its `[patch.crates-io]` entry and its lines in `UPSTREAM.sha2
- | boring | Read-only `SslRef` record-layer accessors | None | None planned: the change stays in the vendored copy |
+@@ -32,6 +32,7 @@ crate's directory, its `[patch.crates-io]` entry and its lines in `UPSTREAM.sha2
+ | h3 | Opt-in draft-00 datagram SETTINGS for WARP | None | Propose the default-off client builder switch to hyperium/h3 |
  | h2 | Ignore DATA and HEADERS on forgotten client streams | None as of 0.4.20 | Issue and PR to hyperium/h2 with the delayed-DATA-after-reset transport test |
  | mio | High-resolution timed waits on Windows | None | PR to tokio-rs/mio, citing Go's default poller path |
 +| nix | macOS-only gating of the utun/kern-control items | None | PR to nix-rust/nix gating KextControl/UtunIfname to macOS |
  | quinn | `MAX_TRANSMIT_DATAGRAMS` 80 (`MAX_TRANSMIT_SEGMENTS` back to upstream's 10) | n0-computer/noq#636 (noq) | The segment cap is upstream's again; propose only the datagram limit to quinn-rs/quinn |
  | quinn | Stamp each received batch with its own read time | None; quinn `main` `8fe66c3` passes one `now` | PR with `crates/proxy/tests/quinn_recv_time.rs` as the regression |
- | quinn-proto | `send_quantum`, `on_packet_lost`, `min_pacing_delay` and explicit-rate pacing | quinn-rs/quinn#2481; merged as noq#611 | Follow #2481. `min_pacing_delay` is Concord's own addition and needs its own proposal; the pacer changes cannot move into `proxy/src/quic/congestion.rs` while the controller API lacks these hooks |
-@@ -93,6 +94,18 @@ The package archive checksum is `7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c
+ | quinn | Lease receive scratch for a socket poll instead of an endpoint lifetime | None | Propose to quinn-rs/quinn with the endpoint sharing regression and receive-buffer lease contracts |
+@@ -96,6 +97,18 @@ The package archive checksum is `7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c
    10 1803) the selector waits as the release does. `windows-link` declares the three ntdll calls, which
    `windows-sys` does not; `Overlapped::new` is built without `os-ext`.
  
@@ -320,12 +325,12 @@ index c3a5468..255481b 100644
 +
  ## quinn 0.11.12
  
- - `src/connection.rs`: `MAX_TRANSMIT_DATAGRAMS` 20 → 80, the value proposed in n0-computer/noq#636. A bulk sender
+ - `src/endpoint.rs`, `src/endpoint/recv_buffer.rs`: receive scratch is leased from a thread-local cache only
 diff --git a/vendor/UPSTREAM.sha256 b/vendor/UPSTREAM.sha256
-index dc806e5..49d0856 100644
+index 71a9e07..77ca57f 100644
 --- a/vendor/UPSTREAM.sha256
 +++ b/vendor/UPSTREAM.sha256
-@@ -610,3 +610,129 @@ a45db000a52725c799b464fd73b70d6b4cb723a0da6c452ee975974f32ad2ba8  boring/test/rs
+@@ -610,6 +610,132 @@ a45db000a52725c799b464fd73b70d6b4cb723a0da6c452ee975974f32ad2ba8  boring/test/rs
  f866a5506ea9a37ed2f73f62f503e1aff32f7e4145be62b023535f4da1c24416  boring/test/rsa.pem
  2c5eeea39708e90396f9f09d920f2af8b7e9f84ace963c1319072224dd3d302b  boring/test/rsa.pem.pub
  6e9b79f55c03525c3e9630ea640b6be7d5fb5edf5fb93341d5c8b9b2435a1d31  boring/tests/hkdf.rs
@@ -455,6 +460,9 @@ index dc806e5..49d0856 100644
 +3430fcc54776ed931da371bff23a7d83312818430f361774cdeed10fe56a143b  nix-0.31.3-ios/test/test_syslog.rs
 +6eb3536936c67bcfbc80a73a902b4a485943aab5375fc7e3880da6695a4eafce  nix-0.31.3-ios/test/test_time.rs
 +74708c63f1c5f28dec4a56f7dc1c042e7ee5ade0690def17f639f567d189174d  nix-0.31.3-ios/test/test_unistd.rs
+ c47c31697263684e7c1dd7fcb8dba17efb412116510e04fa0f7d545a8edcf444  h3/.cargo_vcs_info.json
+ 98a0cdfd22548b031b914fdaf960600797afc99da1884b79c06053be40429dbc  h3/Cargo.lock
+ 5e7eaa0427066d620a7c0f1ca390cfec628de0eb652e275ed639c61eba26e626  h3/Cargo.toml
 diff --git a/vendor/nix-0.31.3-ios/.cargo_vcs_info.json b/vendor/nix-0.31.3-ios/.cargo_vcs_info.json
 new file mode 100644
 index 0000000..fc65d2f

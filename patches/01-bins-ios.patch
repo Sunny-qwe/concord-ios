@@ -1,7 +1,7 @@
-From e0af1997ab75a4dd61e8eac11cf20eba9bae1c71 Mon Sep 17 00:00:00 2001
+From 63fe4545d489743190845c750b0547a945cc1ae1 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
-Date: Mon, 16 Nov 2026 03:40:20 +0000
-Subject: [PATCH 1/3] ios: add bins/ios staticlib crate (concord_start, iOS
+Date: Tue, 17 Nov 2026 08:33:44 +0000
+Subject: [PATCH 1/7] ios: add bins/ios staticlib crate (concord_start, iOS
  platform, socketpair bridge)
 
 Mirrors bins/android as libconcord_ios.a (crate-type staticlib+rlib):
@@ -10,6 +10,9 @@ concord_start() with no thread hook, Core with EngineConfig
 IosPlatform with no host callbacks (protect is a no-op true, find_owner
 is None), a SOCK_DGRAM socketpair bridge (Option A), and a hand-written
 concord_ios.h. Full upstream workspace, no feature trimming.
+
+Rebased onto 5f1d090: Hub::new now takes (handle, server) only, the
+Server owns the Control, so core.rs drops the third argument.
 ---
  Cargo.toml               |   1 +
  bins/ios/Cargo.toml      |  37 ++++++++++
@@ -33,7 +36,7 @@ concord_ios.h. Full upstream workspace, no feature trimming.
  create mode 100644 bins/ios/src/platform.rs
 
 diff --git a/Cargo.toml b/Cargo.toml
-index bea75bb..e0dc10f 100644
+index eb2f9d2..ff05576 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -26,6 +26,7 @@ members = [
@@ -89,7 +92,7 @@ index 0000000..314a63c
 +workspace = true
 diff --git a/bins/ios/README.md b/bins/ios/README.md
 new file mode 100644
-index 0000000..b28542d
+index 0000000..af20f83
 --- /dev/null
 +++ b/bins/ios/README.md
 @@ -0,0 +1,50 @@
@@ -97,7 +100,7 @@ index 0000000..b28542d
 +
 +`libconcord_ios.a` for a `NEPacketTunnelProvider` (NetworkExtension) target,
 +mirroring `bins/android` (`libconcord.so`). Upstream commit:
-+`187ac9d1e9282f07c05c49eb2ea9d4bc0ef243b6` (shallow clone, 2026-11-16).
++`5f1d0903775f5606bfa938cc0bbfedc25031ed6a` (rebased 2026-11-17 from 187ac9d)..
 +
 +## Layout
 +
@@ -469,7 +472,7 @@ index 0000000..594ba1e
 +fn _unused(_: *mut c_void) {}
 diff --git a/bins/ios/src/core.rs b/bins/ios/src/core.rs
 new file mode 100644
-index 0000000..7a02b37
+index 0000000..288ad52
 --- /dev/null
 +++ b/bins/ios/src/core.rs
 @@ -0,0 +1,78 @@
@@ -535,7 +538,7 @@ index 0000000..7a02b37
 +        let server = Arc::new(Server::new(control.clone()));
 +        runtime.spawn(concord_controller::serve(control.clone()));
 +        drop(entered);
-+        let hub = Hub::new(runtime.handle().clone(), server, control.clone());
++        let hub = Hub::new(runtime.handle().clone(), server);
 +        Ok(Core {
 +            _runtime: runtime,
 +            control,

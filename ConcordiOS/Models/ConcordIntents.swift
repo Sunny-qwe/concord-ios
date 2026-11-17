@@ -162,8 +162,8 @@ struct ConcordAppShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: SetOutboundModeIntent(),
             phrases: [
-                "把 \(.applicationName) 切换到 \(.mode)",
-                "把 \(.applicationName) 出站模式设为 \(.mode)",
+                "用 \(.applicationName) 切换出站模式",
+                "切换 \(.applicationName) 出站模式",
             ])
     }
 }

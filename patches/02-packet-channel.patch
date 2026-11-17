@@ -1,7 +1,7 @@
-From 67acc6a8712311291692fce9bea688e9572a5bab Mon Sep 17 00:00:00 2001
+From 8cb32d00ab3a088c6eaa126ab3202fb711c90391 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
-Date: Mon, 16 Nov 2026 03:40:22 +0000
-Subject: [PATCH 2/3] tun: add production packet-channel DeviceSource (Option
+Date: Tue, 17 Nov 2026 08:33:47 +0000
+Subject: [PATCH 2/7] tun: add production packet-channel DeviceSource (Option
  B)
 
 Promotes the FakeDevice pattern of crates/tun/src/testing.rs to a
@@ -10,6 +10,11 @@ DeviceSource::Channel and TunSource::channel (schema/api.json), a
 PacketChannels registry in crates/api, Engine::start_channel_tun, and
 the concord_packet_channel_open/write/read/close FFI. iOS feeds
 packetFlow packets through the channel; no file descriptor is involved.
+
+Rebased onto 5f1d090: upstream removed the TunSource::channel variant,
+so this patch re-adds it (crates/proto/src/types/live.rs) and the
+packet-channel arm in tun.start; Hub no longer holds a Control, so the
+packet_channel_* methods go through self.server.service().
 ---
  crates/api/Cargo.toml          |   1 +
  crates/api/src/channels.rs     |  68 ++++++++++++
@@ -115,10 +120,10 @@ index 0000000..185103c
 +    }
 +}
 diff --git a/crates/api/src/control.rs b/crates/api/src/control.rs
-index d2138b6..e14b671 100644
+index 5c55170..32ac544 100644
 --- a/crates/api/src/control.rs
 +++ b/crates/api/src/control.rs
-@@ -20,6 +20,7 @@ use crate::stream::Subscription;
+@@ -21,6 +21,7 @@ use crate::stream::Subscription;
  use crate::watch as streams;
  
  #[cfg(unix)]
@@ -126,7 +131,7 @@ index d2138b6..e14b671 100644
  use crate::fds::AdoptedFds;
  
  /// What the process that embeds the core knows and the core cannot find out.
-@@ -54,6 +55,7 @@ pub struct Control {
+@@ -56,6 +57,7 @@ pub struct Control {
      reloading: AsyncMutex<()>,
      #[cfg(unix)]
      fds: AdoptedFds,
@@ -134,7 +139,7 @@ index d2138b6..e14b671 100644
  }
  
  fn empty_update() -> UpdateRequest {
-@@ -160,6 +162,7 @@ impl Control {
+@@ -162,6 +164,7 @@ impl Control {
              reloading: AsyncMutex::new(()),
              #[cfg(unix)]
              fds: AdoptedFds::default(),
@@ -142,7 +147,7 @@ index d2138b6..e14b671 100644
          })
      }
  
-@@ -420,6 +423,11 @@ impl Control {
+@@ -426,6 +429,11 @@ impl Control {
          &self.fds
      }
  
@@ -154,7 +159,7 @@ index d2138b6..e14b671 100644
      pub async fn shutdown(&self) {
          self.engine.shutdown().await;
          self.configured.store(false, Ordering::SeqCst);
-@@ -1195,6 +1203,41 @@ impl ControlService for Control {
+@@ -1206,6 +1214,41 @@ impl ControlService for Control {
                      ));
                  }
              }
@@ -197,7 +202,7 @@ index d2138b6..e14b671 100644
          self.refresh();
          Ok(Empty {})
 diff --git a/crates/api/src/lib.rs b/crates/api/src/lib.rs
-index a291995..5d6f5d1 100644
+index 9880329..2f2e8b0 100644
 --- a/crates/api/src/lib.rs
 +++ b/crates/api/src/lib.rs
 @@ -2,6 +2,7 @@
@@ -215,12 +220,12 @@ index a291995..5d6f5d1 100644
 +pub use channels::PacketChannels;
  pub use concord_common::Origin;
  pub use concord_common::sync;
- pub use concord_engine::local_utc_offset;
+ pub use concord_engine::ControllerCors;
 diff --git a/crates/engine/src/engine.rs b/crates/engine/src/engine.rs
-index aaad9f2..bc36168 100644
+index 65fba91..f51215d 100644
 --- a/crates/engine/src/engine.rs
 +++ b/crates/engine/src/engine.rs
-@@ -23,7 +23,7 @@ use concord_platform::{HomeDir, Platform, mmap};
+@@ -25,7 +25,7 @@ use concord_platform::{HomeDir, Platform, mmap};
  use concord_rules::compile_rule_set;
  use concord_rules::geo::GeoStore;
  use concord_tls::TrustStore;
@@ -229,7 +234,7 @@ index aaad9f2..bc36168 100644
  use concord_tunnel::{ConnTable, LiveOptions, Tunnel, TunnelStatus};
  use serde_json::{Value, json};
  use tokio::runtime::Handle;
-@@ -662,6 +662,56 @@ impl Engine {
+@@ -664,6 +664,56 @@ impl Engine {
          true
      }
  
@@ -351,23 +356,23 @@ index 06d33c3..4ae4534 100644
 +    });
 +}
 diff --git a/crates/ffi/src/hub.rs b/crates/ffi/src/hub.rs
-index d673aa6..c9c0c31 100644
+index 3909abe..fc9a5a2 100644
 --- a/crates/ffi/src/hub.rs
 +++ b/crates/ffi/src/hub.rs
-@@ -128,6 +128,36 @@ impl Hub {
+@@ -126,6 +126,36 @@ impl Hub {
      pub fn adopt_fd(&self, fd: OwnedFd) -> u64 {
-         self.control.adopted_fds().adopt(fd)
+         self.server.service().adopted_fds().adopt(fd)
      }
 +
 +    /// Creates a packet channel; see `concord_packet_channel_open`.
 +    pub fn packet_channel_open(&self) -> u64 {
-+        self.control.packet_channels().create()
++        self.server.service().packet_channels().create()
 +    }
 +
 +    /// Writes one packet into the channel. 1 when queued, 0 when the ring is
 +    /// full, -1 when the handle is unknown.
 +    pub fn packet_write(&self, handle: u64, packet: &[u8]) -> i32 {
-+        match self.control.packet_channels().net(handle) {
++        match self.server.service().packet_channels().net(handle) {
 +            Some(net) => i32::from(net.inject(packet)),
 +            None => -1,
 +        }
@@ -376,7 +381,7 @@ index d673aa6..c9c0c31 100644
 +    /// Reads one packet the stack wrote, non-blocking. The byte count, or 0
 +    /// when no packet is waiting, or -1 when the handle is unknown.
 +    pub fn packet_read(&self, handle: u64, out: &mut [u8]) -> i32 {
-+        match self.control.packet_channels().net(handle) {
++        match self.server.service().packet_channels().net(handle) {
 +            Some(net) => net
 +                .try_take(out)
 +                .map_or(0, |n| i32::try_from(n).unwrap_or(-1)),
@@ -386,7 +391,7 @@ index d673aa6..c9c0c31 100644
 +
 +    /// Drops a packet channel; a runner that took its device is unaffected.
 +    pub fn packet_channel_close(&self, handle: u64) {
-+        self.control.packet_channels().close(handle);
++        self.server.service().packet_channels().close(handle);
 +    }
  }
  
@@ -407,10 +412,10 @@ index fdaabde..4c87a42 100644
  pub use callback::{Deliver, Release};
  pub use hub::{Hub, Receiver, hub, install, set_notice};
 diff --git a/crates/proto/src/types/live.rs b/crates/proto/src/types/live.rs
-index fbe9941..a2ea6a9 100644
+index 7628781..8908d9c 100644
 --- a/crates/proto/src/types/live.rs
 +++ b/crates/proto/src/types/live.rs
-@@ -297,8 +297,8 @@ pub enum EngineState {
+@@ -299,8 +299,8 @@ pub enum EngineState {
      Failed,
  }
  
@@ -421,7 +426,7 @@ index fbe9941..a2ea6a9 100644
  #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
  #[serde(tag = "kind", rename_all = "snake_case")]
  pub enum TunSource {
-@@ -309,6 +309,14 @@ pub enum TunSource {
+@@ -311,6 +311,14 @@ pub enum TunSource {
      Inherited {
          handle: u64,
      },
@@ -750,10 +755,10 @@ index efc36a7..434b5e3 100644
      let Some(handler) = deps.dns.clone() else {
          return Ok(None);
 diff --git a/schema/api.json b/schema/api.json
-index 5676f68..fdac7a8 100644
+index e3424d7..b469ae5 100644
 --- a/schema/api.json
 +++ b/schema/api.json
-@@ -4153,9 +4153,28 @@
+@@ -4190,9 +4190,28 @@
              "kind",
              "handle"
            ]

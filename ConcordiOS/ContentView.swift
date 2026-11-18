@@ -98,15 +98,15 @@ struct ContentView: View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.self) { tab in
                 Button { selectedTab = tab } label: {
-                    VStack(spacing: 4) {
+                    VStack(spacing: 3) {
                         Image(systemName: tab.icon)
-                            .font(.system(size: 22, weight: .semibold))
+                            .font(.system(size: 20, weight: .semibold))
                         Text(tab.title)
                             .font(.caption)
                             .fontWeight(.semibold)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 8)
                     .background(
                         selectedTab == tab
                             ? ConcordTheme.tabSelectedFill
@@ -118,7 +118,7 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(8)
+        .padding(6)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 32))
         .shadow(color: .black.opacity(0.10), radius: 16, x: 0, y: 6)
     }

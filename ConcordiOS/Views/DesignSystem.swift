@@ -41,7 +41,7 @@ enum ConcordTheme {
 // MARK: - Card
 
 struct ConcordCardModifier: ViewModifier {
-    var padding: CGFloat = 20
+    var padding: CGFloat = 16
 
     func body(content: Content) -> some View {
         content
@@ -53,7 +53,7 @@ struct ConcordCardModifier: ViewModifier {
 
 extension View {
     /// White card, corner radius 28, soft shadow.
-    func concordCard(padding: CGFloat = 20) -> some View {
+    func concordCard(padding: CGFloat = 16) -> some View {
         modifier(ConcordCardModifier(padding: padding))
     }
 
@@ -91,8 +91,8 @@ struct PillBadge: View {
         Text(text)
             .font(.subheadline)
             .fontWeight(.semibold)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
             .background(tint.opacity(0.14), in: Capsule())
             .foregroundStyle(tint)
     }

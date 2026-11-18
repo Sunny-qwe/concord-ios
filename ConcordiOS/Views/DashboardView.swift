@@ -212,7 +212,7 @@ struct DashboardView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 12) {
                 titleRow
                 if client.mode == .sample {
                     HStack {
@@ -237,7 +237,7 @@ struct DashboardView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
-            .padding(.bottom, 16)
+            .padding(.bottom, 12)
         }
         .concordPageBackground()
         .refreshable { await refreshAll() }
@@ -280,13 +280,13 @@ struct DashboardView: View {
     private var titleRow: some View {
         HStack(alignment: .center) {
             Text("仪表盘")
-                .font(.system(size: 34, weight: .bold))
+                .font(.system(size: 30, weight: .bold))
             Spacer()
             Button { showEditSheet = true } label: {
                 Image(systemName: "pencil")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color(.label))
-                    .frame(width: 52, height: 52)
+                    .frame(width: 44, height: 44)
                     .background(Color.white, in: Circle())
                     .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
             }
@@ -301,9 +301,9 @@ struct DashboardView: View {
         ZStack(alignment: .topTrailing) {
             BlobShape()
                 .fill(Color(red: 0.93, green: 0.93, blue: 0.955))
-                .frame(width: 250, height: 220)
-                .offset(x: 70, y: -50)
-            VStack(alignment: .leading, spacing: 16) {
+                .frame(width: 200, height: 170)
+                .offset(x: 56, y: -40)
+            VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     CardTitleRow(icon: "waveform.path.ecg", title: "状态")
                     PillBadge(text: proxyStore.isRunning ? "运行中" : "未运行",
@@ -311,7 +311,7 @@ struct DashboardView: View {
                 }
                 HStack(spacing: 16) {
                     BlobIcon(systemName: "globe", iconColor: Color(.label),
-                             blobColor: Color(red: 0.92, green: 0.92, blue: 0.94), size: 76)
+                             blobColor: Color(red: 0.92, green: 0.92, blue: 0.94), size: 64)
                     VStack(alignment: .leading, spacing: 8) {
                         Text(proxyStore.selectedOutbound ?? "未选择出站")
                             .font(.title3)
@@ -330,16 +330,16 @@ struct DashboardView: View {
                         Task { await proxyStore.toggle() }
                     } label: {
                         Image(systemName: proxyStore.isRunning ? "stop.fill" : "play.fill")
-                            .font(.system(size: 40, weight: .bold))
+                            .font(.system(size: 32, weight: .bold))
                             .foregroundStyle(.white)
-                            .frame(width: 112, height: 112)
+                            .frame(width: 88, height: 88)
                             .background(ConcordTheme.accent, in: Circle())
                             .shadow(color: ConcordTheme.accent.opacity(0.35), radius: 16, x: 0, y: 8)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(proxyStore.isRunning ? "停止 VPN" : "启动 VPN")
                 }
-                HStack(spacing: 32) {
+                HStack(spacing: 24) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("运行时长")
                             .font(.caption)
@@ -362,7 +362,7 @@ struct DashboardView: View {
                     Spacer()
                 }
             }
-            .padding(20)
+            .padding(16)
         }
         .clipShape(RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
@@ -372,7 +372,7 @@ struct DashboardView: View {
     // MARK: - Network speed card
 
     private var speedCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             CardTitleRow(icon: "gauge.with.dots.needle.33percent", title: "网络速度")
             HStack(spacing: 12) {
                 speedPanel(isUp: true)
@@ -397,7 +397,7 @@ struct DashboardView: View {
             }
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(split.number)
-                    .font(.system(size: 42, weight: .bold))
+                    .font(.system(size: 34, weight: .bold))
                 Text("\(split.unit)/s")
                     .font(.subheadline)
                     .fontWeight(.semibold)
@@ -409,27 +409,27 @@ struct DashboardView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
+        .padding(14)
         .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
     }
 
     // MARK: - Outbound mode card
 
     private var modeCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             CardTitleRow(icon: "arrow.triangle.branch", title: "出站模式")
             HStack(spacing: 12) {
                 ForEach(OutboundMode.allCases) { mode in
                     Button { settingsStore.mode = mode } label: {
-                        VStack(spacing: 8) {
+                        VStack(spacing: 6) {
                             Image(systemName: modeIcon(mode))
-                                .font(.system(size: 22, weight: .semibold))
+                                .font(.system(size: 20, weight: .semibold))
                             Text(modeShortLabel(mode))
                                 .font(.subheadline)
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
+                        .padding(.vertical, 12)
                         .background(settingsStore.mode == mode ? ConcordTheme.accent : ConcordTheme.softFill,
                                     in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
                         .foregroundStyle(settingsStore.mode == mode ? .white : Color(.label))
@@ -449,9 +449,9 @@ struct DashboardView: View {
     // MARK: - VPN card
 
     private var vpnCard: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             BlobIcon(systemName: "shield.fill", iconColor: .white,
-                     blobColor: ConcordTheme.accent, size: 64)
+                     blobColor: ConcordTheme.accent, size: 52)
             VStack(alignment: .leading, spacing: 2) {
                 Text("VPN")
                     .font(.headline)
@@ -467,13 +467,13 @@ struct DashboardView: View {
             .labelsHidden()
             .tint(ConcordTheme.accent)
         }
-        .concordCard(padding: 16)
+        .concordCard(padding: 12)
     }
 
     // MARK: - Intranet IP card
 
     private var intranetCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 6) {
                 Image(systemName: "network")
                     .font(.subheadline)
@@ -484,14 +484,14 @@ struct DashboardView: View {
                 Spacer()
             }
             Text(intranetIp ?? "—")
-                .font(.system(size: 32, weight: .bold))
+                .font(.system(size: 26, weight: .bold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             HStack(spacing: 12) {
                 Image(systemName: "wifi")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(Color(.label))
-                    .frame(width: 44, height: 44)
+                    .frame(width: 40, height: 40)
                     .background(Color.white, in: Circle())
                 VStack(alignment: .leading, spacing: 2) {
                     Text("局域网代理")
@@ -506,7 +506,7 @@ struct DashboardView: View {
                     .labelsHidden()
                     .tint(ConcordTheme.accent)
             }
-            .padding(12)
+            .padding(10)
             .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
         }
         .concordCard()
@@ -515,7 +515,7 @@ struct DashboardView: View {
     // MARK: - Service status card
 
     private var servicesCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Button { withAnimation { servicesExpanded.toggle() } } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "shield.checkmark")
@@ -548,9 +548,9 @@ struct DashboardView: View {
         HStack(spacing: 10) {
             ZStack(alignment: .bottomTrailing) {
                 Text(serviceTileText(service?.name))
-                    .font(.system(size: service?.name.lowercased() == "github" ? 15 : 22, weight: .bold))
+                    .font(.system(size: service?.name.lowercased() == "github" ? 14 : 20, weight: .bold))
                     .foregroundStyle(Color(.label))
-                    .frame(width: 44, height: 44)
+                    .frame(width: 40, height: 40)
                     .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
                     .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
                 if service?.status == "available" {
@@ -566,7 +566,7 @@ struct DashboardView: View {
                 .fontWeight(.semibold)
             Spacer()
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
     }
@@ -646,7 +646,7 @@ struct DashboardView: View {
     // MARK: - Subscription card
 
     private var profileCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "doc.text")
                     .font(.system(size: 17, weight: .semibold))
@@ -699,7 +699,7 @@ struct DashboardView: View {
             }
             HStack(alignment: .firstTextBaseline) {
                 Text(usedPercentText)
-                    .font(.system(size: 28, weight: .bold))
+                    .font(.system(size: 24, weight: .bold))
                 Text("已用")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -722,7 +722,7 @@ struct DashboardView: View {
     // MARK: - Proxy groups card
 
     private var groupsCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Button { onSelectTab(.proxies) } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "square.stack.3d.up")
@@ -744,7 +744,7 @@ struct DashboardView: View {
             HStack {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                     Text("\(proxyStore.groups.count)")
-                        .font(.system(size: 44, weight: .bold))
+                        .font(.system(size: 36, weight: .bold))
                     Text("个")
                         .font(.subheadline)
                         .fontWeight(.semibold)
@@ -759,7 +759,7 @@ struct DashboardView: View {
                         Text(letter)
                             .font(.headline)
                             .foregroundStyle(Color(.label))
-                            .frame(width: 44, height: 44)
+                            .frame(width: 40, height: 40)
                             .background(ConcordTheme.softFill, in: Circle())
                             .overlay(Circle().stroke(Color.white, lineWidth: 2))
                     }
@@ -768,7 +768,7 @@ struct DashboardView: View {
                             .font(.subheadline)
                             .fontWeight(.semibold)
                             .foregroundStyle(Color(.label))
-                            .frame(width: 44, height: 44)
+                            .frame(width: 40, height: 40)
                             .background(ConcordTheme.softFill, in: Circle())
                             .overlay(Circle().stroke(Color.white, lineWidth: 2))
                     }
@@ -792,7 +792,7 @@ struct DashboardView: View {
     private func statCell(value: String, label: String) -> some View {
         VStack(spacing: 4) {
             Text(value)
-                .font(.system(size: 28, weight: .bold))
+                .font(.system(size: 24, weight: .bold))
             Text(label)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)

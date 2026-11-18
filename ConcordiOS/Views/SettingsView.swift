@@ -303,7 +303,7 @@ struct SettingsView: View {
                 }
 
                 Section("关于") {
-                    LabeledContent("版本", value: "Concord iOS 0.2.7（FlClash 风格界面）")
+                    LabeledContent("版本", value: "Concord iOS 0.2.8（FlClash 风格界面）")
                     LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
                     LabeledContent("界面来源", value: "chen08209/FlClash（GPL-3.0）")
                     Text("本 App 是 FlClash 界面的 SwiftUI 复刻，核心经 PacketTunnel 扩展链接（packet-channel 数据面），但静态库构建与真机数据面尚未验证，见 README 的「已上线与待办」一节。")

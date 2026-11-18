@@ -1,4 +1,4 @@
-From 8cb32d00ab3a088c6eaa126ab3202fb711c90391 Mon Sep 17 00:00:00 2001
+From 88b7f11ae2ef07b9ca1cab8c0338a37b18724ddd Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:33:47 +0000
 Subject: [PATCH 2/7] tun: add production packet-channel DeviceSource (Option
@@ -120,7 +120,7 @@ index 0000000..185103c
 +    }
 +}
 diff --git a/crates/api/src/control.rs b/crates/api/src/control.rs
-index 5c55170..32ac544 100644
+index 2ed94ac..b978bba 100644
 --- a/crates/api/src/control.rs
 +++ b/crates/api/src/control.rs
 @@ -21,6 +21,7 @@ use crate::stream::Subscription;
@@ -139,7 +139,7 @@ index 5c55170..32ac544 100644
  }
  
  fn empty_update() -> UpdateRequest {
-@@ -162,6 +164,7 @@ impl Control {
+@@ -165,6 +167,7 @@ impl Control {
              reloading: AsyncMutex::new(()),
              #[cfg(unix)]
              fds: AdoptedFds::default(),
@@ -147,7 +147,7 @@ index 5c55170..32ac544 100644
          })
      }
  
-@@ -426,6 +429,11 @@ impl Control {
+@@ -432,6 +435,11 @@ impl Control {
          &self.fds
      }
  
@@ -159,7 +159,7 @@ index 5c55170..32ac544 100644
      pub async fn shutdown(&self) {
          self.engine.shutdown().await;
          self.configured.store(false, Ordering::SeqCst);
-@@ -1206,6 +1214,41 @@ impl ControlService for Control {
+@@ -1212,6 +1220,41 @@ impl ControlService for Control {
                      ));
                  }
              }
@@ -222,7 +222,7 @@ index 9880329..2f2e8b0 100644
  pub use concord_common::sync;
  pub use concord_engine::ControllerCors;
 diff --git a/crates/engine/src/engine.rs b/crates/engine/src/engine.rs
-index 65fba91..f51215d 100644
+index f8d56e6..28c39b8 100644
 --- a/crates/engine/src/engine.rs
 +++ b/crates/engine/src/engine.rs
 @@ -25,7 +25,7 @@ use concord_platform::{HomeDir, Platform, mmap};
@@ -234,7 +234,7 @@ index 65fba91..f51215d 100644
  use concord_tunnel::{ConnTable, LiveOptions, Tunnel, TunnelStatus};
  use serde_json::{Value, json};
  use tokio::runtime::Handle;
-@@ -664,6 +664,56 @@ impl Engine {
+@@ -668,6 +668,56 @@ impl Engine {
          true
      }
  
@@ -635,7 +635,7 @@ index 0000000..838b396
 +    }
 +}
 diff --git a/crates/tun/src/lib.rs b/crates/tun/src/lib.rs
-index a1b444c..216b1d2 100644
+index ebdd5ad..4f2de82 100644
 --- a/crates/tun/src/lib.rs
 +++ b/crates/tun/src/lib.rs
 @@ -1,5 +1,6 @@
@@ -645,7 +645,7 @@ index a1b444c..216b1d2 100644
  mod device;
  mod dns;
  mod options;
-@@ -17,6 +18,7 @@ mod wintun;
+@@ -19,6 +20,7 @@ mod wintun;
  #[doc(hidden)]
  pub mod testing;
  
@@ -755,10 +755,10 @@ index efc36a7..434b5e3 100644
      let Some(handler) = deps.dns.clone() else {
          return Ok(None);
 diff --git a/schema/api.json b/schema/api.json
-index e3424d7..b469ae5 100644
+index d47b6d6..0257d88 100644
 --- a/schema/api.json
 +++ b/schema/api.json
-@@ -4190,9 +4190,28 @@
+@@ -4235,9 +4235,28 @@
              "kind",
              "handle"
            ]

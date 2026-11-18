@@ -1,4 +1,4 @@
-From 1ce9c714e5a2e8110defb9bec571b748f022018d Mon Sep 17 00:00:00 2001
+From 70d96e04649d0cb9706523dac36ac61bc4b18385 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:34:00 +0000
 Subject: [PATCH 4/7] vendor: nix 0.31.3 with macOS-only utun gates for iOS

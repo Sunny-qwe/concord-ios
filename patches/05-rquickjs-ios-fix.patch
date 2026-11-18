@@ -1,4 +1,4 @@
-From 384521f23c2933eccbcef575ab23160184846255 Mon Sep 17 00:00:00 2001
+From f03a3f7d4e0788288c5096f8fe29931c115defc6 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:34:06 +0000
 Subject: [PATCH 5/7] mitm: enable rquickjs bindgen feature for iOS (no

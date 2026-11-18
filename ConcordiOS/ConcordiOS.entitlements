@@ -2,9 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- TODO: replace with your real App Group. The App Group must exist in
-	     your Apple Developer account and be enabled in both provisioning
-	     profiles (app + tunnel). -->
+	<!-- Network Extension: the main app declares packet-tunnel-provider
+	     too, like FlClash's Runner does. This matters for the unsigned
+	     IPA: tools/adhoc-sign.sh embeds these entitlements into the
+	     binaries' ad-hoc signatures so a re-signer (SideKite/zsign)
+	     preserves them; without it installd rejects the tunnel. -->
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.434fff4c253add77.1</string>

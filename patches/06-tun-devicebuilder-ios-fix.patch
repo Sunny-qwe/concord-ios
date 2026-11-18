@@ -1,4 +1,4 @@
-From 8bdd5ac7a6baeff87383d74aeeb1bf35c3683a4f Mon Sep 17 00:00:00 2001
+From b225b68a00416e5ed9faedc47254936dd020a746 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:34:06 +0000
 Subject: [PATCH 6/7] tun: cfg-gate device creation off iOS (tun-rs has no

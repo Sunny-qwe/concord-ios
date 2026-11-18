@@ -20,7 +20,7 @@ env:
   TUNNEL_BUNDLE_ID: com.sunny-qwe.concord-ios.PacketTunnel
   UPSTREAM_REPO: chen08209/concord
   # Pinned upstream commit the patches in patches/ are diffs against.
-  UPSTREAM_REF: 5f1d0903775f5606bfa938cc0bbfedc25031ed6a
+  UPSTREAM_REF: 01d7a134842dfc9907fbdaa9ed40f1a06539e63c
   STATICLIB_DIR: upstream/target/aarch64-apple-ios/release
   STATICLIB: upstream/target/aarch64-apple-ios/release/libconcord_ios.a
   FFI_LIB_DIR: rust/concord-ios-ffi/target/aarch64-apple-ios/release
@@ -100,6 +100,8 @@ jobs:
             "OTHER_LDFLAGS=\$(inherited) -lconcord_ios -lconcord_ios_ffi" \
             archive
 
+      - name: Ad-hoc sign with entitlements (for re-signers like SideKite)
+        run: bash tools/adhoc-sign.sh build/ConcordiOS.xcarchive/Products/Applications/ConcordiOS.app
       - name: Export unsigned IPA
         run: |
           mkdir -p build/Payload

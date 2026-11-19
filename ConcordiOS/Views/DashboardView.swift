@@ -26,6 +26,10 @@ struct DashboardView: View {
     @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var tunnelManager: TunnelManager
     @EnvironmentObject private var client: ConcordClient
+    /// On-Demand state (Batch F): the VPN card shows whether
+    /// auto-reconnect is on, and the unexpected-disconnect banner
+    /// reads tunnelManager.unexpectedDisconnect.
+    @ObservedObject private var onDemandStore = OnDemandStore.shared
     @Environment(\.colorScheme) private var colorScheme
 
     @AppStorage("ConcordiOS.dashboard.show.status") private var showStatus = true
@@ -998,6 +1002,38 @@ struct DashboardView: View {
                 Text(error).font(.system(size: 10)).foregroundStyle(.red)
             }
             LabeledContent("VPN 隧道", value: tunnelStatusText)
+            // Unexpected disconnect (Batch F): the tunnel dropped
+            // without the user asking (system kill, core stall, failed
+            // start). One tap reconnects via the same path as the play
+            // button; the flag clears on the next successful connect.
+            // A watchdog-triggered restart under On-Demand clears it
+            // by itself when the tunnel comes back.
+            if tunnelManager.unexpectedDisconnect {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("VPN 意外断开")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(tunnelManager.lastError ?? "隧道被系统关闭或核心停止响应。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("重新连接") {
+                        Task { await proxyStore.toggle() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            }
+            if onDemandStore.enabled {
+                Text("按需连接已开启：断网或切换网络后系统会自动重连。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
             LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
             LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
             Text(client.mode == .live

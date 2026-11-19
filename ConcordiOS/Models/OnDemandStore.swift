@@ -23,7 +23,12 @@ import Combine
 final class OnDemandStore: ObservableObject {
     static let shared = OnDemandStore()
 
-    @Published var enabled: Bool = false
+    /// Default on (v0.2.26 Batch F, long-run stability): a fresh
+    /// install gets On-Demand on, so the system auto-reconnects
+    /// after a network loss or handover. A user who explicitly
+    /// turned it off keeps the saved `false` — load() overwrites
+    /// this default whenever saved data exists.
+    @Published var enabled: Bool = true
     @Published var excludedSSIDs: [String] = []
     @Published var applyMessage: String?
 
@@ -37,7 +42,7 @@ final class OnDemandStore: ObservableObject {
     private var lastInstalledSSIDs: [String]?
 
     private struct Saved: Codable {
-        var enabled: Bool = false
+        var enabled: Bool = true
         var excludedSSIDs: [String] = []
     }
 

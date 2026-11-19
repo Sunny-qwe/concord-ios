@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import NetworkExtension
 import os
 
@@ -220,6 +221,34 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var packetsIn: UInt64 = 0
     private var packetsOut: UInt64 = 0
     private var packetsDroppedFull: UInt64 = 0
+
+    // Long-run stability (v0.2.26 Batch F). The system-level backstop
+    // is On-Demand (TunnelManager/OnDemandStore, default on): it
+    // restarts the tunnel after a failure. These three guards run
+    // inside the extension and only fire when something is actually
+    // wrong — nothing here restarts a healthy tunnel.
+    //
+    // Watchdog: traffic.watch pushes a full Traffic value every
+    // second while the core is alive (upstream crates/api/src/watch.rs:
+    // a ticker emits unconditionally), so "no core message at all"
+    // is the liveness signal. No extra RPC is sent: engine.state is
+    // a subscribe, not a unary call (re-subscribing every tick would
+    // leak subscriptions), and a second core.hello handshake is not
+    // defined as idempotent. Network loss alone cannot trip it (the
+    // traffic ticker is core-internal, not network-dependent).
+    private var watchdogTimer: DispatchSourceTimer?
+    private var lastCoreMessageAt: Date?
+    private var watchdogFailures = 0
+    // Memory pressure: the extension lives under the NetworkExtension
+    // memory limit (historically ~15 MB, reported ~50 MB more
+    // recently); Jetsam kills the tunnel when it is exceeded.
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    // Path monitor: re-assert the tunnel network settings when the
+    // underlying network changes (Wi-Fi <-> cellular).
+    private var pathMonitor: NWPathMonitor?
+    private var lastPathSignature: String?
+    private var pathReapplyWorkItem: DispatchWorkItem?
+    private var lastAppliedNetworkSettings: NEPacketTunnelNetworkSettings?
 
     private struct PendingRequest {
         /// The app's original request id, if this request came from
@@ -516,9 +545,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
             }
         }
+        // Kept for the path monitor (Batch F): a network change
+        // re-asserts these exact settings.
+        lastAppliedNetworkSettings = settings
 
         try await subscribeToStreams()
         startPump()
+        startStabilityGuards()
         Self.log.info("tunnel up: channel \(handle), stack \(tun.stack, privacy: .public), mtu \(tun.mtu)")
     }
 
@@ -527,6 +560,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         pumpRunning = false
         drainTimer?.cancel()
         drainTimer = nil
+        // Long-run stability guards (Batch F): stop them here; the
+        // watchdog must not fire while the tunnel is tearing down.
+        watchdogTimer?.cancel()
+        watchdogTimer = nil
+        memoryPressureSource?.cancel()
+        memoryPressureSource = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        pathReapplyWorkItem?.cancel()
+        pathReapplyWorkItem = nil
         coreQueue.async {
             // Best effort: ask the core to stop the tunnel and engine,
             // then give it a moment before closing the session. The
@@ -762,6 +805,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// Runs on coreQueue. Routes replies to the pending request and
     /// `$/event` notifications to the stream handlers.
     private func handleCoreMessage(_ data: Data) {
+        // Watchdog heartbeat (Batch F): every reply and every stream
+        // event passes through here; traffic.watch alone ticks once
+        // a second while the core is alive.
+        lastCoreMessageAt = Date()
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             Self.log.error("dropping unparsable core message (\(data.count) bytes)")
             return
@@ -1175,6 +1222,134 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard !packets.isEmpty else { return }
         packetsOut += UInt64(packets.count)
         packetFlow.writePackets(packets, withProtocols: protocols)
+    }
+
+    // MARK: - Long-run stability (Batch F)
+
+    /// Starts the watchdog, memory-pressure watch and path monitor.
+    /// Called once, after the tunnel is fully up (startPump).
+    private func startStabilityGuards() {
+        startWatchdog()
+        startMemoryPressureWatch()
+        startPathMonitor()
+    }
+
+    /// Health watchdog: every 30s, checks whether any core message
+    /// has arrived recently. A tick only counts a failure after 75s
+    /// of total core silence, and two consecutive failures are needed
+    /// before the tunnel is cancelled — conservative on purpose, so a
+    /// scheduling stall cannot cause a reconnect loop. Cancelling
+    /// lets the system restart the tunnel when On-Demand is enabled
+    /// (the default); with On-Demand off, the tunnel stays down and
+    /// the app shows the unexpected-disconnect banner instead.
+    private func startWatchdog() {
+        lastCoreMessageAt = Date()
+        watchdogFailures = 0
+        let timer = DispatchSource.makeTimerSource(queue: coreQueue)
+        timer.schedule(deadline: .now() + .seconds(30), repeating: .seconds(30))
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            guard self.session != 0, !self.isStopping, self.pumpRunning else { return }
+            guard let last = self.lastCoreMessageAt else { return }
+            let silent = Date().timeIntervalSince(last)
+            if silent > 75 {
+                self.watchdogFailures += 1
+                Self.log.error("watchdog: no core message for \(Int(silent))s (failure \(self.watchdogFailures)/2)")
+                if self.watchdogFailures >= 2 {
+                    self.watchdogTimer?.cancel()
+                    self.watchdogTimer = nil
+                    Self.log.error("watchdog: core unresponsive, cancelling tunnel so On-Demand restarts it")
+                    self.cancelTunnelWithError(TunnelSetupError.rpcFailed("核心无响应（看门狗：75 秒以上无核心消息，连续两次）"))
+                }
+            } else {
+                self.watchdogFailures = 0
+            }
+        }
+        timer.resume()
+        watchdogTimer = timer
+    }
+
+    /// Memory-pressure shedding: on warning/critical, ask the core to
+    /// release its caches (core.releaseMemory: resets outbound
+    /// sessions and returns free pages to the OS) and drop this
+    /// process's append-only buffers (log/dns/events; they refill
+    /// from the next stream events). The MITM capture buffer itself
+    /// is core-side and bounded by limits.capture-entries (default
+    /// 64), so it is small; there is no separate "clear capture" RPC.
+    private func startMemoryPressureWatch() {
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical], queue: coreQueue)
+        source.setEventHandler { [weak self, weak source] in
+            guard let self, let source else { return }
+            Self.log.error("memory pressure event (data \(source.data)); releasing core memory and dropping log/dns/event buffers")
+            self.logBuffer.removeAll()
+            self.dnsBuffer.removeAll()
+            self.eventBuffer.removeAll()
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    _ = try await self.sendCoreRequest(method: "core.releaseMemory", params: [:])
+                    Self.log.info("core.releaseMemory done after memory pressure")
+                } catch {
+                    Self.log.error("core.releaseMemory failed after memory pressure: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+        source.resume()
+        memoryPressureSource = source
+    }
+
+    /// Watches the underlying network (Wi-Fi <-> cellular) and
+    /// re-asserts the tunnel network settings when it changes, so
+    /// routing stays correct after a handover. The signature is the
+    /// path status + interface names + interface types in use; the
+    /// tunnel interface (utun) appears in the list too, but
+    /// re-applying identical settings does not change the signature,
+    /// so this cannot loop. The 1s debounce coalesces bursts
+    /// (interface up/down, IP change); the first callback only sets
+    /// the baseline.
+    private func startPathMonitor() {
+        let monitor = NWPathMonitor()
+        let queue = DispatchQueue(label: "com.concord.ios.pathmonitor")
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            let signature = [
+                String(path.status.rawValue),
+                path.availableInterfaces.map(\.name).sorted().joined(separator: ","),
+                "wifi:\(path.usesInterfaceType(.wifi))",
+                "cell:\(path.usesInterfaceType(.cellular))",
+                "wired:\(path.usesInterfaceType(.wiredEthernet))",
+            ].joined(separator: "|")
+            guard let last = self.lastPathSignature else {
+                self.lastPathSignature = signature
+                return
+            }
+            guard signature != last else { return }
+            self.lastPathSignature = signature
+            self.scheduleNetworkSettingsReapply()
+        }
+        monitor.start(queue: queue)
+        pathMonitor = monitor
+    }
+
+    private func scheduleNetworkSettingsReapply() {
+        pathReapplyWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.reapplyNetworkSettings()
+        }
+        pathReapplyWorkItem = item
+        coreQueue.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
+    private func reapplyNetworkSettings() {
+        guard session != 0, !isStopping, pumpRunning,
+              let settings = lastAppliedNetworkSettings else { return }
+        Self.log.info("network path changed; re-applying tunnel network settings")
+        setTunnelNetworkSettings(settings) { error in
+            if let error {
+                Self.log.error("re-apply tunnel network settings failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     // MARK: - Shared files (App Group)

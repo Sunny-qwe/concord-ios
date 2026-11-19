@@ -34,6 +34,18 @@ final class TunnelManager: ObservableObject {
     @Published private(set) var status: NEVPNStatus = .invalid
     @Published private(set) var lastError: String?
 
+    /// True when the tunnel dropped without the user asking it to
+    /// (v0.2.26 Batch F): the Dashboard shows an "unexpected
+    /// disconnect" banner with a one-tap reconnect. Set only on a
+    /// connected/connecting/reasserting -> disconnected transition
+    /// that was not caused by stop(); cleared on start() and on the
+    /// next successful connect. A failed start also sets it (the
+    /// user asked to start and it did not stay up).
+    @Published private(set) var unexpectedDisconnect = false
+    /// Set by stop() so the observer can tell a user-initiated stop
+    /// from a system/core failure. Cleared by start().
+    private var userInitiatedStop = false
+
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
 
@@ -47,7 +59,17 @@ final class TunnelManager: ObservableObject {
         ) { [weak self] notification in
             guard let self,
                   let connection = notification.object as? NEVPNConnection else { return }
-            self.status = connection.status
+            let old = self.status
+            let new = connection.status
+            self.status = new
+            if new == .disconnected,
+               old == .connected || old == .connecting || old == .reasserting,
+               !self.userInitiatedStop {
+                self.unexpectedDisconnect = true
+            }
+            if new == .connected {
+                self.unexpectedDisconnect = false
+            }
         }
         Task { try? await self.prepare() }
     }
@@ -100,12 +122,22 @@ final class TunnelManager: ObservableObject {
     /// Start the system VPN. The extension's startTunnel boots the
     /// core; a failure there surfaces as a status change to
     /// .disconnected (the error itself is logged by the extension).
+    /// Before starting, the On-Demand rules are (re)installed from
+    /// the store (v0.2.26 Batch F): On-Demand is on by default, so
+    /// the system auto-reconnects after a network loss or handover,
+    /// and a watchdog-triggered restart in the extension only
+    /// recovers when these rules exist. A rules-install failure does
+    /// not block the start — On-Demand is a backstop, not a
+    /// precondition. The install is a no-op when nothing changed.
     @MainActor
     func start() async throws {
         try await prepare()
         guard let manager else {
             throw TunnelError.noManager
         }
+        userInitiatedStop = false
+        unexpectedDisconnect = false
+        _ = await OnDemandStore.shared.installRulesIfNeeded()
         do {
             try manager.connection.startVPNTunnel()
         } catch {
@@ -119,6 +151,8 @@ final class TunnelManager: ObservableObject {
     @MainActor
     func stop() async {
         try? await prepare()
+        userInitiatedStop = true
+        unexpectedDisconnect = false
         manager?.connection.stopVPNTunnel()
     }
 

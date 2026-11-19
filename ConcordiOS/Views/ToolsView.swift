@@ -20,8 +20,31 @@ import SwiftUI
 // 常规 (Settings) page, and the rest remain linked from there or
 // from MITM / Profiles, so no functionality is lost.
 
+/// Tools destinations, navigated programmatically (see below).
+private enum ToolsDestination: Hashable {
+    case requests
+    case dns
+    case resources
+    case language
+    case theme
+    case backup
+    case config
+    case settings
+    case disclaimer
+}
+
 struct ToolsView: View {
     @AppStorage("ConcordiOS.appLanguage") private var appLanguage = ""
+    /// Programmatic navigation path. The rows used to be
+    /// NavigationLinks; on the user's device (v0.2.15) every row was
+    /// dead — taps did nothing — even though the stack and the links
+    /// are present in the pushed source and no overlay, .disabled or
+    /// gesture anywhere in the app can explain it. Buttons provably
+    /// receive taps in this app (the floating tab bar is Buttons),
+    /// so the rows are now Buttons that append to this path and the
+    /// destinations render from one .navigationDestination — the
+    /// NavigationLink tap handling is bypassed entirely.
+    @State private var navPath: [ToolsDestination] = []
 
     private var languageDisplayName: String {
         switch appLanguage {
@@ -32,20 +55,20 @@ struct ToolsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navPath) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     Text("工具")
                         .font(.system(size: 18, weight: .bold))
                     toolSection(header: nil) {
-                        ToolRow(icon: "clock", title: "请求") { ConnectionsView() }
+                        ToolRow(icon: "clock", title: "请求") { navPath.append(.requests) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "server.rack", title: "DNS查询") { DnsQueriesView() }
+                        ToolRow(icon: "server.rack", title: "DNS查询") { navPath.append(.dns) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "archivebox", title: "资源") { ResourcesView() }
+                        ToolRow(icon: "archivebox", title: "资源") { navPath.append(.resources) }
                     }
                     toolSection(header: "设置") {
-                        NavigationLink { LanguageView() } label: {
+                        Button { navPath.append(.language) } label: {
                             HStack(spacing: 14) {
                                 Image(systemName: "character.bubble")
                                     .font(.system(size: 18, weight: .regular))
@@ -66,17 +89,18 @@ struct ToolsView: View {
                             .padding(.vertical, 16)
                         }
                         .buttonStyle(.plain)
+                        .contentShape(Rectangle())
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "paintbrush", title: "主题") { ThemePickerView() }
+                        ToolRow(icon: "paintbrush", title: "主题") { navPath.append(.theme) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "arrow.clockwise.icloud", title: "备份与恢复") { BackupView() }
+                        ToolRow(icon: "arrow.clockwise.icloud", title: "备份与恢复") { navPath.append(.backup) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "wrench", title: "进阶配置") { ConfigEditorView() }
+                        ToolRow(icon: "wrench", title: "进阶配置") { navPath.append(.config) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "gear", title: "常规") { SettingsView() }
+                        ToolRow(icon: "gear", title: "常规") { navPath.append(.settings) }
                     }
                     toolSection(header: "其他") {
-                        ToolRow(icon: "gavel", title: "免责声明") { DisclaimerView() }
+                        ToolRow(icon: "doc.text", title: "免责声明") { navPath.append(.disclaimer) }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -85,6 +109,19 @@ struct ToolsView: View {
             }
             .background(ConcordTheme.pageBackground)
             .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: ToolsDestination.self) { destination in
+                switch destination {
+                case .requests: ConnectionsView()
+                case .dns: DnsQueriesView()
+                case .resources: ResourcesView()
+                case .language: LanguageView()
+                case .theme: ThemePickerView()
+                case .backup: BackupView()
+                case .config: ConfigEditorView()
+                case .settings: SettingsView()
+                case .disclaimer: DisclaimerView()
+                }
+            }
         }
     }
 
@@ -109,21 +146,18 @@ struct ToolsView: View {
     }
 }
 
-/// One 56pt row: plain grey outline icon, 17pt semibold title,
-/// chevron right (16pt vertical padding + 24pt icon frame).
-private struct ToolRow<Destination: View>: View {
+/// One 56pt row: plain grey outline icon, 13pt semibold title,
+/// chevron right (16pt vertical padding + 24pt icon frame). A plain
+/// Button (not a NavigationLink — see the note on navPath above)
+/// with a full-row contentShape, so the whole row rect — including
+/// the gap between the title and the chevron — is tappable.
+private struct ToolRow: View {
     let icon: String
     let title: String
-    let destination: () -> Destination
-
-    init(icon: String, title: String, @ViewBuilder destination: @escaping () -> Destination) {
-        self.icon = icon
-        self.title = title
-        self.destination = destination
-    }
+    let action: () -> Void
 
     var body: some View {
-        NavigationLink { destination() } label: {
+        Button(action: action) {
             HStack(spacing: 14) {
                 Image(systemName: icon)
                     .font(.system(size: 18, weight: .regular))
@@ -141,6 +175,7 @@ private struct ToolRow<Destination: View>: View {
             .padding(.vertical, 16)
         }
         .buttonStyle(.plain)
+        .contentShape(Rectangle())
     }
 }
 

@@ -107,6 +107,61 @@ struct PillBadge: View {
     }
 }
 
+// MARK: - Skeleton bar (FlClash SkeletonPill / inactive bars)
+///
+/// True base colour for the light-mode bars. Measured from the
+/// FlClash reference (IMG_1115-2, 1170x2532): every bar — IP
+/// (140x18), the two chips (48x28, 72x28) and the org bar (96x12)
+/// — renders RGB (233,231,232) = #E9E7E8, while the card bg is
+/// (252,248,249) and the wave is (239,237,240) = #EFEDF0. The
+/// source's literal 0xB3ECE9EB (#ECE9EB @ 0.7) does NOT reproduce
+/// this: composited over the card bg it renders (241,238,239) and
+/// over the wave (237,234,237) — visibly too light. So the bars
+/// are OPAQUE #E9E7E8 in light mode: the render is exactly the
+/// measured colour no matter what sits behind them (the wave edge
+/// crosses the bars). In dark mode the source literal is kept
+/// (#ECE9EB @ 0.7), which reads as a muted grey on a dark card.
+
+struct SkeletonBar: View {
+    let width: CGFloat
+    let height: CGFloat
+    /// True while running and waiting for the probe (pulsing);
+    /// false for the static not-running bars.
+    var animated: Bool = false
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var pulse = false
+
+    /// Light mode: opaque #E9E7E8 (measured — see comment above).
+    /// Dark mode: static bars keep the source literal #ECE9EB @
+    /// 0.7; pulsing bars use white 15% (the source's
+    /// surfaceContainerHighest is theme-dependent).
+    private var barColor: Color {
+        if colorScheme == .dark {
+            return animated ? Color.white.opacity(0.15) : Color(red: 0.925, green: 0.914, blue: 0.922)
+        }
+        return Color(red: 233.0 / 255.0, green: 231.0 / 255.0, blue: 232.0 / 255.0)
+    }
+
+    private var barOpacity: CGFloat {
+        if animated { return pulse ? 1.0 : 0.5 }
+        return colorScheme == .dark ? 0.7 : 1.0
+    }
+
+    var body: some View {
+        Capsule()
+            .fill(barColor)
+            .opacity(barOpacity)
+            .frame(width: width, height: height)
+            .onAppear {
+                guard animated else { return }
+                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                    pulse = true
+                }
+            }
+    }
+}
+
 // MARK: - Organic blob (the grey shape behind the globe / the blue
 // shape behind the VPN shield in the reference)
 

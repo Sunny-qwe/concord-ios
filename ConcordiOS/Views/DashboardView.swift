@@ -47,6 +47,8 @@ struct DashboardView: View {
     @State private var ipLatencyMs: Int?
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
+    /// The last probe fetch failed (no data): while running, the
+    /// card shows "服务失败" instead of the loading skeletons.
 
     // MARK: - Derived data
 
@@ -203,11 +205,13 @@ struct DashboardView: View {
         }
     }
 
-    /// Public-IP lookup (same ip-api.com endpoint as IPQualityView):
-    /// the status card shows the CURRENT egress IP even when the VPN
-    /// is not running — FlClash does the same. When the VPN is on,
-    /// URLSession follows the tunnel, so the answer is the proxy
-    /// egress IP; when it is off, it is the phone's direct IP.
+    /// Public-IP lookup (same ip-api.com endpoint as IPQualityView).
+    /// The lookup runs even while the VPN is off, but the status
+    /// card does NOT show the result then: FlClash shows grey
+    /// skeleton bars while the core is not running, the real IP
+    /// only once it is running. When the VPN is on, URLSession
+    /// follows the tunnel, so the answer is the proxy egress IP;
+    /// when it is off, it is the phone's direct IP.
     private func fetchIPInfo() async {
         guard let url = URL(string: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon") else { return }
         ipChecking = true
@@ -215,14 +219,18 @@ struct DashboardView: View {
         let started = Date()
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { ipFetchFailed = true; return }
             let decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
-            guard decoded.status == "success" else { return }
+            guard decoded.status == "success" else { ipFetchFailed = true; return }
             ipLatencyMs = Int(Date().timeIntervalSince(started) * 1000)
             ipInfo = decoded
+            ipFetchFailed = false
         } catch {
             // No network or API error: keep the previous (or empty)
-            // values — the card shows "—" instead of stale numbers.
+            // values — the card shows "服务失败" while running, or
+            // the skeleton bars while not running, instead of stale
+            // numbers.
+            ipFetchFailed = true
         }
     }
 
@@ -304,8 +312,15 @@ struct DashboardView: View {
             withAnimation(.timingCurve(0.34, 1.56, 0.64, 1, duration: 0.45)) {
                 morphProgress = running ? 1 : 0
             }
-            // The egress IP changes when the VPN toggles: re-fetch
-            // so the status card always shows the current IP.
+            // The egress IP changes when the VPN toggles: drop the
+            // stale direct-IP result so the card shows the loading
+            // skeletons (FlClash re-probes on start), then re-fetch
+            // so the status card shows the current proxy egress IP.
+            if running {
+                ipInfo = nil
+                ipLatencyMs = nil
+                ipFetchFailed = false
+            }
             Task { await fetchIPInfo() }
         }
         .onChange(of: settingsStore.mode) { _, _ in
@@ -361,12 +376,13 @@ struct DashboardView: View {
         return colorScheme == .dark ? .white : ConcordTheme.accent
     }
 
-    // The reference shows the CURRENT egress IP even when the core
-    // is not running ("未运行" + real IP + 移动网络 + 质量 优 +
-    // 组织 Unicom) — so the main text is the IP from fetchIPInfo,
-    // never "未选择出站". The middle row is [country badge] [IP +
-    // pills] [play button]; the bottom row is 运行时间 / 组织 (org
-    // from the same lookup).
+    // Content states (FlClash _ExitRow / _IpChips / _Cells): while
+    // the core is not running the IP slot is a static grey bar, the
+    // chips slot two static grey bars and the org slot one static
+    // grey bar; while running, the probe loading shows pulsing
+    // skeletons, and answered data shows the real IP / chips / org.
+    // The middle row is [country badge] [IP + pills] [play button];
+    // the bottom row is 运行时间 / 组织 (org from the same lookup).
 
     // MARK: - Status card (FlClash CurrentOutboundCard, mobile metrics)
     //
@@ -377,9 +393,87 @@ struct DashboardView: View {
     // out of these metrics (~181pt) — no spacer. The grey wave is
     // _StatusWavePainter, painted behind the content and clipped to
     // the card's rounded rect (34pt, the FlClash mobile card radius).
-    // The IP, chips and organisation stay visible while not running
-    // (our scope choice — FlClash's new version shows skeleton bars
-    // there instead, which the user does not want).
+
+    /// IP slot (FlClash _ExitRow): a static grey bar while the core
+    /// is not running, a pulsing skeleton while running and the
+    /// probe has not answered, the real IP once it has, "服务失败"
+    /// (red) if the probe failed.
+    private var ipSlot: some View {
+        Group {
+            if !proxyStore.isRunning {
+                SkeletonBar(width: 140, height: 18)
+            } else if let ip = ipInfo?.query {
+                Text(ip)
+                    .font(.system(size: 18, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            } else if ipFetchFailed {
+                Text("服务失败")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            } else {
+                SkeletonBar(width: 140, height: 18, animated: true)
+            }
+        }
+        .frame(height: 28, alignment: .leading)
+    }
+
+    /// Chips slot (FlClash _IpChips): two static grey bars while
+    /// not running, two pulsing pills while running and loading,
+    /// the real network-type + quality pills once probed, a retry
+    /// hint if the probe failed.
+    private var chipsSlot: some View {
+        Group {
+            if !proxyStore.isRunning {
+                HStack(spacing: 6) {
+                    SkeletonBar(width: 48, height: 28)
+                    SkeletonBar(width: 72, height: 28)
+                }
+            } else if ipInfo != nil {
+                HStack(spacing: 8) {
+                    PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
+                    if let quality = ipQuality {
+                        qualityPill(text: quality.text, level: quality.level)
+                    }
+                }
+            } else if ipFetchFailed {
+                Text("点按图标重试")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 6) {
+                    SkeletonBar(width: 48, height: 28, animated: true)
+                    SkeletonBar(width: 72, height: 28, animated: true)
+                }
+            }
+        }
+        .frame(height: 28, alignment: .leading)
+    }
+
+    /// Org cell (FlClash _Cells): a static grey bar (full-opacity
+    /// #ECE9EB) while not running, a pulsing skeleton while running
+    /// and loading, the real org once probed, "—" if the probe
+    /// answered without an org or failed.
+    private var orgValue: some View {
+        Group {
+            if !proxyStore.isRunning {
+                SkeletonBar(width: 96, height: 12)
+                    .padding(.top, 2)
+            } else if let org = ipInfo?.org ?? ipInfo?.isp {
+                Text(org)
+                    .font(.system(size: 14))
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+            } else if ipInfo == nil && !ipFetchFailed {
+                SkeletonBar(width: 96, height: 14, animated: true)
+            } else {
+                Text("—")
+                    .font(.system(size: 14))
+                    .fontWeight(.semibold)
+            }
+        }
+    }
 
     private var statusCard: some View {
         ZStack {
@@ -397,24 +491,14 @@ struct DashboardView: View {
                     Spacer().frame(height: 12)
                     HStack(spacing: 12) {
                         CloverBadge(
-                            countryCode: ipInfo?.countryCode,
+                            countryCode: proxyStore.isRunning ? ipInfo?.countryCode : nil,
                             checking: ipChecking,
                             onRefresh: { Task { await fetchIPInfo() } }
                         )
                         VStack(alignment: .leading, spacing: 0) {
-                            Text(ipInfo?.query ?? "—")
-                                .font(.system(size: 18, weight: .semibold))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.75)
-                                .frame(height: 28, alignment: .leading)
+                            ipSlot
                             Spacer().frame(height: 4)
-                            HStack(spacing: 8) {
-                                PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
-                                if let quality = ipQuality {
-                                    qualityPill(text: quality.text, level: quality.level)
-                                }
-                            }
-                            .frame(height: 28, alignment: .leading)
+                            chipsSlot
                         }
                     }
                     Spacer().frame(height: 16)
@@ -433,10 +517,7 @@ struct DashboardView: View {
                             Text("组织")
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
-                            Text(ipInfo?.org ?? ipInfo?.isp ?? "—")
-                                .font(.system(size: 14))
-                                .fontWeight(.semibold)
-                                .lineLimit(1)
+                            orgValue
                         }
                         Spacer()
                     }

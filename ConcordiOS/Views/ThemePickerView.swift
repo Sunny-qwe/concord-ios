@@ -10,6 +10,10 @@ import SwiftUI
 
 struct ThemePickerView: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    /// The preview toggle is a live miniature, not a real switch:
+    /// it used to be bound to `.constant(true)`, so tapping it did
+    /// nothing and looked dead. It now flips local state.
+    @State private var previewVpnOn = true
 
     var body: some View {
         List {
@@ -99,7 +103,7 @@ struct ThemePickerView: View {
                                 .foregroundStyle(mode == "规则" ? .white : Color(.label))
                         }
                     }
-                    Toggle("VPN 开关", isOn: .constant(true))
+                    Toggle("VPN 开关", isOn: $previewVpnOn)
                         .tint(themeStore.accentColor)
                 }
                 .concordCard()

@@ -686,7 +686,7 @@ struct ConcordMitmValidateResult: Codable {
 // have no line form to send back, so the MITM line lists still come
 // from the Swift parser (see MitmModuleParser.parseWithCore).
 
-struct ConcordMitmModuleMeta: Decodable {
+struct ConcordMitmModuleMeta: Codable {
     let name: String?
     let desc: String?
     let author: String?
@@ -700,12 +700,12 @@ struct ConcordMitmModuleMeta: Decodable {
 
 /// `kind` is an internally-tagged object: {"type": "text"} |
 /// {"type": "switch"} | {"type": "select", "options": [...]}.
-struct ConcordMitmModuleArgumentKind: Decodable {
+struct ConcordMitmModuleArgumentKind: Codable {
     let type: String
     let options: [String]?
 }
 
-struct ConcordMitmModuleArgument: Decodable {
+struct ConcordMitmModuleArgument: Codable {
     let name: String
     let kind: ConcordMitmModuleArgumentKind
     let number: Bool
@@ -715,7 +715,7 @@ struct ConcordMitmModuleArgument: Decodable {
     let line: UInt32
 }
 
-struct ConcordMitmModuleResource: Decodable {
+struct ConcordMitmModuleResource: Codable {
     let url: String
     /// script | map-local | jq.
     let kind: String
@@ -725,14 +725,14 @@ struct ConcordMitmModuleResource: Decodable {
 /// `rule` is what goes before the policy in a profile's rule line;
 /// `policy` is a built-in (DIRECT, REJECT, …) or a name the host
 /// maps to one of its outbounds.
-struct ConcordMitmModulePolicy: Decodable {
+struct ConcordMitmModulePolicy: Codable {
     let builtin: String?
     let named: String?
 
     var display: String { builtin ?? named ?? "DIRECT" }
 }
 
-struct ConcordMitmModuleRule: Decodable {
+struct ConcordMitmModuleRule: Codable {
     let line: UInt32
     let rule: String
     let policy: ConcordMitmModulePolicy
@@ -740,24 +740,24 @@ struct ConcordMitmModuleRule: Decodable {
     let extendedMatching: Bool
 }
 
-struct ConcordMitmModuleIgnored: Decodable {
+struct ConcordMitmModuleIgnored: Codable {
     let line: UInt32
     let text: String
     let reason: String
     let detail: String?
 }
 
-struct ConcordMitmModuleOff: Decodable {
+struct ConcordMitmModuleOff: Codable {
     /// requirement | requirementUnreadable.
     let reason: String
 }
 
-struct ConcordMitmLineEntry: Decodable {
+struct ConcordMitmLineEntry: Codable {
     let index: UInt32
     let view: JSONValue
 }
 
-struct ConcordMitmModuleView: Decodable {
+struct ConcordMitmModuleView: Codable {
     let format: String
     let meta: ConcordMitmModuleMeta
     /// Why the module takes no effect as a whole, though its lines

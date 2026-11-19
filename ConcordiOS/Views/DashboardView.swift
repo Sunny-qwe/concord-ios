@@ -47,6 +47,7 @@ struct DashboardView: View {
     @State private var ipLatencyMs: Int?
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
+    @State private var ipFetchFailed = false
     /// The last probe fetch failed (no data): while running, the
     /// card shows "服务失败" instead of the loading skeletons.
 

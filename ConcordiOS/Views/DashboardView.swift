@@ -45,6 +45,8 @@ struct DashboardView: View {
     @State private var intranetIp: String?
     @State private var ipInfo: IPQualityInfo?
     @State private var ipLatencyMs: Int?
+    @State private var morphProgress: CGFloat = 0
+    @State private var ipChecking = false
 
     // MARK: - Derived data
 
@@ -208,6 +210,8 @@ struct DashboardView: View {
     /// egress IP; when it is off, it is the phone's direct IP.
     private func fetchIPInfo() async {
         guard let url = URL(string: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon") else { return }
+        ipChecking = true
+        defer { ipChecking = false }
         let started = Date()
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
@@ -279,6 +283,7 @@ struct DashboardView: View {
         .concordPageBackground()
         .refreshable { await refreshAll() }
         .task {
+            morphProgress = proxyStore.isRunning ? 1 : 0
             if proxyStore.isRunning && tunnelStartedAt == nil {
                 tunnelStartedAt = Date()
             }
@@ -294,6 +299,11 @@ struct DashboardView: View {
         }
         .onChange(of: proxyStore.isRunning) { _, running in
             tunnelStartedAt = running ? (tunnelStartedAt ?? Date()) : nil
+            // Morph circle -> cookie9 over 450ms (easeOutBack, the
+            // forward curve of FlClash's _StartToggle).
+            withAnimation(.timingCurve(0.34, 1.56, 0.64, 1, duration: 0.45)) {
+                morphProgress = running ? 1 : 0
+            }
             // The egress IP changes when the VPN toggles: re-fetch
             // so the status card always shows the current IP.
             Task { await fetchIPInfo() }
@@ -324,9 +334,7 @@ struct DashboardView: View {
                 .font(.system(size: 18, weight: .bold))
             Spacer()
             Button { showEditSheet = true } label: {
-                Image(systemName: "pencil")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(editButtonIconColor)
+                ThickPencilIcon(iconColor: editButtonIconColor, bandColor: editButtonBackground)
                     .frame(width: 44, height: 44)
                     .background(editButtonBackground, in: Circle())
                     .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
@@ -353,8 +361,6 @@ struct DashboardView: View {
         return colorScheme == .dark ? .white : ConcordTheme.accent
     }
 
-    // MARK: - Status card (reference IMG_1110)
-    //
     // The reference shows the CURRENT egress IP even when the core
     // is not running ("未运行" + real IP + 移动网络 + 质量 优 +
     // 组织 Unicom) — so the main text is the IP from fetchIPInfo,
@@ -362,89 +368,115 @@ struct DashboardView: View {
     // pills] [play button]; the bottom row is 运行时间 / 组织 (org
     // from the same lookup).
 
+    // MARK: - Status card (FlClash CurrentOutboundCard, mobile metrics)
+    //
+    // Layout transcribed from the FlClash source: a Row of the left
+    // column (header, ipTop 12, exit row, 16, cells) and the 88pt
+    // button slot, the button vertically centred on the whole row;
+    // padding 20/18/16/18, gap 10, cellGap 24. The card height comes
+    // out of these metrics (~181pt) — no spacer. The grey wave is
+    // _StatusWavePainter, painted behind the content and clipped to
+    // the card's rounded rect (34pt, the FlClash mobile card radius).
+    // The IP, chips and organisation stay visible while not running
+    // (our scope choice — FlClash's new version shows skeleton bars
+    // there instead, which the user does not want).
+
     private var statusCard: some View {
-        ZStack(alignment: .topTrailing) {
-            BlobShape()
-                .fill(Color(red: 0.93, green: 0.93, blue: 0.955))
-                .frame(width: 200, height: 170)
-                .offset(x: 56, y: -40)
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    CardTitleRow(icon: "waveform.path.ecg", title: "状态")
-                    PillBadge(text: proxyStore.isRunning ? "运行中" : "未运行",
-                              tint: proxyStore.isRunning ? .green : .gray)
-                }
-                HStack(spacing: 16) {
-                    // Country badge: the egress IP's country code on
-                    // the same grey blob the reference uses.
-                    ZStack {
-                        BlobShape()
-                            .fill(Color(red: 0.92, green: 0.92, blue: 0.94))
-                            .frame(width: 48, height: 40)
-                        Text(ipInfo?.countryCode ?? "—")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Color(.label))
+        ZStack {
+            StatusWaveShape()
+                .fill(waveColor)
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 8) {
+                        CardTitleRow(icon: "waveform.path.ecg", title: "状态")
+                        PillBadge(text: proxyStore.isRunning ? "运行中" : "未运行",
+                                  tint: proxyStore.isRunning ? .green : .gray,
+                                  dot: proxyStore.isRunning)
                     }
-                    .frame(width: 48, height: 40)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(ipInfo?.query ?? "—")
-                            .font(.system(size: 18, weight: .semibold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                        HStack(spacing: 8) {
-                            PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
-                            if let quality = ipQuality {
-                                qualityPill(text: quality.text, level: quality.level)
+                    .frame(height: 26)
+                    Spacer().frame(height: 12)
+                    HStack(spacing: 12) {
+                        CloverBadge(
+                            countryCode: ipInfo?.countryCode,
+                            checking: ipChecking,
+                            onRefresh: { Task { await fetchIPInfo() } }
+                        )
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(ipInfo?.query ?? "—")
+                                .font(.system(size: 18, weight: .semibold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                                .frame(height: 28, alignment: .leading)
+                            Spacer().frame(height: 4)
+                            HStack(spacing: 8) {
+                                PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
+                                if let quality = ipQuality {
+                                    qualityPill(text: quality.text, level: quality.level)
+                                }
+                            }
+                            .frame(height: 28, alignment: .leading)
+                        }
+                    }
+                    Spacer().frame(height: 16)
+                    HStack(spacing: 24) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("运行时间")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                                Text(uptimeText)
+                                    .font(.system(size: 14))
+                                    .fontWeight(.semibold)
                             }
                         }
-                    }
-                    Spacer()
-                    Button {
-                        Task { await proxyStore.toggle() }
-                    } label: {
-                        Image(systemName: proxyStore.isRunning ? "stop.fill" : "play.fill")
-                            .font(.system(size: 21, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 88, height: 88)
-                            .background(ConcordTheme.accent, in: Circle())
-                            .shadow(color: ConcordTheme.accent.opacity(0.35), radius: 16, x: 0, y: 8)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(proxyStore.isRunning ? "停止 VPN" : "启动 VPN")
-                }
-                // The reference card is taller than its content: the
-                // bottom row sits near the card's bottom edge, with a
-                // large empty gap below the middle row (play-button
-                // bottom 267pt, labels top 348pt in the reference).
-                Spacer().frame(height: 64)
-                HStack(spacing: 24) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("运行时间")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                        TimelineView(.periodic(from: .now, by: 1)) { _ in
-                            Text(uptimeText)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("组织")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                            Text(ipInfo?.org ?? ipInfo?.isp ?? "—")
                                 .font(.system(size: 14))
                                 .fontWeight(.semibold)
+                                .lineLimit(1)
                         }
+                        Spacer()
                     }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("组织")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                        Text(ipInfo?.org ?? ipInfo?.isp ?? "—")
-                            .font(.system(size: 14))
-                            .fontWeight(.semibold)
-                            .lineLimit(1)
-                    }
-                    Spacer()
                 }
+                Button {
+                    Task { await proxyStore.toggle() }
+                } label: {
+                    ZStack {
+                        StartToggleMorphShape(progress: morphProgress)
+                            .fill(Color(red: 0, green: 0.478, blue: 1))
+                            .rotationEffect(.degrees(Double(morphProgress) * 40))
+                            .shadow(color: Color(red: 0, green: 0.478, blue: 1).opacity(0.35), radius: 9, x: 0, y: 6)
+                        Image(systemName: proxyStore.isRunning ? "pause.fill" : "play.fill")
+                            .font(.system(size: 21, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(width: 88, height: 88)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(proxyStore.isRunning ? "停止 VPN" : "启动 VPN")
+                .frame(width: 88)
             }
-            .padding(16)
+            .padding(EdgeInsets(top: 18, leading: 20, bottom: 18, trailing: 16))
         }
-        .clipShape(RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
+        .clipShape(RoundedRectangle(cornerRadius: 34))
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 34))
         .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
+    }
+
+    /// Wave fill (_StatusWavePainter colours): not running #EFEDF0 /
+    /// running #E4EBFB in light mode; white 6% / #262F3E in dark mode.
+    private var waveColor: Color {
+        if colorScheme == .dark {
+            return proxyStore.isRunning
+                ? Color(red: 0.149, green: 0.184, blue: 0.243)
+                : Color.white.opacity(0.06)
+        }
+        return proxyStore.isRunning
+            ? Color(red: 0.894, green: 0.922, blue: 0.984)
+            : Color(red: 0.937, green: 0.929, blue: 0.941)
     }
 
     /// Quality pill with the reference's solid pastel colours (the
@@ -916,6 +948,89 @@ struct DashboardView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// The top-right edit button's glyph: the reference is a thick, bold
+/// pencil (17x17pt bbox, ~24pt diagonal, ~7pt body), not the thin SF
+/// Symbol pencil. Drawn as a filled pentagon (tip bottom-left, flat
+/// top top-right) with a background-coloured band near the top end,
+/// inside the same 44pt circle. Numbers are the measured reference
+/// geometry: axis 20.5pt at 45 degrees, body 7pt wide, tip 5.5pt.
+private struct ThickPencilIcon: View {
+    let iconColor: Color
+    let bandColor: Color
+
+    var body: some View {
+        ZStack {
+            Path { p in
+                p.move(to: CGPoint(x: 0, y: 17))
+                p.addLine(to: CGPoint(x: 6.36, y: 15.59))
+                p.addLine(to: CGPoint(x: 16.97, y: 4.98))
+                p.addLine(to: CGPoint(x: 12.02, y: 0.03))
+                p.addLine(to: CGPoint(x: 1.41, y: 10.64))
+                p.closeSubpath()
+            }
+            .fill(iconColor)
+            Path { p in
+                p.move(to: CGPoint(x: 9.76, y: 2.29))
+                p.addLine(to: CGPoint(x: 14.71, y: 7.24))
+                p.addLine(to: CGPoint(x: 13.58, y: 8.37))
+                p.addLine(to: CGPoint(x: 8.63, y: 3.42))
+                p.closeSubpath()
+            }
+            .fill(bandColor)
+        }
+        .frame(width: 17, height: 17)
+    }
+}
+
+/// Country badge (_CountryBadge): clover4Leaf, #E4E2E4, 48pt, rotated
+/// 45 degrees (the clover shape only — the glyph/code stays upright).
+/// Shows the country code whenever the lookup has one (our scope: the
+/// IP stays visible while not running); the globe shows only before
+/// the first lookup. Tapping re-runs the lookup; while checking, the
+/// clover spins (1500ms period, stops on the next quarter turn).
+private struct CloverBadge: View {
+    let countryCode: String?
+    let checking: Bool
+    let onRefresh: () -> Void
+
+    @State private var spin: Double = 0
+
+    var body: some View {
+        Button(action: onRefresh) {
+            ZStack {
+                CloverShape()
+                    .fill(Color(red: 0.894, green: 0.886, blue: 0.894))
+                    .frame(width: 48, height: 48)
+                    .rotationEffect(.degrees(45 + spin))
+                if let code = countryCode, !code.isEmpty {
+                    Text(code.uppercased())
+                        .font(.system(size: 13, weight: .semibold))
+                        .tracking(0.5)
+                        .foregroundStyle(Color(.label))
+                } else {
+                    Image(systemName: "globe")
+                        .font(.system(size: 21))
+                        .foregroundStyle(Color(.label))
+                }
+            }
+            .frame(width: 48, height: 48)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("重新查询出口 IP")
+        .onChange(of: checking) { _, isChecking in
+            if isChecking {
+                withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
+                    spin = 360
+                }
+            } else {
+                withAnimation(.easeOut(duration: 0.35)) {
+                    spin = 0
+                }
+            }
+        }
     }
 }
 

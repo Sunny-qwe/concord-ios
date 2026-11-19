@@ -10,8 +10,8 @@ import SwiftUI
 //   其他         免责声明
 // Rows are 56pt tall, section labels 13pt semibold grey, card
 // corner radius 24pt. Each row keeps its existing destination;
-// the two rows with no existing destination (语言, 免责声明) get
-// minimal static pages below — no new features are invented.
+// 语言 is a real picker (AppStorage + AppleLanguages, restart to
+// apply) and 免责声明 is a static text page.
 //
 // NOTE: the old Tools page also linked 规则 / 连接 / 日志 /
 // MITM拦截 / MITM模块 / IP质量 / 快捷指令 / 提供方. Those pages
@@ -21,6 +21,16 @@ import SwiftUI
 // from MITM / Profiles, so no functionality is lost.
 
 struct ToolsView: View {
+    @AppStorage("ConcordiOS.appLanguage") private var appLanguage = ""
+
+    private var languageDisplayName: String {
+        switch appLanguage {
+        case "zh-Hans": return "简体中文"
+        case "en": return "English"
+        default: return "默认"
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -45,7 +55,7 @@ struct ToolsView: View {
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(Color(.label))
                                 Spacer()
-                                Text("默认")
+                                Text(languageDisplayName)
                                     .font(.system(size: 13))
                                     .foregroundStyle(Color(.label))
                                 Image(systemName: "chevron.up.chevron.down")
@@ -134,25 +144,56 @@ private struct ToolRow<Destination: View>: View {
     }
 }
 
-// MARK: - Language (no in-app language setting exists)
+// MARK: - Language (real picker)
 
-/// The app follows the system language; there is no in-app
-/// language picker to invent. This page only states the current
-/// value ("默认") so the 语言 row has somewhere to go.
+/// In-app language picker. The choice is persisted and applied via
+/// the standard AppleLanguages mechanism, which iOS reads at launch,
+/// so a restart is required before it takes effect. Honest limit:
+/// the app's own strings are hardcoded Chinese, so only system UI
+/// (dates, system controls) follows the choice until the strings
+/// are localised.
 private struct LanguageView: View {
+    @AppStorage("ConcordiOS.appLanguage") private var appLanguage = ""
+    @State private var showRestartAlert = false
+
+    private var displayName: String {
+        switch appLanguage {
+        case "zh-Hans": return "简体中文"
+        case "en": return "English"
+        default: return "默认"
+        }
+    }
+
     var body: some View {
         List {
             Section {
-                LabeledContent("当前语言", value: "默认")
-                Text("跟随系统语言显示。应用内没有单独的语言切换。")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                Picker("语言", selection: $appLanguage) {
+                    Text("默认（跟随系统）").tag("")
+                    Text("简体中文").tag("zh-Hans")
+                    Text("English").tag("en")
+                }
+                .pickerStyle(.inline)
+            } footer: {
+                Text("切换语言后需要重启应用才会生效。当前应用内文字为中文硬编码，切换后仅系统界面（如日期、系统控件）会跟随语言，应用内文字暂不变。")
             }
         }
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         .navigationTitle("语言")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: appLanguage) { _, code in
+            if code.isEmpty {
+                UserDefaults.standard.removeObject(forKey: "AppleLanguages")
+            } else {
+                UserDefaults.standard.set([code], forKey: "AppleLanguages")
+            }
+            showRestartAlert = true
+        }
+        .alert("需要重启应用", isPresented: $showRestartAlert) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("语言已设为\(displayName)，重启应用后生效。")
+        }
     }
 }
 

@@ -9,6 +9,7 @@ import SwiftUI
 struct ConnectionsView: View {
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var client: ConcordClient
+    @EnvironmentObject private var proxyStore: ProxyStore
     @State private var detail: LiveConnection?
 
     var body: some View {
@@ -55,7 +56,20 @@ struct ConnectionsView: View {
                 }
 
                 if connectionStore.filtered.isEmpty {
-                    ContentUnavailableView("暂无活动连接", systemImage: "arrow.left.arrow.right", description: Text("开启 VPN 后，这里的实时连接会按 host / 规则 / 代理列出"))
+                    if proxyStore.isRunning {
+                        ContentUnavailableView("暂无活动连接", systemImage: "arrow.left.arrow.right", description: Text("当前没有活动连接，产生流量后会在这里列出"))
+                    } else {
+                        ContentUnavailableView {
+                            Label("暂无活动连接", systemImage: "arrow.left.arrow.right")
+                        } description: {
+                            Text("开启 VPN 后，这里的实时连接会按 host / 规则 / 代理列出")
+                        } actions: {
+                            Button("启动 VPN") {
+                                Task { await proxyStore.toggle() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
                 } else {
                     List(connectionStore.filtered) { connection in
                         Button { detail = connection } label: {

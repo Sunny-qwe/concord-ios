@@ -33,6 +33,44 @@ final class AddedRulesStore: ObservableObject {
         try? data.write(to: url, options: .atomic)
     }
 
+    // MARK: - Loopback protection (FlClash rule preset "防止代理回环")
+
+    /// FlClash's blockLoopback preset (rule_preset.dart): traffic to
+    /// the device itself must never be proxied — 0.0.0.0 / :: also
+    /// reach a local listener — and a TUN-originated DNS request on
+    /// port 853 is looped traffic too.
+    static let loopbackPresetRules: [String] = [
+        "IP-CIDR,127.0.0.0/8,REJECT,no-resolve",
+        "IP-CIDR,0.0.0.0/32,REJECT,no-resolve",
+        "IP-CIDR6,::1/128,REJECT,no-resolve",
+        "IP-CIDR6,::/128,REJECT,no-resolve",
+        "AND,((IN-TYPE,TUN),(DST-PORT,853)),REJECT",
+    ]
+
+    /// True only when all five preset rules are present.
+    var isLoopbackProtectionOn: Bool {
+        Self.loopbackPresetRules.allSatisfy { rules.contains($0) }
+    }
+
+    /// How many of the five are present (for the "partially deleted
+    /// by hand" hint on the loopback page).
+    var loopbackPresetPresentCount: Int {
+        Self.loopbackPresetRules.filter { rules.contains($0) }.count
+    }
+
+    /// Enabling (re)adds the five rules at the FRONT of the list,
+    /// in order, so they match before any user rule that would
+    /// proxy loopback; disabling removes all five. A user who
+    /// deletes one by hand in 附加规则 just turns the switch off —
+    /// turning it back on restores the missing ones.
+    func setLoopbackProtection(_ on: Bool) {
+        rules.removeAll { Self.loopbackPresetRules.contains($0) }
+        if on {
+            rules.insert(contentsOf: Self.loopbackPresetRules, at: 0)
+        }
+        save()
+    }
+
     /// A rule is "TYPE,VALUE,POLICY" with an optional ",no-resolve".
     /// Known types come from Clash's rule grammar.
     static let knownTypes: Set<String> = [

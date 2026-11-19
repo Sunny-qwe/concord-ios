@@ -9,7 +9,8 @@ import SwiftUI
 //                开启时显示，见 FlClash ToolsView 的 openLogs 门控）
 //   设置         语言（值 "默认"）/ 主题 / 应用图标 / 备份与恢复 /
 //                可靠性中心 / 进阶配置 / MITM模块 / MITM证书设置 /
-//                常规 / 本地网络设置
+//                常规 / 本地网络设置 / 回环保护（FlClash 规则预设
+//                "防止代理回环"，本机流量拦截，不进代理）
 //   其他         免责声明 / 开发者模式（仅当开发者模式开启时显示）/ 关于
 // Rows are 56pt tall, section labels 13pt semibold grey, card
 // corner radius 24pt. Each row keeps its existing destination;
@@ -50,6 +51,7 @@ enum ToolsDestination: Hashable {
     case mitmModules
     case mitmCertificate
     case localNetwork
+    case loopback
     case settings
     case disclaimer
     case developer
@@ -142,6 +144,8 @@ struct ToolsView: View {
                         ToolRow(icon: "gear", title: "常规") { navPath.append(.settings) }
                         Divider().padding(.leading, 54)
                         ToolRow(icon: "network", title: "本地网络设置") { navPath.append(.localNetwork) }
+                        Divider().padding(.leading, 54)
+                        ToolRow(icon: "arrow.triangle.2.circlepath", title: "回环保护") { navPath.append(.loopback) }
                     }
                     toolSection(header: "其他") {
                         ToolRow(icon: "doc.text", title: "免责声明") { navPath.append(.disclaimer) }
@@ -184,6 +188,7 @@ struct ToolsView: View {
                 case .mitmModules: MitmModulesView()
                 case .mitmCertificate: MitmCertificateView()
                 case .localNetwork: LocalNetworkView()
+                case .loopback: LoopbackView()
                 case .settings: SettingsView()
                 case .disclaimer: DisclaimerView()
                 case .developer: DeveloperView()

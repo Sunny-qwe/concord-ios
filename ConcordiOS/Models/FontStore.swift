@@ -31,9 +31,12 @@ final class FontStore: ObservableObject {
 
     /// The root default font: the picked family at body text style
     /// (so Dynamic Type still scales it), or the system body font.
+    /// NOTE: SwiftUI has no custom(_:textStyle:) overload — the size
+    /// must come from UIFont.preferredFont and relativeTo: .body
+    /// keeps Dynamic Type scaling.
     var rootFont: Font {
         if let family = selectedFamily {
-            return Font.custom(family, textStyle: .body)
+            return Font.custom(family, size: UIFont.preferredFont(forTextStyle: .body).pointSize, relativeTo: .body)
         }
         return Font.body
     }

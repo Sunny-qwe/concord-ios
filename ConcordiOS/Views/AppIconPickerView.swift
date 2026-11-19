@@ -25,10 +25,14 @@ struct AppIconOption: Identifiable {
 
 struct AppIconPickerView: View {
     private static let options: [AppIconOption] = [
-        AppIconOption(iconName: nil, title: "默认", subtitle: "蓝紫渐变", previewResource: "AppIcon-Default@3x"),
-        AppIconOption(iconName: "Dark", title: "墨黑", subtitle: "近黑底 · 白 C", previewResource: "AppIcon-Dark@3x"),
-        AppIconOption(iconName: "Teal", title: "曜青", subtitle: "青绿渐变 · 白 C", previewResource: "AppIcon-Teal@3x"),
-        AppIconOption(iconName: "Light", title: "雪白", subtitle: "白底 · 深蓝 C", previewResource: "AppIcon-Light@3x"),
+        AppIconOption(iconName: nil, title: "经典原版", subtitle: "蓝紫渐变 · 当前主图标", previewResource: "AppIcon-Default@3x"),
+        AppIconOption(iconName: "Dark", title: "黑曜暗金", subtitle: "近黑底 · 金 C", previewResource: "AppIcon-Dark@3x"),
+        AppIconOption(iconName: "Neon", title: "赛博霓虹", subtitle: "深蓝底 · 青品渐变 C", previewResource: "AppIcon-Neon@3x"),
+        AppIconOption(iconName: "Sunset", title: "落日晚霞", subtitle: "蜜桃底 · 橙红渐变 C", previewResource: "AppIcon-Sunset@3x"),
+        AppIconOption(iconName: "Emerald", title: "翡翠薄荷", subtitle: "薄荷底 · 翠绿渐变 C", previewResource: "AppIcon-Emerald@3x"),
+        AppIconOption(iconName: "Sakura", title: "浪漫樱花", subtitle: "粉底 · 玫红渐变 C", previewResource: "AppIcon-Sakura@3x"),
+        AppIconOption(iconName: "Titanium", title: "钛合金灰", subtitle: "银灰底 · 石墨渐变 C", previewResource: "AppIcon-Titanium@3x"),
+        AppIconOption(iconName: "Purple", title: "极光幽紫", subtitle: "深紫底 · 紫罗兰渐变 C", previewResource: "AppIcon-Purple@3x"),
     ]
 
     @State private var currentIconName: String? = UIApplication.shared.alternateIconName

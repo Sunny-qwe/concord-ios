@@ -1314,7 +1314,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             let signature = [
-                String(path.status.rawValue),
+                String(describing: path.status),
                 path.availableInterfaces.map(\.name).sorted().joined(separator: ","),
                 "wifi:\(path.usesInterfaceType(.wifi))",
                 "cell:\(path.usesInterfaceType(.cellular))",

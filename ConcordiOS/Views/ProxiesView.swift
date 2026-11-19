@@ -2,10 +2,14 @@ import SwiftUI
 
 // MARK: - Proxies (FlClash: ProxiesView, lib/views/proxies/)
 // FlClash proxies page, reproduced in SwiftUI:
-// - Top bar: delay test (current group in tab style), scroll to
-//   selected, and a ⋯ menu (style / sort / layout / size / icon
-//   style / hide-timeout / test all / refresh). Every top bar
-//   button is a rounded rect, as in FlClash.
+// - Top bar: ONE capsule (FlClash TonalButtonGroup) holding search
+//   (magnifier, presents the search field) + bolt (tab style only,
+//   delay-tests the current group) + ⋯. The ⋯ opens a white card
+//   menu (FlClash PopupMenu): 风格/排序/布局/尺寸/图标样式, each
+//   opening a submenu with a checkmark on the current value, plus
+//   隐藏超时代理. No test-all and no refresh in the menu (FlClash
+//   has neither there); no locate button in the bar — re-tapping the
+//   active group pill scrolls to the selected node.
 // - Style 标签页： group pills on top, one group's nodes as cards in
 //   a grid. Style 列表： every group stacked with a collapsible
 //   header (icon, name, selected node, per-group delay test +
@@ -27,6 +31,9 @@ struct ProxiesView: View {
     @StateObject private var styleStore = ProxyStyleStore()
     @StateObject private var customStore = CustomProxyStore()
     @State private var searchText = ""
+    @State private var isSearching = false
+    @State private var showMoreMenu = false
+    @State private var menuPath = NavigationPath()
     @State private var selectedGroupName: String?
     @State private var collapsedGroups: Set<String> = []
     @State private var detailNode: ProxyNode?
@@ -159,20 +166,10 @@ struct ProxiesView: View {
                 .background(ConcordTheme.pageBackground)
             }
             .navigationTitle("代理")
-            .searchable(text: $searchText, prompt: "搜索节点")
+            .searchable(text: $searchText, isPresented: $isSearching, prompt: "搜索节点")
             .toolbar {
-                if styleStore.style == .tab {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        delayTestButton(for: selectedGroup)
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        RoundedBarButton(systemName: "location.fill", label: "滚动到已选") {
-                            scrollToSelected(in: selectedGroup)
-                        }
-                    }
-                }
                 ToolbarItem(placement: .topBarTrailing) {
-                    moreMenu
+                    topBarCapsule
                 }
             }
             .sheet(item: $detailNode) { node in
@@ -184,65 +181,205 @@ struct ProxiesView: View {
 
     // MARK: - Top bar
 
+    /// One capsule holding search + bolt + ⋯ (FlClash TonalButtonGroup:
+    /// the bar groups its actions into a single pill; the bolt only
+    /// shows in tab style, where it tests the current group). The
+    /// search is a magnifier button that presents the search field;
+    /// there is no separate locate button in the bar (FlClash folds
+    /// it into the ⋯ menu) — re-tapping the active group pill scrolls
+    /// to the selected node instead.
+    private var topBarCapsule: some View {
+        HStack(spacing: 0) {
+            Button { isSearching = true } label: {
+                Image(systemName: "magnifyingglass")
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("搜索")
+            capsuleDivider
+            if styleStore.style == .tab {
+                topBarBoltButton(for: selectedGroup)
+                capsuleDivider
+            }
+            Button { showMoreMenu = true } label: {
+                Image(systemName: "ellipsis")
+                    .rotationEffect(.degrees(90))
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("更多")
+            .popover(isPresented: $showMoreMenu, attachmentAnchor: .point(.bottom), arrowEdge: .top) {
+                moreMenuPopover
+            }
+        }
+        .background(Color(.secondarySystemBackground), in: Capsule())
+    }
+
+    private var capsuleDivider: some View {
+        Rectangle()
+            .fill(Color(.separator))
+            .frame(width: 1, height: 20)
+    }
+
     /// The bolt: in tab style it tests the current group (FlClash
-    /// delayTestCurrentGroup); the ⋯ menu holds the test-all action.
-    private func delayTestButton(for group: ProxyGroup?) -> some View {
+    /// delayTestCurrentGroup). There is no test-all in the ⋯ menu —
+    /// the bolt is the delay test, as in FlClash.
+    private func topBarBoltButton(for group: ProxyGroup?) -> some View {
         let testing = group.map { proxyStore.testingGroups.contains($0.name) } ?? false
         return Button {
             if let group { Task { await proxyStore.testLatency(group: group) } }
         } label: {
             if testing {
                 ProgressView()
-                    .frame(width: 32, height: 32)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                    .frame(width: 36, height: 36)
             } else {
                 Image(systemName: "bolt.fill")
-                    .frame(width: 32, height: 32)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                    .frame(width: 36, height: 36)
             }
         }
         .buttonStyle(.plain)
         .disabled(group == nil || testing)
+        .accessibilityLabel("测速")
     }
 
-    private var moreMenu: some View {
-        Menu {
-            Picker("风格", selection: $styleStore.style) {
+    // MARK: - ⋯ menu (FlClash PopupMenu, lib/views/proxies/proxies.dart)
+
+    /// The ⋯ menu is a white card, not a native context menu: five
+    /// option rows (each opens a submenu with a checkmark on the
+    /// current value) and the hide-timeout toggle. No test-all and no
+    /// refresh in the menu — FlClash has neither there (the bolt is
+    /// the test; refresh is pull-to-refresh). Icon style only shows
+    /// in list style, as in FlClash.
+    private enum MenuDestination: Hashable {
+        case style, sort, layout, size, iconStyle
+    }
+
+    private var moreMenuPopover: some View {
+        NavigationStack(path: $menuPath) {
+            VStack(spacing: 0) {
+                menuRow(icon: "list.bullet", label: "风格", destination: .style)
+                menuRow(icon: "arrow.up.arrow.down", label: "排序", destination: .sort)
+                menuRow(icon: "square.grid.2x2", label: "布局", destination: .layout)
+                menuRow(icon: "textformat.size", label: "尺寸", destination: .size)
+                if styleStore.style == .list {
+                    menuRow(icon: "photo", label: "图标样式", destination: .iconStyle)
+                }
+                Divider()
+                    .padding(.vertical, 4)
+                Button {
+                    styleStore.hideTimeout.toggle()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "eye.slash")
+                            .frame(width: 22)
+                        Text("隐藏超时代理")
+                        Spacer()
+                        if styleStore.hideTimeout {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(ConcordTheme.accent)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .navigationDestination(for: MenuDestination.self) { dest in
+                menuOptionsView(for: dest)
+            }
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .frame(minWidth: 260, idealWidth: 280)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    private func menuRow(icon: String, label: String, destination: MenuDestination) -> some View {
+        NavigationLink(value: destination) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .frame(width: 22)
+                Text(label)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// A submenu: the options with a checkmark on the current value.
+    /// Tapping one applies it and pops back to the menu root.
+    private func menuOptionsView(for dest: MenuDestination) -> some View {
+        VStack(spacing: 0) {
+            switch dest {
+            case .style:
                 ForEach(ProxyStyleStore.Style.allCases, id: \.self) { style in
-                    Text(style.label).tag(style)
+                    menuOptionRow(label: style.label, selected: styleStore.style == style) {
+                        styleStore.style = style
+                    }
                 }
-            }
-            Picker("排序", selection: $styleStore.sort) {
+            case .sort:
                 ForEach(ProxySort.allCases) { option in
-                    Text(option.rawValue).tag(option)
+                    menuOptionRow(label: option.rawValue, selected: styleStore.sort == option) {
+                        styleStore.sort = option
+                    }
                 }
-            }
-            Picker("布局", selection: $styleStore.layout) {
+            case .layout:
                 ForEach(ProxyStyleStore.Layout.allCases, id: \.self) { layout in
-                    Text(layout.rawValue).tag(layout)
+                    menuOptionRow(label: layout.rawValue, selected: styleStore.layout == layout) {
+                        styleStore.layout = layout
+                    }
                 }
-            }
-            Picker("大小", selection: $styleStore.cardType) {
+            case .size:
                 ForEach(ProxyStyleStore.CardType.allCases, id: \.self) { type in
-                    Text(type.rawValue).tag(type)
+                    menuOptionRow(label: type.rawValue, selected: styleStore.cardType == type) {
+                        styleStore.cardType = type
+                    }
                 }
-            }
-            if styleStore.style == .list {
-                Picker("图标样式", selection: $styleStore.iconStyle) {
-                    ForEach(ProxyStyleStore.IconStyle.allCases, id: \.self) { style in
-                        Text(style.rawValue).tag(style)
+            case .iconStyle:
+                ForEach(ProxyStyleStore.IconStyle.allCases, id: \.self) { style in
+                    menuOptionRow(label: style.rawValue, selected: styleStore.iconStyle == style) {
+                        styleStore.iconStyle = style
                     }
                 }
             }
-            Toggle("隐藏超时代理", isOn: $styleStore.hideTimeout)
-            Button("全部测速") { Task { await proxyStore.testLatency() } }
-                .disabled(proxyStore.isTesting)
-            Button("刷新") { Task { await proxyStore.refresh() } }
-        } label: {
-            Image(systemName: "ellipsis")
-                .frame(width: 32, height: 32)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
         }
+        .navigationTitle(menuTitle(for: dest))
+    }
+
+    private func menuTitle(for dest: MenuDestination) -> String {
+        switch dest {
+        case .style: return "风格"
+        case .sort: return "排序"
+        case .layout: return "布局"
+        case .size: return "尺寸"
+        case .iconStyle: return "图标样式"
+        }
+    }
+
+    private func menuOptionRow(label: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+            menuPath = NavigationPath()
+        } label: {
+            HStack(spacing: 12) {
+                Text(label)
+                Spacer()
+                if selected {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(ConcordTheme.accent)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Tab style
@@ -253,7 +390,11 @@ struct ProxiesView: View {
                 HStack(spacing: 8) {
                     ForEach(visibleGroups) { group in
                         Button(group.name) {
-                            selectedGroupName = group.name
+                            if selectedVisibleGroup?.id == group.id {
+                                scrollToSelected(in: group)
+                            } else {
+                                selectedGroupName = group.name
+                            }
                         }
                         .fontWeight(.semibold)
                         .padding(.horizontal, 14)

@@ -14,11 +14,20 @@
 #
 # Usage: bash tools/adhoc-sign.sh <path-to-ConcordiOS.app>
 # The entitlements come from the repo's .entitlements files, with
-# application-identifier + team-identifier added (team 65ZBN43KNV).
+# application-identifier + team-identifier added. The team is the
+# FlClash placeholder UNKNOWN000, NOT the real team: FlClash's
+# createIOSNoSignEntitlements defaults to UNKNOWN000 when no team is
+# given, and the re-signer rewrites team + bundle identifiers
+# consistently from the profile it signs with. Our real team
+# (65ZBN43KNV) must NOT be baked in: profile JUMJJ8's
+# application-identifier is exactly 65ZBN43KNV.app.forest5669.sapodilla72
+# (no wildcard), so it does not cover .PacketTunnel, and a real-but-
+# mismatched tunnel identifier is what the re-signer preserves.
+# EXPERIMENT (v0.2.11): placeholder entitlements, unproven on device.
 set -euo pipefail
 
 APP="${1:?usage: adhoc-sign.sh <path-to-ConcordiOS.app>}"
-TEAM="65ZBN43KNV"
+TEAM="UNKNOWN000"
 APP_ID="app.forest5669.sapodilla72"
 TUNNEL_ID="${APP_ID}.PacketTunnel"
 

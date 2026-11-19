@@ -1,4 +1,4 @@
-From db6d2d7807803d88066eaa817108f8da6b46ad2d Mon Sep 17 00:00:00 2001
+From 27ad017423c840c0e2ed9807ac47bb391ff7597e Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:34:06 +0000
 Subject: [PATCH 6/7] tun: cfg-gate device creation off iOS (tun-rs has no
@@ -10,7 +10,7 @@ tun-rs 2.8.16 compiles its builder module only for windows/linux/macos/freebsd/o
  1 file changed, 19 insertions(+), 2 deletions(-)
 
 diff --git a/crates/tun/src/device/mod.rs b/crates/tun/src/device/mod.rs
-index cfab6de..9e55cc1 100644
+index c2f8a8a..2463155 100644
 --- a/crates/tun/src/device/mod.rs
 +++ b/crates/tun/src/device/mod.rs
 @@ -238,7 +238,13 @@ impl TunDevice {
@@ -37,7 +37,7 @@ index cfab6de..9e55cc1 100644
      #[cfg_attr(
          not(target_os = "linux"),
          allow(unused_variables, reason = "offload is Linux-only")
-@@ -319,6 +325,17 @@ impl TunDevice {
+@@ -318,6 +324,17 @@ impl TunDevice {
          ))
      }
  
@@ -55,3 +55,6 @@ index cfab6de..9e55cc1 100644
      /// Adopts the descriptor of a `VpnService` interface. The descriptor is closed on every
      /// failure path, including the ones before tun-rs takes it over.
      #[cfg(unix)]
+-- 
+2.43.0
+

@@ -1,4 +1,4 @@
-From ba08c50b6c0702468f96b5663cbdb01e3f1ac095 Mon Sep 17 00:00:00 2001
+From 65b4f0ac65a0712d69afe4a74e79deea799340fb Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:34:06 +0000
 Subject: [PATCH 7/7] ios: drop SOCK_CLOEXEC on Apple targets (libc has no such
@@ -44,3 +44,6 @@ index 594ba1e..a356c7b 100644
      if made != 0 {
          return -1;
      }
+-- 
+2.43.0
+

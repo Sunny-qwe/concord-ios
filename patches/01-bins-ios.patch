@@ -1,4 +1,4 @@
-From 15dc0a6e7528dc95dbf596bbe479ef88f7d58d14 Mon Sep 17 00:00:00 2001
+From 3570642553c8c1f13ccdff12ffa582bd677f9acc Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:33:44 +0000
 Subject: [PATCH 1/7] ios: add bins/ios staticlib crate (concord_start, iOS
@@ -36,10 +36,10 @@ Server owns the Control, so core.rs drops the third argument.
  create mode 100644 bins/ios/src/platform.rs
 
 diff --git a/Cargo.toml b/Cargo.toml
-index bcb458e..34409dd 100644
+index 50c9520..f169fa9 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -26,6 +26,7 @@ members = [
+@@ -27,6 +27,7 @@ members = [
      "crates/test-support",
      "bins/desktop",
      "bins/android",
@@ -690,3 +690,6 @@ index 0000000..b2f9e3f
 +        self.pressure.should_block()
 +    }
 +}
+-- 
+2.43.0
+

@@ -1,4 +1,4 @@
-From a56d5ffdba07d219605578be0c46124a4f3d39ea Mon Sep 17 00:00:00 2001
+From baf71fdc6e7d583f06f53935e03d9bdd15f7cced Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:34:00 +0000
 Subject: [PATCH 4/7] vendor: nix 0.31.3 with macOS-only utun gates for iOS
@@ -272,10 +272,10 @@ is unchanged.
  create mode 100644 vendor/nix-0.31.3-ios/test/test_unistd.rs
 
 diff --git a/Cargo.toml b/Cargo.toml
-index 34409dd..9cab389 100644
+index f169fa9..a715e85 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -31,7 +31,7 @@ members = [
+@@ -32,7 +32,7 @@ members = [
      "tools/bench",
      "xtask",
  ]
@@ -284,7 +284,7 @@ index 34409dd..9cab389 100644
  
  [workspace.package]
  version = "0.1.0"
-@@ -291,5 +291,10 @@ quinn = { path = "vendor/quinn" }
+@@ -299,5 +299,10 @@ quinn = { path = "vendor/quinn" }
  quinn-proto = { path = "vendor/quinn-proto" }
  shadowsocks = { path = "vendor/shadowsocks" }
  mio = { path = "vendor/mio" }
@@ -296,7 +296,7 @@ index 34409dd..9cab389 100644
  
  rustls = { path = "vendor/rustls" }
 diff --git a/vendor/PATCHES.md b/vendor/PATCHES.md
-index 2528dda..5905052 100644
+index 0edb628..affd735 100644
 --- a/vendor/PATCHES.md
 +++ b/vendor/PATCHES.md
 @@ -32,6 +32,7 @@ crate's directory, its `[patch.crates-io]` entry and its lines in `UPSTREAM.sha2
@@ -54029,3 +54029,6 @@ index 0000000..305fc77
 +    assert_eq!(group.gid, group_id);
 +    assert_eq!(group.name, "wheel");
 +}
+-- 
+2.43.0
+

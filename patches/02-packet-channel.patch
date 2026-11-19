@@ -1,4 +1,4 @@
-From 496c0de7158611f635e0436ebcb760871a037358 Mon Sep 17 00:00:00 2001
+From a38b0da007898491a1861ac44f03b9d235027cf3 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:33:47 +0000
 Subject: [PATCH 2/7] tun: add production packet-channel DeviceSource (Option
@@ -21,7 +21,7 @@ packet_channel_* methods go through self.server.service().
  crates/api/src/control.rs       |   8 ++
  crates/api/src/control/tun.rs   |  29 +++++
  crates/api/src/lib.rs           |   2 +
- crates/engine/src/engine/tun.rs |  36 +++++-
+ crates/engine/src/engine/tun.rs |  37 ++++++-
  crates/ffi/src/abi.rs           |  56 ++++++++++
  crates/ffi/src/hub.rs           |  30 +++++
  crates/ffi/src/lib.rs           |   4 +-
@@ -30,7 +30,7 @@ packet_channel_* methods go through self.server.service().
  crates/tun/src/lib.rs           |   2 +
  crates/tun/src/runner.rs        |  67 +++++++++---
  schema/api.json                 |  21 +++-
- 14 files changed, 505 insertions(+), 18 deletions(-)
+ 14 files changed, 506 insertions(+), 18 deletions(-)
  create mode 100644 crates/api/src/channels.rs
  create mode 100644 crates/tun/src/channel.rs
 
@@ -221,7 +221,7 @@ index 9880329..2f2e8b0 100644
  pub use concord_common::sync;
  pub use concord_engine::ControllerCors;
 diff --git a/crates/engine/src/engine/tun.rs b/crates/engine/src/engine/tun.rs
-index 98c0b5a..379a4c4 100644
+index c763638..b10cd2a 100644
 --- a/crates/engine/src/engine/tun.rs
 +++ b/crates/engine/src/engine/tun.rs
 @@ -4,7 +4,7 @@ use std::sync::Arc;
@@ -233,7 +233,7 @@ index 98c0b5a..379a4c4 100644
  
  use super::Engine;
  use crate::apply::Applied;
-@@ -103,6 +103,40 @@ impl Engine {
+@@ -105,6 +105,41 @@ impl Engine {
          Ok(())
      }
  
@@ -258,6 +258,7 @@ index 98c0b5a..379a4c4 100644
 +                DeviceSource::Channel(device),
 +                congestion,
 +                None,
++                self.shared.proxy_tasks.tasks(),
 +            )
 +            .await?;
 +            *slot = Some(runner);
@@ -618,7 +619,7 @@ index 0000000..838b396
 +    }
 +}
 diff --git a/crates/tun/src/lib.rs b/crates/tun/src/lib.rs
-index ebdd5ad..4f2de82 100644
+index a1b444c..216b1d2 100644
 --- a/crates/tun/src/lib.rs
 +++ b/crates/tun/src/lib.rs
 @@ -1,5 +1,6 @@
@@ -628,7 +629,7 @@ index ebdd5ad..4f2de82 100644
  mod device;
  mod dns;
  mod options;
-@@ -19,6 +20,7 @@ mod wintun;
+@@ -17,6 +18,7 @@ mod wintun;
  #[doc(hidden)]
  pub mod testing;
  
@@ -637,10 +638,10 @@ index ebdd5ad..4f2de82 100644
  pub use dns::{DnsHijack, DnsMatcher, DnsRuleError};
  pub use options::{IdRange, Prefix, TunOptions};
 diff --git a/crates/tun/src/runner.rs b/crates/tun/src/runner.rs
-index efc36a7..434b5e3 100644
+index 4a701e1..0874cda 100644
 --- a/crates/tun/src/runner.rs
 +++ b/crates/tun/src/runner.rs
-@@ -6,6 +6,7 @@ use async_trait::async_trait;
+@@ -7,6 +7,7 @@ use concord_common::Tasks;
  use tokio::task::JoinHandle;
  use tokio_util::sync::CancellationToken;
  
@@ -648,7 +649,7 @@ index efc36a7..434b5e3 100644
  use crate::device::{Device, TunDevice};
  use crate::dns::{DnsHijack, DnsMatcher};
  use crate::options::TunOptions;
-@@ -45,6 +46,11 @@ pub enum DeviceSource {
+@@ -46,6 +47,11 @@ pub enum DeviceSource {
      /// The descriptor of an Android `VpnService` interface.
      #[cfg(unix)]
      Adopt(std::os::fd::OwnedFd),
@@ -660,7 +661,7 @@ index efc36a7..434b5e3 100644
  }
  
  pub struct TunDeps {
-@@ -135,21 +141,40 @@ impl TunRunner {
+@@ -143,21 +149,40 @@ impl TunRunner {
          deps: TunDeps,
      ) -> Result<Self, StartError> {
          let dns = dns_config(options, &deps)?;
@@ -711,10 +712,10 @@ index efc36a7..434b5e3 100644
 +        deps: TunDeps,
 +        dns: Option<Arc<DnsConfig>>,
 +    ) -> Result<Self, StartError> {
-         let backend = platform_backend().map_err(|err| StartError {
+         let backend = platform_backend(&deps.tasks).map_err(|err| StartError {
              step: StartStep::Routes,
              kind: err.kind(),
-@@ -318,6 +343,22 @@ impl Drop for TunRunner {
+@@ -325,6 +350,22 @@ impl Drop for TunRunner {
      }
  }
  
@@ -738,10 +739,10 @@ index efc36a7..434b5e3 100644
      let Some(handler) = deps.dns.clone() else {
          return Ok(None);
 diff --git a/schema/api.json b/schema/api.json
-index d47b6d6..0257d88 100644
+index 1d3667e..6d7c0e6 100644
 --- a/schema/api.json
 +++ b/schema/api.json
-@@ -4235,9 +4235,28 @@
+@@ -4294,9 +4294,28 @@
              "kind",
              "handle"
            ]
@@ -771,3 +772,6 @@ index d47b6d6..0257d88 100644
      },
      "RouteCheckParams": {
        "type": "object",
+-- 
+2.43.0
+

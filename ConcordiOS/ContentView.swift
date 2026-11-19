@@ -3,8 +3,8 @@ import SwiftUI
 // MARK: - Main navigation (reference screenshots IMG_1082 / IMG_1083)
 // Four tabs — 仪表盘 / 代理 / 配置 / 工具 — in a floating white
 // capsule bar. The native tab bar is hidden; the bar below is the
-// only tab UI. Rules / Connections / Logs / MITM / Settings are not
-// gone: they live under the 工具 tab (see ToolsView.swift).
+// only tab UI. Rules / Logs / IP quality / Shortcuts live under
+// the 工具 → 常规 page (see ToolsView.swift / SettingsView.swift).
 
 /// The four main tabs.
 enum AppTab: Int, CaseIterable {
@@ -42,6 +42,7 @@ struct ContentView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.safeAreaInsets) private var safeAreaInsets
 
     @State private var selectedTab: AppTab = .dashboard
 
@@ -66,7 +67,13 @@ struct ContentView: View {
         .safeAreaInset(edge: .bottom) {
             floatingTabBar
                 .padding(.horizontal, 16)
-                .padding(.bottom, 4)
+                // Reference bar bottom sits 34pt above the screen
+                // bottom (810pt on an 844pt screen): on a home-
+                // indicator phone the safe area already supplies
+                // those 34pt, so only 4pt extra padding is needed;
+                // on a phone with no bottom safe area the padding
+                // makes up the difference instead.
+                .padding(.bottom, max(4, 34 - safeAreaInsets.bottom))
         }
         .task {
             // Load the first snapshot for every page once, like FlClash
@@ -106,12 +113,12 @@ struct ContentView: View {
                             .fontWeight(.semibold)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 6)
                     .background(
                         selectedTab == tab
                             ? ConcordTheme.tabSelectedFill
                             : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 22)
+                        in: RoundedRectangle(cornerRadius: 24)
                     )
                     .foregroundStyle(selectedTab == tab ? ConcordTheme.accent : ConcordTheme.tabUnselected)
                 }
@@ -119,7 +126,10 @@ struct ContentView: View {
             }
         }
         .padding(6)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 32))
+        // White like the reference (secondarySystemBackground reads
+        // grey against the grouped page background and makes the
+        // bar look like it runs into the screen edge).
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 30))
         .shadow(color: .black.opacity(0.10), radius: 16, x: 0, y: 6)
     }
 }

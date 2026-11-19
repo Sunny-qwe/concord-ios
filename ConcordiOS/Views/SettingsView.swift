@@ -247,6 +247,24 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                // The reference Tools page (IMG_1111) has no rows for
+                // these four pages, so they moved here from ToolsView
+                // to stay reachable: 规则 / 日志 / IP 质量 / 快捷指令.
+                Section("更多工具") {
+                    NavigationLink("规则") {
+                        RulesView()
+                    }
+                    NavigationLink("日志") {
+                        LogsView()
+                    }
+                    NavigationLink("IP 质量") {
+                        IPQualityView()
+                    }
+                    NavigationLink("快捷指令") {
+                        ShortcutsView()
+                    }
+                }
+
                 if settingsStore.developerMode {
                     Section("开发者（core.capabilities）") {
                         Button("读取核心能力") {
@@ -303,7 +321,7 @@ struct SettingsView: View {
                 }
 
                 Section("关于") {
-                    LabeledContent("版本", value: "Concord iOS 0.2.13（FlClash 风格界面）")
+                    LabeledContent("版本", value: "Concord iOS 0.2.14（FlClash 风格界面）")
                     LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
                     LabeledContent("界面来源", value: "chen08209/FlClash（GPL-3.0）")
                     Text("本 App 是 FlClash 界面的 SwiftUI 复刻，核心经 PacketTunnel 扩展链接（packet-channel 数据面），但静态库构建与真机数据面尚未验证，见 README 的「已上线与待办」一节。")
@@ -314,7 +332,7 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
             .tint(ConcordTheme.accent)
-            .navigationTitle("设置")
+            .navigationTitle("常规")
             .onChange(of: settingsStore.mode) { _, _ in settingsStore.save() }
             .onChange(of: settingsStore.logLevel) { _, _ in settingsStore.save() }
             .onChange(of: settingsStore.allowLan) { _, _ in settingsStore.save() }

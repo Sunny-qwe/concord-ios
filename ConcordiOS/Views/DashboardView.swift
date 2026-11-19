@@ -26,6 +26,7 @@ struct DashboardView: View {
     @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var tunnelManager: TunnelManager
     @EnvironmentObject private var client: ConcordClient
+    @Environment(\.colorScheme) private var colorScheme
 
     @AppStorage("ConcordiOS.dashboard.show.status") private var showStatus = true
     @AppStorage("ConcordiOS.dashboard.show.speed") private var showSpeed = true
@@ -42,6 +43,8 @@ struct DashboardView: View {
     @State private var tunnelStartedAt: Date?
     @State private var subscription: ConcordSubscriptionInfo?
     @State private var intranetIp: String?
+    @State private var ipInfo: IPQualityInfo?
+    @State private var ipLatencyMs: Int?
 
     // MARK: - Derived data
 
@@ -198,6 +201,39 @@ struct DashboardView: View {
         }
     }
 
+    /// Public-IP lookup (same ip-api.com endpoint as IPQualityView):
+    /// the status card shows the CURRENT egress IP even when the VPN
+    /// is not running — FlClash does the same. When the VPN is on,
+    /// URLSession follows the tunnel, so the answer is the proxy
+    /// egress IP; when it is off, it is the phone's direct IP.
+    private func fetchIPInfo() async {
+        guard let url = URL(string: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon") else { return }
+        let started = Date()
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
+            let decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
+            guard decoded.status == "success" else { return }
+            ipLatencyMs = Int(Date().timeIntervalSince(started) * 1000)
+            ipInfo = decoded
+        } catch {
+            // No network or API error: keep the previous (or empty)
+            // values — the card shows "—" instead of stale numbers.
+        }
+    }
+
+    /// Quality pill from the lookup latency (FlClash shows "质量 优"
+    /// next to the IP; the thresholds are ours — the reference only
+    /// shows the 优 state).
+    private enum IPQualityLevel { case good, fair, poor }
+
+    private var ipQuality: (text: String, level: IPQualityLevel)? {
+        guard let ms = ipLatencyMs else { return nil }
+        if ms <= 500 { return ("质量 优", .good) }
+        if ms <= 1500 { return ("质量 良", .fair) }
+        return ("质量 差", .poor)
+    }
+
     private func refreshAll() async {
         await proxyStore.refresh()
         await connectionStore.refresh()
@@ -206,6 +242,7 @@ struct DashboardView: View {
         await eventStore.refresh()
         await dnsStore.refresh()
         await refreshSubscription()
+        await fetchIPInfo()
     }
 
     // MARK: - Body
@@ -236,7 +273,7 @@ struct DashboardView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 8)
+            .padding(.top, 20)
             .padding(.bottom, 12)
         }
         .concordPageBackground()
@@ -246,6 +283,7 @@ struct DashboardView: View {
                 tunnelStartedAt = Date()
             }
             intranetIp = DeviceNetwork.localIPv4Address()
+            await fetchIPInfo()
             await trafficStore.refreshEngineStatus()
             await refreshSubscription()
             if trafficStore.services.isEmpty,
@@ -256,6 +294,9 @@ struct DashboardView: View {
         }
         .onChange(of: proxyStore.isRunning) { _, running in
             tunnelStartedAt = running ? (tunnelStartedAt ?? Date()) : nil
+            // The egress IP changes when the VPN toggles: re-fetch
+            // so the status card always shows the current IP.
+            Task { await fetchIPInfo() }
         }
         .onChange(of: settingsStore.mode) { _, _ in
             Task { await settingsStore.applyGeneralToCore() }
@@ -280,14 +321,14 @@ struct DashboardView: View {
     private var titleRow: some View {
         HStack(alignment: .center) {
             Text("仪表盘")
-                .font(.system(size: 30, weight: .bold))
+                .font(.system(size: 20, weight: .bold))
             Spacer()
             Button { showEditSheet = true } label: {
                 Image(systemName: "pencil")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color(.label))
+                    .foregroundStyle(editButtonIconColor)
                     .frame(width: 44, height: 44)
-                    .background(Color.white, in: Circle())
+                    .background(editButtonBackground, in: Circle())
                     .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
             }
             .buttonStyle(.plain)
@@ -295,7 +336,31 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - Status card
+    /// Top-right button state (user request): while the VPN/core is
+    /// running the button turns light blue in light mode and dark
+    /// blue in dark mode; when not running it keeps its default
+    /// white circle. Tied to proxyStore.isRunning — the same state
+    /// that drives the play button and the "运行中/未运行" pill.
+    private var editButtonBackground: Color {
+        guard proxyStore.isRunning else { return Color.white }
+        return colorScheme == .dark
+            ? Color(red: 0.10, green: 0.28, blue: 0.60)
+            : Color(red: 0.83, green: 0.92, blue: 1.0)
+    }
+
+    private var editButtonIconColor: Color {
+        guard proxyStore.isRunning else { return Color(.label) }
+        return colorScheme == .dark ? .white : ConcordTheme.accent
+    }
+
+    // MARK: - Status card (reference IMG_1110)
+    //
+    // The reference shows the CURRENT egress IP even when the core
+    // is not running ("未运行" + real IP + 移动网络 + 质量 优 +
+    // 组织 Unicom) — so the main text is the IP from fetchIPInfo,
+    // never "未选择出站". The middle row is [country badge] [IP +
+    // pills] [play button]; the bottom row is 运行时间 / 组织 (org
+    // from the same lookup).
 
     private var statusCard: some View {
         ZStack(alignment: .topTrailing) {
@@ -310,20 +375,28 @@ struct DashboardView: View {
                               tint: proxyStore.isRunning ? .green : .gray)
                 }
                 HStack(spacing: 16) {
-                    BlobIcon(systemName: "globe", iconColor: Color(.label),
-                             blobColor: Color(red: 0.92, green: 0.92, blue: 0.94), size: 64)
+                    // Country badge: the egress IP's country code on
+                    // the same grey blob the reference uses.
+                    ZStack {
+                        BlobShape()
+                            .fill(Color(red: 0.92, green: 0.92, blue: 0.94))
+                            .frame(width: 56, height: 56)
+                        Text(ipInfo?.countryCode ?? "—")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(Color(.label))
+                    }
+                    .frame(width: 56, height: 56)
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(proxyStore.selectedOutbound ?? "未选择出站")
-                            .font(.title3)
-                            .fontWeight(.semibold)
+                        Text(ipInfo?.query ?? "—")
+                            .font(.system(size: 18, weight: .semibold))
                             .lineLimit(1)
-                        Text(modeShortLabel(settingsStore.mode))
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(ConcordTheme.softFill, in: Capsule())
-                            .foregroundStyle(.secondary)
+                            .minimumScaleFactor(0.75)
+                        HStack(spacing: 8) {
+                            PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
+                            if let quality = ipQuality {
+                                qualityPill(text: quality.text, level: quality.level)
+                            }
+                        }
                     }
                     Spacer()
                     Button {
@@ -339,10 +412,15 @@ struct DashboardView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel(proxyStore.isRunning ? "停止 VPN" : "启动 VPN")
                 }
+                // The reference card is taller than its content: the
+                // bottom row sits near the card's bottom edge, with a
+                // large empty gap below the middle row (play-button
+                // bottom 267pt, labels top 348pt in the reference).
+                Spacer().frame(height: 64)
                 HStack(spacing: 24) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("运行时长")
-                            .font(.caption)
+                        Text("运行时间")
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                         TimelineView(.periodic(from: .now, by: 1)) { _ in
                             Text(uptimeText)
@@ -352,9 +430,9 @@ struct DashboardView: View {
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text("组织")
-                            .font(.caption)
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
-                        Text(profileStore.activeProfile?.name ?? "—")
+                        Text(ipInfo?.org ?? ipInfo?.isp ?? "—")
                             .font(.subheadline)
                             .fontWeight(.semibold)
                             .lineLimit(1)
@@ -367,6 +445,29 @@ struct DashboardView: View {
         .clipShape(RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
         .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
+    }
+
+    /// Quality pill with the reference's solid pastel colours (the
+    /// shared PillBadge is paler); 13pt like the other pills.
+    private func qualityPill(text: String, level: IPQualityLevel) -> some View {
+        let bg: Color
+        let fg: Color
+        if level == .good {
+            bg = Color(red: 0.80, green: 0.95, blue: 0.74)
+            fg = Color(red: 0.15, green: 0.45, blue: 0.15)
+        } else if level == .fair {
+            bg = Color(red: 1.0, green: 0.92, blue: 0.75)
+            fg = Color(red: 0.72, green: 0.44, blue: 0.05)
+        } else {
+            bg = Color(red: 1.0, green: 0.85, blue: 0.82)
+            fg = Color(red: 0.72, green: 0.15, blue: 0.12)
+        }
+        return Text(text)
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(bg, in: Capsule())
+            .foregroundStyle(fg)
     }
 
     // MARK: - Network speed card
@@ -403,7 +504,10 @@ struct DashboardView: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
             }
-            Text("累计 \(ConcordFormat.bytes(total))")
+            // Reference shows "累计 0 B" (no ".0"): ConcordFormat
+            // formats 0 as "0.0 B", so special-case zero locally
+            // (the shared formatter is used elsewhere and stays).
+            Text("累计 \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
                 .font(.subheadline)
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
@@ -446,16 +550,33 @@ struct DashboardView: View {
         .concordCard()
     }
 
-    // MARK: - VPN card
+    // MARK: - VPN card (reference IMG_1110)
+    //
+    // Off state: a GREY circle with a dark-grey shield OUTLINE and
+    // the text "已断开" (not "已关闭"). On state: the blue circle
+    // with a white filled shield, text "已连接" (no on-state
+    // reference exists — this wording is an inference).
 
     private var vpnCard: some View {
         HStack(spacing: 12) {
-            BlobIcon(systemName: "shield.fill", iconColor: .white,
-                     blobColor: ConcordTheme.accent, size: 52)
+            if proxyStore.isRunning {
+                BlobIcon(systemName: "shield.fill", iconColor: .white,
+                         blobColor: ConcordTheme.accent, size: 52)
+            } else {
+                ZStack {
+                    Circle()
+                        .fill(Color(red: 0.93, green: 0.93, blue: 0.95))
+                        .frame(width: 52, height: 52)
+                    Image(systemName: "shield")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.38, green: 0.38, blue: 0.42))
+                }
+                .frame(width: 52, height: 52)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text("VPN")
                     .font(.headline)
-                Text(proxyStore.isRunning ? "已开启" : "已关闭")
+                Text(proxyStore.isRunning ? "已连接" : "已断开")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }

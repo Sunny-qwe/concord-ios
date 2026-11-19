@@ -89,8 +89,7 @@ struct PillBadge: View {
 
     var body: some View {
         Text(text)
-            .font(.subheadline)
-            .fontWeight(.semibold)
+            .font(.system(size: 13, weight: .semibold))
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
             .background(tint.opacity(0.14), in: Capsule())
@@ -237,5 +236,34 @@ enum DeviceNetwork {
             cursor = current.pointee.ifa_next
         }
         return nil
+    }
+
+    /// Active network type for the status card ("Wi-Fi" / "移动网络"):
+    /// en0 up with an IPv4 address means Wi-Fi; pdp_ip0 (the
+    /// cellular data interface) up means mobile data. Same getifaddrs
+    /// source as localIPv4Address — local device info only.
+    static func currentNetworkType() -> String {
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return "未知网络" }
+        defer { freeifaddrs(ifaddr) }
+        var hasWifi = false
+        var hasCellular = false
+        var cursor: UnsafeMutablePointer<ifaddrs>? = firstAddr
+        while let current = cursor {
+            let flags = Int32(current.pointee.ifa_flags)
+            let isUp = (flags & IFF_UP) == IFF_UP
+            let isLoopback = (flags & IFF_LOOPBACK) != 0
+            if isUp, !isLoopback, let name = current.pointee.ifa_name,
+               let socketAddress = current.pointee.ifa_addr,
+               socketAddress.pointee.sa_family == UInt8(AF_INET) {
+                let ifName = String(cString: name)
+                if ifName == "en0" { hasWifi = true }
+                if ifName.hasPrefix("pdp_ip") { hasCellular = true }
+            }
+            cursor = current.pointee.ifa_next
+        }
+        if hasWifi { return "Wi-Fi" }
+        if hasCellular { return "移动网络" }
+        return "未知网络"
     }
 }

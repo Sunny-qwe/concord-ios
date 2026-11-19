@@ -219,9 +219,8 @@ final class TunnelManager: ObservableObject {
                 }
             }
         }
-        if let connection = manager.connection {
-            status = connection.status
-        }
+        let connection = manager.connection
+        status = connection.status
     }
 
     /// FlClash NEHelper.waitForStableStatus: up to 5 s for a

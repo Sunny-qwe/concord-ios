@@ -9,7 +9,7 @@ import SwiftUI
 //                开启时显示，见 FlClash ToolsView 的 openLogs 门控）
 //   设置         语言（值 "默认"）/ 主题 / 应用图标 / 备份与恢复 /
 //                可靠性中心 / 进阶配置 / MITM模块 / MITM证书设置 /
-//                本地网络设置 / 常规
+//                常规 / 本地网络设置
 //   其他         免责声明 / 开发者模式（仅当开发者模式开启时显示）/ 关于
 // Rows are 56pt tall, section labels 13pt semibold grey, card
 // corner radius 24pt. Each row keeps its existing destination;
@@ -118,11 +118,12 @@ struct ToolsView: View {
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(.tertiary)
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 16)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .contentShape(Rectangle())
                         Divider().padding(.leading, 54)
                         ToolRow(icon: "paintbrush", title: "主题") { navPath.append(.theme) }
                         Divider().padding(.leading, 54)
@@ -215,9 +216,12 @@ struct ToolsView: View {
 
 /// One 56pt row: plain grey outline icon, 13pt semibold title,
 /// chevron right (16pt vertical padding + 24pt icon frame). A plain
-/// Button (not a NavigationLink — see the note on navPath above)
-/// with a full-row contentShape, so the whole row rect — including
-/// the gap between the title and the chevron — is tappable.
+/// Button (not a NavigationLink — see the note on navPath above).
+/// The label fills the row width and carries the contentShape:
+/// on device, contentShape on the Button itself did NOT extend the
+/// hit area — only the chevron responded (v0.2.18) — while the
+/// shape on the label HStack makes the whole row rect, including
+/// the gap between the title and the chevron, tappable.
 private struct ToolRow: View {
     let icon: String
     let title: String
@@ -238,11 +242,12 @@ private struct ToolRow: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.vertical, 16)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contentShape(Rectangle())
     }
 }
 

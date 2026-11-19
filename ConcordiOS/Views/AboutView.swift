@@ -49,7 +49,7 @@ struct AboutView: View {
     @State private var isCheckingUpdate = false
 
     private var version: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.18"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.19"
     }
 
     var body: some View {

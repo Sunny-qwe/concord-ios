@@ -20,7 +20,7 @@ env:
   TUNNEL_BUNDLE_ID: com.sunny-qwe.concord-ios.PacketTunnel
   UPSTREAM_REPO: chen08209/concord
   # Pinned upstream commit the patches in patches/ are diffs against.
-  UPSTREAM_REF: 145c9e75873fb22c5a3f218ff1c0a4cd3facd73c
+  UPSTREAM_REF: 165154c92ddec38c6fc461d52d4ed210e7e8a65e
   STATICLIB_DIR: upstream/target/aarch64-apple-ios/release
   STATICLIB: upstream/target/aarch64-apple-ios/release/libconcord_ios.a
   FFI_LIB_DIR: rust/concord-ios-ffi/target/aarch64-apple-ios/release

@@ -138,9 +138,9 @@ struct ToolsView: View {
                         Divider().padding(.leading, 54)
                         ToolRow(icon: "key", title: "MITM证书设置") { navPath.append(.mitmCertificate) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "network", title: "本地网络设置") { navPath.append(.localNetwork) }
-                        Divider().padding(.leading, 54)
                         ToolRow(icon: "gear", title: "常规") { navPath.append(.settings) }
+                        Divider().padding(.leading, 54)
+                        ToolRow(icon: "network", title: "本地网络设置") { navPath.append(.localNetwork) }
                     }
                     toolSection(header: "其他") {
                         ToolRow(icon: "doc.text", title: "免责声明") { navPath.append(.disclaimer) }
@@ -335,7 +335,7 @@ private struct DisclaimerView: View {
                 Text("免责声明")
                     .font(.system(size: 18, weight: .bold))
                 Text("在使用本应用之前，请仔细阅读以下免责声明。使用本应用即表示您同意以下全部条款。")
-                ForEach(terms, id: \.0) { title, body in
+                ForEach(DisclaimerView.terms, id: \.0) { title, body in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(title)
                             .font(.system(size: 13, weight: .semibold))

@@ -591,7 +591,8 @@ func mitmModuleUrls(_ text: String) -> [String] {
         if let url = queryValue("plugin") { urls = [url] }
     case "shadowrocket" where actionFlat == "install":
         if let url = queryValue("module") { urls = [url] }
-    case "stash", "clash" where actionFlat == "install-override":
+    case "stash" where actionFlat == "install-override",
+         "clash" where actionFlat == "install-override":
         if let url = queryValue("url") { urls = [url] }
     case "quantumult-x" where actionFlat == "add-resource" || actionFlat == "update-configuration":
         urls = quantumultXRewrites(queryValue("remote-resource"))
@@ -1605,12 +1606,12 @@ private enum MiniYAML {
         var map: [String: MiniYAMLValue] = [:]
         while index < lines.count {
             let line = lines[index]
-            guard line.indent == indent, let (key, rest) = mapKey(line.content) else { break }
+            guard line.indent == indent, let (key, restText) = mapKey(line.content) else { break }
             index += 1
             // An anchor on the value (`key: &name value`, or `key:
             // &name` over a nested block): peel it, store the value
             // under it once it is read.
-            var rest = rest
+            var rest = restText
             var anchor: String?
             if rest.hasPrefix("&") {
                 let after = String(rest.dropFirst())

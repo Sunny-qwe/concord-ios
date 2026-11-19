@@ -77,6 +77,12 @@ enum ConcordSampleData {
             result = AnyEncodable(ConcordMitmCertificate(certificate: nil))
         case "mitm.validate":
             result = AnyEncodable(ConcordMitmValidateResult(issues: [:]))
+        case "mitm.readModule":
+            result = AnyEncodable(ConcordMitmModuleView(
+                format: "surge",
+                meta: ConcordMitmModuleMeta(name: "示例模块", desc: nil, author: nil, icon: nil, homepage: nil, category: nil, system: nil, requirement: nil, argumentsDesc: nil),
+                off: nil, arguments: [], resources: [], declaredScripts: [], asksConsent: false,
+                issues: [:], views: [:], rules: [], ruleSets: [], network: .object([:]), ignored: []))
         case "mitm.issueCertificate":
             result = AnyEncodable(ConcordMitmPem(pem: ""))
         case "mitm.runScript":

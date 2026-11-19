@@ -1,18 +1,8 @@
-From baf71fdc6e7d583f06f53935e03d9bdd15f7cced Mon Sep 17 00:00:00 2001
-From: Muse <muse@local>
-Date: Tue, 17 Nov 2026 08:34:00 +0000
-Subject: [PATCH 4/7] vendor: nix 0.31.3 with macOS-only utun gates for iOS
+From 7e03f45a492eae94fd3580e28c4f351e0792a059 Mon Sep 17 00:00:00 2001
+From: sunny-qwe <gmlg138888@gmail.com>
+Date: Thu, 19 Nov 2026 13:32:26 +0000
+Subject: [PATCH 4/7] ios: vendor nix 0.31.3 with macOS-only utun gating
 
-nix gates KextControl/UtunIfname on apple_targets, but libc defines
-SYSPROTO_CONTROL / UTUN_OPT_IFNAME only on macOS, so nix fails to
-compile for aarch64-apple-ios (E0425, pulled in by gotatun's unix nix
-dependency with net/socket features). Vendor nix 0.31.3 and gate those
-items (plus their GetCString helper) to target_os = "macos".
-
-Rebased onto 5f1d090: upstream added vendor/h3, so the workspace
-exclude list and vendor/PATCHES.md gained h3 rows; the patch hunks
-were re-based onto the new line numbers. The vendored nix copy itself
-is unchanged.
 ---
  Cargo.toml                                    |    7 +-
  vendor/PATCHES.md                             |   13 +
@@ -272,7 +262,7 @@ is unchanged.
  create mode 100644 vendor/nix-0.31.3-ios/test/test_unistd.rs
 
 diff --git a/Cargo.toml b/Cargo.toml
-index f169fa9..a715e85 100644
+index fde45fb..570d258 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -32,7 +32,7 @@ members = [
@@ -284,7 +274,7 @@ index f169fa9..a715e85 100644
  
  [workspace.package]
  version = "0.1.0"
-@@ -299,5 +299,10 @@ quinn = { path = "vendor/quinn" }
+@@ -304,5 +304,10 @@ quinn = { path = "vendor/quinn" }
  quinn-proto = { path = "vendor/quinn-proto" }
  shadowsocks = { path = "vendor/shadowsocks" }
  mio = { path = "vendor/mio" }

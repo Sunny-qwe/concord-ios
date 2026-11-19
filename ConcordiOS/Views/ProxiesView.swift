@@ -170,7 +170,10 @@ struct ProxiesView: View {
             .searchable(text: $searchText, isPresented: $isSearching, prompt: "搜索节点")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    topBarCapsule
+                    topBarPill
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    moreButton
                 }
             }
             .sheet(item: $detailNode) { node in
@@ -198,35 +201,44 @@ struct ProxiesView: View {
     /// the search field. There is no separate locate button in the
     /// bar (FlClash folds it into the ⋯ menu) — re-tapping the
     /// active group pill scrolls to the selected node.
-    private var topBarCapsule: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 0) {
-                Button { isSearching = true } label: {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 19, weight: .semibold))
-                        .imageScale(.medium)
-                        .frame(width: 44, height: 44)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("搜索")
-                if styleStore.style == .tab {
-                    topBarBoltButton(for: selectedGroup)
-                }
-            }
-            .background(ConcordTheme.cardBackground, in: Capsule())
-            Button { showMoreMenu = true } label: {
-                Image(systemName: "ellipsis")
-                    .rotationEffect(.degrees(90))
+    /// The pill and the ⋯ are TWO toolbar items, not one HStack:
+    /// with a single item SwiftUI anchors the ⋯ popover to the whole
+    /// 140pt bar, so its arrow pointed at the bolt (v0.2.28). The
+    /// ⋯ has its own item so the arrow points at the ⋯ circle.
+    /// Declaration order is left-to-right for trailing items, so
+    /// the pill is declared first and the ⋯ stays rightmost; the
+    /// system spacing between trailing items is 8pt, matching
+    /// barButtonGap.
+    private var topBarPill: some View {
+        HStack(spacing: 0) {
+            Button { isSearching = true } label: {
+                Image(systemName: "magnifyingglass")
                     .font(.system(size: 19, weight: .semibold))
                     .imageScale(.medium)
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("更多")
-            .background(ConcordTheme.cardBackground, in: Circle())
-            .popover(isPresented: $showMoreMenu, attachmentAnchor: .point(.bottom), arrowEdge: .top) {
-                moreMenuPopover
+            .accessibilityLabel("搜索")
+            if styleStore.style == .tab {
+                topBarBoltButton(for: selectedGroup)
             }
+        }
+        .background(ConcordTheme.cardBackground, in: Capsule())
+    }
+
+    private var moreButton: some View {
+        Button { showMoreMenu = true } label: {
+            Image(systemName: "ellipsis")
+                .rotationEffect(.degrees(90))
+                .font(.system(size: 19, weight: .semibold))
+                .imageScale(.medium)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("更多")
+        .background(ConcordTheme.cardBackground, in: Circle())
+        .popover(isPresented: $showMoreMenu, attachmentAnchor: .point(.bottom), arrowEdge: .top) {
+            moreMenuPopover
         }
     }
 
@@ -301,7 +313,7 @@ struct ProxiesView: View {
                                 .foregroundStyle(ConcordTheme.accent)
                         }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 12)
                     .contentShape(Rectangle())
                 }
@@ -310,7 +322,8 @@ struct ProxiesView: View {
                 menuOptionsView(for: dest)
             }
         }
-        .frame(minWidth: 260, idealWidth: 280)
+        .frame(minWidth: 160, maxWidth: 280)
+        .font(.subheadline)
         .presentationCompactAdaptation(.popover)
         .onDisappear { menuLevel = .root }
     }
@@ -326,7 +339,7 @@ struct ProxiesView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 12)
             .padding(.vertical, 12)
             .contentShape(Rectangle())
         }
@@ -346,7 +359,7 @@ struct ProxiesView: View {
                         .fontWeight(.semibold)
                     Spacer()
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 12)
                 .padding(.vertical, 12)
                 .contentShape(Rectangle())
             }
@@ -410,7 +423,7 @@ struct ProxiesView: View {
                         .foregroundStyle(ConcordTheme.accent)
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 12)
             .padding(.vertical, 12)
             .contentShape(Rectangle())
         }

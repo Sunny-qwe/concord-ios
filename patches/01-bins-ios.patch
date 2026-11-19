@@ -1,18 +1,8 @@
-From 3570642553c8c1f13ccdff12ffa582bd677f9acc Mon Sep 17 00:00:00 2001
-From: Muse <muse@local>
-Date: Tue, 17 Nov 2026 08:33:44 +0000
-Subject: [PATCH 1/7] ios: add bins/ios staticlib crate (concord_start, iOS
- platform, socketpair bridge)
+From 7ae62c8154826f23d470e6fc8698b796dbcf311a Mon Sep 17 00:00:00 2001
+From: sunny-qwe <gmlg138888@gmail.com>
+Date: Thu, 19 Nov 2026 13:32:17 +0000
+Subject: [PATCH 1/7] ios: add bins/ios staticlib crate
 
-Mirrors bins/android as libconcord_ios.a (crate-type staticlib+rlib):
-concord_start() with no thread hook, Core with EngineConfig
-{ android: false } and capabilities [tun.inherited, tun.channel], an
-IosPlatform with no host callbacks (protect is a no-op true, find_owner
-is None), a SOCK_DGRAM socketpair bridge (Option A), and a hand-written
-concord_ios.h. Full upstream workspace, no feature trimming.
-
-Rebased onto 5f1d090: Hub::new now takes (handle, server) only, the
-Server owns the Control, so core.rs drops the third argument.
 ---
  Cargo.toml               |   1 +
  bins/ios/Cargo.toml      |  37 ++++++++++
@@ -36,7 +26,7 @@ Server owns the Control, so core.rs drops the third argument.
  create mode 100644 bins/ios/src/platform.rs
 
 diff --git a/Cargo.toml b/Cargo.toml
-index 50c9520..f169fa9 100644
+index ad6a01c..fde45fb 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -27,6 +27,7 @@ members = [

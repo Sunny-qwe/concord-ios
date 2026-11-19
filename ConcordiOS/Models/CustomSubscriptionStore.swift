@@ -130,10 +130,22 @@ struct CustomRule: Codable, Equatable, Identifiable {
         "GEOSITE", "GEOIP", "IP-CIDR", "IP-CIDR6", "IP-ASN",
         "SRC-IP-CIDR", "SRC-PORT", "DST-PORT", "PROCESS-NAME",
         "PROCESS-PATH", "IN-TYPE", "RULE-SET", "MATCH", "FINAL",
+        // Upstream 165154c: URL-REGEX (regex over the request URL)
+        // and USER-AGENT (*? glob, case-sensitive, over the
+        // User-Agent header). Both are undecided before the request
+        // is read; inside a decrypted session each request is
+        // routed on URL + UA after rewrites.
+        "URL-REGEX", "USER-AGENT",
     ]
 
     var text: String {
         if type == "MATCH" || type == "FINAL" { return "\(type),\(target)" }
+        var content = self.content
+        // A regex or glob may contain commas; the core accepts
+        // quoted payloads for these two types (QUOTED_PAYLOAD).
+        if (type == "URL-REGEX" || type == "USER-AGENT") && content.contains(",") && !content.hasPrefix("\"") {
+            content = "\"\(content)\""
+        }
         var line = "\(type),\(content),\(target)"
         if noResolve { line += ",no-resolve" }
         if src { line += ",src" }

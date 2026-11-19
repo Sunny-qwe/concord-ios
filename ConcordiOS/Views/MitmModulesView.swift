@@ -231,6 +231,7 @@ struct MitmModuleDetailView: View {
     @State private var validateMessage: String?
     @State private var validateIssues: [String: [ConcordMitmIssue]]?
     @State private var isValidating = false
+    @State private var coreContent: MitmModuleContent?
 
     private var module: MitmModule? {
         moduleStore.modules.first { $0.id == moduleId }
@@ -238,6 +239,12 @@ struct MitmModuleDetailView: View {
 
     private var content: MitmModuleContent? {
         module.flatMap { moduleStore.parsedContent(for: $0) }
+    }
+
+    /// The content shown: the core's parse when the tunnel is
+    /// running (mitm.readModule), the Swift parser's otherwise.
+    private var shownContent: MitmModuleContent? {
+        coreContent ?? content
     }
 
     var body: some View {
@@ -256,8 +263,11 @@ struct MitmModuleDetailView: View {
                     }
                 }
 
-                if let content {
+                if let content = shownContent {
                     Section("解析出的内容") {
+                        if content.coreParsed {
+                            coreNote(content: content)
+                        }
                         countRow("解密域名", content.insertedHostname.count + content.hostname.count)
                         countRow("URL 重写", content.urlRewrite.count)
                         countRow("头重写", content.headerRewrite.count)
@@ -326,6 +336,12 @@ struct MitmModuleDetailView: View {
         .listStyle(.insetGrouped)
         .navigationTitle(module?.name ?? "模块")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: moduleId) {
+            coreContent = nil
+            if let module, client.mode == .live, tunnelManager.isRunning {
+                coreContent = await moduleStore.coreParsedContent(for: module)
+            }
+        }
         .sheet(isPresented: $showEditor) {
             if let module, let text = moduleStore.text(of: module) {
                 MitmModuleTextEditorView(module: module, initialText: text)
@@ -347,11 +363,39 @@ struct MitmModuleDetailView: View {
         LabeledContent(title, value: "\(count)")
     }
 
+    /// The core's report for this module (mitm.readModule): what
+    /// format it read, whether the module takes effect as a whole,
+    /// and the lines it does not take. A short note, not a redesign.
+    private func coreNote(content: MitmModuleContent) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("核心已解析（\(content.coreFormat ?? "?")）")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+            if let off = content.coreOffReason {
+                Text("该模块整体不生效：\(off == "requirement" ? "前置条件不满足" : "前置条件无法读取")")
+                    .font(.system(size: 10)).foregroundStyle(.orange)
+            }
+            if content.coreAsksConsent {
+                Text("该模块会改动 DNS / hosts / 路由等你未设置的项")
+                    .font(.system(size: 10)).foregroundStyle(.orange)
+            }
+            if content.coreIssueCount > 0 {
+                Text("核心有 \(content.coreIssueCount) 行无法读取（见下方校验）")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            ForEach(Array(content.coreIgnored.prefix(10)), id: \.self) { line in
+                Text(line).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            if content.coreIgnored.count > 10 {
+                Text("等 \(content.coreIgnored.count) 行").font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
     private func validate() async {
         isValidating = true
         defer { isValidating = false }
         do {
-            let config = moduleStore.mergedConfig(userMitm: settingsStore.mitmConfig)
+            let config = await moduleStore.mergedConfigLive(userMitm: settingsStore.mitmConfig)
             let result = try await client.mitmValidate(config: config)
             validateIssues = result.issues
             let total = result.issues.values.reduce(0) { $0 + $1.count }

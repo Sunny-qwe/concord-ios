@@ -45,6 +45,7 @@ struct ConcordiOSApp: App {
         // active profile live when the tunnel is running, so the
         // change takes effect without a VPN restart.
         let mitmModuleStore = MitmModuleStore()
+        mitmModuleStore.client = client
         mitmModuleStore.onModulesChanged = { await profileStore.reapplyActive() }
         _mitmModuleStore = StateObject(wrappedValue: mitmModuleStore)
         // The theme store is a singleton (DesignSystem reads the

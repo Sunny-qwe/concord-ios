@@ -1,8 +1,7 @@
-From 7b3faa1bc06317d9a8eb670c8674192d890a2d0b Mon Sep 17 00:00:00 2001
-From: Muse <muse@local>
-Date: Tue, 17 Nov 2026 08:34:06 +0000
-Subject: [PATCH 5/7] mitm: enable rquickjs bindgen feature for iOS (no
- pre-generated bindings)
+From ac10ff58841bca9ebebe7d75c6c758e654120d20 Mon Sep 17 00:00:00 2001
+From: sunny-qwe <gmlg138888@gmail.com>
+Date: Thu, 19 Nov 2026 13:32:26 +0000
+Subject: [PATCH 5/7] ios: enable rquickjs bindgen for iOS
 
 ---
  crates/mitm/Cargo.toml | 11 +++++++++++

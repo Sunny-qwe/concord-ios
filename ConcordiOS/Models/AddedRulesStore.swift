@@ -72,13 +72,23 @@ final class AddedRulesStore: ObservableObject {
     }
 
     /// A rule is "TYPE,VALUE,POLICY" with an optional ",no-resolve".
-    /// Known types come from Clash's rule grammar.
+    /// Known types come from Clash's rule grammar, plus the two
+    /// upstream 165154c types: URL-REGEX (a regex over the request
+    /// URL) and USER-AGENT (a *? glob, case-sensitive, over the
+    /// User-Agent header — from an HTTP proxy CONNECT when there is
+    /// one). Both are undecided before the request is read: they do
+    /// not match a fresh connection, and NOT around them does not
+    /// turn them into a match; inside a decrypted session each
+    /// request is routed on URL + UA after rewrites. The core does
+    /// the actual matching — the app only recognizes, validates and
+    /// offers them. Their payloads may be quoted (the core's
+    /// QUOTED_PAYLOAD), because a regex or glob may contain commas.
     static let knownTypes: Set<String> = [
         "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD", "DOMAIN-REGEX",
         "GEOSITE", "GEOIP", "IP-CIDR", "IP-CIDR6", "IP-ASN",
         "SRC-IP-CIDR", "SRC-PORT", "DST-PORT", "PROCESS-NAME",
         "PROCESS-PATH", "IN-TYPE", "AND", "OR", "NOT", "MATCH",
-        "FINAL", "RULE-SET",
+        "FINAL", "RULE-SET", "URL-REGEX", "USER-AGENT",
     ]
 
     /// Returns an error message when the rule text is malformed, or
@@ -93,6 +103,21 @@ final class AddedRulesStore: ObservableObject {
         guard knownTypes.contains(parts[0].uppercased()) else {
             return "未知规则类型 \(parts[0])"
         }
+        let type = parts[0].uppercased()
+        if type == "URL-REGEX" || type == "USER-AGENT" {
+            // The payload may be quoted and may contain commas, so
+            // re-split quote-aware (the core's QUOTED_PAYLOAD).
+            var qparts = quotedParts(trimmed)
+            if qparts.last == "no-resolve" { qparts.removeLast() }
+            guard qparts.count == 3, !qparts[1].isEmpty, !qparts[2].isEmpty else {
+                return "规则格式应为 类型,值,策略，例如 URL-REGEX,^https://example\\.com/,PROXY"
+            }
+            if type == "URL-REGEX" {
+                let pattern = qparts[1].trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                guard (try? NSRegularExpression(pattern: pattern)) != nil else { return "正则表达式无效" }
+            }
+            return nil
+        }
         if parts[0].uppercased() == "MATCH" || parts[0].uppercased() == "FINAL" {
             guard parts.count == 2 else { return "MATCH / FINAL 只有策略一个参数" }
             return nil
@@ -101,5 +126,27 @@ final class AddedRulesStore: ObservableObject {
             return "规则格式应为 类型,值,策略，例如 DOMAIN-SUFFIX,example.com,PROXY"
         }
         return nil
+    }
+
+    /// Splits a rule line on commas outside double quotes (the core
+    /// accepts quoted payloads for URL-REGEX / USER-AGENT, whose
+    /// regex or glob may contain commas).
+    private static func quotedParts(_ text: String) -> [String] {
+        var parts: [String] = []
+        var quoted = false
+        var start = text.startIndex
+        var i = text.startIndex
+        while i < text.endIndex {
+            let c = text[i]
+            if c == "\"" {
+                quoted.toggle()
+            } else if c == "," && !quoted {
+                parts.append(String(text[start..<i]).trimmingCharacters(in: .whitespaces))
+                start = text.index(after: i)
+            }
+            i = text.index(after: i)
+        }
+        parts.append(String(text[start...]).trimmingCharacters(in: .whitespaces))
+        return parts
     }
 }

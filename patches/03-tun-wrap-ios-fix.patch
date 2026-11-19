@@ -1,12 +1,8 @@
-From ffb3e87f6e67f79ba0c205f86453ac6545b48c55 Mon Sep 17 00:00:00 2001
-From: Muse <muse@local>
-Date: Tue, 17 Nov 2026 08:33:53 +0000
-Subject: [PATCH 3/7] tun: cfg-gate TunDevice::wrap name lookup off iOS/illumos
+From 792460e97c7fb44e19fd1c8f5f729b71302b1059 Mon Sep 17 00:00:00 2001
+From: sunny-qwe <gmlg138888@gmail.com>
+Date: Thu, 19 Nov 2026 13:32:18 +0000
+Subject: [PATCH 3/7] ios: cfg-gate TunDevice::wrap name/index lookup off iOS
 
-The generic unix DeviceImpl (vendor/tun-rs, used on iOS) defines
-neither name() nor if_index(), so wrap() does not compile for
-aarch64-apple-ios as-is. The empty name / None index is what the
-Android path already uses.
 ---
  crates/tun/src/device/mod.rs | 11 +++++++++--
  1 file changed, 9 insertions(+), 2 deletions(-)

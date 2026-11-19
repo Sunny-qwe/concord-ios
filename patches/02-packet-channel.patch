@@ -1,20 +1,9 @@
-From a38b0da007898491a1861ac44f03b9d235027cf3 Mon Sep 17 00:00:00 2001
-From: Muse <muse@local>
-Date: Tue, 17 Nov 2026 08:33:47 +0000
-Subject: [PATCH 2/7] tun: add production packet-channel DeviceSource (Option
- B)
+From 595c1a95e901dab36673e5b8b5ede8ce0af3d9ea Mon Sep 17 00:00:00 2001
+From: sunny-qwe <gmlg138888@gmail.com>
+Date: Thu, 19 Nov 2026 13:32:17 +0000
+Subject: [PATCH 2/7] ios: promote FakeDevice to a production packet-channel
+ DeviceSource
 
-Promotes the FakeDevice pattern of crates/tun/src/testing.rs to a
-production channel device (crates/tun/src/channel.rs), adds
-DeviceSource::Channel and TunSource::channel (schema/api.json), a
-PacketChannels registry in crates/api, Engine::start_channel_tun, and
-the concord_packet_channel_open/write/read/close FFI. iOS feeds
-packetFlow packets through the channel; no file descriptor is involved.
-
-Rebased onto 5f1d090: upstream removed the TunSource::channel variant,
-so this patch re-adds it (crates/proto/src/types/live.rs) and the
-packet-channel arm in tun.start; Hub no longer holds a Control, so the
-packet_channel_* methods go through self.server.service().
 ---
  crates/api/Cargo.toml           |   1 +
  crates/api/src/channels.rs      |  68 ++++++++++++
@@ -739,10 +728,10 @@ index 4a701e1..0874cda 100644
      let Some(handler) = deps.dns.clone() else {
          return Ok(None);
 diff --git a/schema/api.json b/schema/api.json
-index 1d3667e..6d7c0e6 100644
+index ab6a3f1..2d85347 100644
 --- a/schema/api.json
 +++ b/schema/api.json
-@@ -4294,9 +4294,28 @@
+@@ -4306,9 +4306,28 @@
              "kind",
              "handle"
            ]

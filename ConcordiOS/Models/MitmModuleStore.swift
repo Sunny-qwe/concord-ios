@@ -120,6 +120,12 @@ final class MitmModuleStore: ObservableObject {
     /// when the tunnel is stopped.
     var onModulesChanged: (() async -> String?)?
 
+    /// The live client, wired in ConcordiOSApp. Nil (or a stopped
+    /// tunnel) means the Swift parser reads modules; with a live
+    /// tunnel the core's mitm.readModule reads them instead (see
+    /// coreParsedContent).
+    var client: ConcordClient?
+
     private let modulesDirectoryName = "mitm-modules"
     private let modulesFileName = "modules.json"
 
@@ -222,10 +228,45 @@ final class MitmModuleStore: ObservableObject {
         )
     }
 
+    /// Parses a module with the core (mitm.readModule, upstream
+    /// 165154c) when the tunnel is running; nil when the core cannot
+    /// be reached, and the caller falls back to the Swift parser —
+    /// the same pattern as convert.decodeLinks: the core does it
+    /// when live, the Swift parser when not. The module's own
+    /// arguments are passed, so an argument left unset takes its
+    /// default; attachments are none in this build (the app has no
+    /// local-file attachments — see MitmModuleParser).
+    func coreParsedContent(for module: MitmModule) async -> MitmModuleContent? {
+        guard let client, client.mode == .live, TunnelManager.shared.isRunning,
+              let text = readText(module) else { return nil }
+        do {
+            let language = Locale.preferredLanguages.first ?? "zh-Hans"
+            let view = try await client.mitmReadModule(text: text, arguments: module.arguments, attachments: [:], language: language)
+            return MitmModuleParser.parseWithCore(view: view, text: text, values: module.arguments, resources: module.resources)
+        } catch {
+            return nil
+        }
+    }
+
     /// Enabled modules in order, parsed. A module whose text is
     /// missing adds nothing until it is re-imported.
     func enabledContents() -> [MitmModuleContent] {
         modules.filter(\.enabled).compactMap { parsedContent(for: $0) }
+    }
+
+    /// Enabled modules in order, parsed with the core where the
+    /// tunnel is running (mitm.readModule) and the Swift parser
+    /// otherwise. One RPC per module; modules are few.
+    func enabledContentsLive() async -> [MitmModuleContent] {
+        var out: [MitmModuleContent] = []
+        for module in modules.filter(\.enabled) {
+            if let core = await coreParsedContent(for: module) {
+                out.append(core)
+            } else if let swift = parsedContent(for: module) {
+                out.append(swift)
+            }
+        }
+        return out
     }
 
     /// The merged module lists + rules (user hostnames are NOT in
@@ -234,10 +275,25 @@ final class MitmModuleStore: ObservableObject {
         mergeMitmModules(hostname: [], modules: enabledContents())
     }
 
+    /// The merged module lists + rules, with the core's parse where
+    /// the tunnel is running.
+    func mergedListsLive() async -> MitmModuleMerged {
+        mergeMitmModules(hostname: [], modules: await enabledContentsLive())
+    }
+
     /// The merged MITM config for mitm.validate: the user's own
     /// choices first, then the enabled modules' lists.
     func mergedConfig(userMitm: MitmConfig) -> MitmConfig {
-        let merged = mergedLists()
+        applyMerged(mergedLists(), to: userMitm)
+    }
+
+    /// The merged MITM config, with the core's parse where the
+    /// tunnel is running.
+    func mergedConfigLive(userMitm: MitmConfig) async -> MitmConfig {
+        applyMerged(await mergedListsLive(), to: userMitm)
+    }
+
+    private func applyMerged(_ merged: MitmModuleMerged, to userMitm: MitmConfig) -> MitmConfig {
         var config = userMitm
         config.hostname = userMitm.hostname + merged.hostname
         config.urlRewrite = merged.urlRewrite
@@ -258,15 +314,15 @@ final class MitmModuleStore: ObservableObject {
     /// re-apply the active profile live when the tunnel is running.
     @MainActor
     func refreshModuleFiles() async {
-        writeMergedFile()
+        await writeMergedFile()
         sweepResources()
         if let onModulesChanged {
             applyMessage = await onModulesChanged()
         }
     }
 
-    private func writeMergedFile() {
-        let merged = mergedLists()
+    private func writeMergedFile() async {
+        let merged = await mergedListsLive()
         var json = merged.mitmJSON
         if !merged.rules.isEmpty { json["rules"] = merged.rules }
         guard let url = ConfigStore.sharedFileURL(name: ConfigStore.moduleMitmFileName),

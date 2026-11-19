@@ -130,6 +130,27 @@ struct MitmModuleContent {
     var resourceUrls: Set<String> = []
     var skipped: [MitmModuleSkip] = []
 
+    // MARK: - Core report (mitm.readModule, upstream 165154c)
+    //
+    /// Set by parseWithCore: the core read this module while the VPN
+    /// was running. False means the Swift parser alone read it (VPN
+    /// off, or the core call failed) — the lists below are the same
+    /// either way; only the report fields differ.
+    var coreParsed: Bool = false
+    /// The format the core read: surge | loon | quantumult-x | stash.
+    var coreFormat: String?
+    /// Why the module takes no effect as a whole (requirement /
+    /// requirementUnreadable); nil when it takes effect.
+    var coreOffReason: String?
+    /// Whether the module changes things the user did not set for
+    /// traffic it does not itself rewrite (DNS, hosts, routes,
+    /// verifying servers, the clients decrypted for).
+    var coreAsksConsent: Bool = false
+    /// Lines the core does not take, as "第 N 行（原因）：文本".
+    var coreIgnored: [String] = []
+    /// How many lines the core could not read.
+    var coreIssueCount: Int = 0
+
     var isEmpty: Bool {
         hostname.isEmpty && insertedHostname.isEmpty
             && urlRewrite.isEmpty && headerRewrite.isEmpty
@@ -650,6 +671,16 @@ private let ruleTypes: [String: String] = [
     "DEST-PORT": "DST-PORT", "DST-PORT": "DST-PORT",
     "SRC-PORT": "SRC-PORT", "IN-PORT": "IN-PORT",
     "PROCESS-NAME": "PROCESS-NAME",
+    // Upstream 165154c: URL-REGEX (a regex over the request URL)
+    // and USER-AGENT (a *? glob, case-sensitive, over the
+    // User-Agent header). Both are undecided before the request is
+    // read — they do not match a fresh connection, and NOT around
+    // them does not turn them into a match; inside a decrypted
+    // session each request is routed on URL + UA after rewrites.
+    // The payload passes through as-is when non-empty (the core's
+    // module reader does the same); quotes come off first, since a
+    // regex or glob may contain commas.
+    "URL-REGEX": "URL-REGEX", "USER-AGENT": "USER-AGENT",
 ]
 
 private let loonContentTypes: [String: String] = [
@@ -663,6 +694,8 @@ private let qxFilterTypes: [String: String] = [
     "host": "DOMAIN", "host-suffix": "DOMAIN-SUFFIX",
     "host-keyword": "DOMAIN-KEYWORD", "host-wildcard": "DOMAIN-WILDCARD",
     "ip-cidr": "IP-CIDR", "ip6-cidr": "IP-CIDR6",
+    // Upstream 165154c: QX user-agent filters are USER-AGENT rules.
+    "user-agent": "USER-AGENT",
 ]
 private let qxFilterPattern = #"^(host|host-suffix|host-keyword|host-wildcard|ip-cidr|ip6-cidr|user-agent|geoip|ip-asn|final)\s*,"#
 private let qxRewritePattern = #"^\S+\s+url\s+\S|\surl-and-header\s"#
@@ -1076,17 +1109,15 @@ private final class MitmModuleParserEngine {
 
     func readRule(_ section: String, line: String, shown: String? = nil) {
         let parts = ruleParts(line)
-        guard let first = parts.first else { return }
-        let type = first.uppercased()
+        guard parts.first != nil else { return }
         let policy = parts.count > 2 ? parts[2].uppercased() : nil
-        if type == "URL-REGEX" {
-            if let policy, let action = rejectActions[policy] {
-                urlRewrite.append("\(field(unquote(parts.count > 1 ? parts[1] : ""))) \(action)")
-            } else {
-                skip(section, shown ?? line, .policy)
-            }
-            return
-        }
+        // NOTE (upstream 165154c): URL-REGEX used to map to a
+        // url-rewrite reject here (FlClash-era, from before the core
+        // had URL-REGEX rules). The core now keeps it as a profile
+        // rule with any policy, so this parser does the same — the
+        // two parsers agree line for line. A URL-REGEX rule only
+        // matches inside a decrypted session (or plain HTTP), which
+        // is where the module's MITM hostnames put the traffic.
         let target: String?
         switch policy {
         case "DIRECT": target = "DIRECT"
@@ -1142,6 +1173,12 @@ private final class MitmModuleParserEngine {
             value = parsed
         case "DST-PORT", "SRC-PORT", "IN-PORT":
             guard validPorts(value) else { return nil }
+        case "URL-REGEX", "USER-AGENT":
+            // Upstream 165154c: the payload passes through as-is
+            // when non-empty (quotes already off — a regex or glob
+            // may contain commas, which splitRule keeps together
+            // inside quotes).
+            guard !value.isEmpty else { return nil }
         default:
             if value.isEmpty || value.contains(",") { return nil }
         }
@@ -2106,6 +2143,96 @@ enum MitmModuleParser {
             return engine.parseStash(override, text: text)
         }
         return engine.parse(text)
+    }
+
+    /// Builds module content from the core's mitm.readModule view
+    /// (upstream 165154c). The core is authoritative for the meta,
+    /// the declared arguments, the Clash rules, the declared scripts
+    /// and the resources — and for which lines it cannot read
+    /// (`issues`) or does not take (`ignored`). The MITM line lists
+    /// still come from the Swift parser: the core's views are the
+    /// parsed forms of those lines and have no line form to send
+    /// back, so only the Swift parser produces the syntax the core's
+    /// config takes. The two read the same text line for line; where
+    /// they differ — a line the core takes that the Swift parser
+    /// skips, or the other way round — the core's report
+    /// (issues/ignored, shown in the module detail view) is what the
+    /// user sees. `values` / `resources` are the module's current
+    /// arguments and downloaded resources, as for parse.
+    static func parseWithCore(view: ConcordMitmModuleView, text: String, values: [String: String] = [:], resources: [String: String] = [:]) -> MitmModuleContent {
+        var content = parse(text: text, values: values, resources: resources)
+        content.coreParsed = true
+        content.coreFormat = view.format
+        content.coreOffReason = view.off?.reason
+        content.coreAsksConsent = view.asksConsent
+        content.coreIssueCount = view.issues.values.reduce(0) { $0 + $1.count }
+        content.coreIgnored = view.ignored.map { ignored in
+            var line = "第 \(ignored.line) 行（\(coreIgnoreLabel(ignored.reason))）"
+            if let detail = ignored.detail, !detail.isEmpty { line += "：\(detail)" }
+            return line
+        }
+        if let name = view.meta.name { content.name = name }
+        if let desc = view.meta.desc { content.description = desc }
+        if let system = view.meta.system { content.system = system }
+        if !view.arguments.isEmpty {
+            content.arguments = view.arguments.map { arg in
+                MitmModuleArgument(
+                    name: arg.name,
+                    defaultValue: arg.default,
+                    type: arg.kind.type == "select" ? .select : (arg.kind.type == "switch" ? .toggle : .input),
+                    options: arg.kind.options ?? [],
+                    label: arg.label,
+                    description: arg.desc,
+                    number: arg.number)
+            }
+        }
+        // The core's rule + policy, in profile rule-line form
+        // ("TYPE,VALUE,POLICY" plus ",no-resolve" when set).
+        content.rules = view.rules.map { rule in
+            var line = "\(rule.rule),\(rule.policy.display)"
+            if rule.noResolve { line += ",no-resolve" }
+            return line
+        }
+        // Declared scripts: the core gives 1-based line indices;
+        // the lines themselves are the declaration text, as the
+        // Swift parser records them.
+        let lines = text.components(separatedBy: .newlines)
+        content.declaredScriptLines = view.declaredScripts.compactMap { index in
+            let i = Int(index) - 1
+            guard lines.indices.contains(i) else { return nil }
+            return lines[i].trimmingCharacters(in: .whitespaces)
+        }
+        content.resourceUrls.formUnion(view.resources.map(\.url))
+        return content
+    }
+
+    /// The core's ignore reasons, in the user's words (upstream
+    /// crates/config/src/mitm/module.rs IgnoreReason).
+    private static func coreIgnoreLabel(_ reason: String) -> String {
+        switch reason {
+        case "section": return "不支持的段"
+        case "appOnly": return "仅原 App 支持"
+        case "proxies": return "模块不能改代理"
+        case "setting": return "不支持的设置"
+        case "managedCa": return "CA 由系统管理"
+        case "requirement": return "前置条件不满足"
+        case "requirementUnreadable": return "前置条件无法读取"
+        case "scriptType": return "不支持的脚本类型"
+        case "event": return "不支持的事件"
+        case "disabled": return "行内已禁用"
+        case "finalRule": return "FINAL 规则不生效"
+        case "deviceRule": return "仅设备自身规则"
+        case "ruleType": return "无对应的规则类型"
+        case "policy": return "策略无对应出口"
+        case "nestedRuleSet": return "嵌套规则集"
+        case "reflect": return "不支持 reflect"
+        case "skipVerifyAll": return "跳过全部验证"
+        case "noAttachment": return "本地文件未附加"
+        case "unreadable": return "无法解析的行"
+        case "condition": return "不支持的条件"
+        case "runtimeValue": return "运行时才有的值"
+        default: return reason
+        }
     }
 
     /// Keys at the top of a Stash override that a Surge module or a

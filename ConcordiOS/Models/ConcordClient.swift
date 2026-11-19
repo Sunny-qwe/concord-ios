@@ -3,8 +3,8 @@ import Combine
 
 // MARK: - Concord JSON-RPC 2.0 client
 //
-// Types are modelled on upstream Concord's schema/api.json (68 methods,
-// checked 2026-11-16 against commit 187ac9d1e9282f07c05c49eb2ea9d4bc0ef243b6).
+// Types are modelled on upstream Concord's schema/api.json (69 methods,
+// checked 2026-11-19 against commit 165154c — mitm.readModule added).
 // See TUN_INVESTIGATION.md for the full method map.
 //
 // Two modes:
@@ -673,6 +673,114 @@ struct ConcordMitmIssue: Codable {
 
 struct ConcordMitmValidateResult: Codable {
     let issues: [String: [ConcordMitmIssue]]
+}
+
+// MARK: - mitm.readModule (upstream 165154c, the 69th method)
+//
+// The core reads a Surge module, Loon plugin, Quantumult X snippet
+// or Stash override and returns every line that takes effect, in the
+// same parsed forms mitm.validate returns — plus what it cannot read
+// (`issues`) and what it does not take (`ignored`). The parsed rule
+// views (`views`) are kept as JSON: the app needs their counts and
+// their line indices, not the parsed structs — and the core's views
+// have no line form to send back, so the MITM line lists still come
+// from the Swift parser (see MitmModuleParser.parseWithCore).
+
+struct ConcordMitmModuleMeta: Decodable {
+    let name: String?
+    let desc: String?
+    let author: String?
+    let icon: String?
+    let homepage: String?
+    let category: String?
+    let system: String?
+    let requirement: String?
+    let argumentsDesc: String?
+}
+
+/// `kind` is an internally-tagged object: {"type": "text"} |
+/// {"type": "switch"} | {"type": "select", "options": [...]}.
+struct ConcordMitmModuleArgumentKind: Decodable {
+    let type: String
+    let options: [String]?
+}
+
+struct ConcordMitmModuleArgument: Decodable {
+    let name: String
+    let kind: ConcordMitmModuleArgumentKind
+    let number: Bool
+    let `default`: String
+    let label: String?
+    let desc: String?
+    let line: UInt32
+}
+
+struct ConcordMitmModuleResource: Decodable {
+    let url: String
+    /// script | map-local | jq.
+    let kind: String
+    let lines: [UInt32]
+}
+
+/// `rule` is what goes before the policy in a profile's rule line;
+/// `policy` is a built-in (DIRECT, REJECT, …) or a name the host
+/// maps to one of its outbounds.
+struct ConcordMitmModulePolicy: Decodable {
+    let builtin: String?
+    let named: String?
+
+    var display: String { builtin ?? named ?? "DIRECT" }
+}
+
+struct ConcordMitmModuleRule: Decodable {
+    let line: UInt32
+    let rule: String
+    let policy: ConcordMitmModulePolicy
+    let noResolve: Bool
+    let extendedMatching: Bool
+}
+
+struct ConcordMitmModuleIgnored: Decodable {
+    let line: UInt32
+    let text: String
+    let reason: String
+    let detail: String?
+}
+
+struct ConcordMitmModuleOff: Decodable {
+    /// requirement | requirementUnreadable.
+    let reason: String
+}
+
+struct ConcordMitmLineEntry: Decodable {
+    let index: UInt32
+    let view: JSONValue
+}
+
+struct ConcordMitmModuleView: Decodable {
+    let format: String
+    let meta: ConcordMitmModuleMeta
+    /// Why the module takes no effect as a whole, though its lines
+    /// still read; nil when it takes effect.
+    let off: ConcordMitmModuleOff?
+    let arguments: [ConcordMitmModuleArgument]
+    let resources: [ConcordMitmModuleResource]
+    /// The lines that declare a script, whatever the arguments turn off.
+    let declaredScripts: [UInt32]
+    let asksConsent: Bool
+    /// As mitm.validate's, plus `force-http-hostname`; an `index` is
+    /// the module line.
+    let issues: [String: [ConcordMitmIssue]]
+    /// By list, as mitm.validate keys them; an `index` is the module line.
+    let views: [String: [ConcordMitmLineEntry]]
+    let rules: [ConcordMitmModuleRule]
+    /// Rule-set definitions (name / domain / source); kept as JSON —
+    /// the app does not apply them yet.
+    let ruleSets: [JSONValue]
+    /// The network edits (nameservers, hosts, routes…), in mihomo's
+    /// keys; kept as JSON — the app does not apply them yet.
+    let network: JSONValue
+    let ignored: [ConcordMitmModuleIgnored]
 }
 
 struct ConcordMitmPem: Codable {
@@ -1673,6 +1781,22 @@ final class ConcordClient: ObservableObject {
     func mitmValidate(config: MitmConfig) async throws -> ConcordMitmValidateResult {
         struct MitmValidateParams: Encodable { let config: MitmConfig }
         return try await call(method: "mitm.validate", params: MitmValidateParams(config: config), resultType: ConcordMitmValidateResult.self)
+    }
+
+    /// Reads a module with the core (upstream 165154c): Surge,
+    /// Loon, Quantumult X or Stash, as its author wrote it.
+    /// `arguments` are the user-set values (an omitted argument
+    /// takes its default); `attachments` are local files by the
+    /// relative path the module names; `language` is the language
+    /// requirement expressions read, as `zh-Hans`.
+    func mitmReadModule(text: String, arguments: [String: String] = [:], attachments: [String: String] = [:], language: String = "") async throws -> ConcordMitmModuleView {
+        struct MitmReadModuleParams: Encodable {
+            let text: String
+            let arguments: [String: String]
+            let attachments: [String: String]
+            let language: String
+        }
+        return try await call(method: "mitm.readModule", params: MitmReadModuleParams(text: text, arguments: arguments, attachments: attachments, language: language), resultType: ConcordMitmModuleView.self)
     }
 
     func mitmIssueCertificate(host: String) async throws -> ConcordMitmPem {

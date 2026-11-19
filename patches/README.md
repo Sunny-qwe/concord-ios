@@ -6,15 +6,14 @@ never copied into this repo: the GitHub workflow checks out
 build time. A local inspection copy lives at `../upstream/` (gitignored,
 never uploaded).
 
-- **Pinned upstream commit:** `4e3f9db91bfe47488805db5bdbafd5a72d2e08ac`
-  (`docs(agents): measure a gated branch only where it can fire`, 2026-11-19)
-- **Produced from:** the rebase tree at `/home/hatch/concord-rebase` (7 commits
-  `3570642`–`65b4f0a` on top of `4e3f9db`, `git format-patch 4e3f9db`), rebased
-  2026-11-19 from the previous pin `73d6530144f79c5d55bf93856e692879867cd36d`
-  (18 commits). Verified: the 7 patches apply to a fresh clone at `4e3f9db`
+- **Pinned upstream commit:** `165154c92ddec38c6fc461d52d4ed210e7e8a65e`
+  (`docs(performance): compare the Android app with the Go core over its VPN`, 2026-11-19)
+- **Produced from:** the rebase tree at `/home/hatch/concord-rebase-165154c` (7 commits
+  on top of `165154c`, `git format-patch 165154c`), rebased
+  2026-11-19 from the previous pin `145c9e75873fb22c5a3f218ff1c0a4cd3facd73c`.
+  Verified: the 7 patches apply to a fresh clone at `165154c`
   with zero rejects and produce a tree byte-identical to the rebase tree
-  (after reverting the `Cargo.lock` that cargo invocations regenerate —
-  see below). The local inspection copy at `../upstream/` (branch `ios-port`)
+  (see the "Rebase to 165154c" section). The local inspection copy at `../upstream/` (branch `ios-port`)
   still points at the old pin until it is refreshed; the patches in this
   directory are the authority for the new pin.
 - **Apply order:** `01`, then `02`, then `03`, then `04`, then `05`, then `06`, then `07` (filenames sort in order).
@@ -23,10 +22,10 @@ never uploaded).
 
 | # | File | What it does |
 |---|---|---|
-| `01-bins-ios.patch` | `bins/ios/*` (new), `Cargo.toml` | New iOS staticlib crate mirroring `bins/android`: `crate-type = ["staticlib", "rlib"]`, lib name `concord_ios`, `concord_start()` with no thread hook, `Core` with `EngineConfig { android: false }` and capabilities `["tun.inherited", "tun.channel"]`, an `IosPlatform` with no host callbacks (`protect` is a no-op `true`, `find_owner` is `None`), the Option A `SOCK_DGRAM` socketpair bridge (`concord_ios_bridge_open/close`), and the hand-written C header `concord_ios.h`. Also adds `"bins/ios"` to the workspace members. Builds the FULL upstream workspace — no feature trimming (see below). **Rebase note (5f1d090):** upstream refactored `Hub` to hold the `Server<Control>` instead of a separate `Control`, so `Hub::new` now takes 2 arguments `(handle, server)`; `core.rs` drops the third argument. **Rebase note (01d7a13):** no changes — patch content identical to the 5f1d090 version. **Rebase note (73d6530):** no changes — patch content identical to the 01d7a13 version. **Rebase note (4e3f9db):** no content changes — only the workspace-members hunk shifted by one line (upstream added `crates/quic` above `bins/ios`). |
-| `02-packet-channel.patch` | `crates/tun/src/channel.rs` (new), `crates/tun/src/{lib,runner}.rs`, `crates/proto/src/types/live.rs`, `schema/api.json`, `crates/api/src/{channels.rs (new),lib.rs,control.rs,control/tun.rs}`, `crates/api/Cargo.toml`, `crates/engine/src/engine/tun.rs`, `crates/ffi/src/{abi,hub,lib}.rs` | Option B (correct fix): promotes the `FakeDevice` pattern of `crates/tun/src/testing.rs` to a production channel device; adds `DeviceSource::Channel` and `TunSource::channel` (`{"kind": "channel", "handle": …}`); a `PacketChannels` registry in `crates/api`; `Engine::start_channel_tun`; and the `concord_packet_channel_open/write/read/close` FFI. The iOS host pumps `packetFlow` packets through the channel — no file descriptor involved. **Rebase note (5f1d090):** upstream REMOVED the `TunSource::channel` variant (`crates/proto/src/types/live.rs`), so this patch now re-adds it (with a doc comment marking it as the iOS packet-channel variant) and re-adds the `TunSource::Channel { handle }` arm in `tun.start` (`crates/api/src/control.rs`). `Hub` no longer holds a `Control`, so the four `packet_channel_*` methods go through `self.server.service().packet_channels()` instead of `self.control.packet_channels()`, and the `pub use channels::PacketChannels;` export in `crates/api/src/lib.rs` sits after the new `pub use concord_engine::ControllerCors;`. The tun-side `channel.rs` / `runner.rs` / `lib.rs` hunks applied cleanly. **Rebase note (01d7a13):** no content changes — the patch applied cleanly despite the watch report flagging it: upstream `b3744f7` only added a Linux/Android-gated `pub mod provision;` to `crates/tun/src/lib.rs` and moved `rtnetlink` under the combined linux/android target section of `crates/tun/Cargo.toml` (no iOS effect); `702bac2` / `5e353de` touched `crates/api/src/control.rs` and `schema/api.json` in regions away from the patch hunks, so only the hunk line numbers shifted. The `TunSource::Channel` variant, the `tun.start` arm, and the `concord_packet_channel_open` / `concord_packet_write` / `concord_packet_read` / `concord_packet_channel_close` FFI are unchanged. **Rebase note (73d6530): REWORKED** — upstream split the control surface by domain (`9fd36ab`: `crates/api/src/control.rs` became a thin `Control` struct plus `control/{config,lifecycle,mitm,network,profile,provider,proxy,tun}.rs`) and split `crates/engine/src/engine.rs` into child modules (`232e3a8`), and dropped `VpnTunRequest`. The `TunSource::Channel { handle }` arm in `tun.start` therefore moved from `control.rs` to the new `crates/api/src/control/tun.rs`, next to the `Inherited` arm it mirrors: it takes the device with `self.packet_channels().take_device(handle)` and calls `engine.start_channel_tun(device, InheritedTun { mtu, address, dns, congestion_controller })`, mapping errors with `tun_error` (the old arm built a JSON options string into the now-removed `VpnTunRequest` and checked a `bool`). `Engine::start_channel_tun` moved from `engine.rs` to the new `crates/engine/src/engine/tun.rs`, next to `start_inherited_tun`: it now takes `(ChannelDevice, InheritedTun)` and returns `Result<(), TunStartError>` (was `(ChannelDevice, VpnTunRequest) -> bool`), using `vpn_options(&tun)?` + `start_runner(..., DeviceSource::Channel(device), ...).await?` exactly like `start_inherited_tun` uses `DeviceSource::Adopt(fd)`; the `stack` field is no longer passed (`InheritedTun` has none — the `Inherited` arm ignores `params.stack` too). The `channels` field / init / `packet_channels()` accessor are still added to `Control` in `control.rs`; the import is now ungated (the old patch had it under `#[cfg(unix)]`, a latent inconsistency — the field is ungated and the FFI calls it on all platforms, and `channel.rs` itself has no cfg gates). Everything else in the patch is unchanged (`channels.rs`, `lib.rs`, `Cargo.toml`, `ffi` `abi`/`hub`/`lib`, `proto` `live.rs`, tun `channel.rs`/`runner.rs`/`lib.rs`, `api.json`). **Rebase note (4e3f9db): REWORKED** — upstream split `TunRunner::start`'s tail into `start_with` taking `TunDeps` (`0192321`, `6c459a2`): `platform_backend` now takes `&deps.tasks`, and `start_runner` gained a `tasks` parameter, so `start_with_device` calls `platform_backend(&deps.tasks)` and `start_with(options, device, platform, deps, dns)`, and `start_channel_tun` passes `self.shared.proxy_tasks.tasks()` to `start_runner` like `start_inherited_tun` does. The per-arm `start` shape (needed because `ChannelDevice` is not a `TunDevice`) and everything else in the patch are unchanged. |
+| `01-bins-ios.patch` | `bins/ios/*` (new), `Cargo.toml` | New iOS staticlib crate mirroring `bins/android`: `crate-type = ["staticlib", "rlib"]`, lib name `concord_ios`, `concord_start()` with no thread hook, `Core` with `EngineConfig { android: false }` and capabilities `["tun.inherited", "tun.channel"]`, an `IosPlatform` with no host callbacks (`protect` is a no-op `true`, `find_owner` is `None`), the Option A `SOCK_DGRAM` socketpair bridge (`concord_ios_bridge_open/close`), and the hand-written C header `concord_ios.h`. Also adds `"bins/ios"` to the workspace members. Builds the FULL upstream workspace — no feature trimming (see below). **Rebase note (5f1d090):** upstream refactored `Hub` to hold the `Server<Control>` instead of a separate `Control`, so `Hub::new` now takes 2 arguments `(handle, server)`; `core.rs` drops the third argument. **Rebase note (01d7a13):** no changes — patch content identical to the 5f1d090 version. **Rebase note (73d6530):** no changes — patch content identical to the 01d7a13 version. **Rebase note (4e3f9db):** no content changes — only the workspace-members hunk shifted by one line (upstream added `crates/quic` above `bins/ios`). **Rebase note (165154c):** no content changes — only the index hash shifted (upstream added `boring-sys` to the workspace deps and a `[profile.dev.package.boring-sys]` section in a region away from this patch's hunks). |
+| `02-packet-channel.patch` | `crates/tun/src/channel.rs` (new), `crates/tun/src/{lib,runner}.rs`, `crates/proto/src/types/live.rs`, `schema/api.json`, `crates/api/src/{channels.rs (new),lib.rs,control.rs,control/tun.rs}`, `crates/api/Cargo.toml`, `crates/engine/src/engine/tun.rs`, `crates/ffi/src/{abi,hub,lib}.rs` | Option B (correct fix): promotes the `FakeDevice` pattern of `crates/tun/src/testing.rs` to a production channel device; adds `DeviceSource::Channel` and `TunSource::channel` (`{"kind": "channel", "handle": …}`); a `PacketChannels` registry in `crates/api`; `Engine::start_channel_tun`; and the `concord_packet_channel_open/write/read/close` FFI. The iOS host pumps `packetFlow` packets through the channel — no file descriptor involved. **Rebase note (5f1d090):** upstream REMOVED the `TunSource::channel` variant (`crates/proto/src/types/live.rs`), so this patch now re-adds it (with a doc comment marking it as the iOS packet-channel variant) and re-adds the `TunSource::Channel { handle }` arm in `tun.start` (`crates/api/src/control.rs`). `Hub` no longer holds a `Control`, so the four `packet_channel_*` methods go through `self.server.service().packet_channels()` instead of `self.control.packet_channels()`, and the `pub use channels::PacketChannels;` export in `crates/api/src/lib.rs` sits after the new `pub use concord_engine::ControllerCors;`. The tun-side `channel.rs` / `runner.rs` / `lib.rs` hunks applied cleanly. **Rebase note (01d7a13):** no content changes — the patch applied cleanly despite the watch report flagging it: upstream `b3744f7` only added a Linux/Android-gated `pub mod provision;` to `crates/tun/src/lib.rs` and moved `rtnetlink` under the combined linux/android target section of `crates/tun/Cargo.toml` (no iOS effect); `702bac2` / `5e353de` touched `crates/api/src/control.rs` and `schema/api.json` in regions away from the patch hunks, so only the hunk line numbers shifted. The `TunSource::Channel` variant, the `tun.start` arm, and the `concord_packet_channel_open` / `concord_packet_write` / `concord_packet_read` / `concord_packet_channel_close` FFI are unchanged. **Rebase note (73d6530): REWORKED** — upstream split the control surface by domain (`9fd36ab`: `crates/api/src/control.rs` became a thin `Control` struct plus `control/{config,lifecycle,mitm,network,profile,provider,proxy,tun}.rs`) and split `crates/engine/src/engine.rs` into child modules (`232e3a8`), and dropped `VpnTunRequest`. The `TunSource::Channel { handle }` arm in `tun.start` therefore moved from `control.rs` to the new `crates/api/src/control/tun.rs`, next to the `Inherited` arm it mirrors: it takes the device with `self.packet_channels().take_device(handle)` and calls `engine.start_channel_tun(device, InheritedTun { mtu, address, dns, congestion_controller })`, mapping errors with `tun_error` (the old arm built a JSON options string into the now-removed `VpnTunRequest` and checked a `bool`). `Engine::start_channel_tun` moved from `engine.rs` to the new `crates/engine/src/engine/tun.rs`, next to `start_inherited_tun`: it now takes `(ChannelDevice, InheritedTun)` and returns `Result<(), TunStartError>` (was `(ChannelDevice, VpnTunRequest) -> bool`), using `vpn_options(&tun)?` + `start_runner(..., DeviceSource::Channel(device), ...).await?` exactly like `start_inherited_tun` uses `DeviceSource::Adopt(fd)`; the `stack` field is no longer passed (`InheritedTun` has none — the `Inherited` arm ignores `params.stack` too). The `channels` field / init / `packet_channels()` accessor are still added to `Control` in `control.rs`; the import is now ungated (the old patch had it under `#[cfg(unix)]`, a latent inconsistency — the field is ungated and the FFI calls it on all platforms, and `channel.rs` itself has no cfg gates). Everything else in the patch is unchanged (`channels.rs`, `lib.rs`, `Cargo.toml`, `ffi` `abi`/`hub`/`lib`, `proto` `live.rs`, tun `channel.rs`/`runner.rs`/`lib.rs`, `api.json`). **Rebase note (4e3f9db): REWORKED** — upstream split `TunRunner::start`'s tail into `start_with` taking `TunDeps` (`0192321`, `6c459a2`): `platform_backend` now takes `&deps.tasks`, and `start_runner` gained a `tasks` parameter, so `start_with_device` calls `platform_backend(&deps.tasks)` and `start_with(options, device, platform, deps, dns)`, and `start_channel_tun` passes `self.shared.proxy_tasks.tasks()` to `start_runner` like `start_inherited_tun` does. The per-arm `start` shape (needed because `ChannelDevice` is not a `TunDevice`) and everything else in the patch are unchanged. **Rebase note (165154c):** no content changes — only the index hash and one hunk line number shifted (upstream's `api.json` grew by the `mitm.readModule` method in a region away from this patch's hunks). The watch report's expected failure at `crates/tun/src/runner.rs:135` did NOT materialize: the patch applies cleanly at `165154c`, as it does at `145c9e7`. |
 | `03-tun-wrap-ios-fix.patch` | `crates/tun/src/device/mod.rs` | Prerequisite for ANY iOS build: `TunDevice::wrap` calls `inner.name()` / `inner.if_index()`, which do not exist on the generic unix `DeviceImpl` used on iOS (`vendor/tun-rs`), so `concord-tun` does not compile for `aarch64-apple-ios` as-is. Cfg-gates the lookup to the targets that have it; iOS/illumos get the empty name / `None` index the Android path already uses. Needed by Option A too, not just Option B. **Rebase note (01d7a13):** no changes — patch content identical to the 5f1d090 version. **Rebase note (73d6530):** no changes — patch content identical to the 01d7a13 version. **Rebase note (4e3f9db):** no changes — only the hunk line number shifted (332 → 331). |
-| `04-nix-ios-fix.patch` | `vendor/nix-0.31.3-ios/*` (new, 127 files), `Cargo.toml`, `vendor/PATCHES.md`, `vendor/UPSTREAM.sha256` | Vendors nix 0.31.3 and gates its macOS-only utun/kern-control items to macOS. nix gates `KextControl` / `UtunIfname` on `apple_targets` (any of iOS/macOS/watchOS/tvOS/visionOS), but libc defines `SYSPROTO_CONTROL` / `UTUN_OPT_IFNAME` only on macOS, so nix fails for `aarch64-apple-ios` with E0425 (run #2 of `ios-core-check`, log lines 819-843). The chain: `concord-proxy` (WireGuard stack) → `gotatun` 0.10.2 → its unix `nix` dependency with `net`/`socket` features. `GetCString` (only used by `UtunIfname`) is gated the same way, or nix's `#![deny(unused)]` fails the build. Follows upstream's own vendoring discipline: `[patch.crates-io]` entry, `vendor/PATCHES.md` section + table row, `UPSTREAM.sha256` manifest (validated by `cargo test -p xtask vendor_patches`). No workflow change needed: the patch carries the whole vendored copy, so the runner just applies patches and builds. **Rebase note (5f1d090):** upstream added `vendor/h3` (new vendored crate), so the workspace `exclude` list, the `[patch.crates-io]` section, `vendor/PATCHES.md` table and `vendor/UPSTREAM.sha256` all shifted; the patch hunks were re-based onto the new line numbers. The vendored nix copy itself is unchanged (124/126 `UPSTREAM.sha256` hashes verify against the vendored files; the 2 mismatches are exactly the two intentionally modified files `src/sys/socket/mod.rs` and `src/sys/socket/sockopt.rs`, whose hashes record the pristine archive). **Rebase note (01d7a13):** no changes — patch content identical to the 5f1d090 version. **Rebase note (73d6530):** no changes — patch content identical to the 01d7a13 version. **Rebase note (4e3f9db):** no content changes — the vendored nix copy is unchanged; only hunk line numbers shifted (upstream added `crates/quic` and edited `vendor/PATCHES.md` in a region away from this patch's hunks). |
+| `04-nix-ios-fix.patch` | `vendor/nix-0.31.3-ios/*` (new, 127 files), `Cargo.toml`, `vendor/PATCHES.md`, `vendor/UPSTREAM.sha256` | Vendors nix 0.31.3 and gates its macOS-only utun/kern-control items to macOS. nix gates `KextControl` / `UtunIfname` on `apple_targets` (any of iOS/macOS/watchOS/tvOS/visionOS), but libc defines `SYSPROTO_CONTROL` / `UTUN_OPT_IFNAME` only on macOS, so nix fails for `aarch64-apple-ios` with E0425 (run #2 of `ios-core-check`, log lines 819-843). The chain: `concord-proxy` (WireGuard stack) → `gotatun` 0.10.2 → its unix `nix` dependency with `net`/`socket` features. `GetCString` (only used by `UtunIfname`) is gated the same way, or nix's `#![deny(unused)]` fails the build. Follows upstream's own vendoring discipline: `[patch.crates-io]` entry, `vendor/PATCHES.md` section + table row, `UPSTREAM.sha256` manifest (validated by `cargo test -p xtask vendor_patches`). No workflow change needed: the patch carries the whole vendored copy, so the runner just applies patches and builds. **Rebase note (5f1d090):** upstream added `vendor/h3` (new vendored crate), so the workspace `exclude` list, the `[patch.crates-io]` section, `vendor/PATCHES.md` table and `vendor/UPSTREAM.sha256` all shifted; the patch hunks were re-based onto the new line numbers. The vendored nix copy itself is unchanged (124/126 `UPSTREAM.sha256` hashes verify against the vendored files; the 2 mismatches are exactly the two intentionally modified files `src/sys/socket/mod.rs` and `src/sys/socket/sockopt.rs`, whose hashes record the pristine archive). **Rebase note (01d7a13):** no changes — patch content identical to the 5f1d090 version. **Rebase note (73d6530):** no changes — patch content identical to the 01d7a13 version. **Rebase note (4e3f9db):** no content changes — the vendored nix copy is unchanged; only hunk line numbers shifted (upstream added `crates/quic` and edited `vendor/PATCHES.md` in a region away from this patch's hunks). **Rebase note (165154c):** no content changes — only the index hash and one hunk line number shifted (upstream added lines above the `Cargo.toml` hunk). |
 | `05-rquickjs-ios-fix.patch` | `crates/mitm/Cargo.toml` | Enables the `bindgen` feature of `rquickjs` for `target_os = "ios"`, mirroring the Android block in the same file. `rquickjs-sys` 0.14.0 ships pre-generated bindings for darwin/linux/windows/wasm only — there is no `bindings/aarch64-apple-ios.rs`, so the build fails in `src/lib.rs:19` (`include!(concat!("bindings/", bindings_env!("TARGET"), ".rs"))`) with "couldn't find file .../aarch64-apple-ios.rs" (run #4 of `ios-core-check`, log lines 920-930). With `bindgen` on, `rquickjs-sys/build.rs` generates the bindings at build time from `quickjs.bind.h`. The chain: `concord-ios` → `concord-engine` (default `mitm`) → `concord-mitm` (default `script`) → `rquickjs` 0.14, used by the MITM script engine (`crates/mitm/src/quickjs/`, `mitm.runScript`). No vendoring: bindgen finds Xcode's libclang itself — `clang-sys` 1.9.1 (the locked version) searches `xcode-select --print-path`/Toolchains/`XcodeDefault.xctoolchain/usr/lib` and the hardcoded `/Applications/Xcode.app/...` path, and the workflow already selects that Xcode — so no `LIBCLANG_PATH` is needed. **Workflow change still needed (one line, in the "Build Concord staticlib" step of both `ios-core-check.yml` and `ios.yml`):** `export BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path) --target=arm64-apple-ios"` so bindgen parses against the iOS SDK headers instead of the macOS SDK (same mechanism upstream CI uses for Android: `BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android` in `ci.yaml`). Verified locally: `cargo tree --target aarch64-apple-ios -p concord-mitm -e features -i rquickjs-sys` shows `bindgen` enabled, and with a local libclang the build script ran bindgen and wrote a 2,334-line `bindings.rs` for `arm64-apple-ios` that is identical to the bundled `aarch64-apple-darwin.rs` except for one typedef alias (`size_t` vs `__darwin_size_t` — a header-stub artifact, not a real difference); the build then stops only at `cc-rs` needing `xcrun` for the iOS SDK, which exists only on the runner. **Rebase note (01d7a13):** no changes — patch content identical to the 5f1d090 version. **Rebase note (73d6530):** no changes — patch content identical to the 01d7a13 version. **Rebase note (4e3f9db):** no changes — only the hunk line number shifted (58 → 60). |
 | `06-tun-devicebuilder-ios-fix.patch` | `crates/tun/src/device/mod.rs` | Gates `TunDevice::create` / `build` off iOS and adds an iOS `create` stub returning `Unsupported`, mirroring the Android stub. Root cause: tun-rs 2.8.16 compiles its `builder` module only for windows/linux/macos/freebsd/openbsd/netbsd/illumos (`vendor/tun-rs/src/lib.rs`), so `tun_rs::DeviceBuilder::new()` in `build` fails for `aarch64-apple-ios` with E0433 (run #8 of `ios-core-check`, 2026-11-16 15:01). iOS never creates a device anyway: the NetworkExtension owns the interface and the core gets packets through the packet channel (patch 02) or an adopted descriptor (`AsyncDevice::from_fd`, which tun-rs DOES export on iOS via its generic unix `DeviceImpl`). No vendoring: this touches Concord's own code, not tun-rs. Verified locally: `cargo check -p concord-tun --target aarch64-apple-ios` passes, `cargo check -p concord-tun --target x86_64-apple-darwin` passes (no macOS regression), and patches 01–06 applied to a fresh clone at 5f1d090 produce a tree byte-identical to the rebase tree (see below). **Rebase note (01d7a13):** no changes — patch content identical to the 5f1d090 version. **Rebase note (73d6530):** upstream added a `TunDevice::OFFLOADS` const (3 lines) at the top of `impl TunDevice` in `crates/tun/src/device/mod.rs`, so only hunk line numbers/context shifted; the added/removed lines are identical to the 01d7a13 version. **Rebase note (4e3f9db):** no changes — only the hunk line number shifted (319 → 318). |
 | `07-sock-cloexec-ios-fix.patch` | `bins/ios/src/bridge.rs` | Drops `SOCK_CLOEXEC` from the `socketpair` call in `concord_ios_bridge_open` on Apple targets (`#[cfg(target_vendor = "apple")]` → plain `SOCK_DGRAM`). Root cause: `libc::SOCK_CLOEXEC` exists on Linux but is not defined in libc for Apple targets, so the `concord-ios` lib fails for `aarch64-apple-ios` with E0425 (`cannot find value 'SOCK_CLOEXEC' in crate 'libc'`, `bins/ios/src/bridge.rs:101`, run #9 of `ios-core-check` attempt 2, 2026-11-17 09:33). This is a bug in our own patch-01 bridge code, not upstream code. The fds stay in-process (one end is adopted by the core, the other is held by the extension), so nothing can leak them into a spawned process anyway. Verified locally: `rustfmt --check` passes; `cargo check -p concord-ios --target aarch64-apple-ios` still stops at `cc-rs` needing `xcrun`/iOS SDK (absent on Linux, present on the runner), so the runner build is the verification for this one. Patches 01–07 applied to a fresh clone at 5f1d090 produce a tree byte-identical to the rebase tree (see below). **Rebase note (01d7a13):** no changes — patch content identical to the 5f1d090 version. **Rebase note (73d6530):** no changes — patch content identical to the 01d7a13 version. **Rebase note (4e3f9db):** no changes — patch content identical to the 73d6530 version. |
@@ -36,7 +35,7 @@ never uploaded).
 ```bash
 git clone https://github.com/chen08209/concord upstream-checkout
 cd upstream-checkout
-git checkout 4e3f9db91bfe47488805db5bdbafd5a72d2e08ac
+git checkout 165154c92ddec38c6fc461d52d4ed210e7e8a65e
 git apply /path/to/concord-ios/patches/01-bins-ios.patch
 git apply /path/to/concord-ios/patches/02-packet-channel.patch
 git apply /path/to/concord-ios/patches/03-tun-wrap-ios-fix.patch
@@ -353,6 +352,107 @@ libclang + gcc headers):
 Patches 01–07 applied to a fresh clone at `4e3f9db` produce a tree
 byte-identical to the rebase tree (`/home/hatch/concord-rebase`) once
 the regenerated `Cargo.lock` is reverted.
+
+Note: `Cargo.lock` in the upstream tree is stale against the patched
+manifests (patch `01` adds the `bins/ios` member, patch `04` re-sources
+nix — neither commit regenerates the lock). Any `cargo` invocation in the
+patched tree rewrites it. That is harmless here: the workflows run
+`cargo build` without `--locked`, so the runner regenerates the lock
+itself. Do not commit a locally regenerated lock into a patch unless the
+build is switched to `--locked`.
+
+## Rebase to 165154c (2026-11-19)
+
+All 7 patches applied cleanly with **zero conflicts and zero content
+changes** — the diff bodies of `03`, `05`, `06`, `07` are byte-identical
+to their `145c9e7` versions, and `01`, `02`, `04` differ only in the
+`index` hashes and hunk line numbers (upstream added lines above the
+patched hunks). The watch report's expected patch-02 failure at
+`crates/tun/src/runner.rs:135` did NOT materialize: the patch applies
+cleanly at `165154c`, as it does at `145c9e7`. New patch commits on top
+of `165154c` in `/home/hatch/concord-rebase-165154c`, regenerated with
+`git format-patch 165154c`; the regenerated patches applied to a fresh
+clone at `165154c` produce a tree byte-identical to the rebase tree
+(`diff -r --exclude=.git`, no `Cargo.lock` regeneration involved —
+no cargo invocation ran in either tree before the comparison).
+
+9 commits since `145c9e7`, all 2026-11-19: the core reads MITM modules
+itself — Surge (`038f1ab`), Loon (`d839bbb`), Quantumult X snippets
+and Stash overrides (`f1de7da`) — plus `mitm.readModule`; URL-REGEX /
+USER-AGENT rules and per-request routing inside decrypted sessions
+(`f3e49e2`); a MITM jq fix (`1ff8283`: module lines using jq 1.7
+builtins or a `\cX` escape now load); two TLS fixes (`d9b1847`: ECH
+retry configs read only after BoringSSL rejected ECH; `7e9d333`:
+BoringSSL ex_data slots initialized once per process); NDEBUG for the
+C dependencies of release builds (`3096509`); docs only (`165154c`).
+
+`schema/api.json` at the new HEAD has **69 methods** — the only
+addition is `mitm.readModule` (unary, concurrent, capability `mitm`;
+params `MitmModuleReadParams {text, arguments, attachments,
+language}`; result `MitmModuleView {format, meta, off, arguments,
+resources, declaredScripts, asksConsent, issues, views, rules,
+ruleSets, network, ignored}`). No method removed or changed; 19 new
+`MitmModule*` types, no type removed or changed. Upstream also added
+`boring-sys = "5.4"` to the workspace deps, a
+`[profile.dev.package.boring-sys] opt-level = 0` section, and
+`fancy-regex` to `crates/rules` (for URL-REGEX) — all in regions away
+from the patch hunks, so no patch needed changes.
+
+**The Swift side changes for this rebase:**
+- `mitm.readModule` is wired as the 69th method (`ConcordClient.
+  mitmReadModule` + `ConcordMitmModuleView` et al.; sample data returns
+  an empty view). When the VPN is running, `MitmModuleStore.
+  coreParsedContent` calls it on the imported module text with the
+  user-set arguments and builds the module content from the view
+  (`MitmModuleParser.parseWithCore`): the core's meta, arguments,
+  Clash rules, declared scripts and resources are authoritative, and
+  the core's ignored lines / off-reason / issue count are shown in the
+  module detail view. The MITM line lists still come from the Swift
+  parser — the core's views are the parsed forms of those lines and
+  have no line form to send back. When the VPN is off (or the call
+  fails) the Swift parser reads the module alone, as before; the
+  merged files (`refreshModuleFiles` → `mergedListsLive`) and the
+  validate flow (`mergedConfigLive`) use the core where live. The
+  Swift parser is NOT removed.
+- URL-REGEX / USER-AGENT are recognized everywhere the app handles
+  rule types: `AddedRulesStore.knownTypes` (validation accepts them;
+  URL-REGEX must compile as a regex; payloads may be quoted since a
+  regex or glob may contain commas — the core's `QUOTED_PAYLOAD`),
+  `CustomSubscriptionStore.types` (rule editor picker; a content
+  with a comma is quoted when emitted), and `MitmModuleParser`
+  (`ruleTypes` + `qxFilterTypes` gains QX `user-agent`). The module
+  parser no longer maps URL-REGEX + REJECT to a url-rewrite line
+  (FlClash-era, from before the core had URL-REGEX rules) — the core
+  keeps it as a profile rule, so the Swift parser does the same and
+  the two parsers agree. Both types are undecided before the request
+  is read; inside a decrypted session each request is routed on URL +
+  UA after rewrites (noted in code at each site).
+- Top bar (v0.2.28 user report, folded into this version): the ⋯
+  menu card is now content-sized (`.frame(minWidth: 160,
+  maxWidth: 280)`, 12pt row padding, `.subheadline` labels) instead
+  of forced 280pt — FlClash's `_menuMinWidth = 160`; and the pill
+  and the ⋯ are two separate toolbar items so the popover arrow
+  points at the ⋯ circle instead of the whole bar.
+
+Local verification at the new pin (Linux, Rust 1.100.0; same libclang
+workaround as the 01d7a13 rebase — Python `clang` package's bundled
+libclang + gcc headers):
+
+- `cargo check -p concord-proto -p concord-tun --target
+  aarch64-apple-ios` — passes (covers the patch-02 channel code and
+  `TunSource::Channel`, patch 03, patch 06 and the vendored nix).
+- `cargo check -p concord-api -p concord-ffi -p concord-engine
+  -p concord-ios` (host) — all pass (11m56s; only warning:
+  `proc-macro-error2 v2.0.1` future-incompat notice — pre-existing
+  upstream, unrelated to the patches).
+- `cargo check -p concord-api --target aarch64-apple-ios` — stops at
+  the known SDK wall: `cc-rs: failed to find tool "xcrun"` in
+  `aws-lc-sys`'s build script. No Rust code is reached past that point
+  on Linux; the macOS runner (which has `xcrun` and the iOS SDK) is
+  the verification for the full staticlib build, as before. (The
+  `concord-ffi` / `concord-ios` iOS-target checks were not re-run this
+  time — they stop at the same wall; the host checks above cover the
+  reworked code.)
 
 Note: `Cargo.lock` in the upstream tree is stale against the patched
 manifests (patch `01` adds the `bins/ios` member, patch `04` re-sources

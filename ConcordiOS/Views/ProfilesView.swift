@@ -58,10 +58,10 @@ struct ProfilesView: View {
                                 .frame(width: 40, height: 40)
                                 .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 12))
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("统一导入")
+                                Text("导入配置")
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(.primary)
-                                Text("订阅链接 / 节点链接 / 配置文件，一次粘贴自动识别导入")
+                                Text("订阅链接 / 节点链接 / 配置文件，一次导入一条")
                                     .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
                             }

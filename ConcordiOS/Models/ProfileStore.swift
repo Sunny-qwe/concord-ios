@@ -174,6 +174,87 @@ final class ProfileStore: ObservableObject {
         return nil
     }
 
+    /// A subscription download is not always a Clash YAML file: many
+    /// providers return a base64 blob (or plain lines) of node share
+    /// links instead — e.g. the user's own subscription returns
+    /// base64 of REMARKS/STATUS headers + vless:// links. The old
+    /// code rejected those at localSanityCheck ("配置文件里没有
+    /// proxies …"), so a link subscription could never be imported:
+    /// the download succeeded and the import still failed. Normalise
+    /// before saving: real YAML passes through untouched; a link
+    /// subscription is decoded, its links parsed (locally, core
+    /// fallback when reachable) and rebuilt into a ready-to-use
+    /// Clash config with DefaultConfig — exactly like a pasted node
+    /// link import. Returns the data to save plus a short note
+    /// ("识别到 N 个节点") when a conversion happened.
+    @MainActor
+    private func normalizedSubscriptionData(_ data: Data) async -> Result<(data: Data, note: String?), NodeLinkError> {
+        if Self.localSanityCheck(data) == nil {
+            return .success((data, nil))
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            return .failure(NodeLinkError(message: "订阅内容不是 UTF-8 文本"))
+        }
+        // Candidate bodies: the raw text, plus a base64-decoded whole
+        // body when it decodes to readable text (standard or URL-safe
+        // alphabet, with or without padding, line-wrapped or not).
+        var candidates: [String] = [text]
+        if let decoded = Self.looseBase64Decode(text),
+           let decodedText = String(data: decoded, encoding: .utf8),
+           decodedText != text {
+            candidates.insert(decodedText, at: 0)
+        }
+        for candidate in candidates {
+            if Self.localSanityCheck(Data(candidate.utf8)) == nil {
+                return .success((Data(candidate.utf8), nil))
+            }
+            let linkLines = Self.nonEmptyLines(candidate)
+                .filter { UnifiedImporter.kind(of: $0) == .nodeLink }
+            guard !linkLines.isEmpty else { continue }
+            var proxies: [JSONValue] = []
+            var failedCount = 0
+            for line in linkLines {
+                switch NodeLinkParser.parse(line) {
+                case .success(let node): proxies.append(node.jsonValue)
+                case .failure: failedCount += 1
+                }
+            }
+            // Core fallback for lines the local parser could not
+            // handle — only when the core is reachable (tunnel
+            // running, or sample mode).
+            if proxies.isEmpty, client.mode == .sample || TunnelManager.shared.isRunning {
+                await decodeLinks(linkLines)
+                proxies = decodedProxies
+                failedCount = max(0, linkLines.count - proxies.count)
+            }
+            guard !proxies.isEmpty else { continue }
+            let yaml = DefaultConfig.yaml(proxies: proxies)
+            let note = "识别到 \(proxies.count) 个节点" + (failedCount > 0 ? "，\(failedCount) 行解析失败" : "")
+            return .success((Data(yaml.utf8), note))
+        }
+        return .failure(NodeLinkError(message: Self.localSanityCheck(data) ?? "订阅内容无法识别：既不是 Clash 配置，也没有可识别的节点链接"))
+    }
+
+    /// Base64 decode that tolerates what providers actually send:
+    /// URL-safe alphabet (-/_), missing padding, wrapped lines.
+    private static func looseBase64Decode(_ text: String) -> Data? {
+        var cleaned = text.components(separatedBy: .whitespacesAndNewlines).joined()
+        guard !cleaned.isEmpty else { return nil }
+        cleaned = cleaned.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let remainder = cleaned.count % 4
+        if remainder != 0 {
+            cleaned += String(repeating: "=", count: 4 - remainder)
+        }
+        return Data(base64Encoded: cleaned)
+    }
+
+    private static func nonEmptyLines(_ text: String) -> [String] {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     // MARK: Import / update / delete
 
     @MainActor
@@ -184,14 +265,18 @@ final class ProfileStore: ObservableObject {
         }
         do {
             let (data, _) = try await subscriptionSession.data(from: url)
-            if let problem = Self.localSanityCheck(data) {
-                lastError = "订阅内容异常：\(problem)"
+            let normalized: (data: Data, note: String?)
+            switch await normalizedSubscriptionData(data) {
+            case .success(let value):
+                normalized = value
+            case .failure(let reason):
+                lastError = "订阅内容异常：\(reason.message)"
                 return
             }
             var profile = Profile(name: name.isEmpty ? url.host ?? "订阅" : name, kind: .url, urlString: urlString, updatedAt: Date())
             profiles.append(profile)
-            try saveProfileFile(profile: profile, data: data)
-            statusMessage = "已导入订阅 \(profile.name)"
+            try saveProfileFile(profile: profile, data: normalized.data)
+            statusMessage = "已导入订阅 \(profile.name)" + (normalized.note.map { "（\($0)）" } ?? "")
             save()
             lastError = nil
         } catch {
@@ -229,14 +314,18 @@ final class ProfileStore: ObservableObject {
         guard let urlString = profile.urlString, let url = URL(string: urlString) else { return }
         do {
             let (downloaded, _) = try await subscriptionSession.data(from: url)
-            if let problem = Self.localSanityCheck(downloaded) {
-                lastError = "更新 \(profile.name) 失败：订阅内容异常：\(problem)"
+            let normalized: Data
+            switch await normalizedSubscriptionData(downloaded) {
+            case .success(let value):
+                normalized = value.data
+            case .failure(let reason):
+                lastError = "更新 \(profile.name) 失败：订阅内容异常：\(reason.message)"
                 return
             }
             // A fresh download would wipe the user's local additions
             // (custom proxies, filter overrides) that live baked into
             // the active profile's YAML: re-apply them before saving.
-            let data = profile.isActive ? reapplyLocalOverrides(to: downloaded) : downloaded
+            let data = profile.isActive ? reapplyLocalOverrides(to: normalized) : normalized
             try saveProfileFile(profile: profile, data: data)
             if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
                 profiles[index].updatedAt = Date()

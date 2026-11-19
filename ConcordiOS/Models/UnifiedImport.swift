@@ -1,19 +1,21 @@
 import Foundation
 import Combine
 
-// MARK: - Unified import (batch orchestrator)
+// MARK: - Unified import (single-item orchestrator)
 // One entry point for every import: subscription links, node share
 // links and whole YAML text. It wraps ONLY existing ProfileStore
 // methods (addFromURL / addFromFile / delete / activate / decodeLinks)
 // — no existing method was changed for this feature.
 //
-// Batch rules (per the user's request):
-//  - every pasted line is handled independently and gets its own
-//    result, so a failure never hides behind a later success;
-//  - node lines are collected and saved once as the "我的节点"
-//    config (replacing an old one of the same name);
-//  - the FIRST successful import is activated once at the end —
-//    never once per line.
+// Single-item rules (per the user's request: one tap imports ONE
+// item, never a batch):
+//  - a whole YAML document counts as one item;
+//  - otherwise only the FIRST importable line is imported — any
+//    further lines are ignored and the summary says so, so the user
+//    pastes the next one separately;
+//  - node lines are saved once as the "我的节点" config (replacing
+//    an old one of the same name);
+//  - the imported profile is activated once at the end.
 // Success detection is by snapshot: ProfileStore appends the profile
 // BEFORE writing its file, so a save failure leaves the profile in
 // the list with lastError set. A call only counts as success when
@@ -89,8 +91,29 @@ final class UnifiedImporter: ObservableObject {
     /// True when the text contains anything importable (for the
     /// clipboard prefill on open).
     static func looksImportable(_ text: String) -> Bool {
-        if looksLikeYamlDocument(text) { return true }
-        return nonEmptyLines(text).contains { kind(of: $0) != .unknown }
+        singleItemText(text) != nil
+    }
+
+    /// The single item the one-at-a-time UI imports: a whole YAML
+    /// document as-is, otherwise the first importable line.
+    static func singleItemText(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if looksLikeYamlDocument(trimmed) { return trimmed }
+        return nonEmptyLines(trimmed).first { kind(of: $0) != .unknown }
+    }
+
+    /// Detected kind of the single item (for the UI's type chip).
+    static func singleItemKind(_ text: String) -> ImportKind {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .unknown }
+        if looksLikeYamlDocument(trimmed) { return .yaml }
+        guard let first = nonEmptyLines(trimmed).first(where: { kind(of: $0) != .unknown }) else { return .unknown }
+        switch kind(of: first) {
+        case .subscription: return .subscription
+        case .nodeLink: return .nodes
+        case .unknown: return .unknown
+        }
     }
 
     static func nonEmptyLines(_ text: String) -> [String] {
@@ -108,7 +131,7 @@ final class UnifiedImporter: ObservableObject {
     // MARK: - Entry points
 
     @MainActor
-    func importText(_ text: String, yamlName: String? = nil) async {
+    func importText(_ text: String, name: String? = nil, yamlName: String? = nil) async {
         guard !isImporting else { return }
         isImporting = true
         defer { isImporting = false }
@@ -122,13 +145,14 @@ final class UnifiedImporter: ObservableObject {
             return
         }
         var activationFailure: String?
+        var ignoredLines = 0
         if Self.looksLikeYamlDocument(trimmed) {
-            await importYamlDocument(trimmed, yamlName: yamlName)
+            await importYamlDocument(trimmed, yamlName: yamlName ?? name)
         } else {
-            await importLines(trimmed)
+            ignoredLines = await importFirstLine(trimmed, name: name)
         }
         results.sort { $0.order < $1.order }
-        // Activate the FIRST success once (not once per line).
+        // Activate the imported profile once at the end.
         if let first = successProfiles.sorted(by: { $0.order < $1.order }).first {
             await profileStore.activate(first.profile)
             if profileStore.lastError == nil {
@@ -140,6 +164,9 @@ final class UnifiedImporter: ObservableObject {
         let ok = results.filter { $0.succeeded }.count
         let failed = results.count - ok
         var summary = "导入完成：成功 \(ok) 个，失败 \(failed) 个"
+        if ignoredLines > 0 {
+            summary += "；只导入了第一条，其余 \(ignoredLines) 行没有导入，请分次粘贴"
+        }
         if let activated = activatedName {
             summary += "；已切换到「\(activated)」，去仪表盘点播放键启动即可"
         }
@@ -163,9 +190,9 @@ final class UnifiedImporter: ObservableObject {
     // MARK: - Single subscription (reuses addFromURL)
 
     @MainActor
-    private func importSubscriptionURL(_ urlString: String) async -> Result<Profile, NodeLinkError> {
+    private func importSubscriptionURL(_ urlString: String, name: String? = nil) async -> Result<Profile, NodeLinkError> {
         let beforeCount = profileStore.profiles.count
-        await profileStore.addFromURL(name: "", urlString: urlString)
+        await profileStore.addFromURL(name: name ?? "", urlString: urlString)
         if profileStore.profiles.count > beforeCount,
            profileStore.lastError == nil,
            let created = profileStore.profiles.last {
@@ -191,31 +218,33 @@ final class UnifiedImporter: ObservableObject {
         }
     }
 
-    // MARK: - Mixed lines (batch)
+    // MARK: - Single line (one tap imports ONE item)
 
+    /// Imports only the first importable line; returns how many
+    /// further lines were ignored (the user pastes them separately).
     @MainActor
-    private func importLines(_ text: String) async {
+    private func importFirstLine(_ text: String, name: String?) async -> Int {
         let lines = Self.nonEmptyLines(text)
-        var nodeLines: [(index: Int, line: String)] = []
-        for (index, line) in lines.enumerated() {
-            switch Self.kind(of: line) {
-            case .subscription:
-                switch await importSubscriptionURL(line) {
-                case .success(let profile):
-                    results.append(ImportLineResult(order: index, line: line, kind: .subscription, succeeded: true, message: "已导入订阅「\(profile.name)」"))
-                    successProfiles.append((order: index, profile: profile))
-                case .failure(let error):
-                    results.append(ImportLineResult(order: index, line: line, kind: .subscription, succeeded: false, message: "导入失败：\(error.message)"))
-                }
-            case .nodeLink:
-                nodeLines.append((index: index, line: line))
-            case .unknown:
-                results.append(ImportLineResult(order: index, line: line, kind: .unknown, succeeded: false, message: "无法识别这一行：不是订阅链接、节点链接或 YAML（整段 YAML 请单独粘贴导入）"))
+        guard let firstIndex = lines.firstIndex(where: { Self.kind(of: $0) != .unknown }) else {
+            results.append(ImportLineResult(order: 0, line: lines.first ?? text, kind: .unknown, succeeded: false, message: "无法识别：不是订阅链接、节点链接或 YAML（整段 YAML 请单独粘贴导入）"))
+            return 0
+        }
+        let line = lines[firstIndex]
+        switch Self.kind(of: line) {
+        case .subscription:
+            switch await importSubscriptionURL(line, name: name) {
+            case .success(let profile):
+                results.append(ImportLineResult(order: firstIndex, line: line, kind: .subscription, succeeded: true, message: "已导入订阅「\(profile.name)」"))
+                successProfiles.append((order: firstIndex, profile: profile))
+            case .failure(let error):
+                results.append(ImportLineResult(order: firstIndex, line: line, kind: .subscription, succeeded: false, message: "导入失败：\(error.message)"))
             }
+        case .nodeLink:
+            await importNodeLines([(index: firstIndex, line: line)], totalLines: lines.count)
+        case .unknown:
+            break
         }
-        if !nodeLines.isEmpty {
-            await importNodeLines(nodeLines, totalLines: lines.count)
-        }
+        return lines.count - firstIndex - 1
     }
 
     // MARK: - Node lines (local parse + core fallback + default config)

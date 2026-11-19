@@ -307,7 +307,7 @@ final class BackupStore: ObservableObject {
             path: Self.userDefaultsFileName,
             data: try JSONEncoder().encode(defaultsBackup)))
         let manifest = Manifest(
-            format: "concord-ios-backup", version: 1, appVersion: "0.2.20",
+            format: "concord-ios-backup", version: 1, appVersion: "0.2.21",
             createdAt: Date().timeIntervalSince1970, files: files)
         entries.append(ZipArchive.Entry(
             path: Self.manifestFileName,

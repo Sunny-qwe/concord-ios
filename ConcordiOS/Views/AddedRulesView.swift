@@ -17,6 +17,26 @@ struct AddedRulesView: View {
     var body: some View {
         List {
             Section {
+                Toggle("防止代理回环", isOn: Binding(
+                    get: { rulesStore.isLoopbackProtectionOn },
+                    set: { rulesStore.setLoopbackProtection($0) }
+                ))
+                Text("开启后，发往本机的流量（127.0.0.0/8、0.0.0.0、::1、::）直接拦截，不进代理，避免代理把本机流量又送回隧道造成回环。打开开关会把 5 条规则加到下面列表的最前面。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if rulesStore.loopbackPresetPresentCount > 0,
+                   !rulesStore.isLoopbackProtectionOn {
+                    Text("检测到其中 \(rulesStore.loopbackPresetPresentCount) 条已被手动删除，打开开关可补齐。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Text("这是规则层面的拦截；「本地网络设置」里的本地网络保护是路由层面，不让回环地址进隧道。两个互补，可以一起开。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("回环保护")
+            }
+            Section {
                 Text("附加规则会排在订阅自带规则之前，优先匹配。格式：类型,值,策略，例如 DOMAIN-SUFFIX,example.com,PROXY。保存后重启 VPN 生效，VPN 运行时可点「重新应用」立即生效。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)

@@ -33,8 +33,17 @@ struct Profile: Identifiable, Codable {
     var updatedAt: Date?
     var isActive: Bool
     var note: String?
+    /// age private key for age-encrypted subscription files
+    /// (FlClash edit page; stored per profile, never logged).
+    var ageSecretKey: String?
+    /// Auto-update switch + interval in minutes (FlClash edit page).
+    /// The periodic scheduler is not wired yet — updating stays
+    /// manual via 更新； the values are stored so the edit page is
+    /// faithful and the scheduler can use them later.
+    var autoUpdate: Bool
+    var autoUpdateIntervalMinutes: Int?
 
-    init(id: UUID = UUID(), name: String, kind: ProfileKind, urlString: String? = nil, fileName: String? = nil, updatedAt: Date? = nil, isActive: Bool = false, note: String? = nil) {
+    init(id: UUID = UUID(), name: String, kind: ProfileKind, urlString: String? = nil, fileName: String? = nil, updatedAt: Date? = nil, isActive: Bool = false, note: String? = nil, ageSecretKey: String? = nil, autoUpdate: Bool = false, autoUpdateIntervalMinutes: Int? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -43,6 +52,9 @@ struct Profile: Identifiable, Codable {
         self.updatedAt = updatedAt
         self.isActive = isActive
         self.note = note
+        self.ageSecretKey = ageSecretKey
+        self.autoUpdate = autoUpdate
+        self.autoUpdateIntervalMinutes = autoUpdateIntervalMinutes
     }
 }
 
@@ -363,6 +375,81 @@ final class ProfileStore: ObservableObject {
         save()
     }
 
+    /// Persist a reordered list built outside the List (the FlClash
+    /// ReorderableProfilesSheet keeps a local copy and saves once).
+    /// Profiles missing from the new order keep their relative order
+    /// at the end, so a concurrent add is never dropped.
+    func reorderProfiles(_ newOrder: [Profile]) {
+        let ids = Set(newOrder.map(\.id))
+        profiles = newOrder + profiles.filter { !ids.contains($0.id) }
+        save()
+    }
+
+    /// Save the FlClash edit page's fields (name / URL / age key /
+    /// auto-update). Returns true when the URL of a URL profile
+    /// changed, so the caller can re-download it (FlClash does the
+    /// same after an edit that changes the URL).
+    @discardableResult
+    func updateProfileMeta(_ profile: Profile, name: String, urlString: String?, ageSecretKey: String?, autoUpdate: Bool, autoUpdateIntervalMinutes: Int?) -> Bool {
+        guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return false }
+        let urlChanged = profiles[index].kind == .url && profiles[index].urlString != urlString
+        profiles[index].name = name
+        profiles[index].urlString = urlString
+        profiles[index].ageSecretKey = ageSecretKey
+        profiles[index].autoUpdate = autoUpdate
+        profiles[index].autoUpdateIntervalMinutes = autoUpdateIntervalMinutes
+        save()
+        return urlChanged
+    }
+
+    /// File size + last-modified of a profile's YAML, for the edit
+    /// page's file row (FlClash shows the same two facts).
+    func profileFileInfo(_ profile: Profile) -> (size: Int, lastModified: Date?)? {
+        guard let url = fileURL(for: profile),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: url.path) else { return nil }
+        return (size: attrs[.size] as? Int ?? 0, lastModified: attrs[.modificationDate] as? Date)
+    }
+
+    /// Replace a profile's YAML file (FlClash edit page's upload).
+    /// Validates locally first; when the profile is active the new
+    /// file is re-applied like an update, so it takes effect.
+    func updateProfileFile(_ profile: Profile, data: Data) async {
+        if let problem = Self.localSanityCheck(data) {
+            lastError = "文件内容异常：\(problem)"
+            return
+        }
+        do {
+            try saveProfileFile(profile: profile, data: data)
+            if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
+                profiles[index].updatedAt = Date()
+            }
+            save()
+            lastError = nil
+            if profile.isActive {
+                await applyProfile(profile, data: data)
+            }
+        } catch {
+            lastError = "保存失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// A shareable copy of a profile's YAML (FlClash exportFile):
+    /// the on-disk file is named by UUID, so the export is copied
+    /// to tmp under the profile's name.
+    func exportFileURL(for profile: Profile) -> URL? {
+        guard let source = fileURL(for: profile),
+              FileManager.default.fileExists(atPath: source.path) else { return nil }
+        let safeName = profile.name
+            .components(separatedBy: CharacterSet(charactersIn: "/\\:?%*|\"<>"))
+            .joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let fileName = (safeName.isEmpty ? "配置" : safeName) + ".yaml"
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+        try? FileManager.default.removeItem(at: dest)
+        guard (try? FileManager.default.copyItem(at: source, to: dest)) != nil else { return nil }
+        return dest
+    }
+
     /// Local provenance for NodeSourcesView: the proxy names a
     /// profile's own YAML file declares under `proxies:` (a line
     /// scan — no core needed, so it works with the tunnel stopped).
@@ -394,6 +481,174 @@ final class ProfileStore: ObservableObject {
             }
         }
         return names
+    }
+
+    // MARK: - Local proxy/group parse (Proxies page offline fallback)
+    //
+    // The core only knows groups while the VPN runs (proxy.watch /
+    // proxy.groups need a loaded config), but FlClash shows the
+    // profile's groups/nodes before the VPN starts — and the user
+    // rightly expects to pick a node first, then start. So the
+    // Proxies page falls back to parsing the ACTIVE profile's local
+    // YAML when the core is unreachable (ProxyStore.refresh).
+    // Same line-scan approach as localNodeNames: no core needed, so
+    // it works with the tunnel stopped. Provider-fetched nodes are
+    // not in `proxies:` (they come from the core), and group members
+    // that are other groups or built-ins resolve as DIRECT/REJECT or
+    // "unknown" — the live path does the same for nested groups.
+
+    struct LocalProxyNode {
+        let name: String
+        let type: String
+    }
+
+    struct LocalProxyGroup {
+        let name: String
+        let type: String
+        let nodeNames: [String]
+        let testURL: String
+    }
+
+    struct LocalProxyGroups {
+        let nodes: [LocalProxyNode]
+        let groups: [LocalProxyGroup]
+    }
+
+    /// Parse `proxies:` (name + type) and `proxy-groups:` (name, type,
+    /// member list, url) from a profile's local YAML. Returns nil when
+    /// the file is missing or has neither section. A config with
+    /// proxies but no groups gets one synthesized "GLOBAL" select
+    /// group holding all of them (what the core synthesizes too).
+    func localProxyGroups(for profile: Profile) -> LocalProxyGroups? {
+        guard let url = fileURL(for: profile),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var nodes: [LocalProxyNode] = []
+        var groups: [LocalProxyGroup] = []
+        var section: String? = nil
+        // Current item being collected, with its indent.
+        var itemIndent = -1
+        var item: [String: String] = [:]
+        var itemMembers: [String] = []
+        var itemMembersFlow: [String]? = nil
+        var inMemberList = false
+        var memberListIndent = -1
+        func flushItem() {
+            guard section != nil, !item.isEmpty else { return }
+            if section == "proxies" {
+                if let name = item["name"] {
+                    nodes.append(LocalProxyNode(name: name, type: item["type"] ?? "unknown"))
+                }
+            } else if section == "proxy-groups" {
+                if let name = item["name"] {
+                    let members = itemMembersFlow ?? itemMembers
+                    groups.append(LocalProxyGroup(
+                        name: name, type: item["type"] ?? "select",
+                        nodeNames: members, testURL: item["url"] ?? ""))
+                }
+            }
+            item = [:]
+            itemMembers = []
+            itemMembersFlow = nil
+            inMemberList = false
+        }
+        for rawLine in text.components(separatedBy: "\n") {
+            let line = rawLine.replacingOccurrences(of: "\r", with: "")
+            let indent = line.prefix(while: { $0 == " " || $0 == "\t" }).count
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            if indent == 0 {
+                flushItem()
+                itemIndent = -1
+                if trimmed == "proxies:" || trimmed.hasPrefix("proxies: ") {
+                    section = "proxies"
+                } else if trimmed == "proxy-groups:" || trimmed.hasPrefix("proxy-groups: ") {
+                    section = "proxy-groups"
+                } else {
+                    section = nil
+                }
+                continue
+            }
+            guard section != nil else { continue }
+            if trimmed.hasPrefix("- ") || trimmed == "-" {
+                // A deeper-indented "- " while collecting a member list
+                // is a member, not a new item.
+                if inMemberList && indent > memberListIndent {
+                    let value = Self.unquote(String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces))
+                    if !value.isEmpty { itemMembers.append(value) }
+                    continue
+                }
+                flushItem()
+                itemIndent = indent
+                inMemberList = false
+                let rest = trimmed == "-" ? "" : String(trimmed.dropFirst(2))
+                if !rest.isEmpty, let kv = Self.yamlKeyValue(rest) {
+                    if kv.key == "proxies", let flow = Self.flowList(kv.value) {
+                        itemMembersFlow = flow
+                    } else {
+                        item[kv.key] = kv.value
+                    }
+                }
+                continue
+            }
+            guard itemIndent >= 0, indent > itemIndent else { continue }
+            if inMemberList && indent > memberListIndent {
+                if trimmed.hasPrefix("- ") {
+                    let value = Self.unquote(String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces))
+                    if !value.isEmpty { itemMembers.append(value) }
+                }
+                continue
+            }
+            guard let kv = Self.yamlKeyValue(trimmed) else { continue }
+            if section == "proxy-groups" && kv.key == "proxies" {
+                if let flow = Self.flowList(kv.value) {
+                    itemMembersFlow = flow
+                } else {
+                    inMemberList = true
+                    memberListIndent = indent
+                }
+            } else {
+                item[kv.key] = kv.value
+            }
+        }
+        flushItem()
+        if nodes.isEmpty && groups.isEmpty { return nil }
+        if groups.isEmpty {
+            groups = [LocalProxyGroup(name: "GLOBAL", type: "select",
+                                      nodeNames: nodes.map(\.name), testURL: "")]
+        }
+        return LocalProxyGroups(nodes: nodes, groups: groups)
+    }
+
+    /// "key: value" split for one YAML scalar line; strips matching
+    /// quotes from the value. Returns nil for lines without a colon.
+    private static func yamlKeyValue(_ line: String) -> (key: String, value: String)? {
+        guard let colon = line.firstIndex(of: ":") else { return nil }
+        let key = String(line[..<colon]).trimmingCharacters(in: .whitespaces)
+        var value = String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+        // Strip a trailing inline comment (only when the # is not
+        // inside quotes — good enough for name/type/url lines).
+        if let hash = value.firstIndex(of: "#"), !value.hasPrefix("\""), !value.hasPrefix("'") {
+            value = String(value[..<hash]).trimmingCharacters(in: .whitespaces)
+        }
+        guard !key.isEmpty else { return nil }
+        return (key, unquote(value))
+    }
+
+    /// "[a, b, c]" flow list → members. Names containing commas do
+    /// not survive this (documented: the core path stays
+    /// authoritative while running); quoted members are unquoted.
+    private static func flowList(_ value: String) -> [String]? {
+        guard value.hasPrefix("["), value.hasSuffix("]") else { return nil }
+        let inner = value.dropFirst().dropLast()
+        return inner.split(separator: ",").map { unquote(String($0).trimmingCharacters(in: .whitespaces)) }.filter { !$0.isEmpty }
+    }
+
+    private static func unquote(_ value: String) -> String {
+        if (value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2) ||
+            (value.hasPrefix("'") && value.hasSuffix("'") && value.count >= 2) {
+            return String(value.dropFirst().dropLast())
+        }
+        return value
     }
 
     // MARK: Activate + inspect (config.validate / config.apply /

@@ -1,410 +1,152 @@
 import SwiftUI
+import UniformTypeIdentifiers
+import UIKit
+import CoreImage
 
-// MARK: - Profiles (FlClash: ProfilesView, lib/views/profiles/)
-// FlClash profiles page: remote (URL) and local profiles, update all,
-// per-profile update / edit / preview / delete, active profile switch,
-// profile.inspect counts. This page reproduces those actions; the
-// config editor itself is the profile YAML file (opened via the
-// preview sheet), matching FlClash's editor page on mobile.
+// MARK: - Profiles (FlClash: lib/views/profiles/profiles.dart)
+//
+// FlClash structure, 1:1 where the iOS app has an equivalent:
+// AppBar [节点来源 globe, 可视化配置 sliders, 更新 sync (only when
+// profiles exist), 排序 sort (only when profiles exist), + addCircle
+// menu (only when profiles exist)]; body is an empty state
+// (NullStatus) or a grid of profile cards (LazyVGrid adaptive min
+// 300pt -> 1 column on a 390pt iPhone). Card tap = activate/select;
+// long-press = context menu (编辑 / 扩展 / 同步 (URL) / 更多 submenu /
+// 删除）. Reorder lives in its own sheet (配置排序）, never as
+// long-press-to-reorder on the page. The API-tool sections that used
+// to live on this page moved to ProfileToolsView (Tools -> 订阅工具）.
+//
+// Differences vs FlClash, all honest:
+// - No .custom ProfileKind exists in this app (only url/file), so
+//   every profile takes the non-custom menu path; there is no rename
+//   action (renaming happens via the Edit page's name field) and no
+//   groups-count chip.
+// - No subscriptionInfo (used/total traffic, expiry) is stored on
+//   Profile, so the card subtitle is the FlClash fallback:
+//   远程 (URL) / 本地 (file).
+// - No provider-in-use lookup exists (providers are per-config YAML,
+//   not profile-linked), so delete always uses the plain
+//   "确定删除当前{label}吗？" text, never the provider-in-use variant.
+// - "从手机发送" is TV-only in FlClash and has no iOS equivalent;
+//   it is skipped.
+// - 运行时配置 opens ConfigEditorView (the YAML editor for the
+//   active profile) per the app's existing structure; FlClash's
+//   runtime-config preview is kept as an extra "预览配置" row in the
+//   更多 submenu so the existing ProfilePreviewView stays reachable.
+
+enum ProfileNavDestination: Hashable {
+    case nodeSources
+    case visualConfig
+    case customSubscriptions
+    case configEditor
+    case extend(UUID)
+    case edit(UUID)
+}
 
 struct ProfilesView: View {
     @EnvironmentObject private var profileStore: ProfileStore
-    @EnvironmentObject private var configStore: ConfigStore
+    @State private var navPath: [ProfileNavDestination] = []
     @State private var showUnifiedImport = false
     @State private var showScanImport = false
     @State private var scannedText: String?
+    @State private var showFileImporter = false
+    @State private var showReorder = false
+    @State private var reorderDraft: [Profile] = []
     @State private var previewProfile: Profile?
-    @State private var isUpdating = false
-    @State private var validationMessage: String?
-    @State private var decryptProfileID: UUID?
-    @State private var decryptKey = ""
-    @State private var decryptSaveName = ""
-    @State private var outboundsProfileID: UUID?
-    @State private var encodeProfileID: UUID?
-    @State private var decodeText = ""
-    @State private var decodeSaveName = ""
-    @State private var clearEffectID = ""
-    @State private var showClearEffectConfirm = false
+    @State private var qrProfile: Profile?
+    @State private var exportURL: URL?
+    @State private var deleteTarget: Profile?
+    @State private var updatingIDs: Set<UUID> = []
+    @State private var isUpdatingAll = false
+    @State private var copyNotice: String?
+    @State private var alertMessage: String?
 
-    private func validateActiveProfile() async {
-        switch await profileStore.validateActiveProfile() {
-        case .success(let issues):
-            profileStore.validationIssues = issues
-            validationMessage = issues.isEmpty ? "配置校验通过" : "配置校验发现 \(issues.count) 个问题"
-        case .failure(let error):
-            validationMessage = "校验失败：\(error.localizedDescription)"
-        }
-    }
-
-    private func validateActiveProfileProxies() async {
-        switch await profileStore.validateActiveProfileProxies() {
-        case .success(let issues):
-            profileStore.validationIssues = issues
-            validationMessage = issues.isEmpty ? "节点配置全部有效" : "节点校验发现 \(issues.count) 个问题"
-        case .failure(let error):
-            validationMessage = "校验失败：\(error.localizedDescription)"
-        }
-    }
+    private var hasProfiles: Bool { !profileStore.profiles.isEmpty }
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Button {
-                        showUnifiedImport = true
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "square.and.arrow.down")
-                                .font(.system(size: 18))
-                                .foregroundStyle(.white)
-                                .frame(width: 40, height: 40)
-                                .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 12))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("导入配置")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(.primary)
-                                Text("订阅链接 / 节点链接 / 配置文件，一次导入一条")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 4)
+        NavigationStack(path: $navPath) {
+            ScrollView {
+                VStack(spacing: 12) {
+                    if let notice = copyNotice {
+                        Text(notice)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(Color.green, in: RoundedRectangle(cornerRadius: 12))
                     }
-                    Divider()
-                    NavigationLink {
-                        ConfigEditorView()
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "square.and.pencil")
-                                .font(.system(size: 18))
-                                .foregroundStyle(.white)
-                                .frame(width: 40, height: 40)
-                                .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 12))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("编辑当前配置")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(.primary)
-                                Text("直接改当前订阅的 YAML，保存前先用核心校验")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 4)
-                    }
-                    .disabled(profileStore.activeProfile == nil)
-                }
-                Section("订阅工具") {
-                    Button {
-                        showScanImport = true
-                    } label: {
-                        Label("扫码导入订阅", systemImage: "qrcode.viewfinder")
-                    }
-                    NavigationLink {
-                        NodeSourcesView()
-                    } label: {
-                        Label("节点来源", systemImage: "list.bullet")
-                    }
-                    NavigationLink {
-                        VisualConfigView()
-                    } label: {
-                        Label("可视化配置", systemImage: "slider.horizontal.3")
-                    }
-                    NavigationLink {
-                        ExtendConfigView()
-                    } label: {
-                        Label("扩展配置", systemImage: "plus.square.on.square")
-                    }
-                    NavigationLink {
-                        CustomSubscriptionListView()
-                    } label: {
-                        Label("自定义订阅", systemImage: "doc.badge.gearshape")
-                    }
-                    Text("长按左侧拖动可调整订阅顺序；顺序会保存下来。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-                if profileStore.profiles.isEmpty {
-                    ContentUnavailableView("暂无订阅", systemImage: "list.clipboard", description: Text("添加一个订阅链接或导入本地配置文件"))
-                }
-                ForEach(profileStore.profiles) { profile in
-                    Button {
-                        Task { await profileStore.activate(profile) }
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: profile.kind == .url ? "link" : "doc")
-                                .foregroundStyle(.blue)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(profile.name).font(.system(size: 13))
-                                HStack(spacing: 6) {
-                                    Text(profile.kind.rawValue)
-                                    if let updated = profile.updatedAt {
-                                        Text("更新于 \(updated.formatted(date: .abbreviated, time: .shortened))")
-                                    }
-                                }
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                                if let note = profile.note {
-                                    Text(note).font(.system(size: 10)).foregroundStyle(.orange)
-                                }
-                            }
-                            Spacer()
-                            if profile.isActive {
-                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button("预览") { previewProfile = profile }
-                            .tint(.blue)
-                        Button("更新") { Task { await profileStore.update(profile) } }
-                            .tint(.orange)
-                            .disabled(profile.kind != .url)
-                        Button("删除", role: .destructive) { profileStore.delete(profile) }
+                    if profileStore.profiles.isEmpty {
+                        emptyState
+                    } else {
+                        profileGrid
                     }
                 }
-                .onMove { from, to in
-                    profileStore.moveProfiles(fromOffsets: from, toOffset: to)
-                }
-
-                if let inspect = profileStore.inspect {
-                    Section("当前配置检查（profile.inspect）") {
-                        LabeledContent("节点", value: "\(inspect.proxies)")
-                        LabeledContent("代理组", value: "\(inspect.proxyGroups)")
-                        LabeledContent("规则", value: "\(inspect.rules)")
-                        LabeledContent("摘要", value: inspect.digest)
-                        if !inspect.matchRules.isEmpty {
-                            Text("匹配规则：\(inspect.matchRules.joined(separator: ", "))")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                        }
-                        Button("校验配置文件（config.validate）") {
-                            Task { await validateActiveProfile() }
-                        }
-                        Button("校验节点配置（validate.proxies）") {
-                            Task { await validateActiveProfileProxies() }
-                        }
-                        if !profileStore.validationIssues.isEmpty {
-                            ForEach(profileStore.validationIssues, id: \.message) { issue in
-                                Text(issue.message).font(.system(size: 10)).foregroundStyle(.orange)
-                            }
-                        }
-                        if let message = validationMessage {
-                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                if !profileStore.applyWarnings.isEmpty {
-                    Section("配置警告（config.apply）") {
-                        ForEach(profileStore.applyWarnings, id: \.message) { warning in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(warning.message).font(.system(size: 13))
-                                Text("\(warning.path) · \(warning.level)")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-
-                if !profileStore.profiles.isEmpty {
-                    Section("解密加密配置（config.decrypt）") {
-                        Picker("配置文件", selection: $decryptProfileID) {
-                            ForEach(profileStore.profiles) { profile in
-                                Text(profile.name).tag(profile.id as UUID?)
-                            }
-                        }
-                        SecureField("解密密钥（仅用于本次调用，不保存）", text: $decryptKey)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        Button("解密") {
-                            guard let id = decryptProfileID,
-                                  let profile = profileStore.profiles.first(where: { $0.id == id }) else { return }
-                            Task { await profileStore.decryptProfile(profile, key: decryptKey) }
-                        }
-                        .disabled(decryptProfileID == nil || decryptKey.isEmpty)
-                        if let message = profileStore.decryptMessage {
-                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        }
-                        if let result = profileStore.decryptResult, !result.isEmpty {
-                            Text(result)
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
-                                .lineLimit(12)
-                            HStack {
-                                TextField("另存为订阅名", text: $decryptSaveName)
-                                Button("保存为新订阅") {
-                                    profileStore.saveDecryptedAsProfile(name: decryptSaveName.isEmpty ? "解密后的配置" : decryptSaveName)
-                                }
-                            }
-                        }
-                        Text("加密配置需用密钥解密后才能使用。解密由扩展内的核心执行，需先启动 VPN；密钥只发给本次调用，不会保存。")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if !profileStore.profiles.isEmpty {
-                    Section("出站列表（profile.outbounds）") {
-                        Picker("配置文件", selection: $outboundsProfileID) {
-                            ForEach(profileStore.profiles) { profile in
-                                Text(profile.name).tag(profile.id as UUID?)
-                            }
-                        }
-                        Button("读取出站列表") {
-                            guard let id = outboundsProfileID,
-                                  let profile = profileStore.profiles.first(where: { $0.id == id }) else { return }
-                            Task { await profileStore.loadOutbounds(profile) }
-                        }
-                        .disabled(outboundsProfileID == nil)
-                        if let message = profileStore.outboundsMessage {
-                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        }
-                        if let outbounds = profileStore.outbounds {
-                            if !outbounds.proxies.isEmpty {
-                                Text("代理（\(outbounds.proxies.count)）").font(.system(size: 10)).foregroundStyle(.secondary)
-                                ForEach(outbounds.proxies, id: \.name) { outbound in
-                                    LabeledContent(outbound.name, value: outbound.type)
-                                }
-                            }
-                            if !outbounds.proxyGroups.isEmpty {
-                                Text("代理组（\(outbounds.proxyGroups.count)）").font(.system(size: 10)).foregroundStyle(.secondary)
-                                ForEach(outbounds.proxyGroups, id: \.name) { group in
-                                    LabeledContent(group.name, value: group.type)
-                                }
-                            }
-                        }
-                    }
-
-                    Section("分享链接（convert.encodeLinks）") {
-                        Picker("配置文件", selection: $encodeProfileID) {
-                            ForEach(profileStore.profiles) { profile in
-                                Text(profile.name).tag(profile.id as UUID?)
-                            }
-                        }
-                        Button("生成分享链接") {
-                            guard let id = encodeProfileID,
-                                  let profile = profileStore.profiles.first(where: { $0.id == id }) else { return }
-                            Task { await profileStore.encodeLinks(profile) }
-                        }
-                        .disabled(encodeProfileID == nil)
-                        if let message = profileStore.encodeMessage {
-                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        }
-                        ForEach(profileStore.encodedLinks, id: \.self) { link in
-                            ShareLink(item: link) {
-                                Text(link).font(.system(size: 10)).lineLimit(2)
-                            }
-                        }
-                        Text("链接由核心从配置的 proxies 列表生成，点击可分享。")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Section("导入分享链接（convert.decodeLinks）") {
-                        TextEditor(text: $decodeText)
-                            .frame(minHeight: 100)
-                            .font(.system(.caption, design: .monospaced))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .scrollContentBackground(.hidden)
-                            .padding(8)
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-                        Button("解析链接") {
-                            Task { await profileStore.decodeLinks(decodeText.components(separatedBy: .newlines)) }
-                        }
-                        .disabled(decodeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if let message = profileStore.decodeMessage {
-                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        }
-                        ForEach(Array(profileStore.decodedProxies.enumerated()), id: \.offset) { _, proxy in
-                            HStack {
-                                Text(proxy.objectValue?["name"]?.stringValue ?? "未知节点")
-                                Spacer()
-                                Text(proxy.objectValue?["type"]?.stringValue ?? "")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        if !profileStore.decodedProxies.isEmpty {
-                            HStack {
-                                TextField("另存为订阅名", text: $decodeSaveName)
-                                Button("保存为新订阅") {
-                                    profileStore.saveDecodedAsProfile(name: decodeSaveName.isEmpty ? "导入的节点" : decodeSaveName)
-                                }
-                            }
-                        }
-                        Text("粘贴的链接只发给核心解析，不会发往任何其他地方；不是链接的行会被忽略。")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Section("清除订阅生效文件（profile.clearEffect）") {
-                        TextField("订阅编号（数字）", text: $clearEffectID)
-                            .keyboardType(.numberPad)
-                        Button("清除") {
-                            showClearEffectConfirm = true
-                        }
-                        .disabled(Int64(clearEffectID) == nil)
-                        .alert("清除已下载的提供方文件？", isPresented: $showClearEffectConfirm) {
-                            Button("清除", role: .destructive) {
-                                guard let id = Int64(clearEffectID) else { return }
-                                Task { await profileStore.clearEffect(profileId: id) }
-                            }
-                            Button("取消", role: .cancel) {}
-                        } message: {
-                            Text("将删除核心侧订阅 #\(clearEffectID) 的已下载提供方文件。iOS 上订阅没有数字编号，核心通常找不到可清除的内容。")
-                        }
-                        if let message = profileStore.clearEffectMessage {
-                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
-                        }
-                        Text("订阅编号是桌面端宿主给订阅分配的数字 ID；iOS 上订阅用 UUID 标识，核心侧没有对应的已下载文件，因此这个操作通常无事可做。")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Section {
-                    Text(profileStore.statusMessage)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    if let error = profileStore.lastError {
-                        Text(error).font(.system(size: 10)).foregroundStyle(.red)
-                    }
-                }
+                .padding(16)
             }
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
-            .listStyle(.insetGrouped)
             .navigationTitle("title.profiles".l10n)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        isUpdating = true
-                        Task {
-                            await profileStore.updateAll()
-                            isUpdating = false
-                        }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
+                    Button { navPath.append(.nodeSources) } label: {
+                        Image(systemName: "globe")
                     }
-                    .disabled(isUpdating)
+                    .accessibilityLabel("节点来源")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    EditButton()
+                    Button { navPath.append(.visualConfig) } label: {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .accessibilityLabel("可视化配置")
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showUnifiedImport = true } label: {
-                        Image(systemName: "plus")
+                if hasProfiles {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { Task { await updateAll() } } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .accessibilityLabel("更新")
+                        .disabled(isUpdatingAll)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            reorderDraft = profileStore.profiles
+                            showReorder = true
+                        } label: {
+                            Image(systemName: "arrow.up.arrow.down")
+                        }
+                        .accessibilityLabel("排序")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            addProfileMenuItems
+                        } label: {
+                            Image(systemName: "plus.circle")
+                        }
+                        .accessibilityLabel("添加配置")
+                    }
+                }
+            }
+            .navigationDestination(for: ProfileNavDestination.self) { destination in
+                switch destination {
+                case .nodeSources:
+                    NodeSourcesView()
+                case .visualConfig:
+                    VisualConfigView()
+                case .customSubscriptions:
+                    CustomSubscriptionListView()
+                case .configEditor:
+                    ConfigEditorView()
+                case .extend(let id):
+                    if let profile = profileStore.profiles.first(where: { $0.id == id }) {
+                        ExtendConfigView(profile: profile)
+                    } else {
+                        ContentUnavailableView("订阅已删除", systemImage: "trash")
+                    }
+                case .edit(let id):
+                    if let profile = profileStore.profiles.first(where: { $0.id == id }) {
+                        EditProfileView(profile: profile)
+                    } else {
+                        ContentUnavailableView("订阅已删除", systemImage: "trash")
                     }
                 }
             }
@@ -417,22 +159,399 @@ struct ProfilesView: View {
                     showUnifiedImport = true
                 }
             }
+            .sheet(isPresented: $showReorder) {
+                reorderSheet
+            }
             .sheet(item: $previewProfile) { profile in
                 ProfilePreviewView(profile: profile)
             }
-            .task {
-                // Default the decrypt target to a local file profile
-                // (encrypted configs are imported as files), else the
-                // active profile.
-                if decryptProfileID == nil {
-                    decryptProfileID = profileStore.profiles.first(where: { $0.kind == .file })?.id
-                        ?? profileStore.activeProfile?.id
+            .sheet(item: $qrProfile) { profile in
+                ProfileQRCodeView(profile: profile)
+            }
+            .sheet(isPresented: Binding(
+                get: { exportURL != nil },
+                set: { if !$0 { exportURL = nil } }
+            )) {
+                if let url = exportURL {
+                    NavigationStack {
+                        VStack(spacing: 16) {
+                            Text(url.lastPathComponent)
+                                .font(.system(size: 17, weight: .semibold))
+                            ShareLink(item: url) {
+                                Label("分享配置文件", systemImage: "square.and.arrow.up")
+                                    .font(.system(size: 17, weight: .semibold))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(ConcordTheme.accent)
+                            Text("导出成功")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .padding(24)
+                        .navigationTitle("导出文件")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("完成") { exportURL = nil }
+                            }
+                        }
+                    }
                 }
-                if outboundsProfileID == nil {
-                    outboundsProfileID = profileStore.activeProfile?.id
+            }
+            .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.yaml, UTType.plainText]) { result in
+                handlePickedFile(result)
+            }
+            // One alert for the whole page (two .alert modifiers on
+            // the same view fight each other): it shows either the
+            // delete confirmation or a plain message alert.
+            .alert("提示", isPresented: Binding(
+                get: { alertMessage != nil || deleteTarget != nil },
+                set: { if !$0 { alertMessage = nil; deleteTarget = nil } }
+            )) {
+                if deleteTarget != nil {
+                    Button("删除", role: .destructive) {
+                        if let profile = deleteTarget {
+                            profileStore.delete(profile)
+                        }
+                        deleteTarget = nil
+                    }
+                    Button("取消", role: .cancel) { deleteTarget = nil }
+                } else {
+                    Button("common.ok".l10n, role: .cancel) {}
                 }
-                if encodeProfileID == nil {
-                    encodeProfileID = profileStore.activeProfile?.id
+            } message: {
+                if let profile = deleteTarget {
+                    Text("确定删除当前\(profile.name)吗？")
+                } else {
+                    Text(alertMessage ?? "")
+                }
+            }
+        }
+    }
+
+    // MARK: - Add menu (FlClash AddProfileMenu, minus TV-only
+    // "从手机发送" which has no iOS equivalent)
+
+    @ViewBuilder
+    private var addProfileMenuItems: some View {
+        Button { navPath.append(.nodeSources) } label: {
+            Label("节点来源", systemImage: "list.bullet")
+                .font(.system(size: 15))
+        }
+        Button { showScanImport = true } label: {
+            Label("扫码", systemImage: "qrcode.viewfinder")
+                .font(.system(size: 15))
+        }
+        Button { showFileImporter = true } label: {
+            Label("文件", systemImage: "doc")
+                .font(.system(size: 15))
+        }
+        Button { showUnifiedImport = true } label: {
+            Label("链接", systemImage: "link")
+                .font(.system(size: 15))
+        }
+        Section {
+            Button { navPath.append(.customSubscriptions) } label: {
+                Label("自定义订阅", systemImage: "doc.badge.gearshape")
+                    .font(.system(size: 15))
+            }
+        }
+    }
+
+    // MARK: - Empty state (FlClash NullStatus)
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            ContentUnavailableView(
+                "暂无配置",
+                systemImage: "square.stack",
+                description: Text("添加一个配置文件后即可开始使用")
+            )
+            Menu {
+                addProfileMenuItems
+            } label: {
+                Label("添加配置", systemImage: "plus.circle")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 16))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 60)
+    }
+
+    // MARK: - Grid of cards (FlClash _ProfilesGrid / ProfileItem)
+
+    private var profileGrid: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 300), spacing: 12)],
+            spacing: 12
+        ) {
+            ForEach(profileStore.profiles) { profile in
+                profileCard(profile)
+            }
+        }
+    }
+
+    private func profileCard(_ profile: Profile) -> some View {
+        Button {
+            Task { await activate(profile) }
+        } label: {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(profile.name)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(profile.kind == .url ? "远程" : "本地")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if let note = profile.note {
+                        Text(note)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.orange)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer()
+                if updatingIDs.contains(profile.id) {
+                    ProgressView()
+                        .frame(width: 24, height: 24)
+                } else if let updated = profile.updatedAt {
+                    Text(ConcordRelativeTime.string(since: updated))
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                if profile.isActive {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(ConcordTheme.accent)
+                }
+            }
+            .padding(16)
+            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
+            .overlay(
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(profile.isActive ? ConcordTheme.accent : Color.clear, lineWidth: 2)
+            )
+            .shadow(color: ConcordTheme.cardShadow, radius: 6, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button { navPath.append(.edit(profile.id)) } label: {
+                Label("编辑", systemImage: "square.and.pencil")
+                    .font(.system(size: 15))
+            }
+            Button { navPath.append(.extend(profile.id)) } label: {
+                Label("扩展", systemImage: "plus.square.on.square")
+                    .font(.system(size: 15))
+            }
+            if profile.kind == .url {
+                Button { Task { await sync(profile) } } label: {
+                    Label("同步", systemImage: "arrow.clockwise")
+                        .font(.system(size: 15))
+                }
+            }
+            Menu("更多") {
+                Button { navPath.append(.configEditor) } label: {
+                    Label("运行时配置", systemImage: "eye")
+                        .font(.system(size: 15))
+                }
+                Button { previewProfile = profile } label: {
+                    Label("预览配置", systemImage: "doc.text.magnifyingglass")
+                        .font(.system(size: 15))
+                }
+                if profile.kind == .url {
+                    Button { copyLink(profile) } label: {
+                        Label("复制链接", systemImage: "doc.on.doc")
+                            .font(.system(size: 15))
+                    }
+                    Button { qrProfile = profile } label: {
+                        Label("二维码", systemImage: "qrcode")
+                            .font(.system(size: 15))
+                    }
+                }
+                Button { export(profile) } label: {
+                    Label("导出文件", systemImage: "square.and.arrow.up")
+                        .font(.system(size: 15))
+                }
+            }
+            Button(role: .destructive) { deleteTarget = profile } label: {
+                Label("删除", systemImage: "trash")
+                    .font(.system(size: 15))
+            }
+        }
+    }
+
+    // MARK: - Reorder sheet (FlClash ReorderableProfilesSheet)
+
+    private var reorderSheet: some View {
+        NavigationStack {
+            List {
+                ForEach(reorderDraft) { profile in
+                    Text(profile.name)
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                .onMove { from, to in
+                    reorderDraft.move(fromOffsets: from, toOffset: to)
+                }
+            }
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("配置排序")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("取消") { showReorder = false }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { 
+                        profileStore.reorderProfiles(reorderDraft)
+                        showReorder = false
+                    } label: {
+                        Image(systemName: "checkmark")
+                    }
+                    .accessibilityLabel("保存")
+                }
+            }
+        }
+    }
+
+    // MARK: - Actions
+
+    private func activate(_ profile: Profile) async {
+        await profileStore.activate(profile)
+        if let error = profileStore.lastError {
+            alertMessage = error
+        }
+    }
+
+    private func sync(_ profile: Profile) async {
+        guard profile.kind == .url else { return }
+        updatingIDs.insert(profile.id)
+        defer { updatingIDs.remove(profile.id) }
+        await profileStore.update(profile)
+        if let error = profileStore.lastError {
+            alertMessage = error
+        }
+    }
+
+    private func updateAll() async {
+        guard !isUpdatingAll else { return }
+        isUpdatingAll = true
+        defer { isUpdatingAll = false }
+        for profile in profileStore.profiles where profile.kind == .url {
+            updatingIDs.insert(profile.id)
+        }
+        defer { updatingIDs.removeAll() }
+        await profileStore.updateAll()
+        if let error = profileStore.lastError {
+            alertMessage = error
+        }
+    }
+
+    private func copyLink(_ profile: Profile) {
+        guard let urlString = profile.urlString else { return }
+        UIPasteboard.general.string = urlString
+        copyNotice = "复制成功"
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.5))
+            copyNotice = nil
+        }
+    }
+
+    private func export(_ profile: Profile) {
+        guard let url = profileStore.exportFileURL(for: profile) else {
+            alertMessage = "导出失败：找不到该订阅的本地文件"
+            return
+        }
+        exportURL = url
+    }
+
+    /// The + menu's 文件 item: read the picked .yaml through the
+    /// security-scoped URL, then reuse UnifiedImporter's file path
+    /// (importFileData -> importYamlDocument -> addFromFile). A
+    /// failed read or a failed import surfaces in an alert with the
+    /// importer's summary text — never swallowed silently.
+    private func handlePickedFile(_ result: Result<URL, Error>) {
+        switch result {
+        case .success(let url):
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            let data: Data
+            do {
+                data = try Data(contentsOf: url)
+            } catch {
+                alertMessage = "读取文件失败：\(error.localizedDescription)"
+                return
+            }
+            let importer = UnifiedImporter(profileStore: profileStore)
+            Task { @MainActor in
+                await importer.importFileData(data, fileName: url.lastPathComponent)
+                if importer.results.allSatisfy({ !$0.succeeded }) {
+                    alertMessage = importer.summaryText ?? "导入失败"
+                }
+            }
+        case .failure(let error):
+            alertMessage = "选择文件失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - QR code sheet (FlClash dialogs.showQrCode)
+
+private struct ProfileQRCodeView: View {
+    let profile: Profile
+    @Environment(\.dismiss) private var dismiss
+
+    private var qrImage: UIImage? {
+        guard let urlString = profile.urlString,
+              let data = urlString.data(using: .utf8),
+              let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
+        filter.setValue(data, forKey: "inputMessage")
+        filter.setValue("M", forKey: "inputCorrectionLevel")
+        guard let output = filter.outputImage else { return nil }
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+        guard let cgImage = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
+        return UIImage(cgImage: cgImage)
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                if let image = qrImage {
+                    Image(uiImage: image)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 240, height: 240)
+                } else {
+                    Text("无法生成二维码：该订阅没有链接")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                if let urlString = profile.urlString {
+                    Text(urlString)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .multilineTextAlignment(.center)
+                }
+                Text("在另一台设备上用 FlClash 扫码即可导入此配置。")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Spacer()
+            }
+            .padding(24)
+            .navigationTitle(profile.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
                 }
             }
         }
@@ -452,7 +571,9 @@ struct AddProfileView: View {
             Form {
                 Section("订阅链接") {
                     TextField("名称（可选）", text: $name)
+                        .font(.system(size: 17))
                     TextField("https://…/subscribe.yaml", text: $urlString)
+                        .font(.system(size: 17))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
@@ -462,6 +583,7 @@ struct AddProfileView: View {
                             dismiss()
                         }
                     }
+                    .font(.system(size: 17, weight: .semibold))
                     .disabled(urlString.isEmpty)
                 }
                 Section("本地文件") {
@@ -469,13 +591,14 @@ struct AddProfileView: View {
                         dismiss()
                         showImporter = true
                     }
+                    .font(.system(size: 17, weight: .semibold))
                     Text("支持 Clash / mihomo YAML。导入后文件保存在 App Group 容器，扩展与主 App 共享。")
-                        .font(.system(size: 10))
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
                 Section {
                     Text("订阅更新调用 convert.subscription / provider.update；切换订阅调用 config.apply + profile.inspect。")
-                        .font(.system(size: 10))
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -533,16 +656,16 @@ struct ProfilePreviewView: View {
                 case .nodes:
                     List {
                         if let error = previewError {
-                            Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                            Text(error).font(.system(size: 13)).foregroundStyle(.red)
                         } else if let proxies = convertedProxies {
                             if proxies.isEmpty {
-                                Text("该订阅没有解析出节点").font(.system(size: 10)).foregroundStyle(.secondary)
+                                Text("该订阅没有解析出节点").font(.system(size: 13)).foregroundStyle(.secondary)
                             } else {
                                 ForEach(Array(proxies.enumerated()), id: \.offset) { _, proxy in
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(proxy.objectValue?["name"]?.stringValue ?? "—").font(.system(size: 13))
+                                        Text(proxy.objectValue?["name"]?.stringValue ?? "—").font(.system(size: 17, weight: .semibold))
                                         Text("\(proxy.objectValue?["type"]?.stringValue ?? "—") · \(proxy.objectValue?["server"]?.stringValue ?? "—")")
-                                            .font(.system(size: 10))
+                                            .font(.system(size: 13))
                                             .foregroundStyle(.secondary)
                                     }
                                 }
@@ -556,7 +679,7 @@ struct ProfilePreviewView: View {
                 case .built:
                     ScrollView {
                         if let error = previewError {
-                            Text(error).font(.system(size: 10)).foregroundStyle(.red).padding()
+                            Text(error).font(.system(size: 13)).foregroundStyle(.red).padding()
                         } else if let built = builtText {
                             Text(built)
                                 .font(.system(.caption, design: .monospaced))

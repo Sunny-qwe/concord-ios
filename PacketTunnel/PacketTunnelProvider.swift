@@ -271,8 +271,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private enum TunnelSetupError: LocalizedError {
-        case noAppGroup
+    /// One record of vpn-startup.json. Same JSON shape as the app's
+    /// TunnelStartupDiagnosticRecord (the two targets cannot share
+    /// the type); mirrors FlClash's TunnelStartupDiagnostic.
+    private struct StartupDiagnosticRecord: Codable {
+        let id: String
+        let stage: String
+        let detail: String?
+        let date: Date
+    }
+
+    private enum TunnelSetupError: LocalizedError {        case noAppGroup
         case noConfig
         case tunDisabled
         case coreStartFailed
@@ -300,6 +309,30 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    // MARK: - Startup diagnostic (FlClash TunnelStartupDiagnostic)
+    //
+    // The app reads vpn-startup.json to show WHY a start failed
+    // instead of silence: without it an extension-side failure only
+    // surfaces as a status flip to .disconnected, which the app
+    // cannot distinguish from a user stop. Stages mirror FlClash's
+    // (extension-entered → configuration → core-setup → tun-start →
+    // network-settings → running / startup-failed). Freshness (< 180 s)
+    // is enforced on the reader side (TunnelManager).
+
+    private var startupID = UUID().uuidString
+
+    private func recordStartup(_ stage: String, error: Error? = nil) {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) else { return }
+        let detail = error.map { e -> String in
+            let ns = e as NSError
+            return String("\(ns.localizedDescription) [\(ns.domain):\(ns.code)]".prefix(2048))
+        }
+        let record = StartupDiagnosticRecord(id: startupID, stage: stage, detail: detail, date: Date())
+        guard let data = try? JSONEncoder().encode(record) else { return }
+        try? data.write(to: container.appendingPathComponent("vpn-startup.json"), options: .atomic)
+    }
+
     // MARK: - C callbacks (non-capturing; the provider is passed as context)
 
     private static let deliverCallback: ConcordIOSDeliver = { context, data, len in
@@ -323,10 +356,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         // The extension retains itself for the core session's lifetime
         // (released by releaseCallback when the session ends).
+        startupID = UUID().uuidString
+        recordStartup("extension-entered")
         let context = Unmanaged.passRetained(self).toOpaque()
         Task {
             do {
                 try await self.bootCore(context: context)
+                self.recordStartup("running")
                 completionHandler(nil)
             } catch {
                 // Boot failed: tear down whatever got started so a retry
@@ -341,6 +377,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     Unmanaged<PacketTunnelProvider>.fromOpaque(context).release()
                 }
                 Self.log.error("startTunnel failed: \(error.localizedDescription, privacy: .public)")
+                self.recordStartup("startup-failed", error: error)
                 completionHandler(error)
             }
         }
@@ -355,6 +392,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             throw TunnelSetupError.noConfig
         }
+        recordStartup("configuration")
 
         guard concord_ios_start() == 0 else {
             throw TunnelSetupError.coreStartFailed
@@ -436,6 +474,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         _ = try await sendCoreRequest(method: "config.apply", params: applyParams)
         _ = try await sendCoreRequest(method: "engine.start", params: [:])
+        recordStartup("core-configured")
 
         // General settings saved in the app (general.json) are patched
         // in once at startup, so they take effect on the next VPN start
@@ -492,6 +531,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if let congestionController = tun.congestionController {
             tunParams["congestionController"] = congestionController
         }
+        recordStartup("tun-start")
         _ = try await sendCoreRequest(method: "tun.start", params: tunParams)
 
         // Tunnel interface: the system owns routing; the core must not
@@ -500,9 +540,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // in Settings: the same address the core got in tun.start, plus
         // the IPv6 default route, so IPv6 traffic enters the tunnel
         // instead of bypassing it.
-        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: tunnelAddress)
+        // tunnelRemoteAddress / IPv4 mask match FlClash
+        // (PacketTunnelNetworkConfiguration): the remote address is a
+        // dummy 127.0.0.1 and the interface is a /30 (198.18.0.1,
+        // with 198.18.0.2 as the DNS address inside the same /30).
+        // Our previous values (remote = the interface address itself,
+        // mask /16) are not known to fail a start, but there is no
+        // reason to differ from upstream here.
+        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         settings.mtu = NSNumber(value: tun.mtu)
-        let ipv4 = NEIPv4Settings(addresses: [tunnelAddress], subnetMasks: ["255.255.0.0"])
+        let ipv4 = NEIPv4Settings(addresses: [tunnelAddress], subnetMasks: ["255.255.255.252"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
         // Local network settings (FlClash: 本地网络设置）: excluded
         // routes bypass the tunnel — the standard private ranges when
@@ -536,6 +583,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if tun.dnsHijack {
             settings.dnsSettings = NEDNSSettings(servers: tun.dns)
         }
+        recordStartup("network-settings")
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             self.setTunnelNetworkSettings(settings) { error in
                 if let error {
@@ -557,6 +605,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         isStopping = true
+        recordStartup("stopped")
         pumpRunning = false
         drainTimer?.cancel()
         drainTimer = nil

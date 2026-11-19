@@ -972,7 +972,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "回环保护"
+            "value": "虚拟接口回流地址"
           }
         },
         "en": {
@@ -1156,7 +1156,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "订阅"
+            "value": "配置"
           }
         },
         "en": {

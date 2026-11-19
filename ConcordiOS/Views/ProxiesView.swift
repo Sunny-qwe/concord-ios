@@ -179,7 +179,10 @@ struct ProxiesView: View {
             .sheet(item: $detailNode) { node in
                 NodeDetailView(node: node)
             }
-            .task { if proxyStore.groups.isEmpty { await proxyStore.refresh() } }
+            .task { if proxyStore.groups.isEmpty { await proxyStore.refresh(activeProfile: profileStore.activeProfile) } }
+            .onChange(of: profileStore.activeProfile?.id) { _, _ in
+                Task { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
+            }
         }
     }
 
@@ -463,6 +466,9 @@ struct ProxiesView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
                     .padding(.bottom, 4)
+                localFallbackNote
+                    .padding(.horizontal)
+                    .padding(.bottom, 4)
                 ScrollViewReader { reader in
                     ScrollView {
                         LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
@@ -478,7 +484,7 @@ struct ProxiesView: View {
                             withAnimation { reader.scrollTo(target, anchor: .center) }
                         }
                     }
-                    .refreshable { await proxyStore.refresh() }
+                    .refreshable { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
                 }
             } else if proxyStore.groups.isEmpty && proxyStore.isLoading {
                 ProgressView()
@@ -486,7 +492,7 @@ struct ProxiesView: View {
             } else if searching {
                 ContentUnavailableView("没有匹配的节点", systemImage: "magnifyingglass", description: Text("换个关键词试试"))
             } else {
-                ContentUnavailableView("暂无代理组", systemImage: "globe", description: Text("请先在“订阅”页导入并激活一个订阅"))
+                noGroupsView
             }
         }
     }
@@ -501,11 +507,12 @@ struct ProxiesView: View {
             } else if visibleGroups.isEmpty && searching {
                 ContentUnavailableView("没有匹配的节点", systemImage: "magnifyingglass", description: Text("换个关键词试试"))
             } else if visibleGroups.isEmpty {
-                ContentUnavailableView("暂无代理组", systemImage: "globe", description: Text("请先在“订阅”页导入并激活一个订阅"))
+                noGroupsView
             } else {
                 ScrollViewReader { reader in
                     ScrollView {
                         LazyVStack(spacing: 12) {
+                            localFallbackNote
                             ForEach(visibleGroups) { group in
                                 groupSection(group, width: width)
                             }
@@ -518,9 +525,34 @@ struct ProxiesView: View {
                             withAnimation { reader.scrollTo(target, anchor: .center) }
                         }
                     }
-                    .refreshable { await proxyStore.refresh() }
+                    .refreshable { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
                 }
             }
+        }
+    }
+
+    /// The "no groups" empty state: the "import a subscription"
+    /// wording only applies when there genuinely is no active
+    /// profile. When a profile IS active but yields no groups (empty
+    /// subscription, unparsable file), say so instead of telling the
+    /// user to import one they already have.
+    @ViewBuilder
+    private var noGroupsView: some View {
+        if profileStore.activeProfile == nil {
+            ContentUnavailableView("暂无代理组", systemImage: "globe", description: Text("请先在“订阅”页导入并激活一个订阅"))
+        } else {
+            ContentUnavailableView("该订阅中没有代理组", systemImage: "globe", description: Text("当前订阅没有 proxies 或 proxy-groups，无法显示节点"))
+        }
+    }
+
+    /// Shown while the list comes from the local YAML (VPN off).
+    @ViewBuilder
+    private var localFallbackNote: some View {
+        if proxyStore.isLocalFallback {
+            Text("本地配置 · 未连接 VPN — 点按节点会记住选择，启动后自动应用")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -737,7 +769,7 @@ struct ProxiesView: View {
     // MARK: - Actions
 
     private func selectNode(_ node: ProxyNode, in group: ProxyGroup) async {
-        if let note = await proxyStore.select(node: node, in: group) {
+        if let note = await proxyStore.select(node: node, in: group, profileID: profileStore.activeProfile?.id) {
             showNotice(note)
         }
     }

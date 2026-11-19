@@ -41,7 +41,66 @@ final class ProxyStore: ObservableObject {
     /// True while the group list itself is loading (first load).
     @Published var isLoading = false
     @Published var lastError: String?
+    /// The reason the last VPN start attempt failed, if it failed.
+    /// Kept apart from lastError (which refresh/select also write)
+    /// so the Dashboard can show exactly why the play button did
+    /// nothing: start() can throw in prepare()/startVPNTunnel()
+    /// before the status ever leaves .disconnected, so without this
+    /// the card shows no spinner and no banner — just silence.
+    @Published var startError: String?
     @Published var lastUpdated: Date?
+
+    /// True when the group list on screen comes from the active
+    /// profile's LOCAL YAML instead of the core (VPN off — the core
+    /// has no config loaded, so proxy.watch/proxy.groups are empty).
+    /// The Proxies page shows a small "本地配置" note while this is
+    /// set; latency/delay tests stay unavailable until the VPN runs.
+    @Published var isLocalFallback = false
+
+    /// The profile store, linked by the app at startup (ConcordiOSApp):
+    /// the local fallback reads the active profile's YAML through it.
+    weak var profileStore: ProfileStore?
+
+    /// Node selections made while the VPN is off, persisted per
+    /// profile in UserDefaults as {profileID: {group: proxy}}.
+    /// Applied to the core by refresh() once it is reachable again.
+    /// Every successful live selection is recorded here too, so the
+    /// local fallback keeps showing the same pick after the tunnel
+    /// stops. The value is the proxy.select argument: a node name,
+    /// or "" to clear a url-test/fallback pin.
+    private let pendingSelectionsKey = "concord.pendingSelections"
+
+    private func loadPendingSelections() -> [String: [String: String]] {
+        guard let data = UserDefaults.standard.data(forKey: pendingSelectionsKey),
+              let decoded = try? JSONDecoder().decode([String: [String: String]].self, from: data) else { return [:] }
+        return decoded
+    }
+
+    private func savePendingSelections(_ all: [String: [String: String]]) {
+        if let data = try? JSONEncoder().encode(all) {
+            UserDefaults.standard.set(data, forKey: pendingSelectionsKey)
+        }
+    }
+
+    /// The remembered selection for one group, if any.
+    func pendingSelection(profileID: UUID, group: String) -> String? {
+        loadPendingSelections()[profileID.uuidString]?[group]
+    }
+
+    private func savePendingSelection(profileID: UUID, group: String, proxy: String) {
+        var all = loadPendingSelections()
+        all[profileID.uuidString, default: [:]][group] = proxy
+        savePendingSelections(all)
+    }
+
+    private func dropPendingSelection(profileID: UUID, group: String) {
+        var all = loadPendingSelections()
+        all[profileID.uuidString]?.removeValue(forKey: group)
+        if all[profileID.uuidString]?.isEmpty == true {
+            all.removeValue(forKey: profileID.uuidString)
+        }
+        savePendingSelections(all)
+    }
 
     let client: ConcordClient
     private var cancellables = Set<AnyCancellable>()
@@ -70,40 +129,130 @@ final class ProxyStore: ObservableObject {
     }
 
     @MainActor
-    func refresh() async {
+    func refresh(activeProfile: Profile? = nil) async {
         isLoading = true
         defer { isLoading = false }
         do {
-            // proxy.watch is the live table: the extension subscribes
-            // once at startup and rewrites snapshots/proxies.json on
-            // every change, so this is fresher than a one-shot
-            // proxy.groups call. Fall back to proxy.groups when the
-            // snapshot file is missing (tunnel never subscribed yet).
-            let result: ConcordProxyGroups
-            do {
-                result = try await client.proxyWatchSnapshot()
-            } catch {
-                result = try await client.proxyGroups()
-            }
-            let nodeTypes = Dictionary(uniqueKeysWithValues: result.nodes.map { ($0.name, $0) })
-            groups = result.groups.filter { !$0.hidden }.map { g in
-                ProxyGroup(
-                    name: g.name,
-                    type: g.type,
-                    nodes: (g.all ?? []).map { name in
-                        let info = nodeTypes[name]
-                        return ProxyNode(name: name, type: info?.type ?? "unknown", provider: info?.provider, latencyMs: latencies[name])
-                    },
-                    selectedNodeName: g.now,
-                    testUrl: g.testUrl,
-                    fixed: g.fixed,
-                    icon: g.icon
-                )
-            }
+            try await fetchCoreGroups()
             lastUpdated = Date()
             lastError = nil
+            isLocalFallback = false
+            // A selection made while the VPN was off is remembered in
+            // UserDefaults; now that the core is reachable, apply it.
+            if let profileID = activeProfile?.id {
+                await applyPendingSelections(profileID: profileID)
+            }
         } catch {
+            // Core unreachable (VPN off): fall back to the active
+            // profile's local YAML so the Proxies page still shows
+            // the subscription's groups and nodes. The live path
+            // above is untouched — this runs only when both core
+            // reads throw.
+            if let profile = activeProfile,
+               let local = profileStore?.localProxyGroups(for: profile),
+               loadLocalGroups(local, profileID: profile.id) {
+                lastUpdated = Date()
+                lastError = nil
+                return
+            }
             lastError = error.localizedDescription
+            isLocalFallback = false
+        }
+    }
+
+    /// One core read (proxy.watch snapshot, fallback proxy.groups),
+    /// shared by refresh() and the post-apply re-fetch.
+    private func fetchCoreGroups() async throws {
+        // proxy.watch is the live table: the extension subscribes
+        // once at startup and rewrites snapshots/proxies.json on
+        // every change, so this is fresher than a one-shot
+        // proxy.groups call. Fall back to proxy.groups when the
+        // snapshot file is missing (tunnel never subscribed yet).
+        let result: ConcordProxyGroups
+        do {
+            result = try await client.proxyWatchSnapshot()
+        } catch {
+            result = try await client.proxyGroups()
+        }
+        let nodeTypes = Dictionary(uniqueKeysWithValues: result.nodes.map { ($0.name, $0) })
+        groups = result.groups.filter { !$0.hidden }.map { g in
+            ProxyGroup(
+                name: g.name,
+                type: g.type,
+                nodes: (g.all ?? []).map { name in
+                    let info = nodeTypes[name]
+                    return ProxyNode(name: name, type: info?.type ?? "unknown", provider: info?.provider, latencyMs: latencies[name])
+                },
+                selectedNodeName: g.now,
+                testUrl: g.testUrl,
+                fixed: g.fixed,
+                icon: g.icon
+            )
+        }
+    }
+
+    /// Build the group list from the local parse. Returns false when
+    /// the parse has no groups at all (caller keeps the core error).
+    /// The remembered selection (if any) becomes the group's `now` /
+    /// `fixed`, so the pick the user made while off survives a
+    /// restart. No latency data exists offline — nodes show no delay.
+    private func loadLocalGroups(_ local: ProfileStore.LocalProxyGroups, profileID: UUID) -> Bool {
+        guard !local.groups.isEmpty else { return false }
+        let typeByName = Dictionary(uniqueKeysWithValues: local.nodes.map { ($0.name, $0.type) })
+        groups = local.groups.map { g in
+            let pending = pendingSelection(profileID: profileID, group: g.name)
+            return ProxyGroup(
+                name: g.name,
+                type: g.type,
+                nodes: g.nodeNames.map { name in
+                    ProxyNode(name: name, type: typeByName[name] ?? localBuiltinType(name), provider: nil, latencyMs: nil)
+                },
+                selectedNodeName: g.type == "select" ? pending : nil,
+                testUrl: g.testURL,
+                fixed: g.type == "select" ? nil : pending,
+                icon: ""
+            )
+        }
+        isLocalFallback = true
+        return true
+    }
+
+    /// Built-in pseudo-proxies keep their type offline; anything else
+    /// the file does not declare is "unknown" (the live path does the
+    /// same for nested-group members).
+    private func localBuiltinType(_ name: String) -> String {
+        switch name {
+        case "DIRECT", "REJECT", "REJECT-DROP", "PASS":
+            return name
+        default:
+            return "unknown"
+        }
+    }
+
+    /// Apply remembered off-VPN selections to the now-reachable core.
+    /// Entries for groups the core no longer has are dropped; entries
+    /// the core rejects are kept for the next refresh instead of
+    /// dropping the user's choice. A re-fetch follows when anything
+    /// changed, so `now`/`fixed` show what the core actually picked.
+    private func applyPendingSelections(profileID: UUID) async {
+        let pendings = loadPendingSelections()[profileID.uuidString] ?? [:]
+        guard !pendings.isEmpty else { return }
+        var changed = false
+        for (groupName, proxy) in pendings {
+            guard groups.contains(where: { $0.name == groupName }) else {
+                dropPendingSelection(profileID: profileID, group: groupName)
+                continue
+            }
+            do {
+                let result = try await client.proxySelect(group: groupName, proxy: proxy)
+                if result.changed { changed = true }
+                dropPendingSelection(profileID: profileID, group: groupName)
+            } catch {
+                continue
+            }
+        }
+        if changed {
+            try? await fetchCoreGroups()
         }
     }
 
@@ -114,28 +263,52 @@ final class ProxyStore: ObservableObject {
     ///   pinned node again clears the pin (proxy.select with "").
     /// - load-balance / relay / other: not selectable by hand.
     /// A successful change reloads the groups so `now` and `fixed`
-    /// show what the core actually picked.
+    /// show what the core actually picked. When the VPN is OFF the
+    /// core is unreachable: the choice is remembered (UserDefaults,
+    /// per profile) and applied when the tunnel connects, and the
+    /// local list updates immediately so the tap visibly takes
+    /// effect — the user picks a node first, then starts the VPN.
     @MainActor
-    func select(node: ProxyNode, in group: ProxyGroup) async -> String? {
+    func select(node: ProxyNode, in group: ProxyGroup, profileID: UUID? = nil) async -> String? {
         switch group.type {
         case "select":
-            return await applySelect(group: group, proxy: node.name)
+            return await applySelect(group: group, proxy: node.name, profileID: profileID)
         case "url-test", "fallback":
             let pinned = group.fixed == node.name
-            return await applySelect(group: group, proxy: pinned ? "" : node.name)
+            return await applySelect(group: group, proxy: pinned ? "" : node.name, profileID: profileID)
         default:
             return "该策略组（\(group.type)）不可手动选择"
         }
     }
 
     @MainActor
-    private func applySelect(group: ProxyGroup, proxy: String) async -> String? {
+    private func applySelect(group: ProxyGroup, proxy: String, profileID: UUID? = nil) async -> String? {
         do {
             let result = try await client.proxySelect(group: group.name, proxy: proxy)
+            // Record the live pick too, so the local fallback keeps
+            // showing it after the tunnel stops.
+            if let profileID {
+                savePendingSelection(profileID: profileID, group: group.name, proxy: proxy)
+            }
             if result.changed { await refresh() }
             lastError = nil
             return nil
         } catch {
+            if !isRunning, let profileID {
+                savePendingSelection(profileID: profileID, group: group.name, proxy: proxy)
+                groups = groups.map { g in
+                    guard g.name == group.name else { return g }
+                    var g = g
+                    if g.type == "select" {
+                        g.selectedNodeName = proxy.isEmpty ? nil : proxy
+                    } else {
+                        g.fixed = proxy.isEmpty ? nil : proxy
+                    }
+                    return g
+                }
+                lastError = nil
+                return nil
+            }
             lastError = error.localizedDescription
             return nil
         }
@@ -281,13 +454,16 @@ final class ProxyStore: ObservableObject {
             if TunnelManager.shared.isRunning {
                 await TunnelManager.shared.stop()
                 isRunning = false
+                startError = nil
             } else {
                 do {
                     try await TunnelManager.shared.start()
                     isRunning = true
                     lastError = nil
+                    startError = nil
                 } catch {
                     lastError = error.localizedDescription
+                    startError = error.localizedDescription
                 }
             }
             return
@@ -300,12 +476,15 @@ final class ProxyStore: ObservableObject {
                 lastError = error.localizedDescription
             }
             isRunning = false
+            startError = nil
         } else {
             do {
                 try await client.engineStart()
                 isRunning = true
+                startError = nil
             } catch {
                 lastError = error.localizedDescription
+                startError = error.localizedDescription
             }
         }
     }

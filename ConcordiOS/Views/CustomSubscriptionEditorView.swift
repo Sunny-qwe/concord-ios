@@ -26,9 +26,9 @@ struct CustomSubscriptionListView: View {
                         CustomSubscriptionEditorView(subscriptionID: sub.id)
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(sub.name).font(.system(size: 13))
+                            Text(sub.name).font(.system(size: 17, weight: .semibold))
                             Text("\(sub.groups.count) 分组 · \(sub.rules.count) 规则 · \(sub.proxyProviders.count + sub.ruleProviders.count) 提供方")
-                                .font(.system(size: 10))
+                                .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -132,9 +132,9 @@ struct CustomSubscriptionEditorView: View {
                     Button { editingGroup = group } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(group.name).font(.system(size: 13))
+                                Text(group.name).font(.system(size: 17, weight: .semibold))
                                 Text("\(group.type) · \(group.members.count) 成员\(group.useProviders.isEmpty ? "" : " · 用 \(group.useProviders.joined(separator: ", "))")")
-                                    .font(.system(size: 10))
+                                    .font(.system(size: 13))
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -161,11 +161,11 @@ struct CustomSubscriptionEditorView: View {
                 ForEach(sub.dialers) { dialer in
                     Button { editingDialer = dialer } label: {
                         HStack {
-                            Text(dialer.proxy).font(.system(size: 13))
+                            Text(dialer.proxy).font(.system(size: 17, weight: .semibold))
                             Image(systemName: "arrow.right")
-                                .font(.system(size: 10))
+                                .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
-                            Text(dialer.dialer).font(.system(size: 13))
+                            Text(dialer.dialer).font(.system(size: 17, weight: .semibold))
                             Spacer()
                         }
                     }
@@ -186,9 +186,9 @@ struct CustomSubscriptionEditorView: View {
                     Button { editingProxyProvider = provider } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(provider.name).font(.system(size: 13))
+                                Text(provider.name).font(.system(size: 17, weight: .semibold))
                                 Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
-                                    .font(.system(size: 10))
+                                    .font(.system(size: 13))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
@@ -212,9 +212,9 @@ struct CustomSubscriptionEditorView: View {
                     Button { editingRuleProvider = provider } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(provider.name).font(.system(size: 13))
+                                Text(provider.name).font(.system(size: 17, weight: .semibold))
                                 Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
-                                    .font(.system(size: 10))
+                                    .font(.system(size: 13))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }

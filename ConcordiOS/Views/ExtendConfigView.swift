@@ -16,7 +16,23 @@ struct ExtendConfigView: View {
     @State private var message: String?
     @State private var isApplying = false
 
-    private var profile: Profile? { profileStore.activeProfile }
+    /// The profile this page edits. nil = the active profile (the
+    /// old call sites). Passed by the Profiles page's context menu
+    /// so 扩展 can target a non-active profile.
+    let targetProfile: Profile?
+
+    init(profile: Profile? = nil) {
+        self.targetProfile = profile
+    }
+
+    private var profile: Profile? { targetProfile ?? profileStore.activeProfile }
+
+    /// True only when the target IS the active profile — the only
+    /// case where 立即应用 can apply live.
+    private var isTargetActive: Bool {
+        guard let profile else { return false }
+        return profile.id == profileStore.activeProfile?.id
+    }
 
     private var settings: ExtendSettings {
         draft ?? (profile.map { extendStore.settings(for: $0.id) } ?? ExtendSettings())
@@ -37,9 +53,9 @@ struct ExtendConfigView: View {
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(mode.label).font(.system(size: 13))
+                                Text(mode.label).font(.system(size: 17, weight: .semibold))
                                 Text(mode.description)
-                                    .font(.system(size: 10))
+                                    .font(.system(size: 13))
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -60,9 +76,9 @@ struct ExtendConfigView: View {
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("附加规则").font(.system(size: 13))
+                                Text("附加规则").font(.system(size: 17, weight: .semibold))
                                 Text("在当前配置的规则之前先生效，扩展合并进配置")
-                                    .font(.system(size: 10))
+                                    .font(.system(size: 13))
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -78,7 +94,7 @@ struct ExtendConfigView: View {
                         }
                     }
                     Text("匹配目标会作为最后一条 MATCH 规则写进当前配置；留空则跟随配置自身的最后一条规则。")
-                        .font(.system(size: 10))
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
             } else {
@@ -88,7 +104,7 @@ struct ExtendConfigView: View {
                         set: { newValue in setDraft { $0.scriptEnabled = newValue } }
                     ))
                     Text("脚本定义 function main(config)，返回改写后的配置对象。config 是核心解析后的当前配置。运行需要核心可达（启动 VPN，或示例模式）。")
-                        .font(.system(size: 10))
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
                 Section("脚本") {
@@ -122,9 +138,14 @@ struct ExtendConfigView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                if let profile, !isTargetActive {
+                    Text("正在编辑「\(profile.name)」的扩展配置；立即应用只对当前已激活的订阅生效，切换到该订阅后才能立即应用。设置已保存。")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
                 if profile == nil {
                     Text("没有已激活的订阅：先导入并切换一个订阅。")
-                        .font(.system(size: 10))
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
             } footer: {
@@ -166,6 +187,14 @@ struct ExtendConfigView: View {
     private func applyNow() async {
         saveDraft()
         guard let profile else { return }
+        // 立即应用 only applies when the target IS the active
+        // profile: activeProfileYAML / saveActiveProfileYAML /
+        // runScript are all active-profile-scoped. A non-active
+        // target keeps its saved settings; the note above says so.
+        guard isTargetActive else {
+            message = "「\(profile.name)」不是当前已激活的订阅：切换到该订阅后才能立即应用。扩展设置已保存。"
+            return
+        }
         let current = settings
         isApplying = true
         defer { isApplying = false }

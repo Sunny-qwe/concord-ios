@@ -459,7 +459,27 @@ struct DashboardView: View {
     @ViewBuilder
     private func cardView(for id: DashboardCardID) -> some View {
         switch id {
-        case .status: if showStatus { statusCard }
+        case .status:
+            if showStatus {
+                VStack(alignment: .leading, spacing: 8) {
+                    statusCard
+                    // Start failure (v0.2.31): start() can throw in
+                    // prepare()/startVPNTunnel() before the status
+                    // ever leaves .disconnected, so without this the
+                    // play button shows no spinner and no banner —
+                    // just silence. Show the reason under the card.
+                    if let startError = proxyStore.startError, !proxyStore.isRunning {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .foregroundStyle(.red)
+                            Text("启动失败：\(startError)")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.red)
+                        }
+                        .padding(.horizontal, 4)
+                    }
+                }
+            }
         case .speed: if showSpeed { speedCard }
         case .mode: if showMode { modeCard }
         case .vpn: if showVpn { vpnCard }
@@ -1015,7 +1035,10 @@ struct DashboardView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("VPN 意外断开")
                             .font(.system(size: 13, weight: .semibold))
-                        Text(tunnelManager.lastError ?? "隧道被系统关闭或核心停止响应。")
+                        // The extension's startup diagnostic (if any)
+                        // names the exact stage where the start died;
+                        // otherwise fall back to the app-side error.
+                        Text(tunnelManager.lastStartupDiagnostic() ?? tunnelManager.lastError ?? "隧道被系统关闭或核心停止响应。")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }

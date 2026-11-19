@@ -58,7 +58,12 @@ final class TunnelManager: ObservableObject {
             forName: .NEVPNStatusDidChange, object: nil, queue: .main
         ) { [weak self] notification in
             guard let self,
-                  let connection = notification.object as? NEVPNConnection else { return }
+                  let connection = notification.object as? NEVPNConnection,
+                  // FlClash TunnelCoordinator.handleTunnelStatusNotification:
+                  // ignore status changes from OTHER apps' VPNs (the
+                  // user also runs Egern) — only our manager's
+                  // connection may move our status.
+                  (connection.manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == Self.providerBundleID else { return }
             let old = self.status
             let new = connection.status
             self.status = new
@@ -81,6 +86,13 @@ final class TunnelManager: ObservableObject {
     }
 
     /// Load the saved manager, or create + save one on first launch.
+    /// FlClash TunnelManagerStore.isManagedManager: pick the manager
+    /// whose providerBundleIdentifier is OURS — loadAllFromPreferences
+    /// returns EVERY VPN configuration on the device, and taking
+    /// `.first` could return another app's manager (the user also
+    /// runs Egern): startVPNTunnel on a disabled/foreign manager
+    /// throws or starts the wrong tunnel, with nothing shown in the
+    /// UI. That is the most likely cause of the silent start failure.
     @MainActor
     func prepare() async throws {
         if manager != nil { return }
@@ -93,7 +105,7 @@ final class TunnelManager: ObservableObject {
                 }
             }
         }
-        if let existing = managers.first {
+        if let existing = managers.first(where: { ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == Self.providerBundleID }) {
             manager = existing
         } else {
             let created = NETunnelProviderManager()
@@ -121,7 +133,18 @@ final class TunnelManager: ObservableObject {
 
     /// Start the system VPN. The extension's startTunnel boots the
     /// core; a failure there surfaces as a status change to
-    /// .disconnected (the error itself is logged by the extension).
+    /// .disconnected (the error itself is logged by the extension and
+    /// written to vpn-startup.json — see readStartupDiagnostic).
+    /// The pre-start sequence mirrors FlClash (NEHelper.start /
+    /// TunnelCoordinator.reconcileRunningTunnel):
+    ///  * wait out a disconnect in progress (up to 5 s) — starting
+    ///    mid-disconnect throws;
+    ///  * re-assert isEnabled + disconnectOnSleep=false and
+    ///    save + reload preferences before every start — a manager
+    ///    toggled off in Settings otherwise makes startVPNTunnel
+    ///    throw .configurationDisabled with nothing shown in the UI;
+    ///  * on a .configurationInvalid/.configurationStale error, drop
+    ///    the cached manager, reload it fresh and retry once.
     /// Before starting, the On-Demand rules are (re)installed from
     /// the store (v0.2.26 Batch F): On-Demand is on by default, so
     /// the system auto-reconnects after a network loss or handover,
@@ -137,13 +160,114 @@ final class TunnelManager: ObservableObject {
         }
         userInitiatedStop = false
         unexpectedDisconnect = false
+        if manager.connection.status == .disconnecting {
+            try await waitForStableStatus(manager: manager)
+        }
+        if [.connecting, .connected, .reasserting].contains(manager.connection.status) {
+            return
+        }
+        try await armManagerForStart(manager)
         _ = await OnDemandStore.shared.installRulesIfNeeded()
         do {
             try manager.connection.startVPNTunnel()
         } catch {
-            lastError = error.localizedDescription
-            throw error
+            guard isRetryablePreferenceError(error) else {
+                lastError = error.localizedDescription
+                throw error
+            }
+            // Stale/invalid saved configuration: reload it fresh and
+            // retry once (FlClash startWithPreferenceRetry).
+            self.manager = nil
+            try await prepare()
+            guard let retryManager = self.manager else {
+                lastError = error.localizedDescription
+                throw TunnelError.noManager
+            }
+            try await armManagerForStart(retryManager)
+            do {
+                try retryManager.connection.startVPNTunnel()
+            } catch {
+                lastError = error.localizedDescription
+                throw error
+            }
         }
+    }
+
+    /// isEnabled + disconnectOnSleep + save + reload, the FlClash
+    /// pre-start arming. A save failure throws (the start must not
+    /// proceed on a manager the system will reject); a reload
+    /// failure is tolerated — the in-memory manager is still usable.
+    @MainActor
+    private func armManagerForStart(_ manager: NETunnelProviderManager) async throws {
+        manager.isEnabled = true
+        (manager.protocolConfiguration as? NETunnelProviderProtocol)?.disconnectOnSleep = false
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            manager.saveToPreferences { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+        try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            manager.loadFromPreferences { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+        if let connection = manager.connection {
+            status = connection.status
+        }
+    }
+
+    /// FlClash NEHelper.waitForStableStatus: up to 5 s for a
+    /// disconnect in progress to settle before starting.
+    private func waitForStableStatus(manager: NETunnelProviderManager) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        var status = manager.connection.status
+        while status == .disconnecting && Date() < deadline {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            status = manager.connection.status
+        }
+        guard status != .disconnecting else {
+            throw TunnelError.transitionTimedOut
+        }
+    }
+
+    /// FlClash NEHelper/TunnelManagerStore: only .configurationInvalid
+    /// and .configurationStale are worth retrying with a fresh load.
+    private func isRetryablePreferenceError(_ error: Error) -> Bool {
+        let error = error as NSError
+        guard error.domain == NEVPNErrorDomain,
+              let code = NEVPNError.Code(rawValue: error.code) else { return false }
+        switch code {
+        case .configurationInvalid, .configurationStale:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The extension's startup stages (FlClash TunnelStartupDiagnostic):
+    /// vpn-startup.json in the App Group, fresh within 180 s.
+    /// Returns a one-line "stage: detail" string, or nil when there is
+    /// no recent startup record — used by the Dashboard's
+    /// unexpected-disconnect banner so an extension-side failure
+    /// shows its stage instead of a generic message.
+    func lastStartupDiagnostic() -> String? {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
+              let data = try? Data(contentsOf: container.appendingPathComponent("vpn-startup.json")),
+              let record = try? JSONDecoder().decode(TunnelStartupDiagnosticRecord.self, from: data),
+              Date().timeIntervalSince(record.date) < 180 else { return nil }
+        if let detail = record.detail, !detail.isEmpty {
+            return "VPN \(record.stage)：\(detail)"
+        }
+        return "VPN 阶段：\(record.stage)"
     }
 
     /// Stop the system VPN. The extension's stopTunnel tears down the
@@ -221,6 +345,7 @@ enum TunnelError: LocalizedError {
     case noManager
     case notRunning
     case noReply
+    case transitionTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -230,6 +355,18 @@ enum TunnelError: LocalizedError {
             return "VPN 隧道未运行：请先在仪表盘启动 VPN，再查看实时数据"
         case .noReply:
             return "扩展未回复（隧道可能正在启动或已断开）"
+        case .transitionTimedOut:
+            return "VPN 状态切换超时，请稍后再试"
         }
     }
+}
+
+/// One record of the extension's vpn-startup.json (written by
+/// PacketTunnelProvider, read by TunnelManager.lastStartupDiagnostic).
+/// Shape mirrors FlClash's TunnelStartupDiagnostic.
+struct TunnelStartupDiagnosticRecord: Codable {
+    let id: String
+    let stage: String
+    let detail: String?
+    let date: Date
 }

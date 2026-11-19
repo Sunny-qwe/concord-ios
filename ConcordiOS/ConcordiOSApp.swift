@@ -30,11 +30,15 @@ struct ConcordiOSApp: App {
     init() {
         let client = ConcordClient()
         _client = StateObject(wrappedValue: client)
-        _proxyStore = StateObject(wrappedValue: ProxyStore(client: client))
+        let proxyStore = ProxyStore(client: client)
+        _proxyStore = StateObject(wrappedValue: proxyStore)
         _trafficStore = StateObject(wrappedValue: TrafficStore(client: client))
         _connectionStore = StateObject(wrappedValue: ConnectionStore(client: client))
         _logStore = StateObject(wrappedValue: LogStore(client: client))
         let profileStore = ProfileStore(client: client)
+        // The Proxies page falls back to the active profile's local
+        // YAML when the VPN is off; ProxyStore reads it through here.
+        proxyStore.profileStore = profileStore
         _profileStore = StateObject(wrappedValue: profileStore)
         _ruleStore = StateObject(wrappedValue: RuleStore(client: client))
         _settingsStore = StateObject(wrappedValue: SettingsStore(client: client))

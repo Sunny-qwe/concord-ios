@@ -21,6 +21,12 @@ struct UnifiedImportView: View {
     @State private var showLegacyAdd = false
     @State private var showScanImport = false
     @State private var clipboardNotice: String?
+    /// Read/pick failure from the file importer, shown inline
+    /// instead of silently swallowing it (a .yaml picked from the
+    /// Files app lives outside the sandbox: without the
+    /// security-scope dance Data(contentsOf:) fails and the old
+    /// `try?` dropped the failure without a trace).
+    @State private var fileReadError: String?
     /// Text handed in by the QR scanner (ProfilesView): filled into
     /// the field and imported automatically when `autoImport` is set.
     private let initialText: String
@@ -65,6 +71,12 @@ struct UnifiedImportView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     actionsCard
+                    if let fileReadError {
+                        Text(fileReadError)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     tipText
                 }
                 .padding(16)
@@ -90,9 +102,29 @@ struct UnifiedImportView: View {
                 }
             }
             .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.yaml, UTType.plainText]) { result in
-                if case .success(let url) = result,
-                   let data = try? Data(contentsOf: url) {
-                    Task { await importer.importFileData(data, fileName: url.lastPathComponent) }
+                switch result {
+                case .success(let url):
+                    // Files-app URLs are security-scoped: the app
+                    // may only read them inside
+                    // startAccessingSecurityScopedResource() (same
+                    // dance as BackupStore.restore and
+                    // MitmScriptsView.importFile). Without it,
+                    // Data(contentsOf:) fails for files outside the
+                    // sandbox and the import silently never ran.
+                    guard url.startAccessingSecurityScopedResource() else {
+                        fileReadError = "无法读取该文件：系统拒绝访问，请重新选择"
+                        return
+                    }
+                    defer { url.stopAccessingSecurityScopedResource() }
+                    do {
+                        let data = try Data(contentsOf: url)
+                        fileReadError = nil
+                        Task { await importer.importFileData(data, fileName: url.lastPathComponent) }
+                    } catch {
+                        fileReadError = "读取文件失败：\(error.localizedDescription)"
+                    }
+                case .failure(let error):
+                    fileReadError = "未选择文件：\(error.localizedDescription)"
                 }
             }
             .sheet(isPresented: $showLegacyAdd) {
@@ -158,7 +190,7 @@ struct UnifiedImportView: View {
             }
             HStack(spacing: 8) {
                 TextField("粘贴订阅链接或节点链接", text: $importText)
-                    .font(.system(size: 15))
+                    .font(.system(size: 17))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .lineLimit(1)
@@ -191,11 +223,11 @@ struct UnifiedImportView: View {
             .padding(.vertical, 10)
             .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 14))
             Text("支持订阅链接（http / https）、ss / vmess / trojan / vless 等节点链接，或整段 YAML 配置。")
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
             if let notice = clipboardNotice {
                 Text(notice)
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                     .foregroundStyle(ConcordTheme.accent)
             }
         }
@@ -222,14 +254,14 @@ struct UnifiedImportView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
             TextField("例如：我的订阅", text: $profileName)
-                .font(.system(size: 15))
+                .font(.system(size: 17))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 14))
             Text("不填就用链接的域名当名字；节点链接会生成「我的节点」。")
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
         }
         .concordCard()
@@ -275,7 +307,7 @@ struct UnifiedImportView: View {
     private var resultsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("导入结果")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
             ForEach(importer.results) { result in
                 HStack(alignment: .top, spacing: 10) {
@@ -291,7 +323,7 @@ struct UnifiedImportView: View {
                                 .background(ConcordTheme.accent.opacity(0.12), in: Capsule())
                                 .foregroundStyle(ConcordTheme.accent)
                             Text(result.line)
-                                .font(.system(size: 10))
+                                .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
@@ -318,7 +350,7 @@ struct UnifiedImportView: View {
                         .foregroundStyle(ConcordTheme.accent)
                         .frame(width: 24)
                     Text("扫码导入")
-                        .font(.system(size: 15))
+                        .font(.system(size: 17))
                         .foregroundStyle(.primary)
                     Spacer()
                     Image(systemName: "chevron.right")
@@ -341,7 +373,7 @@ struct UnifiedImportView: View {
                         .foregroundStyle(ConcordTheme.accent)
                         .frame(width: 24)
                     Text("从文件导入")
-                        .font(.system(size: 15))
+                        .font(.system(size: 17))
                         .foregroundStyle(.primary)
                     Spacer()
                     Image(systemName: "chevron.right")
@@ -358,7 +390,7 @@ struct UnifiedImportView: View {
                         .foregroundStyle(ConcordTheme.accent)
                         .frame(width: 24)
                     Text("使用旧版添加方式")
-                        .font(.system(size: 15))
+                        .font(.system(size: 17))
                         .foregroundStyle(.primary)
                     Spacer()
                     Image(systemName: "chevron.right")
@@ -374,7 +406,7 @@ struct UnifiedImportView: View {
 
     private var tipText: some View {
         Text("导入成功后会自动切换到这个配置，去仪表盘点播放键启动即可；首次安装需先在系统设置里信任开发者证书。")
-            .font(.system(size: 12))
+            .font(.system(size: 13))
             .foregroundStyle(.secondary)
     }
 }

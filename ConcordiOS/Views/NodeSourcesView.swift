@@ -76,10 +76,10 @@ struct NodeSourcesView: View {
                     ForEach(section.nodes) { node in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(node.name).font(.system(size: 13))
+                                Text(node.name).font(.system(size: 17, weight: .semibold))
                                 if !node.type.isEmpty {
                                     Text(node.type)
-                                        .font(.system(size: 10))
+                                        .font(.system(size: 13))
                                         .foregroundStyle(.secondary)
                                 }
                             }

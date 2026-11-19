@@ -71,7 +71,7 @@ struct ScanImportView: View {
                     cornerMarks
                 }
             Text(invalidHint ? "二维码不是订阅链接或节点链接" : "将订阅或节点二维码放入框内")
-                .font(.system(size: 14))
+                .font(.system(size: 13))
                 .foregroundStyle(invalidHint ? .red : .white)
                 .padding(.top, 20)
             Button {
@@ -111,7 +111,7 @@ struct ScanImportView: View {
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.white)
             Text("请在系统「设置 → Concord → 相机」中允许访问相机，然后返回这里重新扫码。也可以直接粘贴链接导入，不用扫码。")
-                .font(.system(size: 14))
+                .font(.system(size: 13))
                 .foregroundStyle(.white.opacity(0.8))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)

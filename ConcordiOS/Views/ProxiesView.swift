@@ -182,44 +182,46 @@ struct ProxiesView: View {
 
     // MARK: - Top bar
 
-    /// One capsule holding search + bolt + ⋯ (FlClash TonalButtonGroup:
-    /// the bar groups its actions into a single pill; the bolt only
-    /// shows in tab style, where it tests the current group). The
-    /// search is a magnifier button that presents the search field;
-    /// there is no separate locate button in the bar (FlClash folds
-    /// it into the ⋯ menu) — re-tapping the active group pill scrolls
-    /// to the selected node instead.
+    /// FlClash's bar, 1:1 (lib/ui/scaffold/scaffold_actions.dart):
+    /// the first two actions sit in ONE TonalButtonGroup pill, and
+    /// the ⋯ is a separate standalone button. TonalButtonSize.bar =
+    /// 44pt buttons, 24pt glyphs; barButtonGap = 8pt between the pill
+    /// and the ⋯ circle; the fill is the raised surface (white in
+    /// light mode) — NOT secondarySystemBackground, which is the same
+    /// colour as the page and renders invisible. No dividers between
+    /// the grouped buttons. The bolt only shows in tab style, where
+    /// it tests the current group; the search is a magnifier button
+    /// that presents the search field. There is no separate locate
+    /// button in the bar (FlClash folds it into the ⋯ menu) —
+    /// re-tapping the active group pill scrolls to the selected node.
     private var topBarCapsule: some View {
-        HStack(spacing: 0) {
-            Button { isSearching = true } label: {
-                Image(systemName: "magnifyingglass")
-                    .frame(width: 36, height: 36)
+        HStack(spacing: 8) {
+            HStack(spacing: 0) {
+                Button { isSearching = true } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 24, weight: .semibold))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("搜索")
+                if styleStore.style == .tab {
+                    topBarBoltButton(for: selectedGroup)
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("搜索")
-            capsuleDivider
-            if styleStore.style == .tab {
-                topBarBoltButton(for: selectedGroup)
-                capsuleDivider
-            }
+            .background(ConcordTheme.cardBackground, in: Capsule())
             Button { showMoreMenu = true } label: {
                 Image(systemName: "ellipsis")
                     .rotationEffect(.degrees(90))
-                    .frame(width: 36, height: 36)
+                    .font(.system(size: 24, weight: .semibold))
+                    .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("更多")
+            .background(ConcordTheme.cardBackground, in: Circle())
             .popover(isPresented: $showMoreMenu, attachmentAnchor: .point(.bottom), arrowEdge: .top) {
                 moreMenuPopover
             }
         }
-        .background(Color(.secondarySystemBackground), in: Capsule())
-    }
-
-    private var capsuleDivider: some View {
-        Rectangle()
-            .fill(Color(.separator))
-            .frame(width: 1, height: 20)
     }
 
     /// The bolt: in tab style it tests the current group (FlClash
@@ -232,10 +234,11 @@ struct ProxiesView: View {
         } label: {
             if testing {
                 ProgressView()
-                    .frame(width: 36, height: 36)
+                    .frame(width: 44, height: 44)
             } else {
                 Image(systemName: "bolt.fill")
-                    .frame(width: 36, height: 36)
+                    .font(.system(size: 24, weight: .semibold))
+                    .frame(width: 44, height: 44)
             }
         }
         .buttonStyle(.plain)

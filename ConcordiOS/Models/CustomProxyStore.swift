@@ -101,7 +101,18 @@ struct CustomProxy: Codable, Equatable, Identifiable {
 final class CustomProxyStore: ObservableObject {
     @Published var proxies: [CustomProxy] = []
     /// Per-group filter overrides: group name -> filter expression.
+    /// Per-group filter overrides: group name -> filter expression.
     @Published var filterOverrides: [String: String] = [:]
+
+    /// Full node definitions added from the 代理 page ("添加到本地
+    /// 节点", FlClash addToLocalProxies): the definition as the core
+    /// wrote it (proxy.definition), kept whole — ws-opts, grpc-opts,
+    /// reality-opts, flow, alpn — so the baked node behaves exactly
+    /// like the original. The form proxies above are a subset (name /
+    /// server / port / uuid / password / cipher / tls / sni /
+    /// network / udp) and cannot express those keys, so definitions
+    /// live here instead of being squeezed into CustomProxy.
+    @Published var rawProxies: [JSONValue] = []
 
     static let beginMarker = "# concord-ios 自定义代理 开始"
     static let endMarker = "# concord-ios 自定义代理 结束"
@@ -112,6 +123,10 @@ final class CustomProxyStore: ObservableObject {
 
     private var filtersURL: URL? {
         ConfigStore.sharedFileURL(name: ConfigStore.filterOverridesFileName)
+    }
+
+    private var rawProxiesURL: URL? {
+        ConfigStore.sharedFileURL(name: ConfigStore.rawProxiesFileName)
     }
 
     init() { load() }
@@ -127,6 +142,11 @@ final class CustomProxyStore: ObservableObject {
            let decoded = try? JSONDecoder().decode([String: String].self, from: data) {
             filterOverrides = decoded
         }
+        if let url = rawProxiesURL,
+           let data = try? Data(contentsOf: url),
+           let decoded = try? JSONDecoder().decode([JSONValue].self, from: data) {
+            rawProxies = decoded
+        }
     }
 
     func save() {
@@ -138,6 +158,19 @@ final class CustomProxyStore: ObservableObject {
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? data.write(to: url, options: .atomic)
         }
+        if let url = rawProxiesURL, let data = try? JSONEncoder().encode(rawProxies) {
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
+    /// Bake whatever is stored on disk right now (form proxies +
+    /// raw definitions) into `text`. Every bake path must use this —
+    /// a bake that only knew the form proxies would silently drop
+    /// the raw definitions from the profile.
+    static func bakeCurrent(into text: String) -> String {
+        let store = CustomProxyStore()
+        return bakeProxies(store.proxies, raw: store.rawProxies, into: text)
     }
 
     /// Insert (or re-insert) the custom proxies into a profile's
@@ -145,19 +178,20 @@ final class CustomProxyStore: ObservableObject {
     /// then the current list is written right after the `proxies:`
     /// line. When the profile has no `proxies:` key, or the list is
     /// empty, the text is returned with any stale block removed.
-    static func bakeProxies(_ proxies: [CustomProxy], into text: String) -> String {
+    static func bakeProxies(_ proxies: [CustomProxy], raw rawProxies: [JSONValue] = [], into text: String) -> String {
         var lines = text.components(separatedBy: "\n")
         // Remove a previously baked block, if any.
         if let begin = lines.firstIndex(of: beginMarker),
            let end = lines.firstIndex(of: endMarker), end >= begin {
             lines.removeSubrange(begin...end)
         }
-        guard !proxies.isEmpty else { return lines.joined(separator: "\n") }
+        guard !proxies.isEmpty || !rawProxies.isEmpty else { return lines.joined(separator: "\n") }
         guard let proxiesIndex = lines.firstIndex(where: { $0 == "proxies:" || $0.hasPrefix("proxies: ") }) else {
             return lines.joined(separator: "\n")
         }
         var block: [String] = [beginMarker]
         for proxy in proxies { block.append(contentsOf: proxy.yamlLines()) }
+        for definition in rawProxies { block.append(contentsOf: YAMLValue.proxyItemLines(for: definition, indent: 2)) }
         block.append(endMarker)
         lines.insert(contentsOf: block, at: proxiesIndex + 1)
         return lines.joined(separator: "\n")

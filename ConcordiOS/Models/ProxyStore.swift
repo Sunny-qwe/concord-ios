@@ -21,13 +21,25 @@ struct ProxyGroup: Identifiable {
     var nodes: [ProxyNode]
     var selectedNodeName: String?
     var testUrl: String
+    /// Manual override for url-test / fallback groups (Clash
+    /// `fixed`): the node pinned as 首选； nil/"" = the pick is
+    /// computed by the group itself.
+    var fixed: String?
+    /// Group icon from the profile (URL or short text); "" = none,
+    /// the list header falls back to the name's first character.
+    var icon: String
 }
 
 final class ProxyStore: ObservableObject {
     @Published var isRunning = false
     @Published var groups: [ProxyGroup] = []
     @Published var latencies: [String: Int32] = [:]
-    @Published var isTesting = false
+    /// Group names with a delay test in flight (per-group spinners).
+    @Published var testingGroups: Set<String> = []
+    /// True while any delay test runs.
+    var isTesting: Bool { !testingGroups.isEmpty }
+    /// True while the group list itself is loading (first load).
+    @Published var isLoading = false
     @Published var lastError: String?
     @Published var lastUpdated: Date?
 
@@ -59,6 +71,8 @@ final class ProxyStore: ObservableObject {
 
     @MainActor
     func refresh() async {
+        isLoading = true
+        defer { isLoading = false }
         do {
             // proxy.watch is the live table: the extension subscribes
             // once at startup and rewrites snapshots/proxies.json on
@@ -81,7 +95,9 @@ final class ProxyStore: ObservableObject {
                         return ProxyNode(name: name, type: info?.type ?? "unknown", provider: info?.provider, latencyMs: latencies[name])
                     },
                     selectedNodeName: g.now,
-                    testUrl: g.testUrl
+                    testUrl: g.testUrl,
+                    fixed: g.fixed,
+                    icon: g.icon
                 )
             }
             lastUpdated = Date()
@@ -91,16 +107,37 @@ final class ProxyStore: ObservableObject {
         }
     }
 
+    /// Select a node (FlClash card.dart selectGroupProxy). Returns a
+    /// notice when the group cannot be chosen by hand, else nil.
+    /// - Selector: tap selects the node.
+    /// - url-test / fallback: tap pins the node as 首选； tapping the
+    ///   pinned node again clears the pin (proxy.select with "").
+    /// - load-balance / relay / other: not selectable by hand.
+    /// A successful change reloads the groups so `now` and `fixed`
+    /// show what the core actually picked.
     @MainActor
-    func select(node: ProxyNode, in group: ProxyGroup) async {
+    func select(node: ProxyNode, in group: ProxyGroup) async -> String? {
+        switch group.type {
+        case "select":
+            return await applySelect(group: group, proxy: node.name)
+        case "url-test", "fallback":
+            let pinned = group.fixed == node.name
+            return await applySelect(group: group, proxy: pinned ? "" : node.name)
+        default:
+            return "该策略组（\(group.type)）不可手动选择"
+        }
+    }
+
+    @MainActor
+    private func applySelect(group: ProxyGroup, proxy: String) async -> String? {
         do {
-            let result = try await client.proxySelect(group: group.name, proxy: node.name)
-            if result.changed, let index = groups.firstIndex(where: { $0.id == group.id }) {
-                groups[index].selectedNodeName = node.name
-            }
+            let result = try await client.proxySelect(group: group.name, proxy: proxy)
+            if result.changed { await refresh() }
             lastError = nil
+            return nil
         } catch {
             lastError = error.localizedDescription
+            return nil
         }
     }
 
@@ -112,65 +149,71 @@ final class ProxyStore: ObservableObject {
     /// sequential delay.test calls — the same results, just slower.
     @MainActor
     func testLatency() async {
-        guard !isTesting else { return }
-        isTesting = true
-        defer { isTesting = false }
-        if client.mode == .live {
-            let names = allNodes.filter { $0.type != "DIRECT" }.map { $0.name }
-            if !names.isEmpty {
-                do {
-                    _ = try await client.delayRunStart(proxies: names)
-                    var polls = 0
-                    while polls < 120, !Task.isCancelled {
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                        polls += 1
-                        do {
-                            let snapshot = try await client.delayRunPoll()
-                            for result in snapshot.results {
-                                latencies[result.name] = result.value
-                            }
-                            applyLatencies()
-                            if snapshot.done {
-                                lastError = nil
-                                return
-                            }
-                        } catch is TunnelError {
-                            // The extension has not written the run file
-                            // yet — keep polling, do not fail.
-                            continue
-                        }
-                    }
-                    // The run is still going (or its file never appeared):
-                    // keep the partial results and let the next test
-                    // start a fresh run.
-                    lastError = nil
-                    return
-                } catch {
-                    // delay.run failed to start — fall through to the
-                    // sequential delay.test loop below.
-                }
-            }
-        }
+        var nodes: [(name: String, url: String?)] = []
         for group in groups {
             for node in group.nodes where node.type != "DIRECT" {
-                do {
-                    let result = try await client.delayTest(proxy: node.name)
-                    latencies[node.name] = result.value
-                } catch {
-                    latencies[node.name] = -2
+                nodes.append((name: node.name, url: group.testUrl.isEmpty ? nil : group.testUrl))
+            }
+        }
+        await runLatencyTest(nodes: nodes, groupNames: Set(groups.map { $0.name }), batchURL: nil)
+    }
+
+    /// Batch latency test for one group only (the bolt on a group
+    /// header, or the top bolt in tab style, which tests the current
+    /// group). Same batch/sequential logic as the all-groups test.
+    @MainActor
+    func testLatency(group: ProxyGroup) async {
+        await runLatencyTest(nodes: group.nodes.filter { $0.type != "DIRECT" }.map { (name: $0.name, url: group.testUrl) }, groupNames: [group.name], batchURL: group.testUrl.isEmpty ? nil : group.testUrl)
+    }
+
+    @MainActor
+    private func runLatencyTest(nodes: [(name: String, url: String?)], groupNames: Set<String>, batchURL: String?) async {
+        guard !nodes.isEmpty, testingGroups.isDisjoint(with: groupNames) else { return }
+        testingGroups.formUnion(groupNames)
+        defer { testingGroups.subtract(groupNames) }
+        if client.mode == .live {
+            let names = nodes.map { $0.name }
+            do {
+                _ = try await client.delayRunStart(proxies: names, url: batchURL)
+                var polls = 0
+                while polls < 120, !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    polls += 1
+                    do {
+                        let snapshot = try await client.delayRunPoll()
+                        for result in snapshot.results {
+                            latencies[result.name] = result.value
+                        }
+                        applyLatencies()
+                        if snapshot.done {
+                            lastError = nil
+                            return
+                        }
+                    } catch is TunnelError {
+                        // The extension has not written the run file
+                        // yet — keep polling, do not fail.
+                        continue
+                    }
                 }
+                // The run is still going (or its file never appeared):
+                // keep the partial results and let the next test
+                // start a fresh run.
+                lastError = nil
+                return
+            } catch {
+                // delay.run failed to start — fall through to the
+                // sequential delay.test loop below.
             }
         }
-        // Re-apply latencies to the visible nodes.
-        groups = groups.map { g in
-            var g = g
-            g.nodes = g.nodes.map { n in
-                var n = n
-                n.latencyMs = latencies[n.name]
-                return n
+        for node in nodes {
+            do {
+                let result = try await client.delayTest(proxy: node.name, url: node.url)
+                latencies[node.name] = result.value
+            } catch {
+                latencies[node.name] = -2
             }
-            return g
         }
+        applyLatencies()
         lastError = nil
     }
 

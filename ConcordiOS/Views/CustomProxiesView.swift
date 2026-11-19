@@ -93,7 +93,7 @@ struct CustomProxiesView: View {
             message = "没有可写入的当前配置（先导入一个订阅）"
             return
         }
-        text = CustomProxyStore.bakeProxies(store.proxies, into: text)
+        text = CustomProxyStore.bakeCurrent(into: text)
         message = await profileStore.saveActiveProfileYAML(text)
         if let live = await profileStore.reapplyActive() {
             message = (message ?? "") + " " + live

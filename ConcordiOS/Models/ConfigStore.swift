@@ -34,6 +34,7 @@ final class ConfigStore: ObservableObject {
     static let generalSettingsFileName = "general.json"
     static let addedRulesFileName = "added-rules.json"
     static let customProxiesFileName = "custom-proxies.json"
+    static let rawProxiesFileName = "custom-proxies-raw.json"
     static let filterOverridesFileName = "filter-overrides.json"
     static let hostsFileName = "hosts.json"
 

@@ -29,11 +29,13 @@ struct LoopbackView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Section("生效的规则") {
+            Section {
                 ForEach(AddedRulesStore.loopbackPresetRules, id: \.self) { rule in
                     Text(rule)
                         .font(.system(.body, design: .monospaced))
                 }
+            } header: {
+                Text("生效的规则")
             } footer: {
                 if rulesStore.loopbackPresetPresentCount > 0,
                    !rulesStore.isLoopbackProtectionOn {

@@ -471,8 +471,8 @@ final class ProfileStore: ObservableObject {
     /// update never silently drops them.
     func reapplyLocalOverrides(to data: Data) -> Data {
         guard let text = String(data: data, encoding: .utf8) else { return data }
+        var result = CustomProxyStore.bakeCurrent(into: text)
         let store = CustomProxyStore()
-        var result = CustomProxyStore.bakeProxies(store.proxies, into: text)
         result = CustomProxyStore.bakeFilterOverrides(store.filterOverrides, into: result)
         return result.data(using: .utf8) ?? data
     }

@@ -19,6 +19,12 @@ struct CustomProxiesView: View {
                 Text("自定义节点会写进当前配置的 proxies: 段，之后可以在代理组里选用。订阅更新后会自动重新写回。保存前先用核心校验节点是否可用。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                NavigationLink {
+                    CustomSubscriptionListView()
+                } label: {
+                    Label("完整自定义订阅编辑器（分组 / 拨号器 / 提供方 / 规则）", systemImage: "doc.badge.gearshape")
+                        .font(.footnote)
+                }
             }
             Section("自定义代理（\(store.proxies.count) 个）") {
                 ForEach(store.proxies) { proxy in

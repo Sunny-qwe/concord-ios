@@ -50,7 +50,7 @@
 		</dict>
 	</dict>
 	<key>CFBundleShortVersionString</key>
-	<string>0.2.25</string>
+	<string>0.2.26</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -81,6 +81,8 @@
 			</dict>
 		</dict>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>扫码导入订阅需要使用相机扫描二维码。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

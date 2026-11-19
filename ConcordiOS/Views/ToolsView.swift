@@ -7,10 +7,9 @@ import SwiftUI
 // subtitles:
 //   (no header)  请求 / DNS查询 / 资源 / 日志（仅当 常规 -> 记录日志
 //                开启时显示，见 FlClash ToolsView 的 openLogs 门控）
-//   设置         语言（值 "默认"）/ 主题 / 应用图标 / 备份与恢复 /
-//                可靠性中心 / 进阶配置 / MITM模块 / MITM证书设置 /
-//                常规 / 本地网络设置 / 回环保护（FlClash 规则预设
-//                "防止代理回环"，本机流量拦截，不进代理）
+//   设置         语言（值 "默认"）/ 主题 / 字体 / 应用图标 / 图标集 /
+//                备份与恢复 / 可靠性中心 / 进阶配置 / MITM模块 /
+//                MITM证书设置 / 常规 / 本地网络设置 / 回环保护
 //   其他         免责声明 / 开发者模式（仅当开发者模式开启时显示）/ 关于
 // Rows are 56pt tall, section labels 13pt semibold grey, card
 // corner radius 24pt. Each row keeps its existing destination;
@@ -34,7 +33,9 @@ enum ToolsDestination: Hashable {
     case logs
     case language
     case theme
+    case font
     case appIcon
+    case iconSets
     case backup
     case diagnostics
     case diagnosticsHealth
@@ -89,27 +90,27 @@ struct ToolsView: View {
         NavigationStack(path: $navPath) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
-                    Text("工具")
+                    Text("tools.title".l10n)
                         .font(.system(size: 18, weight: .bold))
                     toolSection(header: nil) {
-                        ToolRow(icon: "clock", title: "请求") { navPath.append(.requests) }
+                        ToolRow(icon: "clock", title: "tools.requests".l10n) { navPath.append(.requests) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "server.rack", title: "DNS查询") { navPath.append(.dns) }
+                        ToolRow(icon: "server.rack", title: "tools.dns".l10n) { navPath.append(.dns) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "archivebox", title: "资源") { navPath.append(.resources) }
+                        ToolRow(icon: "archivebox", title: "tools.resources".l10n) { navPath.append(.resources) }
                         if settingsStore.openLogs {
                             Divider().padding(.leading, 54)
-                            ToolRow(icon: "doc.text", title: "日志") { navPath.append(.logs) }
+                            ToolRow(icon: "doc.text", title: "tools.logs".l10n) { navPath.append(.logs) }
                         }
                     }
-                    toolSection(header: "设置") {
+                    toolSection(header: "tools.section.settings".l10n) {
                         Button { navPath.append(.language) } label: {
                             HStack(spacing: 14) {
                                 Image(systemName: "character.bubble")
                                     .font(.system(size: 18, weight: .regular))
                                     .foregroundStyle(Color(.label))
                                     .frame(width: 24, height: 24)
-                                Text("语言")
+                                Text("tools.language".l10n)
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(Color(.label))
                                 Spacer()
@@ -127,34 +128,38 @@ struct ToolsView: View {
                         }
                         .buttonStyle(.plain)
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "paintbrush", title: "主题") { navPath.append(.theme) }
+                        ToolRow(icon: "paintbrush", title: "tools.theme".l10n) { navPath.append(.theme) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "app", title: "应用图标") { navPath.append(.appIcon) }
+                        ToolRow(icon: "textformat", title: "settings.font".l10n) { navPath.append(.font) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "arrow.clockwise.icloud", title: "备份与恢复") { navPath.append(.backup) }
+                        ToolRow(icon: "app", title: "tools.appIcon".l10n) { navPath.append(.appIcon) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "heart.text.square", title: "可靠性中心") { navPath.append(.diagnostics) }
+                        ToolRow(icon: "square.grid.2x2", title: "settings.iconSets".l10n) { navPath.append(.iconSets) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "wrench", title: "进阶配置") { navPath.append(.config) }
+                        ToolRow(icon: "arrow.clockwise.icloud", title: "tools.backup".l10n) { navPath.append(.backup) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "puzzlepiece", title: "MITM模块") { navPath.append(.mitmModules) }
+                        ToolRow(icon: "heart.text.square", title: "tools.diagnostics".l10n) { navPath.append(.diagnostics) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "key", title: "MITM证书设置") { navPath.append(.mitmCertificate) }
+                        ToolRow(icon: "wrench", title: "tools.advanced".l10n) { navPath.append(.config) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "gear", title: "常规") { navPath.append(.settings) }
+                        ToolRow(icon: "puzzlepiece", title: "tools.mitmModules".l10n) { navPath.append(.mitmModules) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "network", title: "本地网络设置") { navPath.append(.localNetwork) }
+                        ToolRow(icon: "key", title: "tools.mitmCert".l10n) { navPath.append(.mitmCertificate) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "arrow.triangle.2.circlepath", title: "回环保护") { navPath.append(.loopback) }
+                        ToolRow(icon: "gear", title: "tools.settings".l10n) { navPath.append(.settings) }
+                        Divider().padding(.leading, 54)
+                        ToolRow(icon: "network", title: "tools.localNetwork".l10n) { navPath.append(.localNetwork) }
+                        Divider().padding(.leading, 54)
+                        ToolRow(icon: "arrow.triangle.2.circlepath", title: "tools.loopback".l10n) { navPath.append(.loopback) }
                     }
-                    toolSection(header: "其他") {
-                        ToolRow(icon: "doc.text", title: "免责声明") { navPath.append(.disclaimer) }
+                    toolSection(header: "tools.section.other".l10n) {
+                        ToolRow(icon: "doc.text", title: "tools.disclaimer".l10n) { navPath.append(.disclaimer) }
                         if settingsStore.developerMode {
                             Divider().padding(.leading, 54)
-                            ToolRow(icon: "hammer", title: "开发者模式") { navPath.append(.developer) }
+                            ToolRow(icon: "hammer", title: "tools.developer".l10n) { navPath.append(.developer) }
                         }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "info.circle", title: "关于") { navPath.append(.about) }
+                        ToolRow(icon: "info.circle", title: "tools.about".l10n) { navPath.append(.about) }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -171,7 +176,9 @@ struct ToolsView: View {
                 case .logs: LogsView()
                 case .language: LanguageView()
                 case .theme: ThemePickerView()
+                case .font: FontPickerView()
                 case .appIcon: AppIconPickerView()
+                case .iconSets: IconSetsView()
                 case .backup: BackupView()
                 case .diagnostics: DiagnosticsView(navigate: { navPath.append($0) })
                 case .diagnosticsHealth: NetworkHealthView()
@@ -261,10 +268,10 @@ private struct ToolRow: View {
 // FlClash's supported locales: en, es, fr, ja, ko, ru, zh-CN.
 // The choice is persisted and applied via the standard
 // AppleLanguages mechanism, which iOS reads at launch, so a
-// restart is required before it takes effect. Honest limit: the
-// app's own strings are hardcoded Chinese, so only system UI
-// (dates, system controls) follows the choice until the strings
-// are localised.
+// restart is required before it takes effect. The primary
+// interface strings (tab bar, Tools titles, common buttons —
+// Localizable.xcstrings) follow the choice after restart; the
+// rest of the app's strings are still hardcoded Chinese.
 private struct LanguageView: View {
     @AppStorage("ConcordiOS.appLanguage") private var appLanguage = ""
     @State private var showRestartAlert = false
@@ -297,7 +304,7 @@ private struct LanguageView: View {
                 }
                 .pickerStyle(.inline)
             } footer: {
-                Text("切换语言后需要重启应用才会生效。当前应用内文字为中文硬编码，切换后仅系统界面（如日期、系统控件）会跟随语言，应用内文字暂不变。")
+                Text("切换语言后需要重启应用才会生效。重启后底部标签栏、工具页标题与常用按钮会按所选语言显示；页面内的其他文字仍为中文（只本地化了主要界面文字）。")
             }
         }
         .scrollContentBackground(.hidden)
@@ -313,7 +320,7 @@ private struct LanguageView: View {
             showRestartAlert = true
         }
         .alert("需要重启应用", isPresented: $showRestartAlert) {
-            Button("知道了", role: .cancel) {}
+            Button("common.ok".l10n, role: .cancel) {}
         } message: {
             Text("语言已设为\(displayName)，重启应用后生效。")
         }
@@ -326,6 +333,15 @@ private struct LanguageView: View {
 // numbered terms plus the intro. The text is the Chinese version
 // from the upstream localisation (messages_zh_CN.dart).
 private struct DisclaimerView: View {
+    /// The sentence the user must retype to agree (FlClash
+    /// disclaimerNoServiceStatement — also the page's last line).
+    static let restatement = "本应用不提供任何网络代理服务。"
+
+    @AppStorage("ConcordiOS.disclaimer.consented") private var consented = false
+    @AppStorage("ConcordiOS.disclaimer.consentedAt") private var consentedAt: Double = 0
+    @Environment(\.dismiss) private var dismiss
+    @State private var showRestateDialog = false
+    @State private var disagreeMessage: String?
     private static let terms: [(String, String)] = [
         ("一、软件说明", "本应用是一款基于开源项目构建的网络代理工具，旨在帮助用户管理网络连接、优化网络访问体验。本应用不提供任何代理服务、服务器或网络内容，所有网络流量均由用户自行配置的代理服务器处理。"),
         ("二、使用范围", "本应用仅供个人学习、研究和合法用途使用。用户应确保其使用行为符合所在国家或地区的法律法规，不得将本应用用于任何非法目的，包括但不限于：访问非法内容、进行网络攻击、侵犯他人隐私、传播违法信息等。"),
@@ -340,26 +356,164 @@ private struct DisclaimerView: View {
     ]
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("免责声明")
-                    .font(.system(size: 18, weight: .bold))
-                Text("在使用本应用之前，请仔细阅读以下免责声明。使用本应用即表示您同意以下全部条款。")
-                ForEach(DisclaimerView.terms, id: \.0) { title, body in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(title)
-                            .font(.system(size: 13, weight: .semibold))
-                        Text(body)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("免责声明")
+                        .font(.system(size: 18, weight: .bold))
+                    Text("在使用本应用之前，请仔细阅读以下免责声明。使用本应用即表示您同意以下全部条款。")
+                    ForEach(DisclaimerView.terms, id: \.0) { title, body in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(title)
+                                .font(.system(size: 13, weight: .semibold))
+                            Text(body)
+                        }
+                    }
+                    Text(DisclaimerView.restatement)
+                        .font(.system(size: 13, weight: .semibold))
+                    if let disagreeMessage {
+                        Text(disagreeMessage)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red)
                     }
                 }
-                Text("本应用不提供任何网络代理服务。")
-                    .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 13))
+                .padding(16)
             }
-            .font(.system(size: 13))
-            .padding(16)
+            _ConsentBar(
+                consented: consented,
+                consentedDate: consentedAt > 0 ? Date(timeIntervalSince1970: consentedAt) : nil,
+                onAgree: { showRestateDialog = true },
+                onDisagree: {
+                    consented = false
+                    disagreeMessage = "您选择了不同意：请停止使用本应用并将其卸载。"
+                },
+                onWithdraw: { consented = false }
+            )
         }
         .background(ConcordTheme.pageBackground)
         .navigationTitle("免责声明")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showRestateDialog) {
+            _RestateDialog(statement: DisclaimerView.restatement) {
+                consented = true
+                consentedAt = Date().timeIntervalSince1970
+                showRestateDialog = false
+            }
+        }
+    }
+}
+
+/// Consent bar (FlClash _ConsentBar): the bottom bar below the
+/// terms. Agree opens the restatement dialog; disagree declines;
+/// after agreeing it shows the consent time with a withdraw action.
+private struct _ConsentBar: View {
+    let consented: Bool
+    let consentedDate: Date?
+    let onAgree: () -> Void
+    let onDisagree: () -> Void
+    let onWithdraw: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider()
+            if consented {
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("已同意免责声明")
+                            .font(.system(size: 13, weight: .semibold))
+                        if let date = consentedDate {
+                            Text(date.formatted(date: .abbreviated, time: .shortened))
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Button("撤回同意", role: .destructive, action: onWithdraw)
+                        .font(.system(size: 13))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            } else {
+                HStack(spacing: 12) {
+                    Button("不同意", action: onDisagree)
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity)
+                    Button("同意", action: onAgree)
+                        .buttonStyle(.borderedProminent)
+                        .tint(ConcordTheme.accent)
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+        }
+        .background(ConcordTheme.cardBackground)
+    }
+}
+
+/// Restatement dialog (FlClash _RestateDialog): shows the
+/// statement and asks the user to type it out exactly. Confirm
+/// stays disabled until the typed text matches; a non-prefix is
+/// flagged as a mismatch. Typing it proves the user read it,
+/// instead of a single thoughtless tap.
+private struct _RestateDialog: View {
+    let statement: String
+    let onConfirm: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var typed = ""
+
+    private enum Restatement { case partial, diverged, complete }
+
+    private var restatement: Restatement {
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == statement { return .complete }
+        if trimmed.isEmpty || statement.hasPrefix(trimmed) { return .partial }
+        return .diverged
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("请复述以下声明，以确认您已阅读并同意免责声明。")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Text(statement)
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
+                TextField("请逐字输入上方声明", text: $typed, axis: .vertical)
+                    .lineLimit(3...)
+                    .font(.system(size: 13))
+                    .padding(12)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                if restatement == .diverged {
+                    Text("输入与声明不一致，请对照上方文字重新输入。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.red)
+                }
+                Spacer()
+            }
+            .padding(16)
+            .navigationTitle("确认同意")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("确认") { onConfirm() }
+                        .disabled(restatement != .complete)
+                }
+            }
+        }
     }
 }

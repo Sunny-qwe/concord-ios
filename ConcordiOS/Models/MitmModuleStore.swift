@@ -245,6 +245,9 @@ final class MitmModuleStore: ObservableObject {
         config.bodyRewrite = merged.bodyRewrite
         config.mapLocal = merged.mapLocal
         config.script = merged.script
+        config.skipVerifyHostname = merged.skipVerifyHostname
+        config.clientSourceAddress = merged.clientSourceAddress
+        config.requestBodyMock = merged.requestBodyMock
         return config
     }
 

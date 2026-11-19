@@ -355,11 +355,56 @@ final class ProfileStore: ObservableObject {
         save()
     }
 
+    /// Persist a drag-reordered profile list (ProfilesView onMove).
+    /// The array order IS the display order; it is saved with the
+    /// metadata in UserDefaults like every other list change.
+    func moveProfiles(fromOffsets: IndexSet, toOffset: Int) {
+        profiles.move(fromOffsets: fromOffsets, toOffset: toOffset)
+        save()
+    }
+
+    /// Local provenance for NodeSourcesView: the proxy names a
+    /// profile's own YAML file declares under `proxies:` (a line
+    /// scan — no core needed, so it works with the tunnel stopped).
+    /// Provider-fetched nodes are not in `proxies:`; those come
+    /// from the core via convertProfile instead.
+    func localNodeNames(for profile: Profile) -> [String] {
+        guard let url = fileURL(for: profile),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        var names: [String] = []
+        var inProxies = false
+        for line in text.components(separatedBy: "\n") {
+            if line == "proxies:" || line.hasPrefix("proxies: ") {
+                inProxies = true
+                continue
+            }
+            if inProxies {
+                if !line.hasPrefix(" ") && !line.hasPrefix("\t") && !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                    break
+                }
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("- name:") else { continue }
+                var value = String(trimmed.dropFirst("- name:".count))
+                    .trimmingCharacters(in: .whitespaces)
+                if (value.hasPrefix("\"") && value.hasSuffix("\"")) ||
+                    (value.hasPrefix("'") && value.hasSuffix("'")) {
+                    value = String(value.dropFirst().dropLast())
+                }
+                if !value.isEmpty { names.append(value) }
+            }
+        }
+        return names
+    }
+
     // MARK: Activate + inspect (config.validate / config.apply /
     // profile.inspect)
 
     @MainActor
     func activate(_ profile: Profile) async {
+        // The override framework keys per-profile overrides off the
+        // active profile: record the switch before anything applies,
+        // so the extension's config.apply merge already sees it.
+        OverrideStore.noteActiveProfile(profile.id)
         guard let source = fileURL(for: profile),
               let data = try? Data(contentsOf: source) else {
             // The sample profile has no file on disk.

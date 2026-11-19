@@ -246,6 +246,14 @@ struct ConcordConfigPatchParams: Encodable {
     var ipv6: Bool?
     var tcpConcurrent: Bool?
     var unifiedDelay: Bool?
+    /// External-controller secret (core ConfigPatchParams `secret`).
+    var secret: String?
+    /// Local inbound auth lines, `user:password` (core
+    /// ConfigPatchParams `authentication`).
+    var authentication: [String]?
+    /// External-controller listen address, "" = closed (core
+    /// ConfigPatchParams `externalController`).
+    var externalController: String?
 }
 
 struct ConcordGeneralState: Codable {
@@ -575,6 +583,19 @@ struct ConcordTunStartParams: Encodable {
 // {pem, fingerprint, subject, "not-before", "not-after"}; it is absent
 // while no CA exists.
 
+/// The `limits` object of the core's MitmSection (upstream
+/// crates/config/src/mitm/mod.rs): only the keys set here are sent;
+/// the rest keep the core's defaults. FlClash puts
+/// `capture-entries` here (its `capture` switch itself is not a
+/// core field — it travels as config.apply's `options.mitm_capture`).
+struct MitmLimitsConfig: Codable {
+    var captureEntries: Int? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case captureEntries = "capture-entries"
+    }
+}
+
 struct MitmConfig: Codable {
     var enable: Bool = false
     var hostname: [String] = []
@@ -582,6 +603,22 @@ struct MitmConfig: Codable {
     var decryptTls: Bool = true
     var caFingerprint: String = ""
     var h2: Bool = false
+    /// FlClash Mitm.autoQuicBlock (default true in the core:
+    /// auto_quic_block.unwrap_or(true)). QUIC hides its TLS
+    /// handshake in UDP, so without blocking it the client never
+    /// falls back to decryptable TCP+TLS.
+    var autoQuicBlock: Bool = true
+    /// Hosts whose servers' certificates go unchecked while the
+    /// global skip switch is off (core
+    /// `skip-server-cert-verify-hostname`).
+    var skipVerifyHostname: [String] = []
+    /// The clients decrypted for, in Surge's syntax (core
+    /// `client-source-address`); empty means all of them.
+    var clientSourceAddress: [String] = []
+    /// Request-body mocks, in map-local line syntax (core
+    /// `request-body-mock`, compiled like map-local).
+    var requestBodyMock: [String] = []
+    var limits: MitmLimitsConfig? = nil
     /// The core's MITM lists (RawConfig keys, kebab-case). The
     /// Settings page only fills hostname; the merged module lists
     /// (MitmModuleStore.mergedConfig) fill these for mitm.validate.
@@ -598,6 +635,11 @@ struct MitmConfig: Codable {
         case decryptTls = "decrypt-tls"
         case caFingerprint = "ca-fingerprint"
         case h2
+        case autoQuicBlock = "auto-quic-block"
+        case skipVerifyHostname = "skip-server-cert-verify-hostname"
+        case clientSourceAddress = "client-source-address"
+        case requestBodyMock = "request-body-mock"
+        case limits
         case urlRewrite = "url-rewrite"
         case headerRewrite = "header-rewrite"
         case bodyRewrite = "body-rewrite"

@@ -19,11 +19,19 @@ struct UnifiedImportView: View {
     @State private var profileName = ""
     @State private var showFileImporter = false
     @State private var showLegacyAdd = false
+    @State private var showScanImport = false
     @State private var clipboardNotice: String?
+    /// Text handed in by the QR scanner (ProfilesView): filled into
+    /// the field and imported automatically when `autoImport` is set.
+    private let initialText: String
+    private let autoImport: Bool
 
-    init(profileStore: ProfileStore) {
+    init(profileStore: ProfileStore, initialText: String = "", autoImport: Bool = false) {
         self.profileStore = profileStore
+        self.initialText = initialText
+        self.autoImport = autoImport
         _importer = StateObject(wrappedValue: UnifiedImporter(profileStore: profileStore))
+        _importText = State(initialValue: initialText)
     }
 
     /// The single item currently in the field, if recognisable.
@@ -70,6 +78,10 @@ struct UnifiedImportView: View {
                 }
             }
             .task {
+                if autoImport, !importText.isEmpty {
+                    await performImport()
+                    return
+                }
                 if importText.isEmpty,
                    let clip = UIPasteboard.general.string,
                    let item = UnifiedImporter.singleItemText(clip) {
@@ -227,17 +239,7 @@ struct UnifiedImportView: View {
 
     private var importButton: some View {
         Button {
-            Task {
-                await importer.importText(importText, name: profileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : profileName.trimmingCharacters(in: .whitespacesAndNewlines))
-                // Success: clear the field so the next link can be
-                // pasted straight away. Failure: keep the text so
-                // the user can fix it.
-                if importer.activatedName != nil {
-                    importText = ""
-                    profileName = ""
-                    clipboardNotice = nil
-                }
-            }
+            Task { await performImport() }
         } label: {
             Group {
                 if importer.isImporting {
@@ -252,6 +254,20 @@ struct UnifiedImportView: View {
         .buttonStyle(.borderedProminent)
         .tint(ConcordTheme.accent)
         .disabled(!canImport)
+    }
+
+    /// Import the field's content through UnifiedImporter (also
+    /// used by the QR scanner, which fills the field first).
+    private func performImport() async {
+        await importer.importText(importText, name: profileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : profileName.trimmingCharacters(in: .whitespacesAndNewlines))
+        // Success: clear the field so the next link can be pasted
+        // straight away. Failure: keep the text so the user can
+        // fix it.
+        if importer.activatedName != nil {
+            importText = ""
+            profileName = ""
+            clipboardNotice = nil
+        }
     }
 
     // MARK: - Results
@@ -296,6 +312,29 @@ struct UnifiedImportView: View {
 
     private var actionsCard: some View {
         VStack(spacing: 0) {
+            Button { showScanImport = true } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "qrcode.viewfinder")
+                        .foregroundStyle(ConcordTheme.accent)
+                        .frame(width: 24)
+                    Text("扫码导入")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+            .sheet(isPresented: $showScanImport) {
+                ScanImportView { text in
+                    importText = text
+                    Task { await performImport() }
+                }
+            }
+            Divider()
             Button { showFileImporter = true } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "folder")

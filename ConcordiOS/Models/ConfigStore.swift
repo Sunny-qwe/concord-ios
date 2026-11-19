@@ -30,6 +30,19 @@ final class ConfigStore: ObservableObject {
     static let mitmFileName = "mitm.json"
     static let moduleMitmFileName = "module-mitm.json"
     static let dnsFileName = "dns.json"
+    static let ntpFileName = "ntp.json"
+    static let snifferFileName = "sniffer.json"
+    /// Top-level RawConfig keys the app owns (global-ua,
+    /// interface-name): merged into config.apply's overlay by the
+    /// extension. config.patch cannot carry them (see
+    /// ConfigPatchParams in the upstream schema).
+    static let generalOverlayFileName = "general-overlay.json"
+    /// The override framework's store (OverrideStore): global
+    /// overrides plus one entry per profile UUID, and the active
+    /// profile id. The extension merges the effective overrides
+    /// into config.apply's overlay at tunnel start and on every
+    /// live re-apply.
+    static let overridesFileName = "overrides.json"
     static let tunnelSettingsFileName = "tunnel.json"
     static let generalSettingsFileName = "general.json"
     static let addedRulesFileName = "added-rules.json"

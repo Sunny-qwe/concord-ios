@@ -15,10 +15,10 @@ enum AppTab: Int, CaseIterable {
 
     var title: String {
         switch self {
-        case .dashboard: return "仪表盘"
-        case .proxies: return "代理"
-        case .profiles: return "配置"
-        case .tools: return "工具"
+        case .dashboard: return "tab.dashboard".l10n
+        case .proxies: return "tab.proxies".l10n
+        case .profiles: return "tab.profiles".l10n
+        case .tools: return "tab.tools".l10n
         }
     }
 
@@ -128,7 +128,7 @@ struct ContentView: View {
             get: { updateAlertMessage != nil },
             set: { if !$0 { updateAlertMessage = nil } }
         )) {
-            Button("知道了", role: .cancel) {}
+            Button("common.ok".l10n, role: .cancel) {}
         } message: {
             if let updateAlertMessage {
                 Text(updateAlertMessage)
@@ -141,16 +141,16 @@ struct ContentView: View {
         TabView(selection: $selectedTab) {
             DashboardView(onSelectTab: { selectedTab = $0 })
                 .tag(AppTab.dashboard)
-                .tabItem { Label("仪表盘", systemImage: "square.grid.2x2.fill") }
+                .tabItem { Label("tab.dashboard".l10n, systemImage: "square.grid.2x2.fill") }
             ProxiesView()
                 .tag(AppTab.proxies)
-                .tabItem { Label("代理", systemImage: "globe") }
+                .tabItem { Label("tab.proxies".l10n, systemImage: "globe") }
             ProfilesView()
                 .tag(AppTab.profiles)
-                .tabItem { Label("配置", systemImage: "doc.text.fill") }
+                .tabItem { Label("tab.profiles".l10n, systemImage: "doc.text.fill") }
             ToolsView()
                 .tag(AppTab.tools)
-                .tabItem { Label("工具", systemImage: "briefcase.fill") }
+                .tabItem { Label("tab.tools".l10n, systemImage: "briefcase.fill") }
         }
     }
 

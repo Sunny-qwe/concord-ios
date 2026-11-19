@@ -41,9 +41,17 @@ struct SettingsView: View {
                     Toggle("TCP 并发", isOn: $settingsStore.tcpConcurrent)
                     Toggle("统一延迟测试", isOn: $settingsStore.unifiedDelay)
                     Toggle("流量嗅探", isOn: $settingsStore.sniffing)
-                    TextField("全局 User-Agent（留空为默认）", text: $settingsStore.globalUa)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    NavigationLink {
+                        UserAgentsView()
+                    } label: {
+                        HStack {
+                            Text("全局 User-Agent")
+                            Spacer()
+                            Text(settingsStore.globalUa.isEmpty ? "默认" : settingsStore.globalUa)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
                     Stepper("延迟测试超时：\(settingsStore.delayTestTimeout) ms", value: $settingsStore.delayTestTimeout, in: 1000...30000, step: 1000)
                     Toggle("启动时自动连接", isOn: $settingsStore.autoRun)
                     Toggle("切换配置后自动关闭连接", isOn: $settingsStore.autoCloseConnections)
@@ -83,6 +91,9 @@ struct SettingsView: View {
                     TextField("TUN DNS（逗号分隔）", text: $settingsStore.tunDns)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                    NavigationLink("TUN 覆盖（拥塞控制、路由、劫持…）") {
+                        TunOverrideView()
+                    }
                     Text("iOS 上 TUN 由系统 NetworkExtension 拥有，核心不会自己创建 TUN 设备（见 TUN_INVESTIGATION.md）。这些参数会写入共享 tunnel.json，扩展启动时传给 tun.start（packet-channel 路径）并用于配置隧道接口。改动后需重启 VPN 生效。IPv6 开关（通用里）打开时，隧道接口会同时配置 IPv6 地址 fdfe:dcba:9876::1/126 并接管 IPv6 默认路由；关闭时 IPv6 流量不进隧道。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -116,6 +127,10 @@ struct SettingsView: View {
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                     Toggle("Fake-IP", isOn: $settingsStore.dnsFakeIpEnabled)
+                        .onChange(of: settingsStore.dnsFakeIpEnabled) { _, value in
+                            settingsStore.dnsEnhancedMode = value ? "fake-ip" : "normal"
+                            settingsStore.save()
+                        }
                     TextField("Fake-IP 段", text: $settingsStore.dnsFakeIpRange)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -133,6 +148,30 @@ struct SettingsView: View {
                     NavigationLink("DNS 查询记录") {
                         DnsQueriesView()
                     }
+                    NavigationLink("更多 DNS 设置") {
+                        DnsSettingsView()
+                    }
+                }
+
+                Section("配置") {
+                    NavigationLink("覆盖（全局 / 按订阅）") {
+                        OverrideView()
+                    }
+                    NavigationLink("NTP") {
+                        NtpSettingsView()
+                    }
+                    NavigationLink("按需连接") {
+                        OnDemandView()
+                    }
+                    NavigationLink("嗅探") {
+                        SnifferSettingsView()
+                    }
+                    NavigationLink("鉴权与外部控制器") {
+                        GeneralAuthView()
+                    }
+                    Text("覆盖：对通用、DNS、TUN、嗅探、NTP 的逐项覆盖，分全局和单个订阅两级，带 YAML 预览。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("MITM") {
@@ -147,6 +186,40 @@ struct SettingsView: View {
                     Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
                         .disabled(!settingsStore.mitmAvailable)
                         .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
+                    Toggle("跳过服务端证书验证", isOn: $settingsStore.mitmSkipServerCertVerify)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmSkipServerCertVerify) { _, _ in settingsStore.save() }
+                    Text("只跳过上游服务器证书的验证（测试自签服务时用）；开启后中间人可伪造服务器证书，不要长期开。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Toggle("阻止 QUIC", isOn: $settingsStore.mitmAutoQuicBlock)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmAutoQuicBlock) { _, _ in settingsStore.save() }
+                    Text("默认开启：QUIC 把 TLS 握手藏在 UDP 里，解密不了；阻止后客户端回落到 TCP + TLS 才能解密。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    TextField("受信任的服务器证书指纹（可选）", text: $settingsStore.mitmTrustedFingerprint)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save() }
+                    Text("填入某个服务器证书的 SHA-256 指纹后，只信任该指纹的证书（解密 TLS 随之开启）；留空则用本应用 CA 的指纹。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Toggle("捕获拦截记录", isOn: $settingsStore.mitmCapture)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmCapture) { _, _ in settingsStore.save() }
+                    Picker("最多保留条数", selection: $settingsStore.mitmCaptureEntries) {
+                        Text("16").tag(16)
+                        Text("32").tag(32)
+                        Text("64").tag(64)
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!settingsStore.mitmAvailable || !settingsStore.mitmCapture)
+                    .onChange(of: settingsStore.mitmCaptureEntries) { _, _ in settingsStore.save() }
+                    Text("开启后拦截记录才会保存；iOS 上限 64 条（1 MB）。改动下次启动 VPN 后生效。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                     if let info = settingsStore.mitmCertificate {
                         LabeledContent("CA 主题", value: info.subject)
                         LabeledContent("CA 指纹", value: info.fingerprint)
@@ -235,7 +308,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("App 图标") {
+                Section("settings.appIcon".l10n) {
                     NavigationLink("切换 App 图标") {
                         AppIconPickerView()
                     }
@@ -244,7 +317,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("主题") {
+                Section("settings.theme".l10n) {
                     NavigationLink("外观与主题色") {
                         ThemePickerView()
                     }
@@ -253,7 +326,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("备份与恢复") {
+                Section("settings.backup".l10n) {
                     NavigationLink("备份与恢复") {
                         BackupView()
                     }
@@ -347,7 +420,7 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
             .tint(ConcordTheme.accent)
-            .navigationTitle("常规")
+            .navigationTitle("title.settings".l10n)
             .onChange(of: settingsStore.mode) { _, _ in settingsStore.save() }
             .onChange(of: settingsStore.logLevel) { _, _ in settingsStore.save() }
             .onChange(of: settingsStore.allowLan) { _, _ in settingsStore.save() }
@@ -374,12 +447,41 @@ struct SettingsView: View {
 
 // MARK: - DNS queries (FlClash: DnsQueriesView, lib/views/dns_queries.dart)
 
+/// Record-list filter: all, failed only, cache hits, live lookups.
+private enum DnsRecordFilter: String, CaseIterable {
+    case all, errors, cached, live
+
+    var title: String {
+        switch self {
+        case .all: return "全部"
+        case .errors: return "错误"
+        case .cached: return "缓存命中"
+        case .live: return "实时查询"
+        }
+    }
+
+    func matches(_ entry: ConcordDnsEntry) -> Bool {
+        switch self {
+        case .all: return true
+        case .errors: return DnsErrorRow.isFailed(entry)
+        case .cached: return entry.cached == true
+        case .live: return entry.cached != true
+        }
+    }
+}
+
 struct DnsQueriesView: View {
     @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var client: ConcordClient
     @State private var queryName = ""
     @State private var queryType = "A"
     @State private var selectedEntry: ConcordDnsEntry?
+    @State private var recordFilter: DnsRecordFilter = .all
+
+    /// Search text first (DnsStore.filtered), then the group filter.
+    private var visibleEntries: [ConcordDnsEntry] {
+        dnsStore.filtered.filter { recordFilter.matches($0) }
+    }
 
     var body: some View {
         List {
@@ -443,12 +545,19 @@ struct DnsQueriesView: View {
                 }
             }
             Section("查询记录（dns.watch）") {
-                if dnsStore.filtered.isEmpty {
-                    Text("暂无 DNS 查询记录")
+                Picker("筛选", selection: $recordFilter) {
+                    ForEach(DnsRecordFilter.allCases, id: \.self) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+                if visibleEntries.isEmpty {
+                    Text(dnsStore.filtered.isEmpty ? "暂无 DNS 查询记录" : "没有符合筛选的记录")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(dnsStore.filtered) { entry in
+                    ForEach(visibleEntries) { entry in
                         Button {
                             selectedEntry = entry
                         } label: {
@@ -468,6 +577,21 @@ struct DnsQueriesView: View {
                                 Text("应答：\(entry.answers.joined(separator: ", "))")
                                     .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
+                                // Keyword chips (FlClash _DnsKeyword):
+                                // tapping one filters the list by it.
+                                HStack(spacing: 6) {
+                                    DnsKeywordChip(label: entry.type, isError: false) {
+                                        toggleSearch(entry.type)
+                                    }
+                                    if let rcode = entry.rcode, !rcode.isEmpty {
+                                        DnsKeywordChip(label: rcode, isError: DnsErrorRow.isFailed(entry)) {
+                                            toggleSearch(rcode)
+                                        }
+                                    }
+                                }
+                                if let error = entry.error {
+                                    DnsErrorRow(error: error)
+                                }
                                 Text(ConcordFormat.time(entry.time))
                                     .font(.system(size: 10))
                                     .foregroundStyle(.tertiary)
@@ -495,6 +619,64 @@ struct DnsQueriesView: View {
         .sheet(item: $selectedEntry) { entry in
             DnsEntryDetailView(entry: entry)
         }
+    }
+
+    /// Tapping a keyword chip filters by it; tapping it again clears.
+    private func toggleSearch(_ keyword: String) {
+        dnsStore.searchText = dnsStore.searchText == keyword ? "" : keyword
+    }
+}
+
+/// A tappable keyword chip (FlClash _DnsKeyword): type or rcode.
+/// Tapping filters the record list by that keyword.
+private struct DnsKeywordChip: View {
+    let label: String
+    let isError: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background((isError ? Color.red : Color.blue).opacity(0.12), in: Capsule())
+                .foregroundStyle(isError ? .red : .blue)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A failed query's error line (FlClash _ErrorRow): red text,
+/// tapping copies the error.
+private struct DnsErrorRow: View {
+    let error: String
+
+    @State private var copied = false
+
+    static func isFailed(_ entry: ConcordDnsEntry) -> Bool {
+        entry.error != nil
+            || (entry.rcode != nil && entry.rcode != "NOERROR" && entry.rcode != "NoError")
+    }
+
+    var body: some View {
+        Button {
+            UIPasteboard.general.string = error
+            copied = true
+        } label: {
+            HStack(spacing: 4) {
+                Text(error)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                if copied {
+                    Text("已复制")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -533,9 +715,7 @@ private struct DnsEntryDetailView: View {
                 }
                 if let error = entry.error {
                     Section("错误") {
-                        Text(error)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.red)
+                        DnsErrorRow(error: error)
                     }
                 }
                 Section {
@@ -579,6 +759,7 @@ struct ProvidersView: View {
     @EnvironmentObject private var client: ConcordClient
     @State private var sideLoadName = ""
     @State private var sideLoadText = ""
+    @State private var editingProvider: ConcordProviderInfo?
 
     var body: some View {
         List {
@@ -612,6 +793,10 @@ struct ProvidersView: View {
                     }
                 }
                 .swipeActions {
+                    Button("编辑") {
+                        editingProvider = provider
+                    }
+                    .tint(.purple)
                     Button("详情") {
                         Task { await ruleStore.loadProviderDetail(provider) }
                     }
@@ -699,6 +884,9 @@ struct ProvidersView: View {
                 ProviderDetailView(provider: detail)
             }
         }
+        .sheet(item: $editingProvider) { provider in
+            EditProviderView(provider: provider)
+        }
     }
 }
 
@@ -712,6 +900,11 @@ struct ResourcesView: View {
     @EnvironmentObject private var client: ConcordClient
     @State private var releaseMessage: String?
     @State private var geoFiles: [GeoFileInfo] = []
+    /// Per-item update state (FlClash ResourcesView): the names of
+    /// the items currently updating, plus the update-all result.
+    @State private var updatingItems: Set<String> = []
+    @State private var isUpdatingAll = false
+    @State private var updateAllMessage: String?
     @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = false
     @AppStorage("ConcordiOS.geoAutoUpdateHours") private var geoAutoUpdateHours = 24.0
 
@@ -752,6 +945,83 @@ struct ResourcesView: View {
                 LabeledContent("提供方", value: "\(ruleStore.providers.count)")
                 LabeledContent("规则提供方", value: "\(ruleStore.ruleProviders.count)")
                 LabeledContent("MITM 模块", value: "\(mitmModuleStore.modules.filter(\.enabled).count) / \(mitmModuleStore.modules.count) 已启用")
+            }
+            Section("可更新资源") {
+                Button(isUpdatingAll ? "全部更新中…" : "全部更新") {
+                    Task { await updateAllResources() }
+                }
+                .disabled(isUpdatingAll)
+                if let message = updateAllMessage {
+                    Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                Text("全部更新会依次更新所有提供方、MITM 模块与三类 Geo 数据库；失败的项会继续更新其余项，最后汇总。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            Section("规则提供方") {
+                if ruleStore.ruleProviders.isEmpty {
+                    Text("没有规则提供方。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(ruleStore.ruleProviders) { provider in
+                        resourceRow(
+                            title: provider.name,
+                            subtitle: "\(provider.count) 条 · \(provider.vehicleType)",
+                            updatedAt: provider.updatedAt,
+                            updatingKey: "provider:\(provider.name)",
+                            onUpdate: { await updateProvider(provider) }
+                        )
+                    }
+                }
+            }
+            Section("代理提供方") {
+                let proxyProviders = ruleStore.providers.filter { $0.type == "proxy" }
+                if proxyProviders.isEmpty {
+                    Text("没有代理提供方。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(proxyProviders) { provider in
+                        resourceRow(
+                            title: provider.name,
+                            subtitle: "\(provider.count) 条 · \(provider.vehicleType)",
+                            updatedAt: provider.updatedAt,
+                            updatingKey: "provider:\(provider.name)",
+                            onUpdate: { await updateProvider(provider) }
+                        )
+                    }
+                }
+            }
+            Section("MITM 模块") {
+                if mitmModuleStore.modules.isEmpty {
+                    Text("没有 MITM 模块。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(mitmModuleStore.modules) { module in
+                        resourceRow(
+                            title: module.name,
+                            subtitle: "\(module.scripts) 个脚本 · \(module.enabled ? "已启用" : "已暂停")",
+                            updatedAt: Int64(module.lastUpdateTime.timeIntervalSince1970),
+                            updatingKey: "module:\(module.id)",
+                            onUpdate: { await mitmModuleStore.update(module) }
+                        )
+                    }
+                }
+            }
+            Section("MITM 脚本") {
+                let totalScripts = mitmModuleStore.modules.reduce(0) { $0 + $1.scripts }
+                LabeledContent("脚本总数", value: "\(totalScripts) 个")
+                Text("脚本没有独立的更新接口，随所属 MITM 模块一起更新。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            Section("图标集") {
+                LabeledContent("内置备用图标", value: "深色 / 青色 / 浅色")
+                Text("图标集随应用内置，没有远程更新；切换图标见 工具 → 应用图标。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
             }
             Section("Geo 资源") {
                 Toggle("自动更新", isOn: $geoAutoUpdate)
@@ -820,6 +1090,95 @@ struct ResourcesView: View {
         .task {
             scanGeoFiles()
         }
+    }
+
+    /// One updatable resource row (FlClash ResourcesView): name,
+    /// detail, last-update time, and its own update button.
+    private func resourceRow(
+        title: String,
+        subtitle: String,
+        updatedAt: Int64?,
+        updatingKey: String,
+        onUpdate: @escaping () async -> Void
+    ) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                if let updatedAt {
+                    Text("更新于 \(Date(timeIntervalSince1970: TimeInterval(updatedAt)).formatted(date: .abbreviated, time: .shortened))")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer()
+            if updatingItems.contains(updatingKey) {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Button("更新") {
+                    Task {
+                        updatingItems.insert(updatingKey)
+                        await onUpdate()
+                        updatingItems.remove(updatingKey)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(ConcordTheme.accent)
+            }
+        }
+    }
+
+    /// Updates one provider (provider.update) and refreshes the
+    /// provider list so the new time/count show up.
+    private func updateProvider(_ provider: ConcordProviderInfo) async {
+        do {
+            try await client.providerUpdate(name: provider.name)
+            await ruleStore.refresh()
+            ruleStore.providerActionMessage = "已更新提供方 \(provider.name)"
+        } catch {
+            ruleStore.lastError = error.localizedDescription
+        }
+    }
+
+    /// Updates every updatable resource, one after another, and
+    /// reports how many failed instead of stopping at the first.
+    private func updateAllResources() async {
+        isUpdatingAll = true
+        defer { isUpdatingAll = false }
+        var failures: [String] = []
+        for provider in ruleStore.providers {
+            do {
+                try await client.providerUpdate(name: provider.name)
+            } catch {
+                failures.append(provider.name)
+            }
+        }
+        for module in mitmModuleStore.modules {
+            let before = mitmModuleStore.lastError
+            await mitmModuleStore.update(module)
+            if mitmModuleStore.lastError != nil && mitmModuleStore.lastError != before {
+                failures.append(module.name)
+            }
+        }
+        for kind in ["MMDB", "ASN", "GEOSITE"] {
+            do {
+                try await client.geoUpdate(kind: kind)
+            } catch {
+                failures.append("Geo \(kind)")
+            }
+        }
+        await ruleStore.refresh()
+        await trafficStore.refreshMemory()
+        scanGeoFiles()
+        updateAllMessage = failures.isEmpty
+            ? "全部更新完成"
+            : "全部更新完成，\(failures.count) 项失败：\(failures.joined(separator: "、"))"
     }
 
     /// Scan the App Group container root for Geo database files.

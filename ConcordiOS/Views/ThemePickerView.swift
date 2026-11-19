@@ -185,6 +185,15 @@ struct ThemePickerView: View {
                 }
             }
 
+            Section("字体") {
+                NavigationLink("settings.font".l10n) {
+                    FontPickerView()
+                }
+                Text("系统默认字体，或已安装的任意字体。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+
             Section("预览") {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {

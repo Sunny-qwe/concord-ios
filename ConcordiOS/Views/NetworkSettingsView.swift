@@ -38,6 +38,22 @@ struct NetworkSettingsView: View {
                 Text("关闭后隧道不再设置 DNS 服务器，系统 DNS 保持原样，DNS 请求不走代理。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                Picker("出站网卡模式", selection: $settingsStore.interfaceNameMode) {
+                    Text("跟随订阅").tag("follow")
+                    Text("清空").tag("clear")
+                    Text("指定网卡").tag("custom")
+                }
+                if settingsStore.interfaceNameMode == "custom" {
+                    TextField("网卡名，如 en0", text: $settingsStore.interfaceName)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                }
+                Text("跟随订阅：用订阅自己的 interface-name；清空：强制不绑定网卡；指定网卡：核心出站走这块网卡（还会作为 TUN 的自动检测依据）。写入 general-overlay.json，随 config.apply 的 overlay 下发。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                NavigationLink("TUN 覆盖（拥塞控制、路由、劫持…）") {
+                    TunOverrideView()
+                }
             }
             Section("路由") {
                 Toggle("绕过私有路由", isOn: $settingsStore.bypassPrivateRoute)

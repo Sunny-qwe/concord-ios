@@ -29,6 +29,7 @@ struct ProxiesView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var client: ConcordClient
     @StateObject private var styleStore = ProxyStyleStore()
+    @ObservedObject private var iconSetStore = IconSetStore.shared
     @StateObject private var customStore = CustomProxyStore()
     @State private var searchText = ""
     @State private var isSearching = false
@@ -165,7 +166,7 @@ struct ProxiesView: View {
                 }
                 .background(ConcordTheme.pageBackground)
             }
-            .navigationTitle("代理")
+            .navigationTitle("tab.proxies".l10n)
             .searchable(text: $searchText, isPresented: $isSearching, prompt: "搜索节点")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -619,16 +620,20 @@ struct ProxiesView: View {
                 }
             }
             if styleStore.cardType == .loose {
-                Text(nodeDescription(node))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    iconSetStore.icon(for: node.type)
+                    Text(nodeDescription(node))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 Button { Task { await proxyStore.testLatency(node: node) } } label: {
                     LatencyChip(latencyMs: node.latencyMs)
                 }
                 .buttonStyle(.plain)
             } else {
                 HStack {
+                    iconSetStore.icon(for: node.type)
                     Text(node.type)
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -825,7 +830,7 @@ struct NodeDetailView: View {
             }
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
-            .navigationTitle("节点详情")
+            .navigationTitle("title.nodeDetail".l10n)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

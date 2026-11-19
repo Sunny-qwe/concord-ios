@@ -38,6 +38,10 @@ struct ConfigEditorView: View {
     @State private var showDiscardConfirm = false
     @State private var showDraftAlert = false
     @State private var pendingSaveNote = ""
+    /// YAML editing state: the caret (for key completion) and the
+    /// controller the completion row uses to insert at the caret.
+    @State private var selectedRange = NSRange(location: 0, length: 0)
+    @StateObject private var yamlController = YamlEditorController()
 
     private var isDirty: Bool { isLoaded && text != originalText }
 
@@ -54,13 +58,11 @@ struct ConfigEditorView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 editorHeader
-                TextEditor(text: $text)
-                    .font(.system(.body, design: .monospaced))
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .scrollContentBackground(.hidden)
-                    .background(Color(.secondarySystemBackground))
+                YamlEditorView(text: $text, selectedRange: $selectedRange, controller: yamlController)
                     .onChange(of: text) { _, _ in saveDraft() }
+                if !completionSuggestions.isEmpty {
+                    completionRow
+                }
                 statusArea
             }
         }
@@ -170,6 +172,59 @@ struct ConfigEditorView: View {
         .background(ConcordTheme.cardBackground)
     }
 
+    // MARK: - Key completion (FlClash clash_completion.dart,
+    // top-level keys only — a full schema engine is out of scope)
+
+    /// The word the caret is typing, if the caret sits at a
+    /// top-level key position: an empty (or word-only) line at
+    /// indent 0 with no ':' before the caret.
+    private var currentKeyPrefix: (word: String, range: NSRange)? {
+        let nsText = text as NSString
+        guard selectedRange.location <= nsText.length else { return nil }
+        let lineRange = nsText.lineRange(for: NSRange(location: selectedRange.location, length: 0))
+        let line = nsText.substring(with: lineRange)
+        let caretInLine = selectedRange.location - lineRange.location
+        let beforeCaret = String(line.prefix(caretInLine))
+        guard !beforeCaret.contains(":") else { return nil }
+        guard beforeCaret.prefix(while: { $0 == " " }).isEmpty else { return nil }
+        var word = beforeCaret
+        if word.hasPrefix("- ") { word = String(word.dropFirst(2)) }
+        guard word.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }) else {
+            return nil
+        }
+        let wordStart = lineRange.location + (beforeCaret.count - word.count)
+        return (word, NSRange(location: wordStart, length: word.count))
+    }
+
+    private var completionSuggestions: [String] {
+        guard let (word, _) = currentKeyPrefix else { return [] }
+        let matches = YamlClashKeys.topLevel.filter {
+            $0.hasPrefix(word) && $0 != word
+        }
+        return Array(matches.prefix(12))
+    }
+
+    /// Suggestion row above the keyboard: tapping a key inserts
+    /// it plus ": " at the caret, replacing the typed prefix.
+    private var completionRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(completionSuggestions, id: \.self) { key in
+                    Button(key) {
+                        guard let (_, range) = currentKeyPrefix else { return }
+                        yamlController.insert("\(key): ", replacing: range)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .font(.system(.body, design: .monospaced))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+        }
+        .background(ConcordTheme.cardBackground)
+    }
+
     private func load() {
         guard let yaml = profileStore.activeProfileYAML() else {
             loadError = "没有已激活的订阅，或者它的配置文件找不到了"
@@ -231,5 +286,210 @@ struct ConfigEditorView: View {
         errorMessage = nil
         originalText = text
         try? FileManager.default.removeItem(at: Self.draftURL)
+    }
+}
+
+// MARK: - YAML highlighting + key completion
+//
+// TextEditor cannot colour text, so the editor is a UITextView
+// (UIViewRepresentable) whose attributedText is re-built from the
+// plain text on every edit, with the caret restored afterwards.
+// Highlighting is line-based and deliberately small: keys, list
+// dashes, comments, quoted strings and scalars. '#' inside a
+// quoted string is treated as a comment start — a known
+// simplification. A full schema engine (FlClash
+// clash_completion.dart / clash_schema.dart) is out of scope:
+// completion only offers the common top-level Clash keys when the
+// caret is at a top-level key position.
+
+/// Common top-level Clash / mihomo config keys (FlClash
+/// clash_schema.dart `clashConfigSchema`).
+enum YamlClashKeys {
+    static let topLevel: [String] = [
+        "mixed-port", "port", "socks-port", "redir-port", "tproxy-port",
+        "allow-lan", "bind-address", "lan-allowed-ips", "lan-disallowed-ips",
+        "authentication", "mode", "log-level", "ipv6", "unified-delay",
+        "tcp-concurrent", "find-process-mode", "global-ua",
+        "keep-alive-interval", "keep-alive-idle", "disable-keep-alive",
+        "interface-name", "routing-mark", "external-controller",
+        "external-controller-cors", "secret", "external-ui",
+        "external-ui-name", "external-ui-url", "external-doh-server",
+        "profile", "geodata-mode", "geodata-loader", "geosite-matcher",
+        "geo-auto-update", "geo-update-interval", "geox-url", "hosts",
+        "tls", "experimental", "dns", "tun", "sniffer", "ntp",
+        "listeners", "tunnels", "proxies", "proxy-groups",
+        "proxy-providers", "rule-providers", "rules", "script",
+    ]
+}
+
+enum YamlHighlighter {
+    static func highlighted(_ text: String) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: text)
+        let nsText = text as NSString
+        let full = NSRange(location: 0, length: nsText.length)
+        let font = UIFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+        result.addAttribute(.font, value: font, range: full)
+        result.addAttribute(.foregroundColor, value: UIColor.label, range: full)
+        guard nsText.length > 0 else { return result }
+
+        let keyPattern = try? NSRegularExpression(pattern: #"^(\s*)(- )?([\w.\-]+)(:)"#, options: [])
+        let scalarPattern = try? NSRegularExpression(pattern: #":\s*(true|false|null|~|-?\d[\w.:-]*)\s*$"#, options: [])
+        let quotedPattern = try? NSRegularExpression(pattern: #"(['\"]).*?\1"#, options: [])
+
+        nsText.enumerateSubstrings(in: full, options: [.byLines]) { _, lineRange, _, _ in
+            let line = nsText.substring(with: lineRange)
+            // Comment: '#' at line start, or ' #' after content.
+            let commentStart: Int?
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("#") {
+                commentStart = line.firstIndex(of: "#").map { line.distance(from: line.startIndex, to: $0) }
+            } else if let hashRange = line.range(of: " #") {
+                commentStart = line.distance(from: line.startIndex, to: hashRange.lowerBound) + 1
+            } else {
+                commentStart = nil
+            }
+            let codeEnd = commentStart ?? line.count
+            if let start = commentStart {
+                let range = NSRange(location: lineRange.location + start, length: lineRange.length - start)
+                if range.length > 0 {
+                    result.addAttribute(.foregroundColor, value: UIColor.secondaryLabel, range: range)
+                }
+            }
+            guard codeEnd > 0 else { return }
+            let codeRange = NSRange(location: lineRange.location, length: min(codeEnd, lineRange.length))
+            let code = nsText.substring(with: codeRange)
+            // Key + list dash.
+            if let match = keyPattern?.firstMatch(in: code, options: [], range: NSRange(location: 0, length: (code as NSString).length)) {
+                let keyRange = match.range(at: 3)
+                if keyRange.location != NSNotFound {
+                    let shifted = NSRange(location: codeRange.location + keyRange.location, length: keyRange.length)
+                    result.addAttribute(.foregroundColor, value: UIColor.systemBlue, range: shifted)
+                }
+                let dashRange = match.range(at: 2)
+                if dashRange.location != NSNotFound {
+                    let shifted = NSRange(location: codeRange.location + dashRange.location, length: dashRange.length)
+                    result.addAttribute(.foregroundColor, value: UIColor.systemOrange, range: shifted)
+                }
+            }
+            // Quoted strings.
+            quotedPattern?.enumerateMatches(in: code, options: [], range: NSRange(location: 0, length: (code as NSString).length)) { match, _, _ in
+                guard let match else { return }
+                let shifted = NSRange(location: codeRange.location + match.range.location, length: match.range.length)
+                result.addAttribute(.foregroundColor, value: UIColor.systemGreen, range: shifted)
+            }
+            // Bare scalars (true/false/null/numbers) after a colon.
+            if let match = scalarPattern?.firstMatch(in: code, options: [], range: NSRange(location: 0, length: (code as NSString).length)) {
+                let valueRange = match.range(at: 1)
+                if valueRange.location != NSNotFound {
+                    let shifted = NSRange(location: codeRange.location + valueRange.location, length: valueRange.length)
+                    result.addAttribute(.foregroundColor, value: UIColor.systemOrange, range: shifted)
+                }
+            }
+        }
+        return result
+    }
+}
+
+/// Lets the SwiftUI completion row insert text at the UITextView's
+/// caret; the coordinator wires the handler in makeUIView.
+final class YamlEditorController: ObservableObject {
+    var insertHandler: ((NSRange, String) -> Void)?
+
+    func insert(_ text: String, replacing range: NSRange) {
+        insertHandler?(range, text)
+    }
+}
+
+/// Monospace UITextView with YAML highlighting. The plain text is
+/// the source of truth (bound to ConfigEditorView); the attributed
+/// form is derived and never written back.
+struct YamlEditorView: UIViewRepresentable {
+    @Binding var text: String
+    @Binding var selectedRange: NSRange
+    var controller: YamlEditorController
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+        textView.autocorrectionType = .no
+        textView.autocapitalizationType = .none
+        textView.smartQuotesType = .no
+        textView.smartDashesType = .no
+        textView.smartInsertDeleteType = .no
+        textView.spellCheckingType = .no
+        textView.backgroundColor = .secondarySystemBackground
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        textView.delegate = context.coordinator
+        textView.attributedText = YamlHighlighter.highlighted(text)
+        context.coordinator.lastAppliedText = text
+        controller.insertHandler = { [weak textView] range, replacement in
+            guard let textView else { return }
+            context.coordinator.replace(range: range, with: replacement, in: textView)
+        }
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        // External change (load / discard / draft restore): the
+        // binding moved without a user edit, so re-highlight.
+        if context.coordinator.lastAppliedText != text {
+            let caret = textView.selectedRange
+            textView.attributedText = YamlHighlighter.highlighted(text)
+            textView.selectedRange = caret
+            context.coordinator.lastAppliedText = text
+        }
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: YamlEditorView
+        var lastAppliedText = ""
+        private var isApplying = false
+
+        init(_ parent: YamlEditorView) {
+            self.parent = parent
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            guard !isApplying else { return }
+            let plain = textView.text ?? ""
+            lastAppliedText = plain
+            parent.text = plain
+            parent.selectedRange = textView.selectedRange
+            // Do not re-highlight while an IME is composing (pinyin
+            // etc.): replacing the attributed text would drop the
+            // marked text. The next committed edit re-highlights.
+            guard textView.markedTextRange == nil else { return }
+            rehighlight(textView)
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            parent.selectedRange = textView.selectedRange
+        }
+
+        private func rehighlight(_ textView: UITextView) {
+            let caret = textView.selectedRange
+            isApplying = true
+            textView.attributedText = YamlHighlighter.highlighted(textView.text ?? "")
+            textView.selectedRange = caret
+            isApplying = false
+        }
+
+        func replace(range: NSRange, with replacement: String, in textView: UITextView) {
+            let current = textView.text ?? ""
+            guard let swiftRange = Range(range, in: current) else { return }
+            var newText = current
+            newText.replaceSubrange(swiftRange, with: replacement)
+            isApplying = true
+            parent.text = newText
+            lastAppliedText = newText
+            textView.attributedText = YamlHighlighter.highlighted(newText)
+            let newCaret = NSRange(location: range.location + (replacement as NSString).length, length: 0)
+            textView.selectedRange = newCaret
+            parent.selectedRange = newCaret
+            isApplying = false
+        }
     }
 }

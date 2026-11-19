@@ -104,11 +104,19 @@ struct NetworkHealthView: View {
     @State private var services: [ConcordServiceItem] = []
     @State private var servicesError: String?
     @State private var isChecking = false
+    /// Client-side direct-exit probe (no core interface exists):
+    /// a URLSession with proxying disabled, fetching the IP
+    /// service. See checkDirectExit for the honest caveat.
+    @State private var directIp: String?
+    @State private var directCountry: String?
+    @State private var directLatencyMs: Int?
+    @State private var directError: String?
+    @State private var isCheckingDirect = false
 
     var body: some View {
         List {
             Section {
-                Text("出口 IP 走当前出站代理探测；服务检查用当前选中的节点测 Google、YouTube 等。核心没有「直连出口」的探测接口，直连检查暂不可用。")
+                Text("出口 IP 走当前出站代理探测；服务检查用当前选中的节点测 Google、YouTube 等。直连出口用不走代理配置的 URLSession 直接请求 IP 服务探测——核心没有「直连出口」的探测接口，所以是客户端自己测。注意：VPN 开启时系统隧道仍会承载流量，此时直连结果与代理出口相同；只有 VPN 关闭时才是真正的手机直连出口。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -133,6 +141,34 @@ struct NetworkHealthView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+            }
+            Section("直连出口（手机直连）") {
+                if let directIp {
+                    labeled("IP", directIp)
+                    if let country = directCountry, !country.isEmpty {
+                        labeled("国家/地区", country)
+                    }
+                    if let latency = directLatencyMs {
+                        labeled("延迟", "\(latency) ms")
+                    }
+                    Text(proxyStore.isRunning
+                         ? "VPN 正在运行：流量仍走系统隧道，此结果与代理出口相同，不是真正的直连。"
+                         : "VPN 未运行：此为手机的真实直连出口。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else if let directError {
+                    Text(directError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                } else {
+                    Text("尚未探测")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Button(isCheckingDirect ? "探测中…" : "探测直连出口") {
+                    Task { await checkDirectExit() }
+                }
+                .disabled(isCheckingDirect)
             }
             Section("服务检查") {
                 if let servicesError {
@@ -198,7 +234,61 @@ struct NetworkHealthView: View {
             services = []
             servicesError = "服务检查失败：\(error.localizedDescription)"
         }
+        await checkDirectExit()
     }
+
+    /// Direct-exit probe: an ephemeral URLSession whose proxy
+    /// dictionary disables HTTP/HTTPS proxying, so the request does
+    /// not go through any configured HTTP proxy — it is the phone's
+    /// own egress as far as the app layer can tell. It cannot
+    /// bypass the packet-tunnel itself: while the VPN is on, iOS
+    /// still routes the packets through the tunnel, so the answer
+    /// then equals the proxy egress (the UI says so).
+    private func checkDirectExit() async {
+        isCheckingDirect = true
+        defer { isCheckingDirect = false }
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = [
+            "HTTPEnable": false,
+            "HTTPSEnable": false,
+        ]
+        config.timeoutIntervalForRequest = 15
+        let session = URLSession(configuration: config)
+        guard let url = URL(string: "http://ip-api.com/json/?fields=status,query,country") else {
+            directError = "直连探测失败：IP 服务地址无效"
+            return
+        }
+        let started = Date()
+        do {
+            let (data, response) = try await session.data(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                directIp = nil
+                directError = "直连探测失败：IP 服务返回异常状态"
+                return
+            }
+            let decoded = try JSONDecoder().decode(DirectExitResponse.self, from: data)
+            guard decoded.status == "success", let ip = decoded.query else {
+                directIp = nil
+                directError = "直连探测失败：IP 服务未返回地址"
+                return
+            }
+            directLatencyMs = Int(Date().timeIntervalSince(started) * 1000)
+            directCountry = decoded.country
+            directIp = ip
+            directError = nil
+        } catch {
+            directIp = nil
+            directError = "直连探测失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+/// The ip-api.com answer for the direct-exit probe (only the fields
+/// the page shows).
+private struct DirectExitResponse: Decodable {
+    let status: String
+    let query: String?
+    let country: String?
 }
 
 // MARK: - Module audit

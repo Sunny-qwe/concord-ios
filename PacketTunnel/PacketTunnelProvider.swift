@@ -98,7 +98,19 @@ import os
 // travel the same way: the app writes dns.json (DnsConfig keys,
 // kebab-case — "enhanced-mode", "fake-ip-range", upstream
 // crates/config/src/dns.rs) and the extension merges it as
-// {"dns": <dns.json>} alongside mitm. General settings travel as
+// {"dns": <dns.json>} alongside mitm. NTP and sniffer travel the same
+// way (ntp.json -> "ntp", sniffer.json -> "sniffer"). Top-level
+// RawConfig keys config.patch cannot carry (global-ua,
+// interface-name) travel in general-overlay.json, merged key by key
+// into the overlay. The override framework (OverrideStore) writes
+// overrides.json — global overrides plus one entry per profile UUID
+// and the active profile id — and effectiveSection() merges the
+// effective overrides over each base file (global, then the active
+// profile's); the tun fragment has no base file and goes straight
+// into the overlay as "tun" (the core parses it into TunConfig, so
+// strict-route / udp-timeout / dns-hijack / … apply; mtu and
+// congestion-controller are additionally folded into tun.start via
+// readTunnelSettings). General settings travel as
 // general.json (ConfigPatchParams wire keys, snake_case) and are sent
 // as config.patch once at startup, after engine.start, so saved
 // settings take effect on the next VPN start.
@@ -128,6 +140,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let mitmFileName = "mitm.json"
     private let moduleMitmFileName = "module-mitm.json"
     private let dnsFileName = "dns.json"
+    private let ntpFileName = "ntp.json"
+    private let snifferFileName = "sniffer.json"
+    private let generalOverlayFileName = "general-overlay.json"
+    private let overridesFileName = "overrides.json"
     private let generalSettingsFileName = "general.json"
     private let tunnelSettingsFileName = "tunnel.json"
     private let addedRulesFileName = "added-rules.json"
@@ -343,14 +359,51 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if let rules = overlayRules() {
             overlay["rules"] = rules
         }
-        if let dns = readSharedJSON(name: dnsFileName) {
+        if let dns = effectiveSection(file: dnsFileName, section: "dns") {
             overlay["dns"] = dns
+        }
+        if let ntp = effectiveSection(file: ntpFileName, section: "ntp") {
+            overlay["ntp"] = ntp
+        }
+        if let sniffer = effectiveSection(file: snifferFileName, section: "sniffer") {
+            overlay["sniffer"] = sniffer
+        }
+        if let tun = effectiveSection(file: nil, section: "tun") {
+            overlay["tun"] = tun
         }
         if let hosts = readSharedJSON(name: hostsFileName) {
             overlay["hosts"] = hosts
         }
+        if let generalOverlay = readSharedJSON(name: generalOverlayFileName) {
+            for (key, value) in generalOverlay {
+                overlay[key] = value
+            }
+        }
+        // General overrides (test-url, geodata-loader, …) are
+        // top-level RawConfig keys: they merge straight into the
+        // overlay. ipv6 / unified-delay / tcp-concurrent overrides
+        // are ALSO in the overlay (so a live re-apply honours them),
+        // but the startup config.patch below runs after config.apply
+        // and would clobber them with the base general.json values —
+        // so the same three keys are folded into that patch too (see
+        // the patch block).
+        if let generalOverrides = effectiveTopLevelOverrides(section: "general") {
+            for (key, value) in generalOverrides {
+                overlay[key] = value
+            }
+        }
         if !overlay.isEmpty {
             applyParams["overlay"] = overlay
+        }
+        // MITM capture: the core's engine.set_capture reads the
+        // `mitmCapture` wire key from config.apply's `options`
+        // (upstream crates/proto/src/types/config.rs Options, camelCase
+        // via the dto! macro; api.json $defs/Options). The Settings
+        // capture switch only writes mitm.json's "capture" flag, so
+        // the flag has to travel here — otherwise capture is never on.
+        if let mitmJSON = readSharedJSON(name: mitmFileName),
+           let capture = mitmJSON["capture"] as? Bool {
+            applyParams["options"] = ["mitmCapture": capture]
         }
         _ = try await sendCoreRequest(method: "config.apply", params: applyParams)
         _ = try await sendCoreRequest(method: "engine.start", params: [:])
@@ -361,7 +414,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // the tunnel: the settings can still be applied live later.
         if let general = readSharedJSON(name: generalSettingsFileName), !general.isEmpty {
             do {
-                _ = try await sendCoreRequest(method: "config.patch", params: general)
+                // General overrides for the keys that also travel via
+                // config.patch (ipv6, unified-delay, tcp-concurrent):
+                // fold them into this patch, or it would clobber the
+                // overlay values applied above.
+                var patch = general
+                if let overrides = effectiveTopLevelOverrides(section: "general") {
+                    for (key, snake) in ["ipv6": "ipv6", "unified-delay": "unified_delay", "tcp-concurrent": "tcp_concurrent"] {
+                        if let value = overrides[key] {
+                            patch[snake] = value
+                        }
+                    }
+                }
+                _ = try await sendCoreRequest(method: "config.patch", params: patch)
             } catch {
                 Self.log.error("startup config.patch failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -388,13 +453,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             // default below is the core's own DEFAULT_INET6.
             addresses.append(tun.ipv6Address)
         }
-        _ = try await sendCoreRequest(method: "tun.start", params: [
+        var tunParams: [String: Any] = [
             "source": ["kind": "channel", "handle": handle],
             "stack": tun.stack,
             "mtu": tun.mtu,
             "address": addresses,
             "dns": tun.dns,
-        ])
+        ]
+        if let congestionController = tun.congestionController {
+            tunParams["congestionController"] = congestionController
+        }
+        _ = try await sendCoreRequest(method: "tun.start", params: tunParams)
 
         // Tunnel interface: the system owns routing; the core must not
         // install routes (upstream: Os::Other -> NullBackend on iOS).
@@ -527,15 +596,47 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             if let rules = overlayRules() {
                 overlay["rules"] = rules
             }
-            if let dns = readSharedJSON(name: dnsFileName) {
+            if let dns = effectiveSection(file: dnsFileName, section: "dns") {
                 overlay["dns"] = dns
+            }
+            if let ntp = effectiveSection(file: ntpFileName, section: "ntp") {
+                overlay["ntp"] = ntp
+            }
+            if let sniffer = effectiveSection(file: snifferFileName, section: "sniffer") {
+                overlay["sniffer"] = sniffer
+            }
+            if let tun = effectiveSection(file: nil, section: "tun") {
+                overlay["tun"] = tun
             }
             if let hosts = readSharedJSON(name: hostsFileName) {
                 overlay["hosts"] = hosts
             }
+            if let generalOverlay = readSharedJSON(name: generalOverlayFileName) {
+                for (key, value) in generalOverlay {
+                    overlay[key] = value
+                }
+            }
+            if let generalOverrides = effectiveTopLevelOverrides(section: "general") {
+                for (key, value) in generalOverrides {
+                    overlay[key] = value
+                }
+            }
             if !overlay.isEmpty {
                 request["overlay"] = overlay
             }
+        }
+        // Live re-apply: the app's config.apply params carry options
+        // with mitmCapture always false (ConcordConfigOptions default;
+        // nothing in the app sets it). Merge the mitm.json capture flag
+        // in so a live re-apply honours the capture switch too, keeping
+        // any other option keys the app sent.
+        if (request["method"] as? String) == "config.apply" {
+            var options = (request["options"] as? [String: Any]) ?? [:]
+            if let mitmJSON = readSharedJSON(name: mitmFileName),
+               let capture = mitmJSON["capture"] as? Bool {
+                options["mitmCapture"] = capture
+            }
+            request["options"] = options
         }
         // delay.run is a stream, not a plain request: forward it, then
         // register the accumulator on the sub it returns so its Result /
@@ -1094,6 +1195,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let routeExcludeAddress: [String]
         let bypassPrivateRoute: Bool
         let dnsHijack: Bool
+        // TUN override (FlClash tun.dart, via overrides.json): the
+        // congestion controller for tun.start. mtu is overridden the
+        // same way below; the other tun override keys travel in the
+        // config.apply overlay's "tun" fragment, which the core
+        // parses into TunConfig (strict-route, udp-timeout, …).
+        let congestionController: String?
     }
 
     private func readTunnelSettings(container: URL) -> TunnelSettings {
@@ -1102,16 +1209,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             let enabled = json["enabled"] as? Bool ?? true
             let stack = json["stack"] as? String ?? "gvisor"
-            let mtu = (json["mtu"] as? NSNumber)?.intValue ?? 1500
+            let tunOverrides = effectiveOverrides(section: "tun")
+            let mtu = (tunOverrides?["mtu"] as? NSNumber)?.intValue
+                ?? (json["mtu"] as? NSNumber)?.intValue ?? 1500
             let dns = json["dns"] as? [String] ?? ["223.5.5.5", "8.8.8.8"]
             let ipv6 = json["ipv6"] as? Bool ?? false
             let ipv6Address = json["ipv6-address"] as? String ?? "fdfe:dcba:9876::1/126"
             let routeExcludeAddress = json["route-exclude-address"] as? [String] ?? []
             let bypassPrivateRoute = json["bypass-private-route"] as? Bool ?? false
             let dnsHijack = json["dns-hijack"] as? Bool ?? true
-            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack)
+            let congestionController = tunOverrides?["congestion-controller"] as? String
+                ?? json["congestion-controller"] as? String
+            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, congestionController: congestionController)
         }
-        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true)
+        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true, congestionController: nil)
     }
 
     /// Parse a CIDR ("10.0.0.0/8" or "::1/128") into an excluded
@@ -1144,7 +1255,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let hosts = (user?["hostname"] as? [String] ?? [])
             + (modules?["hostname"] as? [String] ?? [])
         mitm["hostname"] = hosts
-        for key in ["url-rewrite", "header-rewrite", "body-rewrite", "map-local", "script"] {
+        for key in ["url-rewrite", "header-rewrite", "body-rewrite", "map-local", "script", "skip-server-cert-verify-hostname", "client-source-address", "request-body-mock"] {
             let merged = (user?[key] as? [String] ?? []) + (modules?[key] as? [String] ?? [])
             if merged.isEmpty {
                 mitm.removeValue(forKey: key)
@@ -1197,5 +1308,77 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return nil
         }
         return json
+    }
+
+    // MARK: - Override framework (OverrideStore / overrides.json)
+    //
+    // overrides.json holds the global overrides plus one entry per
+    // profile UUID and the active profile id. A section's effective
+    // value is its base file (if any) with the global overrides,
+    // then the active profile's overrides, merged over it. Dotted
+    // key paths ("fallback-filter.geoip", "sniff.HTTP") expand into
+    // nested maps. The tun fragment has no base file: only overrides
+    // exist (the device itself is owned by tun.start / tunnel.json).
+
+    private func readOverrides() -> [String: Any]? {
+        readSharedJSON(name: overridesFileName)
+    }
+
+    private func effectiveOverrides(section: String) -> [String: Any]? {
+        guard let doc = readOverrides() else { return nil }
+        var merged: [String: Any] = [:]
+        if let global = doc["global"] as? [String: Any],
+           let keys = global[section] as? [String: Any] {
+            mergeDotted(into: &merged, keys)
+        }
+        if let active = doc["activeProfileId"] as? String,
+           let profiles = doc["profiles"] as? [String: Any],
+           let profile = profiles[active] as? [String: Any],
+           let keys = profile[section] as? [String: Any] {
+            mergeDotted(into: &merged, keys)
+        }
+        return merged.isEmpty ? nil : merged
+    }
+
+    private func effectiveSection(file: String?, section: String) -> [String: Any]? {
+        var base = file.flatMap { readSharedJSON(name: $0) } ?? [:]
+        if let overrides = effectiveOverrides(section: section) {
+            deepMerge(into: &base, overrides)
+        }
+        return base.isEmpty ? nil : base
+    }
+
+    private func effectiveTopLevelOverrides(section: String) -> [String: Any]? {
+        effectiveOverrides(section: section)
+    }
+
+    private func mergeDotted(into dict: inout [String: Any], _ keys: [String: Any]) {
+        for (key, value) in keys {
+            let parts = key.split(separator: ".").map(String.init)
+            assignDotted(into: &dict, parts: parts, value: value)
+        }
+    }
+
+    private func assignDotted(into dict: inout [String: Any], parts: [String], value: Any) {
+        guard let first = parts.first else { return }
+        if parts.count == 1 {
+            dict[first] = value
+            return
+        }
+        var child = dict[first] as? [String: Any] ?? [:]
+        assignDotted(into: &child, parts: Array(parts.dropFirst()), value: value)
+        dict[first] = child
+    }
+
+    private func deepMerge(into base: inout [String: Any], _ overrides: [String: Any]) {
+        for (key, value) in overrides {
+            if var baseChild = base[key] as? [String: Any],
+               let overrideChild = value as? [String: Any] {
+                deepMerge(into: &baseChild, overrideChild)
+                base[key] = baseChild
+            } else {
+                base[key] = value
+            }
+        }
     }
 }

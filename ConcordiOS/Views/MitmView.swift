@@ -63,6 +63,17 @@ struct MitmView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                NavigationLink {
+                    MitmScriptsView()
+                } label: {
+                    HStack {
+                        Text("MITM 脚本")
+                        Spacer()
+                        Text("独立脚本库")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Text("模块把规则、重写、脚本和解密域名打包在一起，整体开关。MITM 拦截本身就是为模块服务的：模块里的重写和脚本要靠它才能改 HTTPS 请求的内容。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)

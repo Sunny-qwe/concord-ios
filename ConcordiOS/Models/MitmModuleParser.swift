@@ -17,14 +17,27 @@ import Darwin
 //
 // Deliberate simplifications vs FlClash (see README):
 //   - Stash overrides are parsed by a small YAML-subset reader
-//     (MiniYAML, block maps/lists/scalars, flow collections, quoted
-//     scalars, literal blocks). Anything it cannot parse falls back
-//     to the section parser instead of failing the whole module.
+//     (MiniYAML, block maps/lists/scalars, flow collections,
+//     quoted scalars, literal and folded blocks, anchors and
+//     aliases, multi-line flow collections, document markers).
+//     Anything it cannot parse falls back to the section parser
+//     instead of failing the whole module.
 //   - No `mitmAddLine`: the app edits module text wholesale.
 //   - No local-file attachments: a map-local `data` that is neither
 //     a downloaded URL nor a known resource skips as .relativeData.
+//     A bare file name does resolve, by basename, against the
+//     resources the module downloaded.
 //   - `system` is advisory only: a module naming another system
 //     still applies (FlClash only warns too).
+//   - dns / rule scripts are not supported by the core itself
+//     (parse_script answers "dns scripts are not supported"), and
+//     JSON-body rewrites have no core line form (BodyActionDef is
+//     Replace or Jq only), so those still skip. `request if …` /
+//     `response if …` conditionals and Loon `then script(…)` calls
+//     have no core line form either and still skip; QX
+//     `url-and-header` and whole-head `request-header` /
+//     `response-header` rewrites do have one (parse_url_rewrite's
+//     `head`, `header-text-replace`) and are emitted.
 
 // MARK: - Arguments
 
@@ -102,6 +115,18 @@ struct MitmModuleContent {
     var declaredScriptLines: [String] = []
     var declaredScripts: Int { declaredScriptLines.count }
     var rules: [String] = []
+    /// Hosts whose servers' certificates go unchecked while the
+    /// global skip switch is off (core
+    /// `skip-server-cert-verify-hostname`, from the [MITM] section).
+    var skipVerifyHostname: [String] = []
+    /// The clients decrypted for, in Surge's syntax (core
+    /// `client-source-address`, from the [MITM] section); empty
+    /// means all of them.
+    var clientSourceAddress: [String] = []
+    /// Request-body mocks, in map-local line syntax (core
+    /// `request-body-mock`, from [Request Body Mock] or Stash
+    /// `http.request-body-mock`).
+    var requestBodyMock: [String] = []
     var resourceUrls: Set<String> = []
     var skipped: [MitmModuleSkip] = []
 
@@ -109,7 +134,9 @@ struct MitmModuleContent {
         hostname.isEmpty && insertedHostname.isEmpty
             && urlRewrite.isEmpty && headerRewrite.isEmpty
             && bodyRewrite.isEmpty && mapLocal.isEmpty && script.isEmpty
-            && rules.isEmpty && resourceUrls.isEmpty && skipped.isEmpty
+            && rules.isEmpty && skipVerifyHostname.isEmpty
+            && clientSourceAddress.isEmpty && requestBodyMock.isEmpty
+            && resourceUrls.isEmpty && skipped.isEmpty
     }
 
     /// The MITM lists as the core takes them: inserted hostnames
@@ -122,7 +149,10 @@ struct MitmModuleContent {
             bodyRewrite: bodyRewrite,
             mapLocal: mapLocal,
             script: script,
-            rules: rules
+            rules: rules,
+            skipVerifyHostname: skipVerifyHostname,
+            clientSourceAddress: clientSourceAddress,
+            requestBodyMock: requestBodyMock
         )
     }
 }
@@ -137,11 +167,15 @@ struct MitmModuleMerged {
     var mapLocal: [String] = []
     var script: [String] = []
     var rules: [String] = []
+    var skipVerifyHostname: [String] = []
+    var clientSourceAddress: [String] = []
+    var requestBodyMock: [String] = []
 
     var isEmpty: Bool {
         hostname.isEmpty && urlRewrite.isEmpty && headerRewrite.isEmpty
             && bodyRewrite.isEmpty && mapLocal.isEmpty && script.isEmpty
-            && rules.isEmpty
+            && rules.isEmpty && skipVerifyHostname.isEmpty
+            && clientSourceAddress.isEmpty && requestBodyMock.isEmpty
     }
 
     /// RawConfig wire keys (kebab-case), for module-mitm.json and
@@ -155,6 +189,9 @@ struct MitmModuleMerged {
         if !bodyRewrite.isEmpty { out["body-rewrite"] = bodyRewrite }
         if !mapLocal.isEmpty { out["map-local"] = mapLocal }
         if !script.isEmpty { out["script"] = script }
+        if !skipVerifyHostname.isEmpty { out["skip-server-cert-verify-hostname"] = skipVerifyHostname }
+        if !clientSourceAddress.isEmpty { out["client-source-address"] = clientSourceAddress }
+        if !requestBodyMock.isEmpty { out["request-body-mock"] = requestBodyMock }
         return out
     }
 }
@@ -655,6 +692,9 @@ private final class MitmModuleParserEngine {
     var script: [String] = []
     var declaredScriptLines: [String] = []
     var rules: [String] = []
+    var skipVerifyHostname: [String] = []
+    var clientSourceAddress: [String] = []
+    var requestBodyMock: [String] = []
     var resourceUrls: Set<String> = []
     var skipped: [MitmModuleSkip] = []
 
@@ -713,6 +753,9 @@ private final class MitmModuleParserEngine {
             script: script,
             declaredScriptLines: declaredScriptLines,
             rules: rules,
+            skipVerifyHostname: skipVerifyHostname,
+            clientSourceAddress: clientSourceAddress,
+            requestBodyMock: requestBodyMock,
             resourceUrls: resourceUrls,
             skipped: skipped
         )
@@ -842,13 +885,17 @@ private final class MitmModuleParserEngine {
         case "header rewrite":
             headerRewrite.append(line)
         case "body rewrite":
-            if RX.matches(#"^http-(request|response)-jq\s"#, line) {
-                skip(section, line, .jq)
-            } else {
-                bodyRewrite.append(line)
-            }
+            // Surge passes its lines through, jq included: the core
+            // reads `http-request-jq` / `http-response-jq` lines
+            // (parse_body_rewrite). FlClash does the same.
+            bodyRewrite.append(line)
         case "map local":
             readMapLocal(section, line: line)
+        case "request body mock":
+            // Same line syntax as map-local, but the answer mocks
+            // the request body the client sends (core
+            // `request-body-mock`, compiled like map-local).
+            readMapLocal(section, line: line, intoRequestMock: true)
         case "rewrite":
             readLoonRewrite(section, line: line)
         case "mitm":
@@ -913,11 +960,24 @@ private final class MitmModuleParserEngine {
 
     /// The resources directory's file for [url], or nil once the line is
     /// skipped for a file the module does not download or the app has not.
+    /// A `data` that is not a URL resolves in three ways: the exact
+    /// resource URL the module downloaded, the bare file name of a
+    /// downloaded resource (`data=a.json` for a `https://…/a.json`
+    /// the module fetched), or an already hash-named file. Anything
+    /// else still skips as .relativeData: the core can only read a
+    /// file that is in its resources directory.
     func resource(_ section: String, line: String, url: String) -> String? {
         if !isMitmResourceUrl(url) {
-            let attachment = resources[url]
-            if attachment == nil { skip(section, line, .relativeData) }
-            return attachment
+            if let attachment = resources[url] { return attachment }
+            let base = URL(fileURLWithPath: url).lastPathComponent
+            if let match = resources.first(where: {
+                URL(string: $0.key)?.lastPathComponent == base
+            }) {
+                return match.value
+            }
+            if resources.values.contains(url) { return url }
+            skip(section, line, .relativeData)
+            return nil
         }
         resourceUrls.insert(url)
         let file = resources[url]
@@ -977,11 +1037,27 @@ private final class MitmModuleParserEngine {
             return
         }
         let key = String(line[..<equals]).trimmingCharacters(in: .whitespaces).lowercased()
-        guard key == "hostname" else {
+        let value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
+        switch key {
+        case "skip-server-cert-verify-hostname":
+            // Hosts whose servers' certificates go unchecked while
+            // the global skip switch is off; the core reads each
+            // item as a hostname entry.
+            skipVerifyHostname.append(contentsOf: value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+        case "client-source-address":
+            // The clients decrypted for, in Surge's syntax
+            // (IP/CIDR items, `-` excludes); the core judges each
+            // item, so they pass through verbatim.
+            clientSourceAddress.append(contentsOf: value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+        case "hostname":
+            readMitmHostname(section, line: line, value: value)
+        default:
             skip(section, line, .setting)
-            return
         }
-        var value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
+    }
+
+    private func readMitmHostname(_ section: String, line: String, value: String) {
+        var value = value
         var inserted = false
         if value.hasPrefix("%INSERT%") {
             inserted = true
@@ -1087,7 +1163,7 @@ private final class MitmModuleParserEngine {
         return out.isEmpty ? nil : out
     }
 
-    func readMapLocal(_ section: String, line: String) {
+    func readMapLocal(_ section: String, line: String, intoRequestMock: Bool = false) {
         guard let tokens = lineTokens(line), !tokens.isEmpty else {
             skip(section, line, .unreadable)
             return
@@ -1103,10 +1179,10 @@ private final class MitmModuleParserEngine {
                 String(token.text[token.text.index(after: equals)...])
             ))
         }
-        addMapLocal(section, line: line, pattern: tokens[0].text, params: params)
+        addMapLocal(section, line: line, pattern: tokens[0].text, params: params, intoRequestMock: intoRequestMock)
     }
 
-    func addMapLocal(_ section: String, line: String, pattern: String, params: [(String, String)]) {
+    func addMapLocal(_ section: String, line: String, pattern: String, params: [(String, String)], intoRequestMock: Bool = false) {
         var params = params
         let dataType = params.first { $0.0 == "data-type" }?.1 ?? "file"
         if dataType == "file" {
@@ -1118,7 +1194,12 @@ private final class MitmModuleParserEngine {
                 params.append(("data", file))
             }
         }
-        mapLocal.append(([field(pattern)] + params.map { "\($0.0)=\(quoted($0.1))" }).joined(separator: " "))
+        let rendered = ([field(pattern)] + params.map { "\($0.0)=\(quoted($0.1))" }).joined(separator: " ")
+        if intoRequestMock {
+            requestBodyMock.append(rendered)
+        } else {
+            mapLocal.append(rendered)
+        }
     }
 
     /// Loon's legacy `pattern action ...`, which spreads over Surge's lists.
@@ -1238,7 +1319,11 @@ private final class MitmModuleParserEngine {
     func readQxRewrite(_ line: String) {
         let section = "rewrite_local"
         if RX.matches(#"\surl-and-header\s"#, line) {
-            skip(section, line, .conditional)
+            // A URL rewrite conditioned on the request head: the
+            // core reads it verbatim (`pattern head url-and-header
+            // action`, parse_url_rewrite), so it is emitted as-is
+            // rather than skipped as a conditional.
+            urlRewrite.append(line)
             return
         }
         guard let m = RX.match(#"^(\S+)\s+url\s+(\S+)\s*(.*)$"#, line),
@@ -1265,10 +1350,23 @@ private final class MitmModuleParserEngine {
             let first = String(rest.prefix(repeated)).trimmingCharacters(in: .whitespaces)
             let second = String(rest.dropFirst(repeated + type.count)).trimmingCharacters(in: .whitespaces)
             bodyRewrite.append([phase, field(pattern), field(first), field(second)].joined(separator: " "))
+        } else if (type == "request-header" || type == "response-header") && repeated > 0 {
+            // A replacement over the whole head, its first line
+            // included: the core reads it as `header-text-replace`
+            // (HeaderEditDef::Text). The two values repeat the type
+            // between them, as a body rewrite does; anything else
+            // keeps the rawHeader skip.
+            let phase = type == "request-header" ? "http-request" : "http-response"
+            let first = String(rest.prefix(repeated)).trimmingCharacters(in: .whitespaces)
+            let second = String(rest.dropFirst(repeated + type.count)).trimmingCharacters(in: .whitespaces)
+            headerRewrite.append([phase, field(pattern), "header-text-replace", field(first), field(second)].joined(separator: " "))
         } else if type == "request-header" || type == "response-header" {
             skip(section, line, .rawHeader)
         } else if type == "jsonjq-request-body" || type == "jsonjq-response-body" {
-            skip(section, line, .jq)
+            // The core reads jq rewrites (parse_body_rewrite);
+            // FlClash emits the same form.
+            let phase = type == "jsonjq-request-body" ? "http-request" : "http-response"
+            bodyRewrite.append("\(phase)-jq \(field(pattern)) \(rest)")
         } else if type == "echo-response" && repeated > 0 {
             let headers = String(rest.prefix(repeated)).trimmingCharacters(in: .whitespaces)
                 .components(separatedBy: "\\r\\n")
@@ -1372,8 +1470,13 @@ private enum MiniYAML {
     }
 
     static func parse(_ text: String) -> [String: MiniYAMLValue]? {
+        let rawLines = splitLines(text)
         var lines: [Line] = []
-        for raw in splitLines(text) {
+        var anchors: [String: MiniYAMLValue] = [:]
+        var i = 0
+        while i < rawLines.count {
+            let raw = rawLines[i]
+            i += 1
             var indent = 0
             for c in raw {
                 if c == " " { indent += 1 } else { break }
@@ -1381,16 +1484,55 @@ private enum MiniYAML {
             if indent < raw.count && raw[raw.index(raw.startIndex, offsetBy: indent)] == "\t" {
                 return nil
             }
-            let content = stripComment(String(raw.dropFirst(indent)))
+            var content = stripComment(String(raw.dropFirst(indent)))
                 .trimmingCharacters(in: .whitespaces)
             if content.isEmpty { continue }
+            // A document marker: Stash overrides sometimes open with it.
+            if content == "---" || content == "..." { continue }
+            // A flow collection split over lines: join until its
+            // brackets balance, so the value parses as one.
+            while flowDepth(content) > 0 && i < rawLines.count {
+                let next = stripComment(rawLines[i]).trimmingCharacters(in: .whitespaces)
+                i += 1
+                if next.isEmpty { continue }
+                content += " " + next
+            }
+            if flowDepth(content) > 0 { return nil }
             lines.append(Line(indent: indent, content: content))
         }
         guard !lines.isEmpty else { return nil }
         var index = 0
-        guard let value = parseBlock(lines, &index, indent: lines[0].indent),
+        guard let value = parseBlock(lines, &index, indent: lines[0].indent, anchors: &anchors),
               case .map(let map) = value, index == lines.count else { return nil }
         return map
+    }
+
+    /// Open brackets minus closed ones, outside quotes: > 0 while
+    /// a flow collection runs over several lines.
+    static func flowDepth(_ text: String) -> Int {
+        let chars = Array(text)
+        var depth = 0
+        var single = false
+        var double = false
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if single {
+                if c == "'" { single = false }
+            } else if double {
+                if c == "\\" { i += 1 } else if c == "\"" { double = false }
+            } else if c == "'" {
+                single = true
+            } else if c == "\"" {
+                double = true
+            } else if c == "[" || c == "{" {
+                depth += 1
+            } else if c == "]" || c == "}" {
+                depth -= 1
+            }
+            i += 1
+        }
+        return depth
     }
 
     /// A `#` preceded by whitespace (or at the start) outside quotes
@@ -1446,54 +1588,79 @@ private enum MiniYAML {
         return nil
     }
 
-    static func parseBlock(_ lines: [Line], _ index: inout Int, indent: Int) -> MiniYAMLValue? {
+    static func parseBlock(_ lines: [Line], _ index: inout Int, indent: Int, anchors: inout [String: MiniYAMLValue]) -> MiniYAMLValue? {
         guard index < lines.count, lines[index].indent == indent else { return nil }
         let content = lines[index].content
         if content == "-" || content.hasPrefix("- ") {
-            return parseList(lines, &index, indent: indent)
+            return parseList(lines, &index, indent: indent, anchors: &anchors)
         }
         if mapKey(content) != nil {
-            return parseMap(lines, &index, indent: indent)
+            return parseMap(lines, &index, indent: indent, anchors: &anchors)
         }
         index += 1
-        return parseScalar(content)
+        return parseInline(content, anchors: &anchors)
     }
 
-    static func parseMap(_ lines: [Line], _ index: inout Int, indent: Int) -> MiniYAMLValue? {
+    static func parseMap(_ lines: [Line], _ index: inout Int, indent: Int, anchors: inout [String: MiniYAMLValue]) -> MiniYAMLValue? {
         var map: [String: MiniYAMLValue] = [:]
         while index < lines.count {
             let line = lines[index]
             guard line.indent == indent, let (key, rest) = mapKey(line.content) else { break }
             index += 1
+            // An anchor on the value (`key: &name value`, or `key:
+            // &name` over a nested block): peel it, store the value
+            // under it once it is read.
+            var rest = rest
+            var anchor: String?
+            if rest.hasPrefix("&") {
+                let after = String(rest.dropFirst())
+                if let space = after.firstIndex(of: " ") {
+                    anchor = String(after[..<space])
+                    rest = String(after[after.index(after: space)...]).trimmingCharacters(in: .whitespaces)
+                } else {
+                    anchor = after
+                    rest = ""
+                }
+            }
+            let value: MiniYAMLValue
             if rest.isEmpty {
                 // Nested block, a block list at the same indent, or an
                 // empty value.
                 if index < lines.count && lines[index].indent > indent {
-                    guard let nested = parseBlock(lines, &index, indent: lines[index].indent) else { return nil }
-                    map[key] = nested
+                    guard let nested = parseBlock(lines, &index, indent: lines[index].indent, anchors: &anchors) else { return nil }
+                    value = nested
                 } else if index < lines.count && lines[index].indent == indent
                             && (lines[index].content == "-" || lines[index].content.hasPrefix("- ")) {
-                    guard let nested = parseList(lines, &index, indent: indent) else { return nil }
-                    map[key] = nested
+                    guard let nested = parseList(lines, &index, indent: indent, anchors: &anchors) else { return nil }
+                    value = nested
                 } else {
-                    map[key] = .null
+                    value = .null
                 }
             } else if rest == "|" || rest == ">" || rest.hasPrefix("|") || rest.hasPrefix(">") {
+                // A literal block keeps its line breaks; a folded
+                // block folds them to spaces. `+` keeps a trailing
+                // break, `-` (and the default here) drops it.
+                let folded = rest.hasPrefix(">")
+                let keepBreak = rest.contains("+")
                 var parts: [String] = []
                 while index < lines.count && lines[index].indent > indent {
                     parts.append(String(lines[index].content))
                     index += 1
                 }
-                map[key] = .string(parts.joined(separator: "\n"))
+                var joined = parts.joined(separator: folded ? " " : "\n")
+                if keepBreak && !joined.isEmpty { joined += "\n" }
+                value = .string(joined)
             } else {
-                guard let value = parseInline(rest) else { return nil }
-                map[key] = value
+                guard let parsed = parseInline(rest, anchors: &anchors) else { return nil }
+                value = parsed
             }
+            if let anchor { anchors[anchor] = value }
+            map[key] = value
         }
         return .map(map)
     }
 
-    static func parseList(_ lines: [Line], _ index: inout Int, indent: Int) -> MiniYAMLValue? {
+    static func parseList(_ lines: [Line], _ index: inout Int, indent: Int, anchors: inout [String: MiniYAMLValue]) -> MiniYAMLValue? {
         var items: [MiniYAMLValue] = []
         while index < lines.count {
             let line = lines[index]
@@ -1503,7 +1670,7 @@ private enum MiniYAML {
             index += 1
             if remainder.isEmpty {
                 guard index < lines.count && lines[index].indent > indent,
-                      let nested = parseBlock(lines, &index, indent: lines[index].indent) else { return nil }
+                      let nested = parseBlock(lines, &index, indent: lines[index].indent, anchors: &anchors) else { return nil }
                 items.append(nested)
             } else if mapKey(remainder) != nil {
                 // A map starting on the dash line: re-read it (plus the
@@ -1514,11 +1681,11 @@ private enum MiniYAML {
                     index += 1
                 }
                 var subIndex = 0
-                guard let nested = parseMap(sub, &subIndex, indent: indent + 2),
+                guard let nested = parseMap(sub, &subIndex, indent: indent + 2, anchors: &anchors),
                       subIndex == sub.count else { return nil }
                 items.append(nested)
             } else {
-                guard let value = parseInline(remainder) else { return nil }
+                guard let value = parseInline(remainder, anchors: &anchors) else { return nil }
                 items.append(value)
             }
         }
@@ -1526,16 +1693,31 @@ private enum MiniYAML {
     }
 
     /// An inline value: flow collection, quoted scalar, or plain scalar.
-    static func parseInline(_ text: String) -> MiniYAMLValue? {
+    static func parseInline(_ text: String, anchors: inout [String: MiniYAMLValue]) -> MiniYAMLValue? {
         let text = text.trimmingCharacters(in: .whitespaces)
         if text.isEmpty { return .null }
         if text == "null" || text == "~" { return .null }
+        if text.hasPrefix("*") {
+            // An alias: the anchored value, or nothing when the
+            // anchor was never defined.
+            return anchors[String(text.dropFirst())]
+        }
+        if text.hasPrefix("&") {
+            // An anchor on an inline value: store the value and
+            // return it without the anchor.
+            let after = String(text.dropFirst())
+            guard let space = after.firstIndex(of: " ") else { return nil }
+            let name = String(after[..<space])
+            guard let value = parseInline(String(after[after.index(after: space)...]), anchors: &anchors) else { return nil }
+            anchors[name] = value
+            return value
+        }
         if text.hasPrefix("[") && text.hasSuffix("]") {
             let inner = String(text.dropFirst().dropLast())
             if inner.trimmingCharacters(in: .whitespaces).isEmpty { return .list([]) }
             var items: [MiniYAMLValue] = []
             for part in splitFlow(inner) {
-                guard let value = parseInline(part) else { return nil }
+                guard let value = parseInline(part, anchors: &anchors) else { return nil }
                 items.append(value)
             }
             return .list(items)
@@ -1545,7 +1727,7 @@ private enum MiniYAML {
             var map: [String: MiniYAMLValue] = [:]
             if inner.trimmingCharacters(in: .whitespaces).isEmpty { return .map(map) }
             for part in splitFlow(inner) {
-                guard let (key, rest) = mapKey(part), let value = parseInline(rest) else { return nil }
+                guard let (key, rest) = mapKey(part), let value = parseInline(rest, anchors: &anchors) else { return nil }
                 map[key] = value
             }
             return .map(map)
@@ -1623,7 +1805,7 @@ private let stashMetaKeys: Set<String> = [
     "manual", "date", "version", "arguments", "arguments-version", "script-providers",
 ]
 private let stashHttpLists: Set<String> = [
-    "mitm", "url-rewrite", "rewrite", "header-rewrite", "body-rewrite", "mock", "script",
+    "mitm", "url-rewrite", "rewrite", "header-rewrite", "body-rewrite", "mock", "request-body-mock", "script",
 ]
 private let stashScriptTypes: [String: String] = [
     "request": "http-request", "response": "http-response",
@@ -1685,6 +1867,8 @@ extension MitmModuleParserEngine {
                     readStashBodyRewrite(key, line: line)
                 case "mock":
                     readStashMock(key, item: item)
+                case "request-body-mock":
+                    readStashMock(key, item: item, intoRequestMock: true)
                 case "script":
                     readStashScript(key, item: item, providers: providers)
                 default:
@@ -1730,7 +1914,9 @@ extension MitmModuleParserEngine {
         case "replace-regex":
             bodyRewrite.append("http-\(phase) \(field(pattern)) \(rest)")
         case "jq":
-            skip(section, line, .jq)
+            // The core reads jq rewrites (parse_body_rewrite);
+            // FlClash emits the same form.
+            bodyRewrite.append("http-\(phase)-jq \(field(pattern)) \(field(unquote(rest)))")
         default:
             skip(section, line, action.hasPrefix("json-") ? .jsonBody : .unreadable)
         }
@@ -1738,7 +1924,7 @@ extension MitmModuleParserEngine {
 
     /// A mock body of more than one line goes over as base64, as each
     /// line of the core's lists is one entry.
-    func readStashMock(_ section: String, item: MiniYAMLValue) {
+    func readStashMock(_ section: String, item: MiniYAMLValue, intoRequestMock: Bool = false) {
         let shown = stashLine(item)
         guard let map = item.map, map["match"] != nil else {
             skip(section, shown, .unreadable)
@@ -1763,7 +1949,7 @@ extension MitmModuleParserEngine {
         if !headers.isEmpty {
             mapped.append(("header", headers.map { "\($0.key):\(stashText($0.value))" }.joined(separator: "|")))
         }
-        addMapLocal(section, line: shown, pattern: stashText(map["match"]), params: mapped)
+        addMapLocal(section, line: shown, pattern: stashText(map["match"]), params: mapped, intoRequestMock: intoRequestMock)
     }
 
     /// Reads an http script, or with [section] `cron` a scheduled one,
@@ -1904,6 +2090,9 @@ func mergeMitmModules(hostname: [String], modules: [MitmModuleContent]) -> MitmM
         out.bodyRewrite += lists.bodyRewrite
         out.mapLocal += lists.mapLocal
         out.script += lists.script
+        out.skipVerifyHostname += lists.skipVerifyHostname
+        out.clientSourceAddress += lists.clientSourceAddress
+        out.requestBodyMock += lists.requestBodyMock
         out.rules += module.rules
     }
     return out

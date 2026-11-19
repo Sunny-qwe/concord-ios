@@ -11,6 +11,8 @@ struct ProfilesView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var configStore: ConfigStore
     @State private var showUnifiedImport = false
+    @State private var showScanImport = false
+    @State private var scannedText: String?
     @State private var previewProfile: Profile?
     @State private var isUpdating = false
     @State private var validationMessage: String?
@@ -99,6 +101,36 @@ struct ProfilesView: View {
                     }
                     .disabled(profileStore.activeProfile == nil)
                 }
+                Section("订阅工具") {
+                    Button {
+                        showScanImport = true
+                    } label: {
+                        Label("扫码导入订阅", systemImage: "qrcode.viewfinder")
+                    }
+                    NavigationLink {
+                        NodeSourcesView()
+                    } label: {
+                        Label("节点来源", systemImage: "list.bullet")
+                    }
+                    NavigationLink {
+                        VisualConfigView()
+                    } label: {
+                        Label("可视化配置", systemImage: "slider.horizontal.3")
+                    }
+                    NavigationLink {
+                        ExtendConfigView()
+                    } label: {
+                        Label("扩展配置", systemImage: "plus.square.on.square")
+                    }
+                    NavigationLink {
+                        CustomSubscriptionListView()
+                    } label: {
+                        Label("自定义订阅", systemImage: "doc.badge.gearshape")
+                    }
+                    Text("长按左侧拖动可调整订阅顺序；顺序会保存下来。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
                 if profileStore.profiles.isEmpty {
                     ContentUnavailableView("暂无订阅", systemImage: "list.clipboard", description: Text("添加一个订阅链接或导入本地配置文件"))
                 }
@@ -138,6 +170,9 @@ struct ProfilesView: View {
                             .disabled(profile.kind != .url)
                         Button("删除", role: .destructive) { profileStore.delete(profile) }
                     }
+                }
+                .onMove { from, to in
+                    profileStore.moveProfiles(fromOffsets: from, toOffset: to)
                 }
 
                 if let inspect = profileStore.inspect {
@@ -350,7 +385,7 @@ struct ProfilesView: View {
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
             .listStyle(.insetGrouped)
-            .navigationTitle("订阅")
+            .navigationTitle("title.profiles".l10n)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -365,13 +400,22 @@ struct ProfilesView: View {
                     .disabled(isUpdating)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
+                    EditButton()
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button { showUnifiedImport = true } label: {
                         Image(systemName: "plus")
                     }
                 }
             }
-            .sheet(isPresented: $showUnifiedImport) {
-                UnifiedImportView(profileStore: profileStore)
+            .sheet(isPresented: $showUnifiedImport, onDismiss: { scannedText = nil }) {
+                UnifiedImportView(profileStore: profileStore, initialText: scannedText ?? "", autoImport: scannedText != nil)
+            }
+            .sheet(isPresented: $showScanImport) {
+                ScanImportView { text in
+                    scannedText = text
+                    showUnifiedImport = true
+                }
             }
             .sheet(item: $previewProfile) { profile in
                 ProfilePreviewView(profile: profile)

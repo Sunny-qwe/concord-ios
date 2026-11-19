@@ -37,6 +37,15 @@ struct DashboardView: View {
     @AppStorage("ConcordiOS.dashboard.show.profile") private var showProfile = true
     @AppStorage("ConcordiOS.dashboard.show.groups") private var showGroups = true
     @AppStorage("ConcordiOS.dashboard.show.stats") private var showStats = true
+    @AppStorage("ConcordiOS.dashboard.show.memory") private var showMemory = true
+    @AppStorage("ConcordiOS.dashboard.show.update") private var showUpdate = true
+    /// Compact density (FlClash layout.dart DashboardDensity.compact):
+    /// smaller type, smaller start button and tiles, subtitles dropped.
+    @AppStorage("ConcordiOS.dashboard.densityCompact") private var densityCompact = false
+    /// Card order, comma-separated DashboardCardID raw values; empty
+    /// means the default order (also used to append cards added by
+    /// later versions).
+    @AppStorage("ConcordiOS.dashboard.order") private var cardOrderString = ""
 
     @State private var showEditSheet = false
     @State private var servicesExpanded = false
@@ -48,6 +57,24 @@ struct DashboardView: View {
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
     @State private var ipFetchFailed = false
+    /// Memory card state (FlClash memory_info.dart): the app's own
+    /// resident size (task_info) plus the core RSS (core.stats).
+    @State private var appMemoryBytes: UInt64 = 0
+    @State private var showMemoryDetail = false
+    @State private var isReleasingMemory = false
+    @State private var memoryReleaseMessage: String?
+    /// Update card state (FlClash update_status.dart): reads the
+    /// same UpdateChecker the About page uses; the last result is
+    /// kept in AppStorage so the card shows something before the
+    /// first check of the session.
+    @State private var updateCheckResult: UpdateChecker.Result?
+    @State private var updateCheckMessage: String?
+    @State private var isCheckingUpdate = false
+    @AppStorage("ConcordiOS.update.lastSha") private var lastUpdateSha = ""
+    @AppStorage("ConcordiOS.update.lastMessage") private var lastUpdateMessage = ""
+    @AppStorage("ConcordiOS.update.lastDate") private var lastUpdateDate = ""
+    @AppStorage("ConcordiOS.update.lastIsNew") private var lastUpdateIsNew = false
+    @AppStorage("ConcordiOS.update.lastChecked") private var lastUpdateChecked = false
     /// The last probe fetch failed (no data): while running, the
     /// card shows "服务失败" instead of the loading skeletons.
 
@@ -152,6 +179,69 @@ struct DashboardView: View {
 
     private var extraGroups: Int {
         max(0, proxyStore.groups.count - 4)
+    }
+
+    // MARK: - Card order + density (FlClash dashboard/edit.dart)
+
+    /// Card spacing and the big-number type shrink in compact density.
+    private var stackSpacing: CGFloat { densityCompact ? 8 : 12 }
+    private var playButtonSize: CGFloat { densityCompact ? 72 : 88 }
+    private var bigNumberSize: CGFloat { densityCompact ? 20 : 25 }
+    private var statNumberSize: CGFloat { densityCompact ? 19 : 24 }
+
+    /// The stored order, repaired: unknown ids are dropped, cards
+    /// added by later versions are appended at the end.
+    private var orderedCards: [DashboardCardID] {
+        var order = cardOrderString
+            .split(separator: ",")
+            .compactMap { DashboardCardID(rawValue: String($0)) }
+        if order.isEmpty { order = DashboardCardID.defaultOrder }
+        for id in DashboardCardID.allCases where !order.contains(id) {
+            order.append(id)
+        }
+        return order
+    }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.25"
+    }
+
+    /// The app process's resident size (FlClash reads
+    /// ProcessInfo.currentRss on its side; task_info is the iOS
+    /// equivalent). The core runs in the extension process, so its
+    /// RSS comes from core.stats instead.
+    private func readAppMemory() {
+        var info = task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<task_basic_info>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        if result == KERN_SUCCESS {
+            appMemoryBytes = UInt64(info.resident_size)
+        }
+    }
+
+    private func refreshMemorySnapshot() async {
+        readAppMemory()
+        await trafficStore.refreshMemory()
+    }
+
+    private func checkForUpdate() async {
+        isCheckingUpdate = true
+        defer { isCheckingUpdate = false }
+        if let result = await UpdateChecker.check() {
+            updateCheckResult = result
+            updateCheckMessage = result.isNew ? "发现新提交" : "已是最新提交"
+            lastUpdateSha = result.sha
+            lastUpdateMessage = result.message
+            lastUpdateDate = result.date
+            lastUpdateIsNew = result.isNew
+            lastUpdateChecked = true
+        } else {
+            updateCheckMessage = "检查更新失败（网络或 GitHub API 不可用）"
+        }
     }
 
     // MARK: - Subscription traffic (provider.get subscriptionInfo)
@@ -262,7 +352,7 @@ struct DashboardView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: stackSpacing) {
                 titleRow
                 if client.mode == .sample {
                     HStack {
@@ -272,15 +362,7 @@ struct DashboardView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                if showStatus { statusCard }
-                if showSpeed { speedCard }
-                if showMode { modeCard }
-                if showVpn { vpnCard }
-                if showIntranet { intranetCard }
-                if showServices { servicesCard }
-                if showProfile { profileCard }
-                if showGroups { groupsCard }
-                if showStats { statsCard }
+                ForEach(orderedCards, id: \.self) { cardView(for: $0) }
                 if let error = proxyStore.lastError {
                     Text(error).font(.system(size: 10)).foregroundStyle(.red)
                 }
@@ -337,8 +419,53 @@ struct DashboardView: View {
                 showServices: $showServices,
                 showProfile: $showProfile,
                 showGroups: $showGroups,
-                showStats: $showStats
+                showStats: $showStats,
+                showMemory: $showMemory,
+                showUpdate: $showUpdate,
+                densityCompact: $densityCompact,
+                cardOrder: Binding(
+                    get: { orderedCards },
+                    set: { newOrder in
+                        cardOrderString = newOrder.map(\.rawValue).joined(separator: ",")
+                    }
+                )
             )
+        }
+        .sheet(isPresented: $showMemoryDetail) {
+            MemoryDetailSheet(
+                appBytes: appMemoryBytes,
+                coreBytes: trafficStore.coreMemoryBytes,
+                isReleasing: $isReleasingMemory,
+                releaseMessage: $memoryReleaseMessage,
+                onRelease: {
+                    do {
+                        try await client.coreReleaseMemory()
+                        await refreshMemorySnapshot()
+                        memoryReleaseMessage = "已请求核心释放内存"
+                    } catch {
+                        memoryReleaseMessage = "释放失败：\(error.localizedDescription)"
+                    }
+                }
+            )
+        }
+    }
+
+    // MARK: - Card dispatch (order + visibility)
+
+    @ViewBuilder
+    private func cardView(for id: DashboardCardID) -> some View {
+        switch id {
+        case .status: if showStatus { statusCard }
+        case .speed: if showSpeed { speedCard }
+        case .mode: if showMode { modeCard }
+        case .vpn: if showVpn { vpnCard }
+        case .intranet: if showIntranet { intranetCard }
+        case .services: if showServices { servicesCard }
+        case .profile: if showProfile { profileCard }
+        case .groups: if showGroups { groupsCard }
+        case .stats: if showStats { statsCard }
+        case .memory: if showMemory { memoryCard }
+        case .update: if showUpdate { updateCard }
         }
     }
 
@@ -346,7 +473,7 @@ struct DashboardView: View {
 
     private var titleRow: some View {
         HStack(alignment: .center) {
-            Text("仪表盘")
+            Text("tab.dashboard".l10n)
                 .font(.system(size: 18, weight: .bold))
             Spacer()
             Button { showEditSheet = true } label: {
@@ -535,11 +662,11 @@ struct DashboardView: View {
                             .font(.system(size: 21, weight: .bold))
                             .foregroundStyle(.white)
                     }
-                    .frame(width: 88, height: 88)
+                    .frame(width: playButtonSize, height: playButtonSize)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(proxyStore.isRunning ? "停止 VPN" : "启动 VPN")
-                .frame(width: 88)
+                .frame(width: playButtonSize)
             }
             .padding(EdgeInsets(top: 18, leading: 20, bottom: 18, trailing: 16))
         }
@@ -612,19 +739,23 @@ struct DashboardView: View {
             }
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(split.number)
-                    .font(.system(size: 25, weight: .bold))
+                    .font(.system(size: bigNumberSize, weight: .bold))
                 Text("\(split.unit)/s")
                     .font(.system(size: 12))
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
             }
-            // Reference shows "累计 0 B" (no ".0"): ConcordFormat
-            // formats 0 as "0.0 B", so special-case zero locally
-            // (the shared formatter is used elsewhere and stays).
-            Text("累计 \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
-                .font(.system(size: 10))
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
+            // Compact density drops the subtitle (FlClash
+            // DashboardDensity.compact drops subtitles).
+            if !densityCompact {
+                // Reference shows "累计 0 B" (no ".0"): ConcordFormat
+                // formats 0 as "0.0 B", so special-case zero locally
+                // (the shared formatter is used elsewhere and stays).
+                Text("累计 \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
+                    .font(.system(size: 10))
+                    .fontWeight(.medium)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
@@ -655,7 +786,7 @@ struct DashboardView: View {
                     .buttonStyle(.plain)
                 }
             }
-            if let message = settingsStore.generalApplyMessage {
+            if let message = settingsStore.generalApplyMessage, !densityCompact {
                 Text(message)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -719,7 +850,7 @@ struct DashboardView: View {
                 Spacer()
             }
             Text(intranetIp ?? "—")
-                .font(.system(size: 25, weight: .bold))
+                .font(.system(size: bigNumberSize, weight: .bold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             HStack(spacing: 12) {
@@ -932,7 +1063,7 @@ struct DashboardView: View {
             }
             HStack(alignment: .firstTextBaseline) {
                 Text(usedPercentText)
-                    .font(.system(size: 24, weight: .bold))
+                    .font(.system(size: statNumberSize, weight: .bold))
                 Text("已用")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
@@ -976,7 +1107,7 @@ struct DashboardView: View {
             HStack {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                     Text("\(proxyStore.groups.count)")
-                        .font(.system(size: 25, weight: .bold))
+                        .font(.system(size: bigNumberSize, weight: .bold))
                     Text("个")
                         .font(.system(size: 13))
                         .fontWeight(.semibold)
@@ -1024,12 +1155,144 @@ struct DashboardView: View {
     private func statCell(value: String, label: String) -> some View {
         VStack(spacing: 4) {
             Text(value)
-                .font(.system(size: 24, weight: .bold))
+                .font(.system(size: statNumberSize, weight: .bold))
             Text(label)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Memory card (FlClash memory_info.dart)
+    //
+    // App RSS (this process, task_info) + core RSS (core.stats via
+    // TrafficStore). The core runs in the NetworkExtension process,
+    // so the two numbers are separate processes, not one total to
+    // be carved up. Polls every 2s like FlClash; tapping opens the
+    // detail sheet with the release-memory action.
+
+    private var memoryTotalBytes: UInt64 {
+        appMemoryBytes + (trafficStore.coreMemoryBytes ?? 0)
+    }
+
+    private var memoryCard: some View {
+        Button { showMemoryDetail = true } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    CardTitleRow(icon: "memorychip", title: "内存")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(ConcordFormat.bytes(Int64(memoryTotalBytes)))
+                        .font(.system(size: bigNumberSize, weight: .bold))
+                        .foregroundStyle(Color(.label))
+                    Text("总计")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                MemoryBar(appBytes: appMemoryBytes, coreBytes: trafficStore.coreMemoryBytes ?? 0)
+                HStack(spacing: 16) {
+                    memoryLegend(dot: ConcordTheme.accent, label: "应用", bytes: appMemoryBytes)
+                    memoryLegend(dot: .green, label: "核心", bytes: trafficStore.coreMemoryBytes ?? 0)
+                }
+                if !proxyStore.isRunning {
+                    Text("核心未运行：仅应用内存为实测值，核心为 0。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .concordCard()
+        .task {
+            await refreshMemorySnapshot()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                await refreshMemorySnapshot()
+            }
+        }
+    }
+
+    private func memoryLegend(dot: Color, label: String, bytes: UInt64) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(dot).frame(width: 8, height: 8)
+            Text(label).font(.system(size: 10)).foregroundStyle(Color(.label))
+            Text(ConcordFormat.bytes(Int64(bytes)))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color(.label))
+        }
+    }
+
+    // MARK: - Update card (FlClash update_status.dart)
+    //
+    // The app has no in-app update download (self-signed IPA): the
+    // card shows the current version, the latest commit on main
+    // from the same UpdateChecker the About page uses, and whether
+    // it is newer. Checking writes the result to AppStorage so the
+    // card keeps its last answer across launches.
+
+    private var updateCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                CardTitleRow(icon: "arrow.down.circle", title: "更新状态")
+                Spacer()
+                if lastUpdateChecked {
+                    PillBadge(
+                        text: lastUpdateIsNew ? "发现新提交" : "已是最新",
+                        tint: lastUpdateIsNew ? .orange : .green
+                    )
+                }
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("v\(appVersion)")
+                    .font(.system(size: bigNumberSize, weight: .bold))
+                Text("当前版本")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            if lastUpdateChecked {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("最新提交 \(String(lastUpdateSha.prefix(7)))")
+                        .font(.system(size: 13))
+                        .fontWeight(.semibold)
+                    Text(lastUpdateMessage)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                    if !lastUpdateDate.isEmpty {
+                        Text(lastUpdateDate)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            } else {
+                Text("尚未检查过更新。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            if let message = updateCheckMessage {
+                Text(message)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            Button(isCheckingUpdate ? "检查中…" : "检查更新") {
+                Task { await checkForUpdate() }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(ConcordTheme.accent)
+            .controlSize(.small)
+            .disabled(isCheckingUpdate)
+            if lastUpdateIsNew {
+                Text("新版本需在 GitHub Actions 重新构建 IPA 后手动安装，本应用内无法直接更新。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .concordCard()
     }
 }
 
@@ -1116,6 +1379,119 @@ private struct CloverBadge: View {
     }
 }
 
+/// Dashboard card identities (FlClash DashboardWidget): the order
+/// is user-editable, the visibility is the show/hide toggles.
+private enum DashboardCardID: String, CaseIterable {
+    case status, speed, mode, vpn, intranet, services, profile, groups, stats, memory, update
+
+    static let defaultOrder: [DashboardCardID] = [
+        .status, .speed, .mode, .vpn, .intranet, .services,
+        .profile, .groups, .stats, .memory, .update,
+    ]
+
+    var title: String {
+        switch self {
+        case .status: return "状态"
+        case .speed: return "网络速度"
+        case .mode: return "出站模式"
+        case .vpn: return "VPN"
+        case .intranet: return "内网 IP"
+        case .services: return "服务状态"
+        case .profile: return "配置"
+        case .groups: return "策略组"
+        case .stats: return "统计"
+        case .memory: return "内存"
+        case .update: return "更新状态"
+        }
+    }
+}
+
+/// Two-segment memory bar (FlClash _MemoryBar): app share in accent
+/// blue, core share in green, on a soft track.
+private struct MemoryBar: View {
+    let appBytes: UInt64
+    let coreBytes: UInt64
+
+    var body: some View {
+        GeometryReader { geo in
+            let total = max(1, appBytes + coreBytes)
+            let appWidth = geo.size.width * CGFloat(appBytes) / CGFloat(total)
+            ZStack(alignment: .leading) {
+                Capsule().fill(ConcordTheme.softFill)
+                HStack(spacing: 2) {
+                    Capsule().fill(ConcordTheme.accent).frame(width: max(0, appWidth - 1))
+                    Capsule().fill(Color.green).frame(width: max(0, geo.size.width - appWidth - 1))
+                }
+            }
+        }
+        .frame(height: 8)
+    }
+}
+
+/// Memory detail sheet (FlClash MemoryDetailSheet): app resident,
+/// core RSS, and the core.releaseMemory action.
+private struct MemoryDetailSheet: View {
+    let appBytes: UInt64
+    let coreBytes: UInt64?
+    @Binding var isReleasing: Bool
+    @Binding var releaseMessage: String?
+    let onRelease: () async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("总计") {
+                    memoryRow("应用 + 核心", value: ConcordFormat.bytes(Int64(appBytes + (coreBytes ?? 0))))
+                    Text("应用与核心是两个进程（应用进程与 NetworkExtension 进程），两项相加是占用总和。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Section("应用") {
+                    memoryRow("常驻内存", value: ConcordFormat.bytes(Int64(appBytes)))
+                }
+                Section("核心") {
+                    if let core = coreBytes {
+                        memoryRow("RSS", value: ConcordFormat.bytes(Int64(core)))
+                    } else {
+                        Text("核心未运行，无内存数据。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("core.stats 只暴露 rss。NetworkExtension 进程内存上限很紧（历史约 15–50 MB），大规则集与 GeoIP 可能触发 Jetsam。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Section {
+                    Button(isReleasing ? "释放中…" : "释放核心内存（core.releaseMemory）") {
+                        Task { await onRelease() }
+                    }
+                    .disabled(isReleasing || coreBytes == nil)
+                    if let message = releaseMessage {
+                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("内存")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func memoryRow(_ title: String, value: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(value).foregroundStyle(.secondary)
+        }
+    }
+}
+
 // MARK: - Dashboard edit sheet (pencil button)
 
 private struct DashboardEditSheet: View {
@@ -1129,6 +1505,10 @@ private struct DashboardEditSheet: View {
     @Binding var showProfile: Bool
     @Binding var showGroups: Bool
     @Binding var showStats: Bool
+    @Binding var showMemory: Bool
+    @Binding var showUpdate: Bool
+    @Binding var densityCompact: Bool
+    @Binding var cardOrder: [DashboardCardID]
 
     var body: some View {
         NavigationStack {
@@ -1143,16 +1523,31 @@ private struct DashboardEditSheet: View {
                     Toggle("配置", isOn: $showProfile)
                     Toggle("策略组", isOn: $showGroups)
                     Toggle("统计", isOn: $showStats)
+                    Toggle("内存", isOn: $showMemory)
+                    Toggle("更新状态", isOn: $showUpdate)
                 }
-                Section {
-                    Text("关闭的卡片会从仪表盘隐藏，可随时再打开。")
+                Section("密度") {
+                    Toggle("紧凑密度", isOn: $densityCompact)
+                    Text("紧凑模式缩小字号与启动按钮、收紧卡片间距，并隐藏部分副标题（FlClash DashboardDensity.compact）。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Section("卡片顺序") {
+                    ForEach(cardOrder, id: \.self) { id in
+                        Text(id.title)
+                    }
+                    .onMove { from, to in
+                        cardOrder.move(fromOffsets: from, toOffset: to)
+                    }
+                    Text("拖动右侧手柄调整顺序，关闭的卡片会从仪表盘隐藏，可随时再打开。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
             }
+            .environment(\.editMode, .constant(.active))
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
-            .navigationTitle("编辑仪表盘")
+            .navigationTitle("title.editDashboard".l10n)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

@@ -122,6 +122,44 @@ final class TunnelManager: ObservableObject {
         manager?.connection.stopVPNTunnel()
     }
 
+    /// Install (or clear) the on-demand rules on the saved VPN
+    /// manager (FlClash: On-Demand, exclude SSIDs). One disconnect
+    /// rule per excluded SSID, then a connect rule for every other
+    /// network; rule order matters, disconnect first. With no
+    /// excluded SSIDs the single connect rule means "always connect
+    /// on demand". Disabled clears the rules and turns on-demand
+    /// off. The manager must be saved for the rules to take effect;
+    /// a failure surfaces to the caller instead of being swallowed.
+    @MainActor
+    func updateOnDemandRules(enabled: Bool, excludedSSIDs: [String]) async throws {
+        try await prepare()
+        guard let manager else {
+            throw TunnelError.noManager
+        }
+        if enabled {
+            var rules: [NEOnDemandRule] = excludedSSIDs.map { ssid in
+                let rule = NEOnDemandRuleDisconnect()
+                rule.ssidMatch = [ssid]
+                return rule
+            }
+            rules.append(NEOnDemandRuleConnect())
+            manager.onDemandRules = rules
+            manager.isOnDemandEnabled = true
+        } else {
+            manager.onDemandRules = []
+            manager.isOnDemandEnabled = false
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            manager.saveToPreferences { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
     /// Send one JSON-RPC request to the extension and await its reply.
     /// Throws TunnelError.notRunning unless the tunnel is connected,
     /// and TunnelError.noReply when the extension answers nothing.

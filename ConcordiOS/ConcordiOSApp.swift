@@ -25,6 +25,7 @@ struct ConcordiOSApp: App {
     @StateObject private var eventStore: EventStore
     @StateObject private var mitmModuleStore: MitmModuleStore
     @StateObject private var themeStore: ThemeStore
+    @StateObject private var fontStore: FontStore
 
     init() {
         let client = ConcordClient()
@@ -50,6 +51,9 @@ struct ConcordiOSApp: App {
         // accent from it); the app owns the same instance so a theme
         // change re-renders the root.
         _themeStore = StateObject(wrappedValue: ThemeStore.shared)
+        // Same pattern for the font store: the root applies its
+        // default font to the whole app (see .font below).
+        _fontStore = StateObject(wrappedValue: FontStore.shared)
     }
 
     var body: some Scene {
@@ -69,7 +73,9 @@ struct ConcordiOSApp: App {
                 .environmentObject(eventStore)
                 .environmentObject(mitmModuleStore)
                 .environmentObject(themeStore)
+                .environmentObject(fontStore)
                 .environmentObject(TunnelManager.shared)
+                .environment(\.font, fontStore.rootFont)
                 .onOpenURL { url in
                     Task { await handleOpenURL(url) }
                 }

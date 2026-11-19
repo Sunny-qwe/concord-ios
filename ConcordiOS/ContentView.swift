@@ -44,8 +44,100 @@ struct ContentView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var selectedTab: AppTab = .dashboard
+    @State private var updateAlertMessage: String?
+    @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = false
+    @AppStorage("ConcordiOS.geoAutoUpdateHours") private var geoAutoUpdateHours = 24.0
 
     var body: some View {
+        Group {
+            if themeStore.navBarStyle == .docked {
+                // Docked: the system tab bar (FlClash: 导航栏样式 ->
+                // 停靠）.
+                tabView
+                    .tint(themeStore.accentColor)
+            } else {
+                // Floating capsule bar (default, reference bottom bar).
+                tabView
+                    .toolbar(.hidden, for: .tabBar)
+                    .tint(themeStore.accentColor)
+                    .safeAreaInset(edge: .bottom) {
+                        floatingTabBar
+                            .padding(.horizontal, 16)
+                            // Reference bar bottom sits 34pt above the screen
+                            // bottom (810pt on an 844pt screen); the safe-area
+                            // inset already supplies those 34pt on a home-
+                            // indicator phone, so only 4pt extra padding is
+                            // needed. (Fixed 4pt: there is no safe-area
+                            // environment value in SwiftUI, so the previous
+                            // property wrapper did not compile.)
+                            .padding(.bottom, 4)
+                    }
+            }
+        }
+        .preferredColorScheme(themeStore.colorScheme)
+        .environment(\.dynamicTypeSize, themeStore.dynamicTypeSize ?? .large)
+        .task {
+            // Load the first snapshot for every page once, like FlClash
+            // does when the home page mounts.
+            await proxyStore.refresh()
+            await ruleStore.refresh()
+            await connectionStore.refresh()
+            await logStore.refresh()
+            trafficStore.start()
+            // Sync the subscription-download flags into ProfileStore
+            // (they live in SettingsStore's saved blob).
+            profileStore.checkCertificate = settingsStore.checkCertificate
+            profileStore.autoCloseConnections = settingsStore.autoCloseConnections
+            // "自动更新订阅" is a real switch now: refresh remote
+            // profiles on launch (updateAll re-applies the active one).
+            if settingsStore.autoUpdateProfiles {
+                await profileStore.updateAll()
+            }
+            // Geo auto-update (ResourcesView setting): refresh the
+            // three Geo databases when the interval has elapsed.
+            if geoAutoUpdate {
+                let last = UserDefaults.standard.double(forKey: "ConcordiOS.geoLastUpdate")
+                if last == 0 || Date().timeIntervalSince1970 - last > geoAutoUpdateHours * 3600 {
+                    for kind in ["MMDB", "ASN", "GEOSITE"] {
+                        await ruleStore.geoUpdate(kind: kind)
+                    }
+                    UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "ConcordiOS.geoLastUpdate")
+                }
+            }
+            // Auto-run: start the VPN on launch when the user asked
+            // for it and a profile is ready.
+            if settingsStore.autoRun, profileStore.activeProfile != nil, !proxyStore.isRunning {
+                await proxyStore.toggle()
+            }
+            // Auto-check for updates on launch.
+            if settingsStore.autoCheckUpdate {
+                if let result = await UpdateChecker.check(), result.isNew {
+                    updateAlertMessage = "发现新提交：\(result.message)"
+                }
+            }
+        }
+        .onChange(of: client.mode) { _, _ in
+            Task {
+                await proxyStore.refresh()
+                await ruleStore.refresh()
+                await connectionStore.refresh()
+                await logStore.refresh()
+            }
+        }
+        .alert("发现更新", isPresented: Binding(
+            get: { updateAlertMessage != nil },
+            set: { if !$0 { updateAlertMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            if let updateAlertMessage {
+                Text(updateAlertMessage)
+            }
+        }
+    }
+
+    /// The four tabs (shared by the floating and docked bar styles).
+    private var tabView: some View {
         TabView(selection: $selectedTab) {
             DashboardView(onSelectTab: { selectedTab = $0 })
                 .tag(AppTab.dashboard)
@@ -59,43 +151,6 @@ struct ContentView: View {
             ToolsView()
                 .tag(AppTab.tools)
                 .tabItem { Label("工具", systemImage: "briefcase.fill") }
-        }
-        .toolbar(.hidden, for: .tabBar)
-        .tint(themeStore.accentColor)
-        .preferredColorScheme(themeStore.colorScheme)
-        .safeAreaInset(edge: .bottom) {
-            floatingTabBar
-                .padding(.horizontal, 16)
-                // Reference bar bottom sits 34pt above the screen
-                // bottom (810pt on an 844pt screen); the safe-area
-                // inset already supplies those 34pt on a home-
-                // indicator phone, so only 4pt extra padding is
-                // needed. (Fixed 4pt: there is no safe-area
-                // environment value in SwiftUI, so the previous
-                // property wrapper did not compile.)
-                .padding(.bottom, 4)
-        }
-        .task {
-            // Load the first snapshot for every page once, like FlClash
-            // does when the home page mounts.
-            await proxyStore.refresh()
-            await ruleStore.refresh()
-            await connectionStore.refresh()
-            await logStore.refresh()
-            trafficStore.start()
-            // "自动更新订阅" is a real switch now: refresh remote
-            // profiles on launch (updateAll re-applies the active one).
-            if settingsStore.autoUpdateProfiles {
-                await profileStore.updateAll()
-            }
-        }
-        .onChange(of: client.mode) { _, _ in
-            Task {
-                await proxyStore.refresh()
-                await ruleStore.refresh()
-                await connectionStore.refresh()
-                await logStore.refresh()
-            }
         }
     }
 

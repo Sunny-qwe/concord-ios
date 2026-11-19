@@ -130,6 +130,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let dnsFileName = "dns.json"
     private let generalSettingsFileName = "general.json"
     private let tunnelSettingsFileName = "tunnel.json"
+    private let addedRulesFileName = "added-rules.json"
+    private let hostsFileName = "hosts.json"
 
     // The tunnel interface address. tun.start takes CIDR prefixes
     // (upstream crates/engine/src/tun.rs: Prefix::parse), so the core
@@ -338,11 +340,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if let mitm = mergedMitmOverlay() {
             overlay["mitm"] = mitm
         }
-        if let rules = moduleRules() {
+        if let rules = overlayRules() {
             overlay["rules"] = rules
         }
         if let dns = readSharedJSON(name: dnsFileName) {
             overlay["dns"] = dns
+        }
+        if let hosts = readSharedJSON(name: hostsFileName) {
+            overlay["hosts"] = hosts
         }
         if !overlay.isEmpty {
             applyParams["overlay"] = overlay
@@ -401,6 +406,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         settings.mtu = NSNumber(value: tun.mtu)
         let ipv4 = NEIPv4Settings(addresses: [tunnelAddress], subnetMasks: ["255.255.0.0"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
+        // Local network settings (FlClash: 本地网络设置）: excluded
+        // routes bypass the tunnel — the standard private ranges when
+        // bypass-private-route is on, plus the user's list.
+        var excludedV4: [NEIPv4Route] = []
+        var excludedV6: [NEIPv6Route] = []
+        var excludeCIDRs = tun.routeExcludeAddress
+        if tun.bypassPrivateRoute {
+            excludeCIDRs += ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"]
+        }
+        for cidr in excludeCIDRs {
+            let route = excludedRoute(from: cidr)
+            if let v4 = route.v4 { excludedV4.append(v4) }
+            if let v6 = route.v6 { excludedV6.append(v6) }
+        }
+        if !excludedV4.isEmpty { ipv4.excludedRoutes = excludedV4 }
         settings.ipv4Settings = ipv4
         if tun.ipv6 {
             let parts = tun.ipv6Address.split(separator: "/")
@@ -409,10 +429,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     addresses: [String(parts[0])],
                     networkPrefixLengths: [NSNumber(value: prefixLength)])
                 ipv6.includedRoutes = [NEIPv6Route.default()]
+                if !excludedV6.isEmpty { ipv6.excludedRoutes = excludedV6 }
                 settings.ipv6Settings = ipv6
             }
         }
-        settings.dnsSettings = NEDNSSettings(servers: tun.dns)
+        // DNS hijacking off (FlClash: DNS 劫持）: leave the system DNS
+        // alone — the tunnel sets no DNS servers.
+        if tun.dnsHijack {
+            settings.dnsSettings = NEDNSSettings(servers: tun.dns)
+        }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             self.setTunnelNetworkSettings(settings) { error in
                 if let error {
@@ -499,11 +524,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             if let mitm = mergedMitmOverlay() {
                 overlay["mitm"] = mitm
             }
-            if let rules = moduleRules() {
+            if let rules = overlayRules() {
                 overlay["rules"] = rules
             }
             if let dns = readSharedJSON(name: dnsFileName) {
                 overlay["dns"] = dns
+            }
+            if let hosts = readSharedJSON(name: hostsFileName) {
+                overlay["hosts"] = hosts
             }
             if !overlay.isEmpty {
                 request["overlay"] = overlay
@@ -1061,6 +1089,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // the core's own DEFAULT_INET6 (upstream crates/engine/src/tun.rs).
         let ipv6: Bool
         let ipv6Address: String
+        // Local network (FlClash: 本地网络设置）: CIDRs excluded from
+        // the tunnel routes, private-range bypass, DNS hijacking.
+        let routeExcludeAddress: [String]
+        let bypassPrivateRoute: Bool
+        let dnsHijack: Bool
     }
 
     private func readTunnelSettings(container: URL) -> TunnelSettings {
@@ -1073,9 +1106,29 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let dns = json["dns"] as? [String] ?? ["223.5.5.5", "8.8.8.8"]
             let ipv6 = json["ipv6"] as? Bool ?? false
             let ipv6Address = json["ipv6-address"] as? String ?? "fdfe:dcba:9876::1/126"
-            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address)
+            let routeExcludeAddress = json["route-exclude-address"] as? [String] ?? []
+            let bypassPrivateRoute = json["bypass-private-route"] as? Bool ?? false
+            let dnsHijack = json["dns-hijack"] as? Bool ?? true
+            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack)
         }
-        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126")
+        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true)
+    }
+
+    /// Parse a CIDR ("10.0.0.0/8" or "::1/128") into an excluded
+    /// route. IPv4 needs a dotted subnet mask; IPv6 takes the prefix
+    /// length directly. Returns (nil, nil) for malformed input.
+    private func excludedRoute(from cidr: String) -> (v4: NEIPv4Route?, v6: NEIPv6Route?) {
+        let parts = cidr.split(separator: "/")
+        guard parts.count == 2, let prefix = Int(parts[1]) else { return (nil, nil) }
+        let address = String(parts[0])
+        if address.contains(":") {
+            guard (0...128).contains(prefix) else { return (nil, nil) }
+            return (nil, NEIPv6Route(destinationAddress: address, networkPrefixLength: NSNumber(value: prefix)))
+        }
+        guard (0...32).contains(prefix) else { return (nil, nil) }
+        let maskValue: UInt32 = prefix == 0 ? 0 : (~UInt32(0) << (32 - prefix))
+        let mask = "\(maskValue >> 24 & 0xFF).\(maskValue >> 16 & 0xFF).\(maskValue >> 8 & 0xFF).\(maskValue & 0xFF)"
+        return (NEIPv4Route(destinationAddress: address, subnetMask: mask), nil)
     }
 
     /// The MITM overlay for config.apply: the user's own mitm.json
@@ -1109,6 +1162,30 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard let modules = readSharedJSON(name: moduleMitmFileName),
               let rules = modules["rules"] as? [String], !rules.isEmpty else { return nil }
         return rules
+    }
+
+    /// The overlay's top-level "rules": the user's added rules first,
+    /// then the enabled modules' merged rules. Nil when there are none.
+    private func overlayRules() -> [String]? {
+        var rules: [String] = []
+        if let added = readSharedJSONArray(name: addedRulesFileName) {
+            rules.append(contentsOf: added)
+        }
+        if let modules = moduleRules() {
+            rules.append(contentsOf: modules)
+        }
+        return rules.isEmpty ? nil : rules
+    }
+
+    private func readSharedJSONArray(name: String) -> [String]? {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) else { return nil }
+        let file = container.appendingPathComponent(name)
+        guard let data = try? Data(contentsOf: file),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String] else {
+            return nil
+        }
+        return json
     }
 
     private func readSharedJSON(name: String) -> [String: Any]? {

@@ -11,6 +11,28 @@ struct ConnectionsView: View {
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var proxyStore: ProxyStore
     @State private var detail: LiveConnection?
+    @State private var detailIsLive = true
+    @State private var feed: ConnectionFeed = .live
+
+    /// The two feeds of FlClash's Requests page: live connections
+    /// and recently finished ones (built locally by diffing
+    /// snapshots — see ConnectionStore.recentConnections).
+    enum ConnectionFeed {
+        case live
+        case recent
+    }
+
+    /// Recent connections matching the search text.
+    private var recentFiltered: [LiveConnection] {
+        guard !connectionStore.searchText.isEmpty else { return connectionStore.recentConnections }
+        let q = connectionStore.searchText.lowercased()
+        return connectionStore.recentConnections.filter {
+            ($0.host?.lowercased().contains(q) ?? false)
+                || $0.destination.lowercased().contains(q)
+                || ($0.proxy?.lowercased().contains(q) ?? false)
+                || ($0.rule?.lowercased().contains(q) ?? false)
+        }
+    }
 
     var body: some View {
         // No NavigationStack here on purpose: this page is pushed
@@ -55,55 +77,57 @@ struct ConnectionsView: View {
                         .padding(.bottom, 4)
                 }
 
-                if connectionStore.filtered.isEmpty {
-                    if proxyStore.isRunning {
-                        ContentUnavailableView("暂无活动连接", systemImage: "arrow.left.arrow.right", description: Text("当前没有活动连接，产生流量后会在这里列出"))
-                    } else {
-                        ContentUnavailableView {
-                            Label("暂无活动连接", systemImage: "arrow.left.arrow.right")
-                        } description: {
-                            Text("开启 VPN 后，这里的实时连接会按 host / 规则 / 代理列出")
-                        } actions: {
-                            Button("启动 VPN") {
-                                Task { await proxyStore.toggle() }
+                Picker("请求", selection: $feed) {
+                    Text("正在运行").tag(ConnectionFeed.live)
+                    Text("最近请求").tag(ConnectionFeed.recent)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.bottom, 4)
+                if feed == .live {
+                    if connectionStore.filtered.isEmpty {
+                        if proxyStore.isRunning {
+                            ContentUnavailableView("暂无活动连接", systemImage: "arrow.left.arrow.right", description: Text("当前没有活动连接，产生流量后会在这里列出"))
+                        } else {
+                            ContentUnavailableView {
+                                Label("暂无活动连接", systemImage: "arrow.left.arrow.right")
+                            } description: {
+                                Text("开启 VPN 后，这里的实时连接会按 host / 规则 / 代理列出")
+                            } actions: {
+                                Button("启动 VPN") {
+                                    Task { await proxyStore.toggle() }
+                                }
+                                .buttonStyle(.borderedProminent)
                             }
-                            .buttonStyle(.borderedProminent)
                         }
+                    } else {
+                        List(connectionStore.filtered) { connection in
+                            Button { detail = connection; detailIsLive = true } label: {
+                                connectionRow(connection)
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button("断开", role: .destructive) {
+                                    Task { await connectionStore.close(connection) }
+                                }
+                            }
+                        }
+                        .listStyle(.insetGrouped)
+                        .scrollContentBackground(.hidden)
                     }
                 } else {
-                    List(connectionStore.filtered) { connection in
-                        Button { detail = connection } label: {
-                            HStack(alignment: .top, spacing: 8) {
-                                Text(ConcordFormat.time(Int64(connection.start.timeIntervalSince1970 * 1000)))
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 64, alignment: .leading)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(connection.host ?? connection.destination)
-                                        .font(.system(size: 13))
-                                        .lineLimit(1)
-                                    Text("\(connection.network.uppercased()) · \(connection.rule ?? "—") · \(connection.proxy ?? "—")")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.secondary)
-                                    Text("持续 \(ConcordFormat.duration(seconds: connection.durationSeconds)) · ↑ \(ConcordFormat.bytes(connection.upload)) ↓ \(ConcordFormat.bytes(connection.download))")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(.tertiary)
+                    if recentFiltered.isEmpty {
+                        ContentUnavailableView("暂无最近请求", systemImage: "clock", description: Text("已结束的连接会在这里列出（本会话内，最多 200 条）"))
+                    } else {
+                        List(recentFiltered) { connection in
+                            Button { detail = connection; detailIsLive = false } label: {
+                                connectionRow(connection)
                             }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button("断开", role: .destructive) {
-                                Task { await connectionStore.close(connection) }
-                            }
-                        }
+                        .listStyle(.insetGrouped)
+                        .scrollContentBackground(.hidden)
                     }
-                    .listStyle(.insetGrouped)
-                    .scrollContentBackground(.hidden)
                 }
             }
             .background(ConcordTheme.pageBackground)
@@ -129,6 +153,9 @@ struct ConnectionsView: View {
                         Button("断开全部连接", role: .destructive) {
                             Task { await connectionStore.closeAll() }
                         }
+                        Button("清除最近请求记录", role: .destructive) {
+                            connectionStore.clearRecent()
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -140,15 +167,43 @@ struct ConnectionsView: View {
                 }
             }
             .sheet(item: $detail) { connection in
-                ConnectionDetailView(connection: connection)
+                ConnectionDetailView(connection: connection, isLive: detailIsLive)
             }
             .refreshable { await connectionStore.refresh() }
             .task { if connectionStore.connections.isEmpty { await connectionStore.refresh() } }
+    }
+
+    /// One connection row, shared by the live and recent feeds.
+    private func connectionRow(_ connection: LiveConnection) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(ConcordFormat.time(Int64(connection.start.timeIntervalSince1970 * 1000)))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(connection.host ?? connection.destination)
+                    .font(.system(size: 13))
+                    .lineLimit(1)
+                Text("\(connection.network.uppercased()) · \(connection.rule ?? "—") · \(connection.proxy ?? "—")")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text("持续 \(ConcordFormat.duration(seconds: connection.durationSeconds)) · ↑ \(ConcordFormat.bytes(connection.upload)) ↓ \(ConcordFormat.bytes(connection.download))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.tertiary)
+        }
     }
 }
 
 struct ConnectionDetailView: View {
     let connection: LiveConnection
+    /// False for a finished connection from 最近请求： there is
+    /// nothing to close.
+    var isLive: Bool = true
     @EnvironmentObject private var connectionStore: ConnectionStore
     @Environment(\.dismiss) private var dismiss
 
@@ -173,10 +228,12 @@ struct ConnectionDetailView: View {
                     LabeledContent("下行", value: ConcordFormat.bytes(connection.download))
                 }
                 Section {
-                    Button("断开此连接", role: .destructive) {
-                        Task {
-                            await connectionStore.close(connection)
-                            dismiss()
+                    if isLive {
+                        Button("断开此连接", role: .destructive) {
+                            Task {
+                                await connectionStore.close(connection)
+                                dismiss()
+                            }
                         }
                     }
                     NavigationLink("MITM 拦截记录（mitm.exchanges）") {

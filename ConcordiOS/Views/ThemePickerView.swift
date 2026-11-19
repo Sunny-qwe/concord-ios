@@ -14,6 +14,8 @@ struct ThemePickerView: View {
     /// it used to be bound to `.constant(true)`, so tapping it did
     /// nothing and looked dead. It now flips local state.
     @State private var previewVpnOn = true
+    @State private var newCustomColor = Color.blue
+    @State private var customColorMessage: String?
 
     var body: some View {
         List {
@@ -39,7 +41,9 @@ struct ThemePickerView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                Text("「跟随系统」时 App 跟随 iPhone 的深色 / 浅色设置自动切换。")
+                Toggle("纯黑模式", isOn: $themeStore.pureBlack)
+                    .onChange(of: themeStore.pureBlack) { _, _ in themeStore.save() }
+                Text("「跟随系统」时 App 跟随 iPhone 的深色 / 浅色设置自动切换。纯黑模式只在深色下生效：页面背景变纯黑，卡片变深灰。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
@@ -49,6 +53,7 @@ struct ThemePickerView: View {
                     ForEach(ThemeAccent.allCases) { accent in
                         Button {
                             themeStore.accent = accent
+                            themeStore.customAccentHex = nil
                             themeStore.save()
                         } label: {
                             VStack(spacing: 6) {
@@ -56,7 +61,7 @@ struct ThemePickerView: View {
                                     Circle()
                                         .fill(accent.color)
                                         .frame(width: 44, height: 44)
-                                    if themeStore.accent == accent {
+                                    if themeStore.customAccentHex == nil && themeStore.accent == accent {
                                         Image(systemName: "checkmark")
                                             .font(.system(size: 16, weight: .semibold))
                                             .fontWeight(.bold)
@@ -65,16 +70,119 @@ struct ThemePickerView: View {
                                 }
                                 Text(accent.label)
                                     .font(.system(size: 10))
-                                    .foregroundStyle(themeStore.accent == accent ? Color(.label) : .secondary)
+                                    .foregroundStyle(themeStore.customAccentHex == nil && themeStore.accent == accent ? Color(.label) : .secondary)
                             }
                         }
                         .buttonStyle(.plain)
                     }
                 }
                 .padding(.vertical, 4)
-                Text("主题色会用在按钮、开关、选中状态和进度条上。")
+                if !themeStore.customColors.isEmpty {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
+                        ForEach(themeStore.customColors, id: \.self) { hex in
+                            Button {
+                                themeStore.customAccentHex = hex
+                                themeStore.save()
+                            } label: {
+                                VStack(spacing: 6) {
+                                    ZStack {
+                                        Circle()
+                                            .fill(Color(hex: hex) ?? .gray)
+                                            .frame(width: 44, height: 44)
+                                        if themeStore.customAccentHex == hex {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 16, weight: .semibold))
+                                                .fontWeight(.bold)
+                                                .foregroundStyle(.white)
+                                        }
+                                    }
+                                    Text(hex)
+                                        .font(.system(size: 9))
+                                        .foregroundStyle(themeStore.customAccentHex == hex ? Color(.label) : .secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button("删除", role: .destructive) {
+                                    themeStore.customColors.removeAll { $0 == hex }
+                                    if themeStore.customAccentHex == hex {
+                                        themeStore.customAccentHex = nil
+                                    }
+                                    themeStore.save()
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                HStack {
+                    ColorPicker("自定义颜色", selection: $newCustomColor)
+                    Button("添加") {
+                        guard let hex = Self.hexString(of: newCustomColor) else { return }
+                        if themeStore.customColors.contains(hex) {
+                            customColorMessage = "这个颜色已经加过了"
+                            return
+                        }
+                        themeStore.customColors.append(hex)
+                        themeStore.customAccentHex = hex
+                        themeStore.save()
+                        customColorMessage = nil
+                    }
+                }
+                if let customColorMessage {
+                    Text(customColorMessage)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Text("主题色会用在按钮、开关、选中状态和进度条上。长按自定义颜色可删除。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+            }
+
+            Section("颜色风格") {
+                Picker("颜色风格", selection: $themeStore.colorStyle) {
+                    ForEach(ThemeColorStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: themeStore.colorStyle) { _, _ in themeStore.save() }
+                Text("生动：原样；柔和：降低饱和度；单色：灰色主题色。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("导航栏") {
+                Picker("导航栏样式", selection: $themeStore.navBarStyle) {
+                    ForEach(ThemeNavBarStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: themeStore.navBarStyle) { _, _ in themeStore.save() }
+                Text("悬浮：底部悬浮胶囊栏；停靠：系统自带底部标签栏。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("文字大小") {
+                Toggle("自定义文字大小", isOn: $themeStore.textScaleEnabled)
+                    .onChange(of: themeStore.textScaleEnabled) { _, _ in themeStore.save() }
+                if themeStore.textScaleEnabled {
+                    HStack {
+                        Text("小")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Slider(value: $themeStore.textScale, in: 0.8...1.3, step: 0.1)
+                            .onChange(of: themeStore.textScale) { _, _ in themeStore.save() }
+                        Text("大")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("当前 \(Int(themeStore.textScale * 100))%")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("预览") {
@@ -112,5 +220,14 @@ struct ThemePickerView: View {
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         .navigationTitle("主题")
+    }
+
+    /// "#RRGGBB" for a picked colour.
+    static func hexString(of color: Color) -> String? {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        guard UIColor(color).getRed(&red, green: &green, blue: &blue, alpha: &alpha) else {
+            return nil
+        }
+        return String(format: "#%02X%02X%02X", Int(red * 255), Int(green * 255), Int(blue * 255))
     }
 }

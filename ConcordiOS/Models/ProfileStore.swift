@@ -76,6 +76,24 @@ final class ProfileStore: ObservableObject {
     private let storageKey = "ConcordiOS.profiles.v1"
     private var cancellables = Set<AnyCancellable>()
 
+    /// The session used for subscription downloads. When 校验证书 is
+    /// on (default) this is the shared session; when the user turns it
+    /// off, a session whose delegate trusts any server certificate
+    /// (FlClash: 常规 -> 校验订阅证书）. Synced from SettingsStore by
+    /// ContentView on launch and by the 常规 page when toggled.
+    var checkCertificate: Bool = true
+    /// Close all live connections after a profile switch (FlClash:
+    /// 常规 -> 自动关闭连接）. Synced from SettingsStore the same way.
+    var autoCloseConnections: Bool = false
+
+    private lazy var insecureSession: URLSession = {
+        URLSession(configuration: .default, delegate: InsecureCertificateDelegate(), delegateQueue: nil)
+    }()
+
+    private var subscriptionSession: URLSession {
+        checkCertificate ? URLSession.shared : insecureSession
+    }
+
     var activeProfile: Profile? {
         profiles.first { $0.isActive }
     }
@@ -130,6 +148,12 @@ final class ProfileStore: ObservableObject {
 
     /// Absolute path of a profile's YAML file, for the core's
     /// profile-ref calls (config.validate / config.apply / ...).
+    /// The absolute path of a profile's file, for pages that hand a
+    /// path to the core (e.g. the 配置预检 page's profile.build).
+    func absolutePathForPreflight(_ profile: Profile) -> String? {
+        absolutePath(for: profile)
+    }
+
     private func absolutePath(for profile: Profile) -> String? {
         fileURL(for: profile)?.path
     }
@@ -159,7 +183,7 @@ final class ProfileStore: ObservableObject {
             return
         }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await subscriptionSession.data(from: url)
             if let problem = Self.localSanityCheck(data) {
                 lastError = "订阅内容异常：\(problem)"
                 return
@@ -204,11 +228,15 @@ final class ProfileStore: ObservableObject {
     func update(_ profile: Profile) async {
         guard let urlString = profile.urlString, let url = URL(string: urlString) else { return }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            if let problem = Self.localSanityCheck(data) {
+            let (downloaded, _) = try await subscriptionSession.data(from: url)
+            if let problem = Self.localSanityCheck(downloaded) {
                 lastError = "更新 \(profile.name) 失败：订阅内容异常：\(problem)"
                 return
             }
+            // A fresh download would wipe the user's local additions
+            // (custom proxies, filter overrides) that live baked into
+            // the active profile's YAML: re-apply them before saving.
+            let data = profile.isActive ? reapplyLocalOverrides(to: downloaded) : downloaded
             try saveProfileFile(profile: profile, data: data)
             if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
                 profiles[index].updatedAt = Date()
@@ -317,6 +345,7 @@ final class ProfileStore: ObservableObject {
                 markActive(profile)
                 statusMessage = "已切换到 \(profile.name)（已立即生效）"
                 lastError = nil
+                await closeAllConnectionsIfNeeded()
             } catch {
                 lastError = "切换失败：\(error.localizedDescription)（文件已复制，下次启动 VPN 时会使用新配置）"
             }
@@ -336,6 +365,27 @@ final class ProfileStore: ObservableObject {
         markActive(profile)
         statusMessage = "已切换到 \(profile.name)（下次启动 VPN 时生效）"
         lastError = nil
+    }
+
+    /// Close every live connection (connection.closeAll) when
+    /// 自动关闭连接 is on. Called after a profile switch that took
+    /// effect live.
+    @MainActor
+    private func closeAllConnectionsIfNeeded() async {
+        guard autoCloseConnections, client.mode == .live, TunnelManager.shared.isRunning else { return }
+        try? await client.connectionCloseAll()
+    }
+
+    /// Re-bake the user's local additions (custom proxies, filter
+    /// overrides) into freshly downloaded profile data. Used when a
+    /// subscription update replaces the active profile's file, so the
+    /// update never silently drops them.
+    func reapplyLocalOverrides(to data: Data) -> Data {
+        guard let text = String(data: data, encoding: .utf8) else { return data }
+        let store = CustomProxyStore()
+        var result = CustomProxyStore.bakeProxies(store.proxies, into: text)
+        result = CustomProxyStore.bakeFilterOverrides(store.filterOverrides, into: result)
+        return result.data(using: .utf8) ?? data
     }
 
     /// Re-applies the active profile live (config.apply with no
@@ -734,5 +784,23 @@ final class ProfileStore: ObservableObject {
             || string == "true" || string == "false" || string == "null" || string == "~"
         guard needsQuotes else { return string }
         return "\"" + string.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
+}
+
+// MARK: - Insecure certificate delegate (FlClash: 校验订阅证书 off)
+// Trusts any server certificate for subscription downloads. Used
+// only when the user turns 校验证书 off in 常规 — the default
+// session (shared, system trust) is used otherwise.
+private final class InsecureCertificateDelegate: NSObject, URLSessionDelegate {
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if let trust = challenge.protectionSpace.serverTrust {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
     }
 }

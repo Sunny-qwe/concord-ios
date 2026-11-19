@@ -70,12 +70,60 @@ enum ThemeAccent: String, CaseIterable, Identifiable {
     }
 }
 
+/// FlClash's colour style: vivid (default), soft (desaturated) or
+/// monochrome (greyscale accent).
+enum ThemeColorStyle: String, CaseIterable, Identifiable {
+    case vivid = "vivid"
+    case soft = "soft"
+    case monochrome = "monochrome"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .vivid: return "生动"
+        case .soft: return "柔和"
+        case .monochrome: return "单色"
+        }
+    }
+}
+
+/// FlClash's navigation-bar style: the floating capsule (default)
+/// or the system docked tab bar.
+enum ThemeNavBarStyle: String, CaseIterable, Identifiable {
+    case floating = "floating"
+    case docked = "docked"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .floating: return "悬浮"
+        case .docked: return "停靠"
+        }
+    }
+}
+
 final class ThemeStore: ObservableObject {
     static let shared = ThemeStore()
     static let storageKey = "ConcordiOS.theme.v1"
 
     @Published var appearance: ThemeAppearance = .system
     @Published var accent: ThemeAccent = .blue
+    /// A user-added accent colour (hex, e.g. "#FF6B6B"). When set it
+    /// overrides `accent`.
+    @Published var customAccentHex: String?
+    /// User-added accent swatches (hex strings), editable in the
+    /// theme page (FlClash: ThemeView custom colours).
+    @Published var customColors: [String] = []
+    /// Pure black background in dark mode (FlClash: ThemeView).
+    @Published var pureBlack: Bool = false
+    @Published var colorStyle: ThemeColorStyle = .vivid
+    @Published var navBarStyle: ThemeNavBarStyle = .floating
+    /// Text scale (FlClash: ThemeView text-scale slider). Off =
+    /// follow the system size; on = the slider's DynamicTypeSize.
+    @Published var textScaleEnabled: Bool = false
+    @Published var textScale: Double = 1.0
 
     /// nil = follow the system (SwiftUI decides).
     var colorScheme: ColorScheme? {
@@ -86,7 +134,47 @@ final class ThemeStore: ObservableObject {
         }
     }
 
-    var accentColor: Color { accent.color }
+    /// Whether the UI is currently dark (used for pure-black
+    /// backgrounds; .system resolves against the device trait).
+    var isDark: Bool {
+        switch appearance {
+        case .dark: return true
+        case .light: return false
+        case .system: return UITraitCollection.current.userInterfaceStyle == .dark
+        }
+    }
+
+    /// The accent after the colour style is applied: vivid as-is,
+    /// soft desaturated, monochrome greyscale.
+    var accentColor: Color {
+        let base: Color
+        if let hex = customAccentHex, let parsed = Color(hex: hex) {
+            base = parsed
+        } else {
+            base = accent.color
+        }
+        switch colorStyle {
+        case .vivid:
+            return base
+        case .soft:
+            return base.adjusted(saturationMultiplier: 0.7)
+        case .monochrome:
+            return base.adjusted(saturationMultiplier: 0.0)
+        }
+    }
+
+    /// The text-size step the root applies (nil = system default).
+    var dynamicTypeSize: DynamicTypeSize? {
+        guard textScaleEnabled else { return nil }
+        switch textScale {
+        case ..<0.85: return .xSmall
+        case ..<0.95: return .small
+        case ..<1.05: return .large
+        case ..<1.15: return .xLarge
+        case ..<1.25: return .xxLarge
+        default: return .xxxLarge
+        }
+    }
 
     private init() {
         load()
@@ -95,6 +183,40 @@ final class ThemeStore: ObservableObject {
     private struct Saved: Codable {
         var appearance: String
         var accent: String
+        var customAccentHex: String?
+        var customColors: [String]
+        var pureBlack: Bool
+        var colorStyle: String
+        var navBarStyle: String
+        var textScaleEnabled: Bool
+        var textScale: Double
+
+        // The post-0.2.17 fields are decoded leniently so themes
+        // saved by earlier versions still load.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            appearance = try c.decode(String.self, forKey: .appearance)
+            accent = try c.decode(String.self, forKey: .accent)
+            customAccentHex = try c.decodeIfPresent(String.self, forKey: .customAccentHex)
+            customColors = try c.decodeIfPresent([String].self, forKey: .customColors) ?? []
+            pureBlack = try c.decodeIfPresent(Bool.self, forKey: .pureBlack) ?? false
+            colorStyle = try c.decodeIfPresent(String.self, forKey: .colorStyle) ?? "vivid"
+            navBarStyle = try c.decodeIfPresent(String.self, forKey: .navBarStyle) ?? "floating"
+            textScaleEnabled = try c.decodeIfPresent(Bool.self, forKey: .textScaleEnabled) ?? false
+            textScale = try c.decodeIfPresent(Double.self, forKey: .textScale) ?? 1.0
+        }
+
+        init(appearance: String, accent: String, customAccentHex: String?, customColors: [String], pureBlack: Bool, colorStyle: String, navBarStyle: String, textScaleEnabled: Bool, textScale: Double) {
+            self.appearance = appearance
+            self.accent = accent
+            self.customAccentHex = customAccentHex
+            self.customColors = customColors
+            self.pureBlack = pureBlack
+            self.colorStyle = colorStyle
+            self.navBarStyle = navBarStyle
+            self.textScaleEnabled = textScaleEnabled
+            self.textScale = textScale
+        }
     }
 
     /// Re-read the persisted choice (used after a backup restore).
@@ -107,11 +229,42 @@ final class ThemeStore: ObservableObject {
               let saved = try? JSONDecoder().decode(Saved.self, from: data) else { return }
         appearance = ThemeAppearance(rawValue: saved.appearance) ?? .system
         accent = ThemeAccent(rawValue: saved.accent) ?? .blue
+        customAccentHex = saved.customAccentHex
+        customColors = saved.customColors
+        pureBlack = saved.pureBlack
+        colorStyle = ThemeColorStyle(rawValue: saved.colorStyle) ?? .vivid
+        navBarStyle = ThemeNavBarStyle(rawValue: saved.navBarStyle) ?? .floating
+        textScaleEnabled = saved.textScaleEnabled
+        textScale = saved.textScale
     }
 
     func save() {
-        let saved = Saved(appearance: appearance.rawValue, accent: accent.rawValue)
+        let saved = Saved(appearance: appearance.rawValue, accent: accent.rawValue, customAccentHex: customAccentHex, customColors: customColors, pureBlack: pureBlack, colorStyle: colorStyle.rawValue, navBarStyle: navBarStyle.rawValue, textScaleEnabled: textScaleEnabled, textScale: textScale)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: Self.storageKey)
+    }
+}
+
+extension Color {
+    /// Parse a "#RRGGBB" hex string.
+    init?(hex: String) {
+        var text = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("#") { text.removeFirst() }
+        guard text.count == 6, let value = UInt64(text, radix: 16) else { return nil }
+        self.init(
+            red: Double((value >> 16) & 0xFF) / 255,
+            green: Double((value >> 8) & 0xFF) / 255,
+            blue: Double(value & 0xFF) / 255
+        )
+    }
+
+    /// Multiply the colour's saturation (HSB), leaving hue and
+    /// brightness alone.
+    func adjusted(saturationMultiplier: CGFloat) -> Color {
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        guard UIColor(self).getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha) else {
+            return self
+        }
+        return Color(hue: hue, saturation: saturation * saturationMultiplier, brightness: brightness, opacity: alpha)
     }
 }

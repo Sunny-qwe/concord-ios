@@ -59,6 +59,15 @@ final class ConnectionStore: ObservableObject {
     /// The result message of the last network.update call.
     @Published var networkUpdateMessage: String?
 
+    /// Recently finished connections (FlClash: 请求 -> 最近请求).
+    /// Concord has no connection history — its events carry no
+    /// connection records — so the app builds this feed itself by
+    /// diffing live snapshots: a connection that was present in the
+    /// previous poll and is gone now is recorded here with its final
+    /// counters. Kept in memory for the session, capped at 200, so
+    /// the list never grows without bound.
+    @Published var recentConnections: [LiveConnection] = []
+
     let client: ConcordClient
 
     init(client: ConcordClient = ConcordClient()) {
@@ -92,12 +101,30 @@ final class ConnectionStore: ObservableObject {
     func refresh() async {
         do {
             let snapshot = try await client.connectionSnapshot()
-            connections = snapshot.connections.map(LiveConnection.init)
+            let next = snapshot.connections.map(LiveConnection.init)
+            // Record what finished since the last poll: ids that were
+            // live and are gone now. (A connection the user closed by
+            // hand is recorded too — it did finish.)
+            let nextIds = Set(next.map(\.id))
+            let finished = connections.filter { !nextIds.contains($0.id) }
+            if !finished.isEmpty {
+                recentConnections = (finished + recentConnections)
+                    .sorted { $0.start > $1.start }
+                if recentConnections.count > 200 {
+                    recentConnections = Array(recentConnections.prefix(200))
+                }
+            }
+            connections = next
             lastUpdated = Date()
             lastError = nil
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// Clear the recorded history.
+    func clearRecent() {
+        recentConnections.removeAll()
     }
 
     @MainActor

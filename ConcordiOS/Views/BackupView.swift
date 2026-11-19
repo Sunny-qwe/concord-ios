@@ -27,6 +27,16 @@ struct BackupView: View {
     @State private var pickedURL: URL?
     @State private var message: String?
     @State private var errorMessage: String?
+    @State private var restoreScope: BackupStore.RestoreScope = .all
+    // WebDAV account (FlClash: 备份与恢复 -> WebDAV 远程备份）.
+    // Stored in UserDefaults like the other app settings; FlClash
+    // keeps its WebDAV credentials in its own database the same way.
+    @AppStorage("ConcordiOS.webdav.url") private var webdavURL = ""
+    @AppStorage("ConcordiOS.webdav.username") private var webdavUsername = ""
+    @AppStorage("ConcordiOS.webdav.password") private var webdavPassword = ""
+    @AppStorage("ConcordiOS.webdav.fileName") private var webdavFileName = "concord-ios-backup.zip"
+    @State private var webdavStatus: String?
+    @State private var webdavConnected: Bool?
 
     var body: some View {
         List {
@@ -54,12 +64,63 @@ struct BackupView: View {
                 Text("导入会替换当前全部订阅、设置和 MITM 模块。恢复前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+                Picker("恢复选项", selection: $restoreScope) {
+                    ForEach(BackupStore.RestoreScope.allCases) { scope in
+                        Text(scope.rawValue).tag(scope)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(restoreScope == .all
+                     ? "恢复全部数据：所有文件与设置都被备份里的内容替换。"
+                     : "仅恢复配置：只恢复订阅与配置，设置、主题、MITM 模块保持不变。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
                 Button {
                     showImporter = true
                 } label: {
                     Label("选择备份文件…", systemImage: "square.and.arrow.down")
                 }
                 .disabled(backupStore.isWorking)
+            }
+
+            Section("WebDAV 远程备份") {
+                HStack {
+                    Circle()
+                        .fill(webdavConnected == nil ? Color.gray : (webdavConnected! ? Color.green : Color.red))
+                        .frame(width: 10, height: 10)
+                    Text(webdavConnected == nil ? "未测试" : (webdavConnected! ? "已连接" : "连接失败"))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                TextField("WebDAV 地址，如 https://dav.example.com/backup/", text: $webdavURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                TextField("用户名", text: $webdavUsername)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                SecureField("密码", text: $webdavPassword)
+                TextField("备份文件名", text: $webdavFileName)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("测试连接") {
+                    Task { await testWebDAV() }
+                }
+                .disabled(webdavURL.trimmingCharacters(in: .whitespaces).isEmpty || backupStore.isWorking)
+                Button("上传当前备份到 WebDAV") {
+                    Task { await uploadToWebDAV() }
+                }
+                .disabled(webdavURL.trimmingCharacters(in: .whitespaces).isEmpty || backupStore.isWorking)
+                Button("从 WebDAV 下载并恢复") {
+                    Task { await downloadFromWebDAV() }
+                }
+                .disabled(webdavURL.trimmingCharacters(in: .whitespaces).isEmpty || backupStore.isWorking)
+                if let webdavStatus {
+                    Text(webdavStatus)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if backupStore.isWorking {
@@ -102,7 +163,57 @@ struct BackupView: View {
             }
             Button("取消", role: .cancel) { pickedURL = nil }
         } message: {
-            Text("当前全部订阅、设置和 MITM 模块会被备份里的内容替换。")
+            Text(restoreScope == .all
+                 ? "当前全部订阅、设置和 MITM 模块会被备份里的内容替换。"
+                 : "只恢复备份里的订阅与配置，设置、主题、MITM 模块保持不变。")
+        }
+    }
+
+    private var webdavAccount: WebDAVAccount {
+        WebDAVAccount(url: webdavURL, username: webdavUsername, password: webdavPassword, fileName: webdavFileName)
+    }
+
+    private func testWebDAV() async {
+        backupStore.isWorking = true
+        defer { backupStore.isWorking = false }
+        do {
+            try await WebDAVClient(account: webdavAccount).testConnection()
+            webdavConnected = true
+            webdavStatus = "WebDAV 连接成功"
+        } catch {
+            webdavConnected = false
+            webdavStatus = "WebDAV 连接失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func uploadToWebDAV() async {
+        backupStore.isWorking = true
+        defer { backupStore.isWorking = false }
+        do {
+            let url = try await backupStore.createBackup()
+            backupURL = url
+            let data = try Data(contentsOf: url)
+            try await WebDAVClient(account: webdavAccount).upload(data)
+            webdavConnected = true
+            webdavStatus = "已上传到 WebDAV：\(webdavFileName)"
+        } catch {
+            webdavStatus = "上传失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func downloadFromWebDAV() async {
+        backupStore.isWorking = true
+        defer { backupStore.isWorking = false }
+        do {
+            let data = try await WebDAVClient(account: webdavAccount).download()
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(webdavFileName.isEmpty ? "concord-ios-backup.zip" : webdavFileName)
+            try data.write(to: tempURL, options: .atomic)
+            pickedURL = tempURL
+            showRestoreConfirm = true
+            webdavStatus = "已下载备份，请确认恢复"
+        } catch {
+            webdavStatus = "下载失败：\(error.localizedDescription)"
         }
     }
 
@@ -129,7 +240,7 @@ struct BackupView: View {
             self.pickedURL = nil
         }
         do {
-            let summary = try await backupStore.restore(from: pickedURL)
+            let summary = try await backupStore.restore(from: pickedURL, scope: restoreScope)
             // Reload every store that keeps its state on disk, so the
             // pages show the restored data without restarting the app.
             profileStore.reload()

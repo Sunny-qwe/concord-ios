@@ -12,6 +12,7 @@ struct SettingsView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var ruleStore: RuleStore
+    @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var client: ConcordClient
     @State private var mitmIssueHost = ""
     @State private var showCrashConfirm = false
@@ -44,6 +45,20 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     Stepper("延迟测试超时：\(settingsStore.delayTestTimeout) ms", value: $settingsStore.delayTestTimeout, in: 1000...30000, step: 1000)
+                    Toggle("启动时自动连接", isOn: $settingsStore.autoRun)
+                    Toggle("切换配置后自动关闭连接", isOn: $settingsStore.autoCloseConnections)
+                    Toggle("校验订阅证书", isOn: $settingsStore.checkCertificate)
+                    Toggle("启动时自动检查更新", isOn: $settingsStore.autoCheckUpdate)
+                    Toggle("记录日志（工具页显示「日志」）", isOn: $settingsStore.openLogs)
+                    if let findProcessMode = settingsStore.findProcessMode {
+                        LabeledContent("进程查找方式", value: findProcessMode)
+                    }
+                    NavigationLink("Hosts") {
+                        HostsView()
+                    }
+                    Text("启动时自动连接：打开应用后自动启动 VPN（需已有配置）。校验订阅证书：关闭后订阅下载不再验证服务器证书（自签证书的订阅源可用）。进程查找方式由核心决定，不可修改。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                     Button("从核心读取当前配置") {
                         Task { await settingsStore.refreshFromCore() }
                     }
@@ -321,7 +336,7 @@ struct SettingsView: View {
                 }
 
                 Section("关于") {
-                    LabeledContent("版本", value: "Concord iOS 0.2.17（FlClash 风格界面）")
+                    LabeledContent("版本", value: "Concord iOS 0.2.18（FlClash 风格界面）")
                     LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
                     LabeledContent("界面来源", value: "chen08209/FlClash（GPL-3.0）")
                     Text("本 App 是 FlClash 界面的 SwiftUI 复刻，核心经 PacketTunnel 扩展链接（packet-channel 数据面），但静态库构建与真机数据面尚未验证，见 README 的「已上线与待办」一节。")
@@ -338,6 +353,17 @@ struct SettingsView: View {
             .onChange(of: settingsStore.allowLan) { _, _ in settingsStore.save() }
             .onChange(of: settingsStore.ipv6) { _, _ in settingsStore.save() }
             .onChange(of: settingsStore.tunEnabled) { _, _ in settingsStore.save() }
+            .onChange(of: settingsStore.autoRun) { _, _ in settingsStore.save() }
+            .onChange(of: settingsStore.autoCloseConnections) { _, value in
+                profileStore.autoCloseConnections = value
+                settingsStore.save()
+            }
+            .onChange(of: settingsStore.checkCertificate) { _, value in
+                profileStore.checkCertificate = value
+                settingsStore.save()
+            }
+            .onChange(of: settingsStore.autoCheckUpdate) { _, _ in settingsStore.save() }
+            .onChange(of: settingsStore.openLogs) { _, _ in settingsStore.save() }
             .task {
                 if client.mode == .live {
                     await settingsStore.refreshMitmStatus()
@@ -353,6 +379,7 @@ struct DnsQueriesView: View {
     @EnvironmentObject private var client: ConcordClient
     @State private var queryName = ""
     @State private var queryType = "A"
+    @State private var selectedEntry: ConcordDnsEntry?
 
     var body: some View {
         List {
@@ -422,26 +449,31 @@ struct DnsQueriesView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(dnsStore.filtered) { entry in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(entry.domain).font(.system(size: 13))
-                                Spacer()
-                                Text(entry.type)
+                        Button {
+                            selectedEntry = entry
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(entry.domain).font(.system(size: 13))
+                                    Spacer()
+                                    Text(entry.type)
+                                        .font(.system(size: 10))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.blue.opacity(0.12), in: Capsule())
+                                }
+                                Text("上游 \(entry.upstream) · \(entry.delay) ms · \(entry.cached == true ? "缓存命中" : "实时查询")")
                                     .font(.system(size: 10))
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.blue.opacity(0.12), in: Capsule())
+                                    .foregroundStyle(.secondary)
+                                Text("应答：\(entry.answers.joined(separator: ", "))")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                                Text(ConcordFormat.time(entry.time))
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.tertiary)
                             }
-                            Text("上游 \(entry.upstream) · \(entry.delay) ms · \(entry.cached == true ? "缓存命中" : "实时查询")")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                            Text("应答：\(entry.answers.joined(separator: ", "))")
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                            Text(ConcordFormat.time(entry.time))
-                                .font(.system(size: 10))
-                                .foregroundStyle(.tertiary)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -460,6 +492,83 @@ struct DnsQueriesView: View {
         }
         .refreshable { await dnsStore.refresh() }
         .task { if dnsStore.entries.isEmpty { await dnsStore.refresh() } }
+        .sheet(item: $selectedEntry) { entry in
+            DnsEntryDetailView(entry: entry)
+        }
+    }
+}
+
+/// One DNS query's full detail (FlClash: DnsQueriesView detail
+/// sheet): time, domain, type, initiator, upstream, cached,
+/// rcode, delay, answers, error, plus a copy button.
+private struct DnsEntryDetailView: View {
+    let entry: ConcordDnsEntry
+    @Environment(\.dismiss) private var dismiss
+    @State private var copied = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("查询") {
+                    detailRow("时间", ConcordFormat.time(entry.time))
+                    detailRow("域名", entry.domain)
+                    detailRow("类型", entry.type)
+                    detailRow("发起方", entry.initiator)
+                    detailRow("上游", entry.upstream)
+                    detailRow("缓存", entry.cached == true ? "命中" : "未命中")
+                    detailRow("返回码", entry.rcode ?? "—")
+                    detailRow("延迟", "\(entry.delay) ms")
+                }
+                Section("应答") {
+                    if entry.answers.isEmpty {
+                        Text("无应答记录")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(entry.answers, id: \.self) { answer in
+                            Text(answer)
+                                .font(.system(.body, design: .monospaced))
+                        }
+                    }
+                }
+                if let error = entry.error {
+                    Section("错误") {
+                        Text(error)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red)
+                    }
+                }
+                Section {
+                    Button(copied ? "已复制" : "复制详情") {
+                        UIPasteboard.general.string = """
+                        \(entry.domain) \(entry.type)
+                        上游：\(entry.upstream)
+                        返回码：\(entry.rcode ?? "—")
+                        延迟：\(entry.delay) ms
+                        应答：\(entry.answers.joined(separator: ", "))
+                        """
+                        copied = true
+                    }
+                }
+            }
+            .navigationTitle("DNS 详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func detailRow(_ title: String, _ value: String) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(value)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
     }
 }
 
@@ -599,8 +708,20 @@ struct ResourcesView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var ruleStore: RuleStore
+    @EnvironmentObject private var mitmModuleStore: MitmModuleStore
     @EnvironmentObject private var client: ConcordClient
     @State private var releaseMessage: String?
+    @State private var geoFiles: [GeoFileInfo] = []
+    @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = false
+    @AppStorage("ConcordiOS.geoAutoUpdateHours") private var geoAutoUpdateHours = 24.0
+
+    /// One Geo file found in the App Group container.
+    struct GeoFileInfo: Identifiable {
+        var id: String { name }
+        let name: String
+        let size: Int64
+        let modified: Date?
+    }
 
     var body: some View {
         List {
@@ -629,6 +750,57 @@ struct ResourcesView: View {
                 LabeledContent("节点", value: "\(proxyStore.allNodes.count)")
                 LabeledContent("规则", value: "\(ruleStore.rules.count)")
                 LabeledContent("提供方", value: "\(ruleStore.providers.count)")
+                LabeledContent("规则提供方", value: "\(ruleStore.ruleProviders.count)")
+                LabeledContent("MITM 模块", value: "\(mitmModuleStore.modules.filter(\.enabled).count) / \(mitmModuleStore.modules.count) 已启用")
+            }
+            Section("Geo 资源") {
+                Toggle("自动更新", isOn: $geoAutoUpdate)
+                if geoAutoUpdate {
+                    HStack {
+                        Text("更新间隔")
+                        Spacer()
+                        Picker("", selection: $geoAutoUpdateHours) {
+                            Text("12 小时").tag(12.0)
+                            Text("24 小时").tag(24.0)
+                            Text("72 小时").tag(72.0)
+                            Text("每周").tag(168.0)
+                        }
+                        .pickerStyle(.menu)
+                    }
+                }
+                if geoFiles.isEmpty {
+                    Text("容器里没有找到 Geo 文件（MMDB / ASN / GeoSite）。点下面按钮更新，核心会在后台下载。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(geoFiles) { file in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(file.name)
+                                .font(.system(size: 13))
+                            Text("\(ConcordFormat.bytes(file.size))\(file.modified.map { " · 更新于 \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "")")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Button("更新 GeoIP（MMDB）") {
+                    Task { await ruleStore.geoUpdate(kind: "MMDB") }
+                }
+                Button("更新 ASN（ASN）") {
+                    Task { await ruleStore.geoUpdate(kind: "ASN") }
+                }
+                Button("更新 GeoSite（GEOSITE）") {
+                    Task { await ruleStore.geoUpdate(kind: "GEOSITE") }
+                }
+                Text("concord 的 geo.update 只支持 MMDB、ASN、GEOSITE 三种，没有 GEOIP。更新在后台进行，完成后文件会出现在容器里。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                if let message = ruleStore.providerActionMessage {
+                    Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+                if let error = ruleStore.lastError {
+                    Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                }
             }
             Section {
                 Button("刷新") {
@@ -636,6 +808,7 @@ struct ResourcesView: View {
                         await trafficStore.refreshMemory()
                         await proxyStore.refresh()
                         await ruleStore.refresh()
+                        scanGeoFiles()
                     }
                 }
             }
@@ -644,5 +817,33 @@ struct ResourcesView: View {
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("资源")
+        .task {
+            scanGeoFiles()
+        }
+    }
+
+    /// Scan the App Group container root for Geo database files.
+    /// The core's home is the container itself, so its MMDB / ASN /
+    /// GeoSite files land here; the names are matched loosely
+    /// because the core does not publish them through the API.
+    private func scanGeoFiles() {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: container.path) else {
+            geoFiles = []
+            return
+        }
+        geoFiles = names.compactMap { name in
+            let lower = name.lowercased()
+            guard lower.contains("mmdb") || lower.contains("geo") || lower.contains("asn")
+                    || lower.contains("country") || lower.hasSuffix(".dat") else {
+                return nil
+            }
+            let url = container.appendingPathComponent(name)
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+            let modified = attributes?[.modificationDate] as? Date
+            return GeoFileInfo(name: name, size: size, modified: modified)
+        }.sorted { $0.name < $1.name }
     }
 }

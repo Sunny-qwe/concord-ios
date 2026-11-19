@@ -55,6 +55,27 @@ final class SettingsStore: ObservableObject {
     @Published var globalUa: String = ""
     @Published var delayTestTimeout: Int = 5000
 
+    // Local network (FlClash: Tools -> 常规 -> 本地网络设置,
+    // iOS): CIDRs excluded from the tunnel routes, private-range
+    // bypass and DNS hijacking. Written to tunnel.json by save();
+    // the extension applies them when it sets up the interface.
+    @Published var routeExcludeAddress: [String] = []
+    @Published var bypassPrivateRoute: Bool = false
+    @Published var dnsHijack: Bool = true
+
+    // Startup / requests (FlClash: Tools -> 常规): auto-run on
+    // launch, close all connections on profile switch, verify
+    // subscription certificates, auto-check for updates, and
+    // whether the log page appears on the Tools page.
+    @Published var autoRun: Bool = false
+    @Published var autoCloseConnections: Bool = false
+    @Published var checkCertificate: Bool = true
+    @Published var autoCheckUpdate: Bool = false
+    @Published var openLogs: Bool = false
+    /// The core's find-process mode (config.general, display-only:
+    /// it is not patchable — see ConcordConfigPatchParams).
+    @Published var findProcessMode: String?
+
     // TUN (extension parameters, passed to tun.start)
     @Published var tunEnabled: Bool = true
     @Published var tunStack: String = "gvisor"
@@ -165,10 +186,18 @@ final class SettingsStore: ObservableObject {
         var mitmHostnames: String
         var mitmDecryptTls: Bool
         var mitmCaFingerprint: String
+        var autoRun: Bool
+        var autoCloseConnections: Bool
+        var checkCertificate: Bool
+        var autoCheckUpdate: Bool
+        var openLogs: Bool
+        var routeExcludeAddress: [String]
+        var bypassPrivateRoute: Bool
+        var dnsHijack: Bool
 
         // The MITM fields are new: decode them leniently so settings
         // saved before they existed still load.
-        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String) {
+        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, openLogs: Bool = false, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true) {
             self.mode = mode
             self.logLevel = logLevel
             self.mixedPort = mixedPort
@@ -194,6 +223,14 @@ final class SettingsStore: ObservableObject {
             self.mitmHostnames = mitmHostnames
             self.mitmDecryptTls = mitmDecryptTls
             self.mitmCaFingerprint = mitmCaFingerprint
+            self.autoRun = autoRun
+            self.autoCloseConnections = autoCloseConnections
+            self.checkCertificate = checkCertificate
+            self.autoCheckUpdate = autoCheckUpdate
+            self.openLogs = openLogs
+            self.routeExcludeAddress = routeExcludeAddress
+            self.bypassPrivateRoute = bypassPrivateRoute
+            self.dnsHijack = dnsHijack
         }
 
         init(from decoder: Decoder) throws {
@@ -223,11 +260,19 @@ final class SettingsStore: ObservableObject {
             mitmHostnames = try c.decodeIfPresent(String.self, forKey: .mitmHostnames) ?? ""
             mitmDecryptTls = try c.decodeIfPresent(Bool.self, forKey: .mitmDecryptTls) ?? true
             mitmCaFingerprint = try c.decodeIfPresent(String.self, forKey: .mitmCaFingerprint) ?? ""
+            autoRun = try c.decodeIfPresent(Bool.self, forKey: .autoRun) ?? false
+            autoCloseConnections = try c.decodeIfPresent(Bool.self, forKey: .autoCloseConnections) ?? false
+            checkCertificate = try c.decodeIfPresent(Bool.self, forKey: .checkCertificate) ?? true
+            autoCheckUpdate = try c.decodeIfPresent(Bool.self, forKey: .autoCheckUpdate) ?? false
+            openLogs = try c.decodeIfPresent(Bool.self, forKey: .openLogs) ?? false
+            routeExcludeAddress = try c.decodeIfPresent([String].self, forKey: .routeExcludeAddress) ?? []
+            bypassPrivateRoute = try c.decodeIfPresent(Bool.self, forKey: .bypassPrivateRoute) ?? false
+            dnsHijack = try c.decodeIfPresent(Bool.self, forKey: .dnsHijack) ?? true
         }
     }
 
     func save() {
-        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint)
+        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, openLogs: openLogs, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
         saveSharedFiles()
@@ -289,6 +334,9 @@ final class SettingsStore: ObservableObject {
             "mtu": tunMtu,
             "dns": dnsServers.isEmpty ? ["223.5.5.5", "8.8.8.8"] : dnsServers,
             "ipv6": ipv6,
+            "route-exclude-address": routeExcludeAddress,
+            "bypass-private-route": bypassPrivateRoute,
+            "dns-hijack": dnsHijack,
         ]
         if let url = ConfigStore.sharedFileURL(name: ConfigStore.tunnelSettingsFileName),
            let data = try? JSONSerialization.data(withJSONObject: tunnel) {
@@ -389,6 +437,14 @@ final class SettingsStore: ObservableObject {
         mitmHostnames = saved.mitmHostnames
         mitmDecryptTls = saved.mitmDecryptTls
         mitmCaFingerprint = saved.mitmCaFingerprint
+        autoRun = saved.autoRun
+        autoCloseConnections = saved.autoCloseConnections
+        checkCertificate = saved.checkCertificate
+        autoCheckUpdate = saved.autoCheckUpdate
+        openLogs = saved.openLogs
+        routeExcludeAddress = saved.routeExcludeAddress
+        bypassPrivateRoute = saved.bypassPrivateRoute
+        dnsHijack = saved.dnsHijack
     }
 
     /// Pull the general config from the core (config.general) into the UI.
@@ -406,6 +462,7 @@ final class SettingsStore: ObservableObject {
             if let value = general.unifiedDelay { unifiedDelay = value }
             if let value = general.sniffing { sniffing = value }
             if let value = general.globalUa { globalUa = value }
+            if let value = general.findProcessMode { findProcessMode = value }
             save()
         } catch {
             // Keep the locally saved settings; the core is not linked yet.

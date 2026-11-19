@@ -16,10 +16,19 @@ enum ConcordTheme {
     /// Page background: the system grouped background — #F2F2F7 in
     /// light mode, dark in dark mode. (ThemeStore drives the colour
     /// scheme; these semantic colours follow it automatically.)
-    static let pageBackground = Color(.systemGroupedBackground)
+    /// With 纯黑模式 on in dark mode the page is pure black.
+    static var pageBackground: Color {
+        ThemeStore.shared.pureBlack && ThemeStore.shared.isDark
+            ? .black : Color(.systemGroupedBackground)
+    }
     /// Card background: secondary system grouped background — white
-    /// in light mode, dark grey in dark mode.
-    static let cardBackground = Color(.secondarySystemGroupedBackground)
+    /// in light mode, dark grey in dark mode. Pure black mode keeps
+    /// cards a very dark grey so they stay distinguishable.
+    static var cardBackground: Color {
+        ThemeStore.shared.pureBlack && ThemeStore.shared.isDark
+            ? Color(red: 0.11, green: 0.11, blue: 0.12)
+            : Color(.secondarySystemGroupedBackground)
+    }
     /// Main card corner radius.
     static let cardRadius: CGFloat = 28
     /// Inner panel corner radius (speed halves, mode pills).

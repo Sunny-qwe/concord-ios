@@ -32,6 +32,10 @@ final class ConfigStore: ObservableObject {
     static let dnsFileName = "dns.json"
     static let tunnelSettingsFileName = "tunnel.json"
     static let generalSettingsFileName = "general.json"
+    static let addedRulesFileName = "added-rules.json"
+    static let customProxiesFileName = "custom-proxies.json"
+    static let filterOverridesFileName = "filter-overrides.json"
+    static let hostsFileName = "hosts.json"
 
     /// Snapshot files the PacketTunnel extension writes for the app's
     /// live transport (see PacketTunnelProvider.swift):

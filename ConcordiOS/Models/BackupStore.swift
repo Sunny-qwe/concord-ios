@@ -307,7 +307,7 @@ final class BackupStore: ObservableObject {
             path: Self.userDefaultsFileName,
             data: try JSONEncoder().encode(defaultsBackup)))
         let manifest = Manifest(
-            format: "concord-ios-backup", version: 1, appVersion: "0.2.17",
+            format: "concord-ios-backup", version: 1, appVersion: "0.2.18",
             createdAt: Date().timeIntervalSince1970, files: files)
         entries.append(ZipArchive.Entry(
             path: Self.manifestFileName,
@@ -330,7 +330,19 @@ final class BackupStore: ObservableObject {
     /// validates the whole zip first, safety-copies the current
     /// container, then replaces it; any failure rolls back. Returns a
     /// human-readable summary (file count + what to do next).
-    func restore(from pickedURL: URL) async throws -> String {
+    /// What a restore brings back (FlClash: 备份与恢复 -> 恢复选项）.
+    enum RestoreScope: String, CaseIterable, Identifiable {
+        /// Everything: all container files + all saved settings.
+        case all = "恢复全部数据"
+        /// Only the profiles (profiles/*.yaml + config.yaml) and the
+        /// profile list: settings, theme, MITM modules and the rest
+        /// stay as they are.
+        case profilesOnly = "仅恢复配置"
+
+        var id: String { rawValue }
+    }
+
+    func restore(from pickedURL: URL, scope: RestoreScope = .all) async throws -> String {
         let accessing = pickedURL.startAccessingSecurityScopedResource()
         defer { if accessing { pickedURL.stopAccessingSecurityScopedResource() } }
         let zipData: Data
@@ -363,7 +375,8 @@ final class BackupStore: ObservableObject {
             throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "App Group 容器不可用"])
         }
-        // Safety copy of the current state, for rollback.
+        // Safety copy of the current state, for rollback. A
+        // profiles-only restore only copies what it will replace.
         let safetyDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("Concord-恢复前备份-\(Self.backupFileStamp())")
         var savedDefaults: [String: Data?] = [:]
@@ -371,10 +384,28 @@ final class BackupStore: ObservableObject {
             savedDefaults[key] = UserDefaults.standard.data(forKey: key)
         }
         let savedMode = UserDefaults.standard.string(forKey: "ConcordiOS.mode.v1")
+        /// The container files this restore replaces.
+        let filesToRestore: [String] = {
+            switch scope {
+            case .all: return manifest.files
+            case .profilesOnly:
+                return manifest.files.filter {
+                    $0 == ConfigStore.configFileName || $0.hasPrefix("profiles/")
+                }
+            }
+        }()
         do {
             try FileManager.default.createDirectory(at: safetyDir, withIntermediateDirectories: true)
-            let contents = try FileManager.default.contentsOfDirectory(atPath: container.path)
-            for item in contents {
+            let items: [String]
+            switch scope {
+            case .all:
+                items = try FileManager.default.contentsOfDirectory(atPath: container.path)
+            case .profilesOnly:
+                items = ["profiles", ConfigStore.configFileName].filter {
+                    FileManager.default.fileExists(atPath: container.appendingPathComponent($0).path)
+                }
+            }
+            for item in items {
                 try FileManager.default.copyItem(
                     at: container.appendingPathComponent(item),
                     to: safetyDir.appendingPathComponent(item))
@@ -385,19 +416,36 @@ final class BackupStore: ObservableObject {
         }
         do {
             // Replace the container contents with the staged files.
-            let contents = try FileManager.default.contentsOfDirectory(atPath: container.path)
-            for item in contents {
-                try FileManager.default.removeItem(at: container.appendingPathComponent(item))
+            switch scope {
+            case .all:
+                let contents = try FileManager.default.contentsOfDirectory(atPath: container.path)
+                for item in contents {
+                    try FileManager.default.removeItem(at: container.appendingPathComponent(item))
+                }
+            case .profilesOnly:
+                for item in ["profiles", ConfigStore.configFileName] {
+                    let target = container.appendingPathComponent(item)
+                    if FileManager.default.fileExists(atPath: target.path) {
+                        try FileManager.default.removeItem(at: target)
+                    }
+                }
             }
-            for path in manifest.files {
+            for path in filesToRestore {
                 guard let data = byPath[path] else { continue }
                 let target = container.appendingPathComponent(path)
                 try FileManager.default.createDirectory(
                     at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try data.write(to: target, options: .atomic)
             }
-            // Restore the UserDefaults blobs.
-            for key in Self.backupUserDefaultsKeys {
+            // Restore the UserDefaults blobs (profiles-only restores
+            // just the profile list).
+            let defaultsKeys: [String] = {
+                switch scope {
+                case .all: return Self.backupUserDefaultsKeys
+                case .profilesOnly: return ["ConcordiOS.profiles.v1"]
+                }
+            }()
+            for key in defaultsKeys {
                 if let base64 = defaultsBackup.values[key],
                    let data = Data(base64Encoded: base64) {
                     if defaultsBackup.stringKeys.contains(key),
@@ -412,7 +460,7 @@ final class BackupStore: ObservableObject {
             }
         } catch {
             // Roll back: restore the safety copy and the old defaults.
-            try? BackupStore.rollback(container: container, safetyDir: safetyDir)
+            try? BackupStore.rollback(container: container, safetyDir: safetyDir, scope: scope)
             for (key, data) in savedDefaults {
                 if let data { UserDefaults.standard.set(data, forKey: key) }
                 else { UserDefaults.standard.removeObject(forKey: key) }
@@ -426,19 +474,41 @@ final class BackupStore: ObservableObject {
                 NSLocalizedDescriptionKey: "恢复中途失败，已恢复到恢复前状态：\(error.localizedDescription)"])
         }
         try? FileManager.default.removeItem(at: safetyDir)
-        return "已恢复 \(manifest.files.count) 个文件（备份于 \(Self.backupDateString(manifest.createdAt))）。各页面会自动重新加载；VPN 正在运行时建议重启一次 VPN，让核心用恢复后的配置重新启动。"
+        switch scope {
+        case .all:
+            return "已恢复 \(filesToRestore.count) 个文件（备份于 \(Self.backupDateString(manifest.createdAt))）。各页面会自动重新加载；VPN 正在运行时建议重启一次 VPN，让核心用恢复后的配置重新启动。"
+        case .profilesOnly:
+            return "已恢复配置：\(filesToRestore.count) 个配置文件（备份于 \(Self.backupDateString(manifest.createdAt))）。设置、主题、MITM 模块等未动；VPN 正在运行时建议重启一次 VPN。"
+        }
     }
 
-    private static func rollback(container: URL, safetyDir: URL) throws {
-        let contents = try FileManager.default.contentsOfDirectory(atPath: container.path)
-        for item in contents {
-            try FileManager.default.removeItem(at: container.appendingPathComponent(item))
-        }
-        let saved = try FileManager.default.contentsOfDirectory(atPath: safetyDir.path)
-        for item in saved {
-            try FileManager.default.copyItem(
-                at: safetyDir.appendingPathComponent(item),
-                to: container.appendingPathComponent(item))
+    /// Restore the safety copy after a failed restore. A
+    /// profiles-only rollback touches only the profile files, so the
+    /// rest of the container is never disturbed.
+    private static func rollback(container: URL, safetyDir: URL, scope: RestoreScope) throws {
+        switch scope {
+        case .all:
+            let contents = try FileManager.default.contentsOfDirectory(atPath: container.path)
+            for item in contents {
+                try FileManager.default.removeItem(at: container.appendingPathComponent(item))
+            }
+            let saved = try FileManager.default.contentsOfDirectory(atPath: safetyDir.path)
+            for item in saved {
+                try FileManager.default.copyItem(
+                    at: safetyDir.appendingPathComponent(item),
+                    to: container.appendingPathComponent(item))
+            }
+        case .profilesOnly:
+            for item in ["profiles", ConfigStore.configFileName] {
+                let target = container.appendingPathComponent(item)
+                if FileManager.default.fileExists(atPath: target.path) {
+                    try FileManager.default.removeItem(at: target)
+                }
+                let saved = safetyDir.appendingPathComponent(item)
+                if FileManager.default.fileExists(atPath: saved.path) {
+                    try FileManager.default.copyItem(at: saved, to: target)
+                }
+            }
         }
     }
 

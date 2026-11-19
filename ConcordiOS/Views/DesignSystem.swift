@@ -72,10 +72,10 @@ struct CardTitleRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Color(.label))
             Text(title)
-                .font(.headline)
+                .font(.system(size: 12, weight: .semibold))
             Spacer()
         }
     }
@@ -89,7 +89,7 @@ struct PillBadge: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.system(size: 10, weight: .semibold))
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
             .background(tint.opacity(0.14), in: Capsule())
@@ -142,7 +142,7 @@ struct BlobIcon: View {
                 .fill(blobColor)
                 .frame(width: size, height: size)
             Image(systemName: systemName)
-                .font(.system(size: size * 0.36, weight: .semibold))
+                .font(.system(size: size * 0.38, weight: .semibold))
                 .foregroundStyle(iconColor)
         }
         .frame(width: size, height: size)

@@ -31,7 +31,7 @@ struct UnifiedImportView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("粘贴订阅链接、节点链接或整段配置，自动识别，一次导入。订阅链接每行一个，多个会逐个导入；节点链接会直接解析并生成可用的「我的节点」配置。")
-                        .font(.subheadline)
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                     TextEditor(text: $importText)
                         .frame(minHeight: 160)
@@ -42,7 +42,7 @@ struct UnifiedImportView: View {
                         .padding(12)
                         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
                     if let notice = clipboardNotice {
-                        Text(notice).font(.caption).foregroundStyle(.secondary)
+                        Text(notice).font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 10) {
                         Button {
@@ -90,15 +90,15 @@ struct UnifiedImportView: View {
                     }
                     if let summary = importer.summaryText {
                         Text(summary)
-                            .font(.subheadline)
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Divider()
                     Button("使用旧版添加方式") { showLegacyAdd = true }
-                        .font(.subheadline)
+                        .font(.system(size: 13))
                     Text("导入成功后会自动切换到第一个成功的配置，去仪表盘点播放键启动即可；首次安装需先在系统设置里信任开发者证书。")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
                 .padding(16)
@@ -153,7 +153,7 @@ struct UnifiedImportView: View {
     private var resultsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("导入结果")
-                .font(.headline)
+                .font(.system(size: 12, weight: .semibold))
             ForEach(importer.results) { result in
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: result.succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
@@ -161,20 +161,20 @@ struct UnifiedImportView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(result.kind.rawValue)
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .fontWeight(.semibold)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(ConcordTheme.accent.opacity(0.12), in: Capsule())
                                 .foregroundStyle(ConcordTheme.accent)
                             Text(result.line)
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
                         Text(result.message)
-                            .font(.subheadline)
+                            .font(.system(size: 13))
                     }
                     Spacer()
                 }

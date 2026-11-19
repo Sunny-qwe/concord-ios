@@ -51,11 +51,11 @@ struct IPQualityView: View {
                         size: 56)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(isViaVPN ? "代理出口 IP" : "本机直连 IP")
-                            .font(.headline)
+                            .font(.system(size: 12, weight: .semibold))
                         Text(isViaVPN
                              ? "VPN 正在运行：下面是代理出口的 IP 质量。"
                              : "VPN 未运行：下面是你手机直连网络的 IP 质量，不是代理出口。开启 VPN 后再刷新，看到的才是代理出口。")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -75,7 +75,7 @@ struct IPQualityView: View {
             if let errorMessage {
                 Section {
                     Text(errorMessage)
-                        .font(.callout)
+                        .font(.system(size: 13))
                         .foregroundStyle(.red)
                 }
             }
@@ -106,14 +106,14 @@ struct IPQualityView: View {
             } else if info != nil {
                 Section {
                     Text("查询服务返回失败：\(info?.message ?? "未知错误")")
-                        .font(.callout)
+                        .font(.system(size: 13))
                         .foregroundStyle(.red)
                 }
             }
 
             Section {
                 Text("数据来自 ip-api.com（免费接口，无需 key）。它只告诉你出口 IP 是谁、在哪里、属于哪个运营商，不做测速、不判断节点能不能解锁流媒体。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
         }

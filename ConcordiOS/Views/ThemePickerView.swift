@@ -21,7 +21,7 @@ struct ThemePickerView: View {
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: appearance.icon)
-                                .font(.title3)
+                                .font(.system(size: 18))
                                 .foregroundStyle(themeStore.appearance == appearance ? themeStore.accentColor : .secondary)
                                 .frame(width: 28)
                             Text(appearance.label)
@@ -36,7 +36,7 @@ struct ThemePickerView: View {
                     .buttonStyle(.plain)
                 }
                 Text("「跟随系统」时 App 跟随 iPhone 的深色 / 浅色设置自动切换。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
 
@@ -54,13 +54,13 @@ struct ThemePickerView: View {
                                         .frame(width: 44, height: 44)
                                     if themeStore.accent == accent {
                                         Image(systemName: "checkmark")
-                                            .font(.headline)
+                                            .font(.system(size: 16, weight: .semibold))
                                             .fontWeight(.bold)
                                             .foregroundStyle(.white)
                                     }
                                 }
                                 Text(accent.label)
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(themeStore.accent == accent ? Color(.label) : .secondary)
                             }
                         }
@@ -69,7 +69,7 @@ struct ThemePickerView: View {
                 }
                 .padding(.vertical, 4)
                 Text("主题色会用在按钮、开关、选中状态和进度条上。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
 
@@ -79,9 +79,9 @@ struct ThemePickerView: View {
                         BlobIcon(systemName: "globe", iconColor: .white, blobColor: themeStore.accentColor, size: 56)
                         VStack(alignment: .leading, spacing: 4) {
                             Text("仪表盘")
-                                .font(.headline)
+                                .font(.system(size: 12, weight: .semibold))
                             Text("这就是换主题后的样子")
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -91,7 +91,7 @@ struct ThemePickerView: View {
                     HStack(spacing: 8) {
                         ForEach(["规则", "全局", "直连"], id: \.self) { mode in
                             Text(mode)
-                                .font(.subheadline)
+                                .font(.system(size: 13))
                                 .fontWeight(.semibold)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 6)

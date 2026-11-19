@@ -21,7 +21,7 @@ struct LogsView: View {
                     HStack {
                         SampleDataBadge()
                         Text(tab == .logs ? "日志为示例数据" : "事件为示例数据")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
@@ -50,10 +50,10 @@ struct LogsView: View {
                     if !logStore.warnings.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("核心警告（core.lastWarnings）")
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                             ForEach(logStore.warnings, id: \.message) { warning in
-                                Text(warning.message).font(.caption).foregroundStyle(.orange)
+                                Text(warning.message).font(.system(size: 10)).foregroundStyle(.orange)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -68,18 +68,18 @@ struct LogsView: View {
                             List(logStore.filtered) { entry in
                                 HStack(alignment: .top, spacing: 8) {
                                     Text(ConcordFormat.time(entry.time))
-                                        .font(.caption)
+                                        .font(.system(size: 10))
                                         .foregroundStyle(.secondary)
                                         .frame(width: 64, alignment: .leading)
                                     Text(entry.level.uppercased())
-                                        .font(.caption2)
+                                        .font(.system(size: 10))
                                         .fontWeight(.semibold)
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
                                         .background(levelColor(entry.level).opacity(0.15), in: Capsule())
                                         .foregroundStyle(levelColor(entry.level))
                                     Text(entry.text)
-                                        .font(.caption)
+                                        .font(.system(size: 10))
                                         .lineLimit(3)
                                 }
                                 .id(entry.id)
@@ -109,19 +109,19 @@ struct LogsView: View {
                         List(eventStore.filtered) { entry in
                             HStack(alignment: .top, spacing: 8) {
                                 Text(ConcordFormat.time(entry.receivedAtMillis))
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
                                     .frame(width: 64, alignment: .leading)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(entry.event.type)
-                                        .font(.caption2)
+                                        .font(.system(size: 10))
                                         .fontWeight(.semibold)
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
                                         .background(eventColor(entry.event.type).opacity(0.15), in: Capsule())
                                         .foregroundStyle(eventColor(entry.event.type))
                                     Text(entry.event.summary)
-                                        .font(.caption)
+                                        .font(.system(size: 10))
                                         .lineLimit(3)
                                 }
                             }
@@ -131,14 +131,14 @@ struct LogsView: View {
                     }
                     if let updated = eventStore.lastUpdated {
                         Text("上次更新：\(updated.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal)
                     }
                     if let error = eventStore.lastError {
                         Text(error)
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.red)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal)

@@ -40,7 +40,7 @@ struct AppIconPickerView: View {
         List {
             if !UIApplication.shared.supportsAlternateIcons {
                 Text("当前设备不支持切换图标（supportsAlternateIcons 为 false）。自签安装也可能被系统拒绝，见下方错误信息。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
             Section {
@@ -53,8 +53,8 @@ struct AppIconPickerView: View {
                                 .frame(width: 56, height: 56)
                                 .clipShape(RoundedRectangle(cornerRadius: 13))
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(option.title).font(.body)
-                                Text(option.subtitle).font(.caption).foregroundStyle(.secondary)
+                                Text(option.title).font(.system(size: 13))
+                                Text(option.subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
                             }
                             Spacer()
                             if currentIconName == option.iconName {
@@ -76,7 +76,7 @@ struct AppIconPickerView: View {
             if let message = statusMessage {
                 Section {
                     Text(message)
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(statusIsError ? .red : .secondary)
                         .textSelection(.enabled)
                 }

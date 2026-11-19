@@ -27,16 +27,16 @@ struct MitmModulesView: View {
         List {
             Section {
                 Text("模块把一组规则、重写、脚本和解密域名打包在一起，整体开关、整体更新。支持 Surge 模块、Loon 插件、Quantumult X 片段和 Stash 覆写。模块内容会在下次启动 VPN 时生效；VPN 运行时改动会立即重新应用。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 if let message = moduleStore.applyMessage {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
+                    Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 if let message = moduleStore.statusMessage {
-                    Text(message).font(.caption).foregroundStyle(.green)
+                    Text(message).font(.system(size: 10)).foregroundStyle(.green)
                 }
                 if let error = moduleStore.lastError {
-                    Text(error).font(.caption).foregroundStyle(.red)
+                    Text(error).font(.system(size: 10)).foregroundStyle(.red)
                 }
             }
 
@@ -62,7 +62,7 @@ struct MitmModulesView: View {
             Section("已安装的模块（\(moduleStore.modules.count)）") {
                 if moduleStore.modules.isEmpty {
                     Text("还没有模块。粘贴一个 Surge / Loon / Quantumult X 模块链接导入。")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
                 ForEach(moduleStore.modules) { module in
@@ -157,19 +157,19 @@ private struct MitmModuleRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
                         Text(module.name)
-                            .font(.body)
+                            .font(.system(size: 13))
                             .fontWeight(.semibold)
                             .foregroundStyle(Color(.label))
                         if module.url != nil {
                             Text("链接")
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
                                 .background(Color.blue.opacity(0.12), in: Capsule())
                         }
                         if let content, content.declaredScripts > 0 {
                             Text("\(content.declaredScripts) 脚本")
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
                                 .background(Color.orange.opacity(0.14), in: Capsule())
@@ -177,7 +177,7 @@ private struct MitmModuleRow: View {
                         }
                         if let content, !content.skipped.isEmpty {
                             Text("\(content.skipped.count) 跳过")
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
                                 .background(Color.gray.opacity(0.14), in: Capsule())
@@ -185,23 +185,23 @@ private struct MitmModuleRow: View {
                     }
                     if !module.description.isEmpty {
                         Text(module.description)
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
                     Text("更新于 \(ConcordRelativeTime.string(since: module.lastUpdateTime))")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
             }
             .buttonStyle(.plain)
             VStack(spacing: 4) {
                 Button(action: onMoveUp) {
-                    Image(systemName: "chevron.up").font(.caption)
+                    Image(systemName: "chevron.up").font(.system(size: 13, weight: .semibold))
                 }
                 .disabled(moduleStore.modules.first?.id == module.id)
                 Button(action: onMoveDown) {
-                    Image(systemName: "chevron.down").font(.caption)
+                    Image(systemName: "chevron.down").font(.system(size: 13, weight: .semibold))
                 }
                 .disabled(moduleStore.modules.last?.id == module.id)
             }
@@ -245,14 +245,14 @@ struct MitmModuleDetailView: View {
             if let module {
                 Section {
                     Text(module.description.isEmpty ? "（无描述）" : module.description)
-                        .font(.body)
+                        .font(.system(size: 13))
                     LabeledContent("来源", value: module.url ?? "本地")
                     LabeledContent("上次更新", value: ConcordRelativeTime.string(since: module.lastUpdateTime))
                     if let tip = module.systemTip {
-                        Text(tip).font(.caption).foregroundStyle(.orange)
+                        Text(tip).font(.system(size: 10)).foregroundStyle(.orange)
                     }
                     if let message = moduleStore.applyMessage {
-                        Text(message).font(.caption).foregroundStyle(.secondary)
+                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                 }
 
@@ -279,7 +279,7 @@ struct MitmModuleDetailView: View {
                 } else {
                     Section {
                         Text("模块文本丢失，请重新导入。")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.red)
                     }
                 }
@@ -300,15 +300,15 @@ struct MitmModuleDetailView: View {
                     }
                     if isValidating { ProgressView() }
                     if let message = validateMessage {
-                        Text(message).font(.caption).foregroundStyle(.secondary)
+                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                     if let issues = validateIssues, !issues.isEmpty {
                         ForEach(issues.keys.sorted(), id: \.self) { list in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(list).font(.caption).fontWeight(.semibold)
+                                Text(list).font(.system(size: 10)).fontWeight(.semibold)
                                 ForEach(issues[list] ?? [], id: \.index) { issue in
                                     Text("第 \(issue.index + 1) 行：\(issue.message)")
-                                        .font(.caption)
+                                        .font(.system(size: 10))
                                         .foregroundStyle(.red)
                                 }
                             }
@@ -375,10 +375,10 @@ private struct MitmModuleArgumentsSection: View {
             ForEach(arguments, id: \.name) { argument in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(argument.title)
-                        .font(.subheadline)
+                        .font(.system(size: 13))
                         .fontWeight(.semibold)
                     if let description = argument.description, !description.isEmpty {
-                        Text(description).font(.caption).foregroundStyle(.secondary)
+                        Text(description).font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                     switch argument.type {
                     case .input:
@@ -407,10 +407,10 @@ private struct MitmModuleArgumentsSection: View {
                 }
             }
             if let savedMessage {
-                Text(savedMessage).font(.caption).foregroundStyle(.green)
+                Text(savedMessage).font(.system(size: 10)).foregroundStyle(.green)
             }
             Text("参数会填进模块的每一行（Surge 的 {{{参数}}}、Loon 的 ${参数}、Stash 的 ${args.参数}）。改参数后需要资源的行会重新下载。")
-                .font(.caption)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
         .onAppear {
@@ -439,7 +439,7 @@ struct MitmModuleSkippedView: View {
         List {
             Section {
                 Text("这些行 FlClash 也带不过来：原因写在每行下面。改模块原文可以去掉它们。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
             ForEach(Array(skipped.enumerated()), id: \.offset) { _, skip in
@@ -448,7 +448,7 @@ struct MitmModuleSkippedView: View {
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                     Text("\(skip.section) · \(skip.reason.label)")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.orange)
                 }
             }
@@ -494,7 +494,7 @@ private struct MitmModulePasteImportView: View {
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || moduleStore.isBusy)
                     if let error = moduleStore.lastError {
-                        Text(error).font(.caption).foregroundStyle(.red)
+                        Text(error).font(.system(size: 10)).foregroundStyle(.red)
                     }
                 }
             }
@@ -537,7 +537,7 @@ private struct MitmModuleTextEditorView: View {
                         .autocapitalization(.none)
                         .autocorrectionDisabled()
                     Text("支持 Surge、Loon、Quantumult X 和 Stash 覆写语法。保存后会重新解析、重新下载资源；带新脚本的模块会先暂停。")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
                 Section {
@@ -554,7 +554,7 @@ private struct MitmModuleTextEditorView: View {
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || moduleStore.isBusy)
                     if let error = moduleStore.lastError {
-                        Text(error).font(.caption).foregroundStyle(.red)
+                        Text(error).font(.system(size: 10)).foregroundStyle(.red)
                     }
                 }
             }

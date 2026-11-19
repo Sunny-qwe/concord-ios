@@ -9,7 +9,7 @@ import SwiftUI
 struct SampleDataBadge: View {
     var body: some View {
         Text("示例数据")
-            .font(.caption2)
+            .font(.system(size: 10))
             .fontWeight(.semibold)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
@@ -33,15 +33,15 @@ struct StatCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.caption)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.headline)
+                .font(.system(size: 12, weight: .semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             if let subtitle {
                 Text(subtitle)
-                    .font(.caption2)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
@@ -90,7 +90,7 @@ struct LatencyChip: View {
 
     var body: some View {
         Text(ConcordFormat.latency(latencyMs))
-            .font(.caption)
+            .font(.system(size: 10))
             .fontWeight(.semibold)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)

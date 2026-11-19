@@ -25,7 +25,7 @@ struct ShortcutsView: View {
         List {
             Section("快捷指令动作") {
                 Text("在 iPhone「快捷指令」App 里搜索 Concord，就能找到这 4 个动作；也可以把它们放到小组件、自动化或操作按钮上。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 shortcutRow(icon: "power", title: "开启 VPN", subtitle: "启动 VPN 隧道")
                 shortcutRow(icon: "poweroff", title: "关闭 VPN", subtitle: "停止 VPN 隧道")
@@ -35,16 +35,16 @@ struct ShortcutsView: View {
 
             Section("说明") {
                 Text("快捷指令尽量在后台直接操作：开关 VPN 走系统 VPN 配置，切换模式先保存、VPN 运行时再实时应用到核心。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 Text("如果某次操作在后台做不了（比如系统不让快捷指令直接碰 VPN 配置），这次操作会失败并在结果里写明原因——这时可以用下面的 URL 动作代替：用快捷指令里的「打开 URL」打开对应链接，App 打开后就会执行。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
 
             Section("URL 动作（备用）") {
                 Text("点一行复制链接，粘贴到快捷指令的「打开 URL」动作里。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 ForEach(urlActions, id: \.url) { action in
                     Button {
@@ -57,20 +57,20 @@ struct ShortcutsView: View {
                                 .frame(width: 28)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(action.title)
-                                    .font(.body)
+                                    .font(.system(size: 13))
                                     .foregroundStyle(Color(.label))
                                 Text(action.url)
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
                             if copiedURL == action.url {
                                 Text("已复制")
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(.green)
                             } else {
                                 Image(systemName: "doc.on.doc")
-                                    .font(.caption)
+                                    .font(.system(size: 13))
                                     .foregroundStyle(.tertiary)
                             }
                         }
@@ -87,13 +87,13 @@ struct ShortcutsView: View {
     private func shortcutRow(icon: String, title: String, subtitle: String) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.title3)
+                .font(.system(size: 18))
                 .foregroundStyle(.white)
                 .frame(width: 40, height: 40)
                 .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.body)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                Text(title).font(.system(size: 13))
+                Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 4)

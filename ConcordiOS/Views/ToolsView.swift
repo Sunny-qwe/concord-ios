@@ -26,7 +26,7 @@ struct ToolsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
                     Text("工具")
-                        .font(.system(size: 20, weight: .bold))
+                        .font(.system(size: 18, weight: .bold))
                     toolSection(header: nil) {
                         ToolRow(icon: "clock", title: "请求") { ConnectionsView() }
                         Divider().padding(.leading, 54)
@@ -38,15 +38,15 @@ struct ToolsView: View {
                         NavigationLink { LanguageView() } label: {
                             HStack(spacing: 14) {
                                 Image(systemName: "character.bubble")
-                                    .font(.system(size: 20, weight: .regular))
+                                    .font(.system(size: 18, weight: .regular))
                                     .foregroundStyle(Color(.label))
                                     .frame(width: 24, height: 24)
                                 Text("语言")
-                                    .font(.system(size: 17, weight: .semibold))
+                                    .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(Color(.label))
                                 Spacer()
                                 Text("默认")
-                                    .font(.system(size: 17))
+                                    .font(.system(size: 13))
                                     .foregroundStyle(Color(.label))
                                 Image(systemName: "chevron.up.chevron.down")
                                     .font(.system(size: 13, weight: .semibold))
@@ -116,11 +116,11 @@ private struct ToolRow<Destination: View>: View {
         NavigationLink { destination() } label: {
             HStack(spacing: 14) {
                 Image(systemName: icon)
-                    .font(.system(size: 20, weight: .regular))
+                    .font(.system(size: 18, weight: .regular))
                     .foregroundStyle(Color(.label))
                     .frame(width: 24, height: 24)
                 Text(title)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color(.label))
                 Spacer()
                 Image(systemName: "chevron.right")
@@ -145,7 +145,7 @@ private struct LanguageView: View {
             Section {
                 LabeledContent("当前语言", value: "默认")
                 Text("跟随系统语言显示。应用内没有单独的语言切换。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
         }
@@ -164,12 +164,12 @@ private struct DisclaimerView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text("免责声明")
-                    .font(.system(size: 20, weight: .bold))
+                    .font(.system(size: 18, weight: .bold))
                 Text("本 App 是一个开源代理客户端：核心为 chen08209/concord，界面复刻自 chen08209/FlClash，均以 GPL-3.0 开源。")
                 Text("请遵守所在国家和地区的法律法规，合理、合法使用本 App；因使用本 App 产生的任何后果由使用者自行承担。")
                 Text("MITM 抓包会解密 HTTPS 流量，仅可在自己拥有或已获授权的设备与流量上使用；抓包前需在系统设置中手动安装并信任自签 CA 证书。")
             }
-            .font(.body)
+            .font(.system(size: 13))
             .padding(16)
         }
         .background(ConcordTheme.pageBackground)

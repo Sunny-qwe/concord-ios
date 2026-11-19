@@ -116,7 +116,7 @@ struct ConfigEditorView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(profileStore.activeProfile?.name ?? "当前配置")
-                    .font(.headline)
+                    .font(.system(size: 12, weight: .semibold))
                 Spacer()
                 if isDirty {
                     PillBadge(text: "未保存", tint: .orange)
@@ -129,7 +129,7 @@ struct ConfigEditorView: View {
                     ? "保存前会先用核心校验（config.validate），有问题就不会覆盖。"
                     : "VPN 未运行：保存前只能做本地检查，核心会在下次启动 VPN 时再校验一次。")
                  : "示例模式：保存只做本地检查，不会发给核心。")
-                .font(.caption)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
         .padding(12)
@@ -144,24 +144,24 @@ struct ConfigEditorView: View {
             if !validationIssues.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("校验发现 \(validationIssues.count) 个问题，未保存：")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .fontWeight(.semibold)
                         .foregroundStyle(.red)
                     ForEach(Array(validationIssues.enumerated()), id: \.offset) { _, issue in
                         Text("· \(issue.message)")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.red)
                     }
                 }
             }
             if let errorMessage {
                 Text(errorMessage)
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.red)
             }
             if let message {
                 Text(message)
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
         }

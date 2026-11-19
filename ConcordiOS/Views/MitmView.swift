@@ -45,7 +45,7 @@ struct MitmView: View {
                 HStack {
                     SampleDataBadge()
                     Text("拦截记录为示例数据")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
                 .listRowBackground(Color.clear)
@@ -59,12 +59,12 @@ struct MitmView: View {
                         Text("MITM 模块")
                         Spacer()
                         Text("Surge / Loon / QX")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
                 }
                 Text("模块把规则、重写、脚本和解密域名打包在一起，整体开关。MITM 拦截本身就是为模块服务的：模块里的重写和脚本要靠它才能改 HTTPS 请求的内容。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
 
@@ -77,14 +77,14 @@ struct MitmView: View {
                 }
                 .disabled(mitmStore.isRunningScript || mitmStore.scriptName.trimmingCharacters(in: .whitespaces).isEmpty)
                 if let message = mitmStore.scriptMessage {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
+                    Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 if let result = mitmStore.scriptResult {
                     JSONValueView(value: result)
                         .frame(minHeight: 60)
                 }
                 Text("脚本是核心里的 MITM 脚本（按名字运行）。没有列出脚本的接口，名字就是脚本文件名。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
 
@@ -104,45 +104,45 @@ struct MitmView: View {
                 }
                 if mitmStore.capturing {
                     Text("正在捕获")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.green)
                 }
                 if let message = mitmStore.exchangesMessage {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
+                    Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
                 ForEach(mitmStore.exchanges) { exchange in
                     Button { detailSummary = exchange } label: {
                         HStack(alignment: .top, spacing: 8) {
                             Text(ConcordFormat.time(rfc3339: exchange.start))
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                                 .frame(width: 64, alignment: .leading)
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack {
                                     Text(exchange.method)
-                                        .font(.caption)
+                                        .font(.system(size: 10))
                                         .fontWeight(.semibold)
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
                                         .background(Color.blue.opacity(0.12), in: Capsule())
                                     Text(exchange.url)
-                                        .font(.body)
+                                        .font(.system(size: 13))
                                         .lineLimit(1)
                                     Spacer()
                                     if exchange.pending ?? false {
-                                        Text("进行中").font(.caption).foregroundStyle(.orange)
+                                        Text("进行中").font(.system(size: 10)).foregroundStyle(.orange)
                                     } else {
                                         Text("\(exchange.status)")
-                                            .font(.caption)
+                                            .font(.system(size: 10))
                                             .fontWeight(.semibold)
                                             .foregroundStyle(exchange.status >= 400 ? .red : .green)
                                     }
                                 }
                                 Text("↑ \(ConcordFormat.bytes(exchange.requestSize)) · ↓ \(ConcordFormat.bytes(exchange.responseSize)) · \(exchange.duration) ms")
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
                                 if let error = exchange.error, !error.isEmpty {
-                                    Text(error).font(.caption).foregroundStyle(.red)
+                                    Text(error).font(.system(size: 10)).foregroundStyle(.red)
                                 }
                             }
                         }
@@ -232,7 +232,7 @@ struct MitmExchangeDetailView: View {
                 }
                 if let message = mitmStore.detailMessage {
                     Section {
-                        Text(message).font(.caption).foregroundStyle(.red)
+                        Text(message).font(.system(size: 10)).foregroundStyle(.red)
                     }
                 }
             }

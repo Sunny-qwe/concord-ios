@@ -53,21 +53,21 @@ struct ProfilesView: View {
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "square.and.arrow.down")
-                                .font(.title3)
+                                .font(.system(size: 18))
                                 .foregroundStyle(.white)
                                 .frame(width: 40, height: 40)
                                 .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 12))
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("统一导入")
-                                    .font(.headline)
+                                    .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(.primary)
                                 Text("订阅链接 / 节点链接 / 配置文件，一次粘贴自动识别导入")
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
                             Image(systemName: "chevron.right")
-                                .font(.caption)
+                                .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(.secondary)
                         }
                         .padding(.vertical, 4)
@@ -78,21 +78,21 @@ struct ProfilesView: View {
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "square.and.pencil")
-                                .font(.title3)
+                                .font(.system(size: 18))
                                 .foregroundStyle(.white)
                                 .frame(width: 40, height: 40)
                                 .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 12))
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("编辑当前配置")
-                                    .font(.headline)
+                                    .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(.primary)
                                 Text("直接改当前订阅的 YAML，保存前先用核心校验")
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
                             Image(systemName: "chevron.right")
-                                .font(.caption)
+                                .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(.secondary)
                         }
                         .padding(.vertical, 4)
@@ -110,17 +110,17 @@ struct ProfilesView: View {
                             Image(systemName: profile.kind == .url ? "link" : "doc")
                                 .foregroundStyle(.blue)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(profile.name).font(.body)
+                                Text(profile.name).font(.system(size: 13))
                                 HStack(spacing: 6) {
                                     Text(profile.kind.rawValue)
                                     if let updated = profile.updatedAt {
                                         Text("更新于 \(updated.formatted(date: .abbreviated, time: .shortened))")
                                     }
                                 }
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                                 if let note = profile.note {
-                                    Text(note).font(.caption2).foregroundStyle(.orange)
+                                    Text(note).font(.system(size: 10)).foregroundStyle(.orange)
                                 }
                             }
                             Spacer()
@@ -148,7 +148,7 @@ struct ProfilesView: View {
                         LabeledContent("摘要", value: inspect.digest)
                         if !inspect.matchRules.isEmpty {
                             Text("匹配规则：\(inspect.matchRules.joined(separator: ", "))")
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                         }
                         Button("校验配置文件（config.validate）") {
@@ -159,11 +159,11 @@ struct ProfilesView: View {
                         }
                         if !profileStore.validationIssues.isEmpty {
                             ForEach(profileStore.validationIssues, id: \.message) { issue in
-                                Text(issue.message).font(.caption).foregroundStyle(.orange)
+                                Text(issue.message).font(.system(size: 10)).foregroundStyle(.orange)
                             }
                         }
                         if let message = validationMessage {
-                            Text(message).font(.caption).foregroundStyle(.secondary)
+                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -172,9 +172,9 @@ struct ProfilesView: View {
                     Section("配置警告（config.apply）") {
                         ForEach(profileStore.applyWarnings, id: \.message) { warning in
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(warning.message).font(.subheadline)
+                                Text(warning.message).font(.system(size: 13))
                                 Text("\(warning.path) · \(warning.level)")
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -198,7 +198,7 @@ struct ProfilesView: View {
                         }
                         .disabled(decryptProfileID == nil || decryptKey.isEmpty)
                         if let message = profileStore.decryptMessage {
-                            Text(message).font(.caption).foregroundStyle(.secondary)
+                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                         }
                         if let result = profileStore.decryptResult, !result.isEmpty {
                             Text(result)
@@ -213,7 +213,7 @@ struct ProfilesView: View {
                             }
                         }
                         Text("加密配置需用密钥解密后才能使用。解密由扩展内的核心执行，需先启动 VPN；密钥只发给本次调用，不会保存。")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -232,17 +232,17 @@ struct ProfilesView: View {
                         }
                         .disabled(outboundsProfileID == nil)
                         if let message = profileStore.outboundsMessage {
-                            Text(message).font(.caption).foregroundStyle(.secondary)
+                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                         }
                         if let outbounds = profileStore.outbounds {
                             if !outbounds.proxies.isEmpty {
-                                Text("代理（\(outbounds.proxies.count)）").font(.caption).foregroundStyle(.secondary)
+                                Text("代理（\(outbounds.proxies.count)）").font(.system(size: 10)).foregroundStyle(.secondary)
                                 ForEach(outbounds.proxies, id: \.name) { outbound in
                                     LabeledContent(outbound.name, value: outbound.type)
                                 }
                             }
                             if !outbounds.proxyGroups.isEmpty {
-                                Text("代理组（\(outbounds.proxyGroups.count)）").font(.caption).foregroundStyle(.secondary)
+                                Text("代理组（\(outbounds.proxyGroups.count)）").font(.system(size: 10)).foregroundStyle(.secondary)
                                 ForEach(outbounds.proxyGroups, id: \.name) { group in
                                     LabeledContent(group.name, value: group.type)
                                 }
@@ -263,15 +263,15 @@ struct ProfilesView: View {
                         }
                         .disabled(encodeProfileID == nil)
                         if let message = profileStore.encodeMessage {
-                            Text(message).font(.caption).foregroundStyle(.secondary)
+                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                         }
                         ForEach(profileStore.encodedLinks, id: \.self) { link in
                             ShareLink(item: link) {
-                                Text(link).font(.caption).lineLimit(2)
+                                Text(link).font(.system(size: 10)).lineLimit(2)
                             }
                         }
                         Text("链接由核心从配置的 proxies 列表生成，点击可分享。")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
 
@@ -289,14 +289,14 @@ struct ProfilesView: View {
                         }
                         .disabled(decodeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         if let message = profileStore.decodeMessage {
-                            Text(message).font(.caption).foregroundStyle(.secondary)
+                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                         }
                         ForEach(Array(profileStore.decodedProxies.enumerated()), id: \.offset) { _, proxy in
                             HStack {
                                 Text(proxy.objectValue?["name"]?.stringValue ?? "未知节点")
                                 Spacer()
                                 Text(proxy.objectValue?["type"]?.stringValue ?? "")
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -309,7 +309,7 @@ struct ProfilesView: View {
                             }
                         }
                         Text("粘贴的链接只发给核心解析，不会发往任何其他地方；不是链接的行会被忽略。")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
 
@@ -330,20 +330,20 @@ struct ProfilesView: View {
                             Text("将删除核心侧订阅 #\(clearEffectID) 的已下载提供方文件。iOS 上订阅没有数字编号，核心通常找不到可清除的内容。")
                         }
                         if let message = profileStore.clearEffectMessage {
-                            Text(message).font(.caption).foregroundStyle(.secondary)
+                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                         }
                         Text("订阅编号是桌面端宿主给订阅分配的数字 ID；iOS 上订阅用 UUID 标识，核心侧没有对应的已下载文件，因此这个操作通常无事可做。")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
                 }
 
                 Section {
                     Text(profileStore.statusMessage)
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                     if let error = profileStore.lastError {
-                        Text(error).font(.caption).foregroundStyle(.red)
+                        Text(error).font(.system(size: 10)).foregroundStyle(.red)
                     }
                 }
             }
@@ -426,12 +426,12 @@ struct AddProfileView: View {
                         showImporter = true
                     }
                     Text("支持 Clash / mihomo YAML。导入后文件保存在 App Group 容器，扩展与主 App 共享。")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
                 Section {
                     Text("订阅更新调用 convert.subscription / provider.update；切换订阅调用 config.apply + profile.inspect。")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -489,16 +489,16 @@ struct ProfilePreviewView: View {
                 case .nodes:
                     List {
                         if let error = previewError {
-                            Text(error).font(.caption).foregroundStyle(.red)
+                            Text(error).font(.system(size: 10)).foregroundStyle(.red)
                         } else if let proxies = convertedProxies {
                             if proxies.isEmpty {
-                                Text("该订阅没有解析出节点").font(.caption).foregroundStyle(.secondary)
+                                Text("该订阅没有解析出节点").font(.system(size: 10)).foregroundStyle(.secondary)
                             } else {
                                 ForEach(Array(proxies.enumerated()), id: \.offset) { _, proxy in
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(proxy.objectValue?["name"]?.stringValue ?? "—").font(.body)
+                                        Text(proxy.objectValue?["name"]?.stringValue ?? "—").font(.system(size: 13))
                                         Text("\(proxy.objectValue?["type"]?.stringValue ?? "—") · \(proxy.objectValue?["server"]?.stringValue ?? "—")")
-                                            .font(.caption)
+                                            .font(.system(size: 10))
                                             .foregroundStyle(.secondary)
                                     }
                                 }
@@ -512,7 +512,7 @@ struct ProfilePreviewView: View {
                 case .built:
                     ScrollView {
                         if let error = previewError {
-                            Text(error).font(.caption).foregroundStyle(.red).padding()
+                            Text(error).font(.system(size: 10)).foregroundStyle(.red).padding()
                         } else if let built = builtText {
                             Text(built)
                                 .font(.system(.caption, design: .monospaced))

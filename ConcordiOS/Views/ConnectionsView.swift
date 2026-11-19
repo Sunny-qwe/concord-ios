@@ -20,7 +20,7 @@ struct ConnectionsView: View {
                     HStack {
                         SampleDataBadge()
                         Text("连接为示例数据")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
@@ -33,13 +33,13 @@ struct ConnectionsView: View {
                     Text("下行 \(ConcordFormat.bytes(connectionStore.totalDownload))")
                     Spacer()
                 }
-                .font(.caption)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
                 .padding(.bottom, 4)
                 if let message = connectionStore.networkUpdateMessage {
                     Text(message)
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
@@ -47,7 +47,7 @@ struct ConnectionsView: View {
                 }
                 if let error = connectionStore.lastError {
                     Text(error)
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
@@ -61,23 +61,23 @@ struct ConnectionsView: View {
                         Button { detail = connection } label: {
                             HStack(alignment: .top, spacing: 8) {
                                 Text(ConcordFormat.time(Int64(connection.start.timeIntervalSince1970 * 1000)))
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
                                     .frame(width: 64, alignment: .leading)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(connection.host ?? connection.destination)
-                                        .font(.body)
+                                        .font(.system(size: 13))
                                         .lineLimit(1)
                                     Text("\(connection.network.uppercased()) · \(connection.rule ?? "—") · \(connection.proxy ?? "—")")
-                                        .font(.caption)
+                                        .font(.system(size: 10))
                                         .foregroundStyle(.secondary)
                                     Text("持续 \(ConcordFormat.duration(seconds: connection.durationSeconds)) · ↑ \(ConcordFormat.bytes(connection.upload)) ↓ \(ConcordFormat.bytes(connection.download))")
-                                        .font(.caption2)
+                                        .font(.system(size: 10))
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 Image(systemName: "chevron.right")
-                                    .font(.caption)
+                                    .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(.tertiary)
                             }
                         }
@@ -169,7 +169,7 @@ struct ConnectionDetailView: View {
                         MitmView(initialConnectionId: connection.id)
                     }
                     Text("断开调用 connection.close；拦截记录调用 mitm.exchanges，需要 MITM 已开启并正在捕获。")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
             }

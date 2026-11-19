@@ -50,7 +50,7 @@ struct ProxiesView: View {
                     HStack {
                         SampleDataBadge()
                         Text("节点与延迟为示例数据")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
@@ -78,7 +78,7 @@ struct ProxiesView: View {
 
                 if let group = selectedGroup {
                     Text("\(group.type) · \(group.nodes.count) 个节点 · 当前：\(group.selectedNodeName ?? "未选择")")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
@@ -145,9 +145,9 @@ struct ProxiesView: View {
     private func nodeRow(_ node: ProxyNode, in group: ProxyGroup) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(node.name).font(.body)
+                Text(node.name).font(.system(size: 13))
                 Text("\(node.type)\(node.provider.map { " · \($0)" } ?? "")")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -170,13 +170,13 @@ struct ProxiesView: View {
     private func nodeCard(_ node: ProxyNode, in group: ProxyGroup) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(node.name).font(.subheadline).fontWeight(.semibold).lineLimit(2)
+                Text(node.name).font(.system(size: 13)).fontWeight(.semibold).lineLimit(2)
                 Spacer()
                 if group.selectedNodeName == node.name {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.blue)
                 }
             }
-            Text(node.type).font(.caption).foregroundStyle(.secondary)
+            Text(node.type).font(.system(size: 10)).foregroundStyle(.secondary)
             LatencyChip(latencyMs: node.latencyMs)
         }
         .padding(14)
@@ -227,7 +227,7 @@ struct NodeDetailView: View {
                     }
                 } else if let error = detail?.error {
                     Section {
-                        Text(error).font(.caption).foregroundStyle(.orange)
+                        Text(error).font(.system(size: 10)).foregroundStyle(.orange)
                     }
                 } else {
                     Section {

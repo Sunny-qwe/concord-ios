@@ -42,7 +42,6 @@ struct ContentView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.safeAreaInsets) private var safeAreaInsets
 
     @State private var selectedTab: AppTab = .dashboard
 
@@ -68,12 +67,13 @@ struct ContentView: View {
             floatingTabBar
                 .padding(.horizontal, 16)
                 // Reference bar bottom sits 34pt above the screen
-                // bottom (810pt on an 844pt screen): on a home-
-                // indicator phone the safe area already supplies
-                // those 34pt, so only 4pt extra padding is needed;
-                // on a phone with no bottom safe area the padding
-                // makes up the difference instead.
-                .padding(.bottom, max(4, 34 - safeAreaInsets.bottom))
+                // bottom (810pt on an 844pt screen); the safe-area
+                // inset already supplies those 34pt on a home-
+                // indicator phone, so only 4pt extra padding is
+                // needed. (Fixed 4pt: there is no safe-area
+                // environment value in SwiftUI, so the previous
+                // property wrapper did not compile.)
+                .padding(.bottom, 4)
         }
         .task {
             // Load the first snapshot for every page once, like FlClash
@@ -109,8 +109,7 @@ struct ContentView: View {
                         Image(systemName: tab.icon)
                             .font(.system(size: 20, weight: .semibold))
                         Text(tab.title)
-                            .font(.caption)
-                            .fontWeight(.semibold)
+                            .font(.system(size: 8, weight: .semibold))
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)

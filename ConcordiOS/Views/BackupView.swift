@@ -32,7 +32,7 @@ struct BackupView: View {
         List {
             Section("导出备份") {
                 Text("备份包含：全部订阅配置、设置（通用 / TUN / DNS / MITM）、MITM 模块、主题和核心模式。实时快照（流量、连接、日志）不备份，下次打开 App 时会自动重新生成。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 Button {
                     Task { await createBackup() }
@@ -45,14 +45,14 @@ struct BackupView: View {
                         Label("分享备份文件", systemImage: "square.and.arrow.up")
                     }
                     Text("备份文件：\(backupURL.lastPathComponent)")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
             }
 
             Section("导入备份") {
                 Text("导入会替换当前全部订阅、设置和 MITM 模块。恢复前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 Button {
                     showImporter = true
@@ -70,14 +70,14 @@ struct BackupView: View {
             if let message {
                 Section {
                     Text(message)
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
             }
             if let errorMessage {
                 Section {
                     Text(errorMessage)
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.red)
                 }
             }

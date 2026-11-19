@@ -255,7 +255,7 @@ struct DashboardView: View {
                     HStack {
                         SampleDataBadge()
                         Text("示例数据：所有数值均为内置示例，不是真实核心数据")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -269,7 +269,7 @@ struct DashboardView: View {
                 if showGroups { groupsCard }
                 if showStats { statsCard }
                 if let error = proxyStore.lastError {
-                    Text(error).font(.caption).foregroundStyle(.red)
+                    Text(error).font(.system(size: 10)).foregroundStyle(.red)
                 }
             }
             .padding(.horizontal, 16)
@@ -321,7 +321,7 @@ struct DashboardView: View {
     private var titleRow: some View {
         HStack(alignment: .center) {
             Text("仪表盘")
-                .font(.system(size: 20, weight: .bold))
+                .font(.system(size: 18, weight: .bold))
             Spacer()
             Button { showEditSheet = true } label: {
                 Image(systemName: "pencil")
@@ -380,12 +380,12 @@ struct DashboardView: View {
                     ZStack {
                         BlobShape()
                             .fill(Color(red: 0.92, green: 0.92, blue: 0.94))
-                            .frame(width: 56, height: 56)
+                            .frame(width: 48, height: 40)
                         Text(ipInfo?.countryCode ?? "—")
-                            .font(.system(size: 15, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundStyle(Color(.label))
                     }
-                    .frame(width: 56, height: 56)
+                    .frame(width: 48, height: 40)
                     VStack(alignment: .leading, spacing: 8) {
                         Text(ipInfo?.query ?? "—")
                             .font(.system(size: 18, weight: .semibold))
@@ -403,7 +403,7 @@ struct DashboardView: View {
                         Task { await proxyStore.toggle() }
                     } label: {
                         Image(systemName: proxyStore.isRunning ? "stop.fill" : "play.fill")
-                            .font(.system(size: 32, weight: .bold))
+                            .font(.system(size: 21, weight: .bold))
                             .foregroundStyle(.white)
                             .frame(width: 88, height: 88)
                             .background(ConcordTheme.accent, in: Circle())
@@ -420,20 +420,20 @@ struct DashboardView: View {
                 HStack(spacing: 24) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("运行时间")
-                            .font(.system(size: 13))
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                         TimelineView(.periodic(from: .now, by: 1)) { _ in
                             Text(uptimeText)
-                                .font(.subheadline)
+                                .font(.system(size: 14))
                                 .fontWeight(.semibold)
                         }
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text("组织")
-                            .font(.system(size: 13))
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                         Text(ipInfo?.org ?? ipInfo?.isp ?? "—")
-                            .font(.subheadline)
+                            .font(.system(size: 14))
                             .fontWeight(.semibold)
                             .lineLimit(1)
                     }
@@ -463,7 +463,7 @@ struct DashboardView: View {
             fg = Color(red: 0.72, green: 0.15, blue: 0.12)
         }
         return Text(text)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.system(size: 10, weight: .semibold))
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(bg, in: Capsule())
@@ -490,17 +490,17 @@ struct DashboardView: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: isUp ? "arrow.up" : "arrow.down")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(isUp ? Color(.label) : ConcordTheme.accent)
                 Text(isUp ? "上传" : "下载")
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                     .fontWeight(.semibold)
             }
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(split.number)
-                    .font(.system(size: 34, weight: .bold))
+                    .font(.system(size: 25, weight: .bold))
                 Text("\(split.unit)/s")
-                    .font(.subheadline)
+                    .font(.system(size: 12))
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
             }
@@ -508,7 +508,7 @@ struct DashboardView: View {
             // formats 0 as "0.0 B", so special-case zero locally
             // (the shared formatter is used elsewhere and stays).
             Text("累计 \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
-                .font(.subheadline)
+                .font(.system(size: 10))
                 .fontWeight(.medium)
                 .foregroundStyle(.secondary)
         }
@@ -527,9 +527,9 @@ struct DashboardView: View {
                     Button { settingsStore.mode = mode } label: {
                         VStack(spacing: 6) {
                             Image(systemName: modeIcon(mode))
-                                .font(.system(size: 20, weight: .semibold))
+                                .font(.system(size: 17, weight: .semibold))
                             Text(modeShortLabel(mode))
-                                .font(.subheadline)
+                                .font(.system(size: 10))
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
@@ -543,7 +543,7 @@ struct DashboardView: View {
             }
             if let message = settingsStore.generalApplyMessage {
                 Text(message)
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
         }
@@ -568,16 +568,16 @@ struct DashboardView: View {
                         .fill(Color(red: 0.93, green: 0.93, blue: 0.95))
                         .frame(width: 52, height: 52)
                     Image(systemName: "shield")
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(Color(red: 0.38, green: 0.38, blue: 0.42))
                 }
                 .frame(width: 52, height: 52)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text("VPN")
-                    .font(.headline)
+                    .font(.system(size: 14, weight: .semibold))
                 Text(proxyStore.isRunning ? "已连接" : "已断开")
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -597,29 +597,29 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 6) {
                 Image(systemName: "network")
-                    .font(.subheadline)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 Text("内网 IP")
-                    .font(.subheadline)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 Spacer()
             }
             Text(intranetIp ?? "—")
-                .font(.system(size: 26, weight: .bold))
+                .font(.system(size: 25, weight: .bold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             HStack(spacing: 12) {
                 Image(systemName: "wifi")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color(.label))
                     .frame(width: 40, height: 40)
                     .background(Color.white, in: Circle())
                 VStack(alignment: .leading, spacing: 2) {
                     Text("局域网代理")
-                        .font(.subheadline)
+                        .font(.system(size: 13))
                         .fontWeight(.semibold)
                     Text(settingsStore.allowLan ? "已开启" : "已关闭")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -640,14 +640,13 @@ struct DashboardView: View {
             Button { withAnimation { servicesExpanded.toggle() } } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "shield.checkmark")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                     Text("服务状态")
-                        .font(.headline)
+                        .font(.system(size: 12, weight: .semibold))
                     Spacer()
                     PillBadge(text: serviceBadge.text, tint: serviceBadge.tint)
                     Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .fontWeight(.semibold)
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(servicesExpanded ? 90 : 0))
                 }
@@ -683,7 +682,7 @@ struct DashboardView: View {
                 }
             }
             Text(service?.delay.map { "\($0) ms" } ?? "—")
-                .font(.subheadline)
+                .font(.system(size: 13))
                 .fontWeight(.semibold)
             Spacer()
         }
@@ -705,23 +704,23 @@ struct DashboardView: View {
                 ProgressView()
             }
             if let error = trafficStore.servicesError {
-                Text(error).font(.caption).foregroundStyle(.red)
+                Text(error).font(.system(size: 10)).foregroundStyle(.red)
             }
             if trafficStore.services.isEmpty {
                 Text("通过当前出站检测 Google / GitHub / YouTube 等服务的可用性（probe.services）。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(trafficStore.services) { service in
                     HStack {
-                        Text(service.name).font(.subheadline)
+                        Text(service.name).font(.system(size: 13))
                         Spacer()
                         if let region = service.region, !region.isEmpty {
-                            Text(region).font(.caption).foregroundStyle(.secondary)
+                            Text(region).font(.system(size: 10)).foregroundStyle(.secondary)
                         }
-                        Text(service.delay.map { "\($0) ms" } ?? "—").font(.caption)
+                        Text(service.delay.map { "\($0) ms" } ?? "—").font(.system(size: 10))
                         Text(serviceStatusLabel(service.status))
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .fontWeight(.semibold)
                             .foregroundStyle(serviceStatusColor(service.status))
                     }
@@ -744,14 +743,14 @@ struct DashboardView: View {
                let faults = engine.faults, !faults.isEmpty {
                 ForEach(faults, id: \.service) { fault in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("启动失败：\(fault.service)").font(.subheadline)
+                        Text("启动失败：\(fault.service)").font(.system(size: 13))
                         Text("\(fault.reason)：\(fault.message)")
-                            .font(.caption)
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
                 }
             } else if let error = trafficStore.engineStatusError {
-                Text(error).font(.caption).foregroundStyle(.red)
+                Text(error).font(.system(size: 10)).foregroundStyle(.red)
             }
             LabeledContent("VPN 隧道", value: tunnelStatusText)
             LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
@@ -759,7 +758,7 @@ struct DashboardView: View {
             Text(client.mode == .live
                  ? "数据面：PacketTunnel 扩展内的 Concord 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
                  : "示例模式：VPN 开关只切换界面状态，不转发流量。切到实时核心并启动 VPN 后由扩展转发流量。")
-                .font(.caption)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
     }
@@ -770,9 +769,9 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "doc.text")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 16, weight: .semibold))
                 Text("配置")
-                    .font(.headline)
+                    .font(.system(size: 12, weight: .semibold))
                 Spacer()
                 Button {
                     Task {
@@ -783,27 +782,26 @@ struct DashboardView: View {
                     }
                 } label: {
                     Image(systemName: "arrow.clockwise")
-                        .font(.subheadline)
+                        .font(.system(size: 13))
                         .foregroundStyle(Color(.label))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("更新订阅")
                 Button { onSelectTab(.profiles) } label: {
                     Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .fontWeight(.semibold)
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
             }
             HStack(spacing: 8) {
                 Text(profileStore.activeProfile?.name ?? "未选择订阅")
-                    .font(.title3)
+                    .font(.system(size: 18))
                     .fontWeight(.semibold)
                     .lineLimit(1)
                 Button { onSelectTab(.profiles) } label: {
                     Image(systemName: "arrow.left.arrow.right")
-                        .font(.subheadline)
+                        .font(.system(size: 13))
                         .foregroundStyle(Color(.label))
                 }
                 .buttonStyle(.plain)
@@ -811,29 +809,29 @@ struct DashboardView: View {
             }
             HStack {
                 Text("更新于 \(updatedText)")
-                    .font(.subheadline)
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(remainingText)
-                    .font(.subheadline)
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
             HStack(alignment: .firstTextBaseline) {
                 Text(usedPercentText)
                     .font(.system(size: 24, weight: .bold))
                 Text("已用")
-                    .font(.subheadline)
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(trafficText)
-                    .font(.subheadline)
+                    .font(.system(size: 13))
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
             }
             CapsuleProgressBar(fraction: usedFraction)
             if subscription == nil {
                 Text("订阅流量信息：核心未提供（需订阅支持 subscription-userinfo，或先启动 VPN）。")
-                    .font(.caption)
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
         }
@@ -847,16 +845,15 @@ struct DashboardView: View {
             Button { onSelectTab(.proxies) } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "square.stack.3d.up")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                     Text("策略组")
-                        .font(.headline)
+                        .font(.system(size: 12, weight: .semibold))
                     if timeoutCount > 0 {
                         PillBadge(text: "\(timeoutCount) 超时", tint: .orange)
                     }
                     Spacer()
                     Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .fontWeight(.semibold)
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.tertiary)
                 }
                 .foregroundStyle(Color(.label))
@@ -865,13 +862,13 @@ struct DashboardView: View {
             HStack {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                     Text("\(proxyStore.groups.count)")
-                        .font(.system(size: 36, weight: .bold))
+                        .font(.system(size: 25, weight: .bold))
                     Text("个")
-                        .font(.subheadline)
+                        .font(.system(size: 13))
                         .fontWeight(.semibold)
                         .foregroundStyle(.secondary)
                     Image(systemName: "arrow.up")
-                        .font(.caption)
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -886,7 +883,7 @@ struct DashboardView: View {
                     }
                     if extraGroups > 0 {
                         Text("+\(extraGroups)")
-                            .font(.subheadline)
+                            .font(.system(size: 13))
                             .fontWeight(.semibold)
                             .foregroundStyle(Color(.label))
                             .frame(width: 40, height: 40)
@@ -915,7 +912,7 @@ struct DashboardView: View {
             Text(value)
                 .font(.system(size: 24, weight: .bold))
             Text(label)
-                .font(.subheadline)
+                .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -952,7 +949,7 @@ private struct DashboardEditSheet: View {
                 }
                 Section {
                     Text("关闭的卡片会从仪表盘隐藏，可随时再打开。")
-                        .font(.caption)
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
             }

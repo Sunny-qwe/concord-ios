@@ -34,7 +34,7 @@ struct ProxiesView: View {
     @State private var searchText = ""
     @State private var isSearching = false
     @State private var showMoreMenu = false
-    @State private var menuPath = NavigationPath()
+    @State private var menuLevel: MenuLevel = .root
     @State private var selectedGroupName: String?
     @State private var collapsedGroups: Set<String> = []
     @State private var detailNode: ProxyNode?
@@ -185,21 +185,26 @@ struct ProxiesView: View {
     /// FlClash's bar, 1:1 (lib/ui/scaffold/scaffold_actions.dart):
     /// the first two actions sit in ONE TonalButtonGroup pill, and
     /// the ⋯ is a separate standalone button. TonalButtonSize.bar =
-    /// 44pt buttons, 24pt glyphs; barButtonGap = 8pt between the pill
-    /// and the ⋯ circle; the fill is the raised surface (white in
-    /// light mode) — NOT secondarySystemBackground, which is the same
-    /// colour as the page and renders invisible. No dividers between
-    /// the grouped buttons. The bolt only shows in tab style, where
-    /// it tests the current group; the search is a magnifier button
-    /// that presents the search field. There is no separate locate
-    /// button in the bar (FlClash folds it into the ⋯ menu) —
-    /// re-tapping the active group pill scrolls to the selected node.
+    /// 44pt buttons; the Flutter glyphs are 24pt nominal but their
+    /// ink measures ~19pt (58px @3x), so the SF glyphs use a 19pt
+    /// font — and .imageScale(.medium), because the toolbar applies
+    /// .large (1.25x), which blew the 24pt glyphs up to 30pt ink in
+    /// v0.2.27. barButtonGap = 8pt between the pill and the ⋯ circle;
+    /// the fill is the raised surface (white in light mode) — NOT
+    /// secondarySystemBackground, which is the same colour as the
+    /// page and renders invisible. No dividers between the grouped
+    /// buttons. The bolt only shows in tab style, where it tests the
+    /// current group; the search is a magnifier button that presents
+    /// the search field. There is no separate locate button in the
+    /// bar (FlClash folds it into the ⋯ menu) — re-tapping the
+    /// active group pill scrolls to the selected node.
     private var topBarCapsule: some View {
         HStack(spacing: 8) {
             HStack(spacing: 0) {
                 Button { isSearching = true } label: {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 24, weight: .semibold))
+                        .font(.system(size: 19, weight: .semibold))
+                        .imageScale(.medium)
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
@@ -212,7 +217,8 @@ struct ProxiesView: View {
             Button { showMoreMenu = true } label: {
                 Image(systemName: "ellipsis")
                     .rotationEffect(.degrees(90))
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.system(size: 19, weight: .semibold))
+                    .imageScale(.medium)
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
@@ -237,7 +243,8 @@ struct ProxiesView: View {
                     .frame(width: 44, height: 44)
             } else {
                 Image(systemName: "bolt.fill")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(.system(size: 19, weight: .semibold))
+                    .imageScale(.medium)
                     .frame(width: 44, height: 44)
             }
         }
@@ -254,13 +261,24 @@ struct ProxiesView: View {
     /// refresh in the menu — FlClash has neither there (the bolt is
     /// the test; refresh is pull-to-refresh). Icon style only shows
     /// in list style, as in FlClash.
+    /// A plain VStack, NOT a NavigationStack: a NavigationStack
+    /// inside a popover reports no usable ideal height, so the card
+    /// rendered clipped to ~1 row (v0.2.27). The level is state, and
+    /// the popover sizes itself to the VStack — the same as FlClash's
+    /// PopupMenu sizing to its content.
     private enum MenuDestination: Hashable {
         case style, sort, layout, size, iconStyle
     }
 
+    private enum MenuLevel: Hashable {
+        case root
+        case options(MenuDestination)
+    }
+
     private var moreMenuPopover: some View {
-        NavigationStack(path: $menuPath) {
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
+            switch menuLevel {
+            case .root:
                 menuRow(icon: "list.bullet", label: "风格", destination: .style)
                 menuRow(icon: "arrow.up.arrow.down", label: "排序", destination: .sort)
                 menuRow(icon: "square.grid.2x2", label: "布局", destination: .layout)
@@ -288,18 +306,17 @@ struct ProxiesView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-            }
-            .navigationDestination(for: MenuDestination.self) { dest in
+            case .options(let dest):
                 menuOptionsView(for: dest)
             }
-            .navigationBarTitleDisplayMode(.inline)
         }
         .frame(minWidth: 260, idealWidth: 280)
         .presentationCompactAdaptation(.popover)
+        .onDisappear { menuLevel = .root }
     }
 
     private func menuRow(icon: String, label: String, destination: MenuDestination) -> some View {
-        NavigationLink(value: destination) {
+        Button { menuLevel = .options(destination) } label: {
             HStack(spacing: 12) {
                 Image(systemName: icon)
                     .frame(width: 22)
@@ -316,10 +333,25 @@ struct ProxiesView: View {
         .buttonStyle(.plain)
     }
 
-    /// A submenu: the options with a checkmark on the current value.
-    /// Tapping one applies it and pops back to the menu root.
+    /// A submenu: a back header plus the options with a checkmark on
+    /// the current value. Tapping one applies it and closes the menu,
+    /// as FlClash's popup does on pick.
     private func menuOptionsView(for dest: MenuDestination) -> some View {
         VStack(spacing: 0) {
+            Button { menuLevel = .root } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(menuTitle(for: dest))
+                        .fontWeight(.semibold)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Divider()
             switch dest {
             case .style:
                 ForEach(ProxyStyleStore.Style.allCases, id: \.self) { style in
@@ -353,7 +385,6 @@ struct ProxiesView: View {
                 }
             }
         }
-        .navigationTitle(menuTitle(for: dest))
     }
 
     private func menuTitle(for dest: MenuDestination) -> String {
@@ -369,7 +400,7 @@ struct ProxiesView: View {
     private func menuOptionRow(label: String, selected: Bool, action: @escaping () -> Void) -> some View {
         Button {
             action()
-            menuPath = NavigationPath()
+            showMoreMenu = false
         } label: {
             HStack(spacing: 12) {
                 Text(label)

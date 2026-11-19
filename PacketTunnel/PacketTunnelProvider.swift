@@ -120,7 +120,7 @@ import os
 final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     private static let log = Logger(
-        subsystem: "app.forest5669.sapodilla72", category: "PacketTunnel")
+        subsystem: "com.concord.ios", category: "PacketTunnel")
 
     // App Group shared container (must match the entitlements + ExportOptions).
     private let appGroupID = "group.434fff4c253add77.1"
@@ -138,7 +138,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     /// All core state is mutated only on this queue. The Deliver
     /// callback runs on a core thread and hops onto it.
-    private let coreQueue = DispatchQueue(label: "app.forest5669.sapodilla72.core")
+    private let coreQueue = DispatchQueue(label: "com.concord.ios.core")
     /// Guards pumpRunning / isStopping, which are read from the
     /// packetFlow callback thread as well as coreQueue, and the
     /// request-id counter. (A plain lock/unlock helper rather than

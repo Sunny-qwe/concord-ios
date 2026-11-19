@@ -28,7 +28,7 @@ import NetworkExtension
 final class TunnelManager: ObservableObject {
     static let shared = TunnelManager()
 
-    static let providerBundleID = "app.forest5669.sapodilla72.PacketTunnel"
+    static let providerBundleID = "com.concord.ios.PacketTunnel"
     static let serverAddress = "Concord"
 
     @Published private(set) var status: NEVPNStatus = .invalid

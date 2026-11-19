@@ -28,7 +28,8 @@ set -euo pipefail
 
 APP="${1:?usage: adhoc-sign.sh <path-to-ConcordiOS.app>}"
 TEAM="UNKNOWN000"
-APP_ID="app.forest5669.sapodilla72"
+# EXPERIMENT (v0.2.12): bundle IDs deliberately do NOT match the JUMJJ8 profile, FlClash-style — diagnostic test of whether non-matching IDs are what makes the re-signer accept FlClash.
+APP_ID="com.concord.ios"
 TUNNEL_ID="${APP_ID}.PacketTunnel"
 
 # Expand one target's entitlements: read the repo's .entitlements file,

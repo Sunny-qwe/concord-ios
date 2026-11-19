@@ -40,7 +40,7 @@ struct FontPickerView: View {
                 Text("默认使用 iOS 系统字体。")
             }
 
-            Section("已安装字体") {
+            Section {
                 ForEach(filteredFamilies, id: \.self) { family in
                     Button {
                         fontStore.select(family)
@@ -58,6 +58,8 @@ struct FontPickerView: View {
                     }
                     .buttonStyle(.plain)
                 }
+            } header: {
+                Text("已安装字体")
             } footer: {
                 Text("iOS 自带字体大多只含拉丁字母，中文仍会用系统字体显示；英文与数字会按所选字体显示。")
             }

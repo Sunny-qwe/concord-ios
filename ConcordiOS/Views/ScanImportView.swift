@@ -88,9 +88,12 @@ struct ScanImportView: View {
         }
     }
 
+    private static let cornerAlignments: [Alignment] = [.topLeading, .topTrailing, .bottomLeading, .bottomTrailing]
+
     private var cornerMarks: some View {
         ZStack {
-            ForEach([Alignment.topLeading, .topTrailing, .bottomLeading, .bottomTrailing], id: \.self) { alignment in
+            ForEach(Self.cornerAlignments.indices, id: \.self) { index in
+                let alignment = Self.cornerAlignments[index]
                 RoundedRectangle(cornerRadius: 4)
                     .fill(Color.white)
                     .frame(width: 28, height: 4)

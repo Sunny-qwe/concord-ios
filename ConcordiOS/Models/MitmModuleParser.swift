@@ -2178,7 +2178,7 @@ enum MitmModuleParser {
             content.arguments = view.arguments.map { arg in
                 MitmModuleArgument(
                     name: arg.name,
-                    defaultValue: arg.default,
+                    defaultValue: arg.`default`,
                     type: arg.kind.type == "select" ? .select : (arg.kind.type == "switch" ? .toggle : .input),
                     options: arg.kind.options ?? [],
                     label: arg.label,

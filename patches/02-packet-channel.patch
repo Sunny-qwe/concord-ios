@@ -1,4 +1,4 @@
-From 88b7f11ae2ef07b9ca1cab8c0338a37b18724ddd Mon Sep 17 00:00:00 2001
+From 496c0de7158611f635e0436ebcb760871a037358 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:33:47 +0000
 Subject: [PATCH 2/7] tun: add production packet-channel DeviceSource (Option
@@ -16,20 +16,21 @@ so this patch re-adds it (crates/proto/src/types/live.rs) and the
 packet-channel arm in tun.start; Hub no longer holds a Control, so the
 packet_channel_* methods go through self.server.service().
 ---
- crates/api/Cargo.toml          |   1 +
- crates/api/src/channels.rs     |  68 ++++++++++++
- crates/api/src/control.rs      |  43 ++++++++
- crates/api/src/lib.rs          |   2 +
- crates/engine/src/engine.rs    |  52 ++++++++-
- crates/ffi/src/abi.rs          |  56 ++++++++++
- crates/ffi/src/hub.rs          |  30 ++++++
- crates/ffi/src/lib.rs          |   4 +-
- crates/proto/src/types/live.rs |  12 ++-
- crates/tun/src/channel.rs      | 187 +++++++++++++++++++++++++++++++++
- crates/tun/src/lib.rs          |   2 +
- crates/tun/src/runner.rs       |  67 +++++++++---
- schema/api.json                |  21 +++-
- 13 files changed, 527 insertions(+), 18 deletions(-)
+ crates/api/Cargo.toml           |   1 +
+ crates/api/src/channels.rs      |  68 ++++++++++++
+ crates/api/src/control.rs       |   8 ++
+ crates/api/src/control/tun.rs   |  29 +++++
+ crates/api/src/lib.rs           |   2 +
+ crates/engine/src/engine/tun.rs |  36 +++++-
+ crates/ffi/src/abi.rs           |  56 ++++++++++
+ crates/ffi/src/hub.rs           |  30 +++++
+ crates/ffi/src/lib.rs           |   4 +-
+ crates/proto/src/types/live.rs  |  12 +-
+ crates/tun/src/channel.rs       | 187 ++++++++++++++++++++++++++++++++
+ crates/tun/src/lib.rs           |   2 +
+ crates/tun/src/runner.rs        |  67 +++++++++---
+ schema/api.json                 |  21 +++-
+ 14 files changed, 505 insertions(+), 18 deletions(-)
  create mode 100644 crates/api/src/channels.rs
  create mode 100644 crates/tun/src/channel.rs
 
@@ -120,26 +121,26 @@ index 0000000..185103c
 +    }
 +}
 diff --git a/crates/api/src/control.rs b/crates/api/src/control.rs
-index 2ed94ac..b978bba 100644
+index 6bf951b..04d7dca 100644
 --- a/crates/api/src/control.rs
 +++ b/crates/api/src/control.rs
-@@ -21,6 +21,7 @@ use crate::stream::Subscription;
- use crate::watch as streams;
+@@ -16,6 +16,7 @@ use crate::stream::Subscription;
  
  #[cfg(unix)]
-+use crate::channels::PacketChannels;
  use crate::fds::AdoptedFds;
++use crate::channels::PacketChannels;
  
- /// What the process that embeds the core knows and the core cannot find out.
-@@ -56,6 +57,7 @@ pub struct Control {
+ mod config;
+ mod lifecycle;
+@@ -62,6 +63,7 @@ pub struct Control {
      reloading: AsyncMutex<()>,
      #[cfg(unix)]
      fds: AdoptedFds,
 +    channels: PacketChannels,
  }
  
- fn empty_update() -> UpdateRequest {
-@@ -165,6 +167,7 @@ impl Control {
+ fn data_error(failure: Failure) -> ApiError {
+@@ -94,6 +96,7 @@ impl Control {
              reloading: AsyncMutex::new(()),
              #[cfg(unix)]
              fds: AdoptedFds::default(),
@@ -147,7 +148,7 @@ index 2ed94ac..b978bba 100644
          })
      }
  
-@@ -432,6 +435,11 @@ impl Control {
+@@ -144,6 +147,11 @@ impl Control {
          &self.fds
      }
  
@@ -159,35 +160,33 @@ index 2ed94ac..b978bba 100644
      pub async fn shutdown(&self) {
          self.engine.shutdown().await;
          self.configured.store(false, Ordering::SeqCst);
-@@ -1212,6 +1220,41 @@ impl ControlService for Control {
+diff --git a/crates/api/src/control/tun.rs b/crates/api/src/control/tun.rs
+index ba2bbcd..7c53ade 100644
+--- a/crates/api/src/control/tun.rs
++++ b/crates/api/src/control/tun.rs
+@@ -63,6 +63,35 @@ impl Control {
                      ));
                  }
              }
 +            TunSource::Channel { handle } => {
 +                #[cfg(unix)]
 +                {
-+                    let Some(device) = self.channels.take_device(handle) else {
-+                        return Err(ApiError::not_found("handle", handle.to_string()));
-+                    };
-+                    let options = serde_json::json!({
-+                        "mtu": params.mtu.unwrap_or(0),
-+                        "congestion-controller": params.congestion_controller.unwrap_or_default(),
-+                    });
-+                    let started = self
-+                        .engine
++                    let device = self
++                        .packet_channels()
++                        .take_device(handle)
++                        .ok_or_else(|| ApiError::not_found("handle", handle.to_string()))?;
++                    self.engine
 +                        .start_channel_tun(
 +                            device,
-+                            concord_engine::VpnTunRequest {
-+                                stack: params.stack.unwrap_or_default(),
-+                                address: params.address.join(","),
-+                                dns: params.dns.join(","),
-+                                options: options.to_string(),
++                            InheritedTun {
++                                mtu: params.mtu,
++                                address: params.address,
++                                dns: params.dns,
++                                congestion_controller: params.congestion_controller,
 +                            },
 +                        )
-+                        .await;
-+                    if !started {
-+                        return Err(ApiError::unavailable("tun", "the TUN device did not start"));
-+                    }
++                        .await
++                        .map_err(tun_error)?;
 +                }
 +                #[cfg(not(unix))]
 +                {
@@ -221,71 +220,55 @@ index 9880329..2f2e8b0 100644
  pub use concord_common::Origin;
  pub use concord_common::sync;
  pub use concord_engine::ControllerCors;
-diff --git a/crates/engine/src/engine.rs b/crates/engine/src/engine.rs
-index f8d56e6..28c39b8 100644
---- a/crates/engine/src/engine.rs
-+++ b/crates/engine/src/engine.rs
-@@ -25,7 +25,7 @@ use concord_platform::{HomeDir, Platform, mmap};
- use concord_rules::compile_rule_set;
- use concord_rules::geo::GeoStore;
- use concord_tls::TrustStore;
--use concord_tun::{Congestion, DeviceSource, Prefix, TunRunner};
-+use concord_tun::{ChannelDevice, Congestion, DeviceSource, Prefix, TunRunner};
- use concord_tunnel::{ConnTable, LiveOptions, Tunnel, TunnelStatus};
- use serde_json::{Value, json};
- use tokio::runtime::Handle;
-@@ -668,6 +668,56 @@ impl Engine {
-         true
+diff --git a/crates/engine/src/engine/tun.rs b/crates/engine/src/engine/tun.rs
+index 98c0b5a..379a4c4 100644
+--- a/crates/engine/src/engine/tun.rs
++++ b/crates/engine/src/engine/tun.rs
+@@ -4,7 +4,7 @@ use std::sync::Arc;
+ use std::sync::atomic::Ordering;
+ 
+ use concord_common::sync::lock;
+-use concord_tun::{DeviceSource, TunRunner};
++use concord_tun::{ChannelDevice, DeviceSource, TunRunner};
+ 
+ use super::Engine;
+ use crate::apply::Applied;
+@@ -103,6 +103,40 @@ impl Engine {
+         Ok(())
      }
  
 +    /// `handleStartTun` for a packet channel: takes the device (its ring is
 +    /// dropped, and the stack stops, on every failing path). Mirrors
-+    /// `start_vpn_tun`, but there is no descriptor to adopt or close.
++    /// `start_inherited_tun`, but there is no descriptor to adopt or close.
 +    #[cfg(unix)]
-+    pub async fn start_channel_tun(&self, device: ChannelDevice, request: VpnTunRequest) -> bool {
++    pub async fn start_channel_tun(
++        &self,
++        device: ChannelDevice,
++        tun: InheritedTun,
++    ) -> Result<(), TunStartError> {
 +        self.shared.sockets.protect_held().await;
-+        let started = {
++        {
 +            let mut slot = self.tun.lock().await;
 +            self.close_tun(&mut slot).await;
-+            let built = vpn_options(&request);
-+            match built {
-+                Ok((options, congestion)) => {
-+                    match start_runner(
-+                        &self.shared.tunnel,
-+                        &self.shared.sockets,
-+                        &options,
-+                        DeviceSource::Channel(device),
-+                        congestion,
-+                        None,
-+                    )
-+                    .await
-+                    {
-+                        Ok(runner) => {
-+                            *slot = Some(runner);
-+                            true
-+                        }
-+                        Err(err) => {
-+                            tracing::error!("TUN: {err}");
-+                            false
-+                        }
-+                    }
-+                }
-+                Err(err) => {
-+                    tracing::error!("TUN: {err}");
-+                    false
-+                }
-+            }
-+        };
-+        if !started {
-+            return false;
++            let (options, congestion) = vpn_options(&tun)?;
++            let runner = start_runner(
++                &self.shared.tunnel,
++                &self.shared.sockets,
++                &options,
++                DeviceSource::Channel(device),
++                congestion,
++                None,
++            )
++            .await?;
++            *slot = Some(runner);
 +        }
 +        if self.running.load(Ordering::SeqCst) {
 +            self.reset_resolver_connections();
 +            self.route.reset(self.is_running());
-+        } else if let Err(err) = self.start_listeners().await {
-+            tracing::error!("start listeners: {err:?}");
++        } else {
++            self.start_listeners().await;
 +        }
-+        true
++        Ok(())
 +    }
 +
      /// `StopTun`.
@@ -788,6 +771,3 @@ index d47b6d6..0257d88 100644
      },
      "RouteCheckParams": {
        "type": "object",
--- 
-2.43.0
-

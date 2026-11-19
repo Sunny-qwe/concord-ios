@@ -65,7 +65,7 @@
 - 不支持 DNS 脚本、规则脚本、`jq` 改写、JSON 正文改写、原始头改写、条件写法（`if` / `then script(`）、`url-and-header` —— 这些在详情页都会列为跳过，和 FlClash 一致。
 - 核心只认它能解析的行：`mitm.validate` 可以在 VPN 运行时校验合并后的 MITM 配置，指出核心读不懂的行（详情页「校验合并后的 MITM 配置」）；校验不通过的行核心会跳过，不会让整个配置失效。
 - 模块脚本是任意代码：带脚本的模块默认停用，需手动确认才启用；更新带来新脚本时会先暂停，等用户再确认。
-- 最新上游给 MITM 加了 `skip-server-cert-verify-hostname`、`client-source-address`、`request_body_mock` 等新列表，升级后的核心（01d7a13）已经有这些字段（`crates/mitm/src/config.rs` 已核实），但模块解析器（Swift 侧）目前还不产生它们——这是解析器的缺口，不是核心的缺口。
+- 最新上游给 MITM 加了 `skip-server-cert-verify-hostname`、`client-source-address`、`request_body_mock` 等新列表，升级后的核心（73d6530）已经有这些字段（`crates/mitm/src/config.rs` 已核实），但模块解析器（Swift 侧）目前还不产生它们——这是解析器的缺口，不是核心的缺口。
 
 ## 架构
 

@@ -1,4 +1,4 @@
-From 42dd9c1d298b6b7376b1a91bf0a00eed457f5629 Mon Sep 17 00:00:00 2001
+From 442a292361fc8cc0c87c42f8bf89d758676d14c7 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:33:53 +0000
 Subject: [PATCH 3/7] tun: cfg-gate TunDevice::wrap name lookup off iOS/illumos
@@ -12,10 +12,10 @@ Android path already uses.
  1 file changed, 9 insertions(+), 2 deletions(-)
 
 diff --git a/crates/tun/src/device/mod.rs b/crates/tun/src/device/mod.rs
-index 02acef6..4f09d18 100644
+index f0ca5a8..cfab6de 100644
 --- a/crates/tun/src/device/mod.rs
 +++ b/crates/tun/src/device/mod.rs
-@@ -329,9 +329,16 @@ impl TunDevice {
+@@ -332,9 +332,16 @@ impl TunDevice {
      }
  
      fn wrap(inner: tun_rs::AsyncDevice) -> Self {
@@ -34,6 +34,3 @@ index 02acef6..4f09d18 100644
          let (name, index) = (String::new(), None);
          TunDevice {
              inner: DeviceIo::Tokio(inner),
--- 
-2.43.0
-

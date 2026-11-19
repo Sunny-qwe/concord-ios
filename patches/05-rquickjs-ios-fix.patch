@@ -1,4 +1,4 @@
-From f03a3f7d4e0788288c5096f8fe29931c115defc6 Mon Sep 17 00:00:00 2001
+From 724db6e0d79f6b6814755ea0f96204a3ac9d7352 Mon Sep 17 00:00:00 2001
 From: Muse <muse@local>
 Date: Tue, 17 Nov 2026 08:34:06 +0000
 Subject: [PATCH 5/7] mitm: enable rquickjs bindgen feature for iOS (no
@@ -9,10 +9,10 @@ Subject: [PATCH 5/7] mitm: enable rquickjs bindgen feature for iOS (no
  1 file changed, 11 insertions(+)
 
 diff --git a/crates/mitm/Cargo.toml b/crates/mitm/Cargo.toml
-index 32b7f93..3a7194c 100644
+index d397abb..1fcba20 100644
 --- a/crates/mitm/Cargo.toml
 +++ b/crates/mitm/Cargo.toml
-@@ -57,6 +57,17 @@ rquickjs = { workspace = true, optional = true }
+@@ -58,6 +58,17 @@ rquickjs = { workspace = true, optional = true }
  [target.'cfg(target_os = "android")'.dependencies]
  rquickjs = { workspace = true, optional = true, features = ["bindgen"] }
  
@@ -30,6 +30,3 @@ index 32b7f93..3a7194c 100644
  [dev-dependencies]
  concord-test-support = { workspace = true }
  tokio = { workspace = true, features = ["full", "test-util"] }
--- 
-2.43.0
-

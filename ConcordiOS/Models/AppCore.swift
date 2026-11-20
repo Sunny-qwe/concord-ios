@@ -168,13 +168,24 @@ final class AppCore {
                 throw AppCoreError.sessionFailed
             }
             session = sessionID
+            // Boot calls get 60 s, like the extension's bootCore
+            // (PacketTunnelProvider.sendCoreRequest): a healthy but
+            // slow boot — config.apply loading GeoIP data and the
+            // profile's rule providers, the core warming up — must
+            // not be aborted at 15 s. The 15 s default killed the
+            // first delay test on every tap (v0.2.32: the tap did
+            // nothing at all) and the torn-down session made the
+            // next tap restart the same slow boot and time out
+            // again. Only the boot is slow; delay.test itself
+            // keeps the 15 s default (the core's own probe timeout
+            // is 5 s).
             _ = try await sendRequest(method: "core.hello", params: [
                 "protocol": ["min": 1, "max": 1],
                 "client": ["name": "concord-ios", "version": "0.2.0"],
-            ], resultType: EmptyResult.self)
+            ], resultType: EmptyResult.self, timeoutSeconds: 60)
             _ = try await sendRequest(method: "core.init", params: [
                 "home": home.path,
-            ], resultType: EmptyResult.self)
+            ], resultType: EmptyResult.self, timeoutSeconds: 60)
             // The profile gives proxies / proxy-groups / rules; the
             // overlay carries everything else — here the listener
             // ports, so this instance can never clash with the
@@ -189,8 +200,8 @@ final class AppCore {
             _ = try await sendRequest(method: "config.apply", params: [
                 "profile": ["path": configURL.path],
                 "overlay": overlay,
-            ], resultType: EmptyResult.self)
-            _ = try await sendRequest(method: "engine.start", params: [:], resultType: EmptyResult.self)
+            ], resultType: EmptyResult.self, timeoutSeconds: 60)
+            _ = try await sendRequest(method: "engine.start", params: [:], resultType: EmptyResult.self, timeoutSeconds: 60)
             loadedConfigSignature = signature
         } catch {
             // Balance the passRetained above exactly once: if the
@@ -292,8 +303,8 @@ final class AppCore {
 
     // MARK: JSON-RPC plumbing (mirrors PacketTunnelProvider)
 
-    private func sendRequest<Result: Decodable>(method: String, params: [String: Any], resultType: Result.Type) async throws -> Result {
-        let data = try await sendRawJSONRPC(["method": method, "params": params])
+    private func sendRequest<Result: Decodable>(method: String, params: [String: Any], resultType: Result.Type, timeoutSeconds: TimeInterval = 15) async throws -> Result {
+        let data = try await sendRawJSONRPC(["method": method, "params": params], timeoutSeconds: timeoutSeconds)
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw AppCoreError.rpcFailed("核心返回了无法解析的响应（\(method)）")
         }
@@ -308,7 +319,7 @@ final class AppCore {
         return try decoder.decode(Result.self, from: resultData)
     }
 
-    private func sendRawJSONRPC(_ request: [String: Any]) async throws -> Data {
+    private func sendRawJSONRPC(_ request: [String: Any], timeoutSeconds: TimeInterval = 15) async throws -> Data {
         let id = nextRequestID
         nextRequestID += 1
         var object = request
@@ -331,10 +342,10 @@ final class AppCore {
                     continuation.resume(throwing: AppCoreError.rpcFailed("会话不存在"))
                     return
                 }
-                self.coreQueue.asyncAfter(deadline: .now() + 15) {
+                self.coreQueue.asyncAfter(deadline: .now() + timeoutSeconds) {
                     if let request = self.pending.removeValue(forKey: id) {
                         request.resume(
-                            throwing: AppCoreError.rpcFailed("调用超时（15s）"))
+                            throwing: AppCoreError.rpcFailed("调用超时（\(Int(timeoutSeconds))s）"))
                     }
                 }
             }

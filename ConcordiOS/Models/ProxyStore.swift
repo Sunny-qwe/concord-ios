@@ -36,6 +36,16 @@ final class ProxyStore: ObservableObject {
     @Published var latencies: [String: Int32] = [:]
     /// Group names with a delay test in flight (per-group spinners).
     @Published var testingGroups: Set<String> = []
+    /// Node names with a single-node delay test in flight (per-node
+    /// spinners — FlClash shows an ActivityIndicator while a card's
+    /// test runs; without this the bolt tap shows nothing at all
+    /// until the result lands, which reads as "no response").
+    @Published var testingNodes: Set<String> = []
+    /// The reason the last delay test failed, if it failed. The
+    /// Proxies page shows this in its notice banner: testLatency
+    /// used to write only lastError, which no view on this page
+    /// reads, so every failure was total silence (v0.2.32).
+    @Published var testError: String?
     /// True while any delay test runs.
     var isTesting: Bool { !testingGroups.isEmpty }
     /// True while the group list itself is loading (first load).
@@ -378,6 +388,7 @@ final class ProxyStore: ObservableObject {
                 try await AppCore.shared.ensureStarted()
             } catch {
                 lastError = error.localizedDescription
+                testError = error.localizedDescription
                 return
             }
         }
@@ -440,6 +451,9 @@ final class ProxyStore: ObservableObject {
                 // a node failure as a returned value of -2, never
                 // as a throw. Leave the node untested and stop —
                 // the backend is down, further calls fail too.
+                // Surface the reason instead of going silent.
+                lastError = error.localizedDescription
+                testError = error.localizedDescription
                 break
             }
         }
@@ -450,9 +464,17 @@ final class ProxyStore: ObservableObject {
     /// One node's delay (the per-node chip tap). Passes the group's
     /// test URL (FlClash _handleTestCurrentDelay). Uses the app-side
     /// core when the VPN is off; a transport failure only sets
-    /// lastError and leaves the chip unchanged.
+    /// lastError and leaves the chip unchanged. The node is marked
+    /// testing first (FlClash shows a spinner while a card's test
+    /// runs) and a failure is surfaced as testError — the Proxies
+    /// page shows it — so the tap is never silent: spinner, then a
+    /// real latency, or the honest reason it could not run.
     @MainActor
     func testLatency(node: ProxyNode, testURL: String? = nil) async {
+        guard !testingNodes.contains(node.name) else { return }
+        testingNodes.insert(node.name)
+        testError = nil
+        defer { testingNodes.remove(node.name) }
         do {
             let result: ConcordDelayResult
             if client.mode == .live && !TunnelManager.shared.isRunning {
@@ -465,6 +487,7 @@ final class ProxyStore: ObservableObject {
             applyLatencies()
         } catch {
             lastError = error.localizedDescription
+            testError = error.localizedDescription
         }
     }
 

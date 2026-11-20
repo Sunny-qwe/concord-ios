@@ -253,6 +253,12 @@ struct ProxiesView: View {
             .onChange(of: profileStore.activeProfile?.id) { _, _ in
                 Task { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
             }
+            .onChange(of: proxyStore.testError) { _, new in
+                // A failed delay test used to be total silence
+                // (lastError is never read on this page): show the
+                // reason in the notice banner instead.
+                if let new { notice = new }
+            }
         }
     }
 
@@ -817,7 +823,7 @@ struct ProxiesView: View {
                         .lineLimit(1)
                 }
                 Button { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } } label: {
-                    DelayText(latencyMs: node.latencyMs)
+                    DelayText(latencyMs: node.latencyMs, testing: proxyStore.testingNodes.contains(node.name))
                 }
                 .buttonStyle(.plain)
             } else {
@@ -829,7 +835,7 @@ struct ProxiesView: View {
                         .lineLimit(1)
                     Spacer()
                     Button { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } } label: {
-                        DelayText(latencyMs: node.latencyMs)
+                        DelayText(latencyMs: node.latencyMs, testing: proxyStore.testingNodes.contains(node.name))
                     }
                     .buttonStyle(.plain)
                 }
@@ -988,10 +994,18 @@ struct ProxiesView: View {
 /// Untested shows the bolt glyph, as in FlClash.
 private struct DelayText: View {
     let latencyMs: Int32?
+    /// While this node's test runs (FlClash shows an ActivityIndicator
+    /// for DelayTestPhase.running); without it the tap shows nothing
+    /// until the result lands.
+    var testing: Bool = false
 
     var body: some View {
         Group {
-            if let ms = latencyMs {
+            if testing {
+                ProgressView()
+                    .frame(width: 12, height: 12)
+                    .scaleEffect(0.7)
+            } else if let ms = latencyMs {
                 if ms > 0 {
                     Text("\(ms) ms")
                         .foregroundStyle(ms < 600 ? Color.green : Color.orange)

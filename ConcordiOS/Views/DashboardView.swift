@@ -32,6 +32,7 @@ struct DashboardView: View {
     /// reads tunnelManager.unexpectedDisconnect.
     @ObservedObject private var onDemandStore = OnDemandStore.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
 
     @AppStorage("ConcordiOS.dashboard.show.status") private var showStatus = true
     @AppStorage("ConcordiOS.dashboard.show.speed") private var showSpeed = true
@@ -470,6 +471,16 @@ struct DashboardView: View {
                let proxy = proxyStore.selectedOutbound,
                client.mode == .sample || tunnelManager.isRunning {
                 await trafficStore.probeServices(proxy: proxy)
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // C11: returning to the foreground while already on the
+            // dashboard never re-ran the .task above, so the intranet
+            // IP stayed stale after a network change. Re-read it on
+            // every return to active (same read as on appear).
+            if phase == .active {
+                intranetIp = DeviceNetwork.localIPv4Address()
+                intranetLoaded = true
             }
         }
         .onChange(of: proxyStore.isRunning) { _, running in

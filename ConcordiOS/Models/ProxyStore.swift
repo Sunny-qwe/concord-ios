@@ -914,7 +914,11 @@ final class ProxyStore: ObservableObject {
     ///      LIVE (crates/group/src/provider/mod.rs update() ->
     ///      pull() -> load_buf() -> apply(): nodes.store +
     ///      route.moved + request_refresh), so NO config.apply is
-    ///      needed afterwards.
+    ///      needed afterwards. Cold-start exception: an update
+    ///      that answers `config is not applied` (the call raced
+    ///      ahead of config.apply) is retried once after ~2 s,
+    ///      and if it still answers that, the banner says the
+    ///      core is still starting — never "提供方更新失败".
     ///   3. Re-check the names against a fresh inventory. Still
     ///      missing → .stillMissing with a precise banner, not the
     ///      old generic "更新成功但仍没有…请检查订阅": the provider
@@ -966,6 +970,12 @@ final class ProxyStore: ObservableObject {
         }
         var updated: [String] = []
         var updateErrors: [(provider: String, error: String)] = []
+        // The cold-start race (WWW-MuYu-Love/FlClash 12aa5f6f):
+        // provider.update reached a core that has not applied any
+        // config yet. That is not a failure — waiting fixes it —
+        // so those providers are kept out of updateErrors (and its
+        // "提供方更新失败" banner) and retried once below.
+        var notApplied: [String] = []
         for provider in providers.sorted() {
             do {
                 if useAppCore {
@@ -975,7 +985,46 @@ final class ProxyStore: ObservableObject {
                 }
                 updated.append(provider)
             } catch {
-                updateErrors.append((provider, error.localizedDescription))
+                if case AppCoreError.configNotApplied = error {
+                    notApplied.append(provider)
+                } else if case ConcordClientError.configNotApplied = error {
+                    notApplied.append(provider)
+                } else {
+                    updateErrors.append((provider, error.localizedDescription))
+                }
+            }
+        }
+        // One retry for the cold-start race only: give the core
+        // ~2 s to finish applying, then update just those
+        // providers once more. Still not applied after the retry
+        // stays out of updateErrors — the stillMissing reason
+        // below says the core is still starting instead of
+        // reporting a failure. The single warning line lands in
+        // the delay-test diagnostic report via that reason
+        // (preloadNote -> writeReport -> last-delay-test-report
+        // .txt, included in the Logs export): LogStore itself
+        // only replays the core's own log stream, so there is no
+        // app-side append API to write a warning to.
+        var coreNotReady = false
+        if !notApplied.isEmpty {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            for provider in notApplied {
+                do {
+                    if useAppCore {
+                        try await AppCore.shared.providerUpdate(name: provider)
+                    } else {
+                        try await client.providerUpdate(name: provider)
+                    }
+                    updated.append(provider)
+                } catch {
+                    if case AppCoreError.configNotApplied = error {
+                        coreNotReady = true
+                    } else if case ConcordClientError.configNotApplied = error {
+                        coreNotReady = true
+                    } else {
+                        updateErrors.append((provider, error.localizedDescription))
+                    }
+                }
             }
         }
         // Re-check with a fresh inventory (one proxy.groups call):
@@ -983,13 +1032,32 @@ final class ProxyStore: ObservableObject {
         // updated provider actually holds now — the two facts the
         // old generic "更新成功但仍没有" text never had. When the
         // re-check itself fails, claim nothing about the update:
-        // the test below surfaces a dead channel on its own.
+        // the test below surfaces a dead channel on its own —
+        // unless the core is known not ready (the retry above
+        // still raced apply): then a .ready would run delay.test
+        // against a core with no applied config, so report the
+        // not-ready state instead.
         guard let after = await loadedInventory() else {
+            if coreNotReady {
+                return .stillMissing(
+                    reason: "核心还在启动，请稍后再试",
+                    updated: updated)
+            }
             return .ready(updated: updated)
         }
         let stillMissing = Set(names).subtracting(after.loaded)
         guard !stillMissing.isEmpty else {
             return .ready(updated: updated)
+        }
+        if coreNotReady, updateErrors.isEmpty {
+            // The retry still raced the core: do NOT banner this
+            // as a provider failure — the core simply has not
+            // applied its config yet. (When other providers failed
+            // for real reasons, updateErrors is non-empty and the
+            // existing failure banner below keeps precedence.)
+            return .stillMissing(
+                reason: "核心还在启动，请稍后再试",
+                updated: updated)
         }
         if !updateErrors.isEmpty {
             let detail = updateErrors.prefix(2).map { "\($0.provider)：\($0.error)" }.joined(separator: "；")

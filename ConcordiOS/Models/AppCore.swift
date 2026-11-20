@@ -51,6 +51,17 @@ enum AppCoreError: LocalizedError {
     case coreStartFailed
     case sessionFailed
     case rpcFailed(String)
+    /// The core answered `config is not applied`: the call raced
+    /// ahead of config.apply — e.g. provider.update while the core
+    /// is still booting. The same call succeeds once apply
+    /// finishes, so callers swallow + retry this one error only;
+    /// it is never a real failure. Match note: the engine's
+    /// string code `core_error` (Failure::core, engine.rs) never
+    /// reaches the wire — api_error maps it to ApiError::internal,
+    /// so the wire error is code -32603 with this exact message
+    /// (data {"kind": "internal"}). The match in sendRequest is
+    /// therefore on the wire code + message, not `core_error`.
+    case configNotApplied
     /// The geo databases could not be pre-seeded and geoip.metadb is
     /// still missing, so config.apply would fail in the core's own
     /// MMDB download. Carries the real download reason (see GeoSeed).
@@ -72,6 +83,8 @@ enum AppCoreError: LocalizedError {
             return "应用内核心会话打开失败（核心未运行）"
         case .rpcFailed(let message):
             return "核心调用失败：\(message)"
+        case .configNotApplied:
+            return "核心还在启动，请稍后再试"
         case .geoSeedFailed(let message):
             return "GeoIP 数据库下载失败：\(message)（测速需要 geoip.metadb，核心自带的下载在当前网络下同样失败；请检查网络后重试）"
         case .caSyncFailed(let message):
@@ -767,6 +780,67 @@ final class AppCore {
     private static let caKeyFileName = "ca.key"
     private static let caFileNames = [caKeyFileName, caCertFileName]
 
+    /// The stale CA file names the FlClash fork deletes before
+    /// regenerating (WWW-MuYu-Love/FlClash ac90aebb): the cert and
+    /// key, plus their .bak variants. The pinned core itself never
+    /// writes .bak files — generate_ca (crates/mitm/src/ca.rs)
+    /// writes ca.key then ca.crt atomically and replaces any
+    /// existing pair — but deleting the .bak names too costs
+    /// nothing and matches the fork.
+    private static let staleCAFileNames = caFileNames + ["ca.crt.bak", "ca.key.bak"]
+
+    /// What deleting the old CA files before a regenerate did.
+    /// Non-throwing by design: a deletion failure must not abort
+    /// the regenerate (the core overwrites the generating home on
+    /// its own), but the caller must report it in the status
+    /// message instead of claiming a clean regenerate.
+    struct OldCADeletion {
+        /// "应用内 ca.crt" style names of files actually removed.
+        var deleted: [String] = []
+        /// Human-readable failures, e.g. "隧道 ca.key：权限不足".
+        var failures: [String] = []
+        var hasFailures: Bool { !failures.isEmpty }
+    }
+
+    /// Deletes the old CA files from BOTH core homes — this core's
+    /// home and the App Group container (the tunnel core's home) —
+    /// before a regenerate (FlClash fork ac90aebb). The core
+    /// overwrites the generating home on its own, so the deletion
+    /// matters for the OTHER home: without it, a VPN-off
+    /// regenerate would leave the tunnel's old CA in place and
+    /// syncGeneratedCAToTunnel (fill only MISSING, never
+    /// overwrite) would refuse to replace it, so the next VPN
+    /// start would use the old CA while the user installed and
+    /// trusted the new one — and vice versa for a VPN-on
+    /// regenerate, where the app home would keep the stale CA for
+    /// VPN-off trust checks. Never throws; check `failures`.
+    static func deleteOldCAFiles() -> OldCADeletion {
+        var result = OldCADeletion()
+        let homes: [(label: String, url: URL?)] = [
+            ("应用内", try? appHomeDirectory()),
+            ("隧道", FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)),
+        ]
+        for (label, home) in homes {
+            guard let home else {
+                result.failures.append("\(label)核心目录不可用，旧 CA 未能删除")
+                continue
+            }
+            let dir = home.appendingPathComponent(caDirectoryName, isDirectory: true)
+            for name in staleCAFileNames {
+                let url = dir.appendingPathComponent(name)
+                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                do {
+                    try FileManager.default.removeItem(at: url)
+                    result.deleted.append("\(label) \(name)")
+                } catch {
+                    result.failures.append("\(label) \(name)：\(error.localizedDescription)")
+                }
+            }
+        }
+        return result
+    }
+
     /// What syncing a freshly generated CA into the tunnel home did.
     /// `.synced` is the only outcome where the tunnel will use this
     /// CA; the other two mean the tunnel keeps (or may generate) a
@@ -884,7 +958,17 @@ final class AppCore {
             throw AppCoreError.rpcFailed("核心返回了无法解析的响应（\(method)）")
         }
         if let error = object["error"] as? [String: Any] {
-            throw AppCoreError.rpcFailed((error["message"] as? String) ?? "未知错误（\(method)）")
+            // Cold-start race (WWW-MuYu-Love/FlClash 12aa5f6f):
+            // code -32603 + message `config is not applied` means
+            // the call raced ahead of config.apply. Only this
+            // exact pair maps to .configNotApplied; every other
+            // error keeps the old rpcFailed path verbatim.
+            let code = (error["code"] as? NSNumber)?.intValue
+            let message = (error["message"] as? String) ?? "未知错误（\(method)）"
+            if code == -32603 && message == "config is not applied" {
+                throw AppCoreError.configNotApplied
+            }
+            throw AppCoreError.rpcFailed(message)
         }
         guard let resultData = try? JSONSerialization.data(withJSONObject: object["result"] ?? NSNull()) else {
             throw AppCoreError.rpcFailed("核心返回了无法解析的结果（\(method)）")

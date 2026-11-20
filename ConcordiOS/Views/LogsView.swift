@@ -17,6 +17,8 @@ struct LogsView: View {
     @State private var showExportError = false
     @State private var showCopiedAlert = false
     @State private var tab = LogsTab.logs
+    /// The log row tapped for its detail sheet (C8).
+    @State private var selectedEntry: ConcordLogEntry?
     /// Persisted diagnostics (v0.2.40): AppCore writes the boot
     /// report and the last delay-test report to disk; they do not
     /// need the tunnel running, so the Logs page shows them while
@@ -80,22 +82,31 @@ struct LogsView: View {
                     } else {
                         ScrollViewReader { proxy in
                             List(logStore.filtered) { entry in
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text(ConcordFormat.time(entry.time))
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 64, alignment: .leading)
-                                    Text(entry.level.uppercased())
-                                        .font(.system(size: 10))
-                                        .fontWeight(.semibold)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(levelColor(entry.level).opacity(0.15), in: Capsule())
-                                        .foregroundStyle(levelColor(entry.level))
-                                    Text(entry.text)
-                                        .font(.system(size: 10))
-                                        .lineLimit(3)
+                                // C8: a row opens its detail sheet
+                                // (full text, selectable, with copy);
+                                // the list itself still truncates to
+                                // 3 lines.
+                                Button {
+                                    selectedEntry = entry
+                                } label: {
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Text(ConcordFormat.time(entry.time))
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 64, alignment: .leading)
+                                        Text(entry.level.uppercased())
+                                            .font(.system(size: 10))
+                                            .fontWeight(.semibold)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(levelColor(entry.level).opacity(0.15), in: Capsule())
+                                            .foregroundStyle(levelColor(entry.level))
+                                        Text(entry.text)
+                                            .font(.system(size: 10))
+                                            .lineLimit(3)
+                                    }
                                 }
+                                .buttonStyle(.plain)
                                 .id(entry.id)
                             }
                             .listStyle(.insetGrouped)
@@ -215,6 +226,9 @@ struct LogsView: View {
                 if let exportURL {
                     ShareSheet(items: [exportURL])
                 }
+            }
+            .sheet(item: $selectedEntry) { entry in
+                LogEntryDetailView(entry: entry)
             }
             .alert("已复制", isPresented: $showCopiedAlert) {
                 Button("好", role: .cancel) {}
@@ -344,6 +358,43 @@ struct LogsView: View {
 enum LogsTab: String, CaseIterable {
     case logs = "日志"
     case events = "事件"
+}
+
+/// One log row, full text selectable, with a copy button (C8):
+/// the list truncates rows to 3 lines, so long rows are only
+/// fully readable here.
+private struct LogEntryDetailView: View {
+    let entry: ConcordLogEntry
+    @Environment(\.dismiss) private var dismiss
+    @State private var copied = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("\(ConcordFormat.time(entry.time)) · \(entry.level.uppercased())")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Text(entry.text)
+                        .font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+                Section {
+                    Button(copied ? "已复制" : "复制") {
+                        UIPasteboard.general.string = "[\(ConcordFormat.time(entry.time))] \(entry.level.uppercased()) \(entry.text)"
+                        copied = true
+                    }
+                }
+            }
+            .navigationTitle("日志详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
 }
 
 // Minimal share sheet (UIActivityViewController wrapper).

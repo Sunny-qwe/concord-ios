@@ -26,6 +26,8 @@ struct MitmCertificateView: View {
     @State private var isCheckingTrust = false
     @State private var showRegenerateConfirm = false
     @State private var regenerateNote: String?
+    @State private var showShareCAConfirm = false
+    @State private var showCAShareSheet = false
     @State private var isInstallingProfile = false
     @State private var installMessage: String?
     @State private var installFailed = false
@@ -67,7 +69,20 @@ struct MitmCertificateView: View {
                             .font(.footnote)
                             .foregroundStyle(installFailed ? Color.red : Color.secondary)
                     }
-                    ShareLink("分享 CA 证书（PEM）", item: info.pem)
+                    // CA 证书是解密流量的信任根：分享前先确认，
+                    // 别随手发出去。
+                    Button("分享 CA 证书（PEM）") {
+                        showShareCAConfirm = true
+                    }
+                    .alert("分享 CA 证书？", isPresented: $showShareCAConfirm) {
+                        Button("分享") { showCAShareSheet = true }
+                        Button("取消", role: .cancel) {}
+                    } message: {
+                        Text("CA 证书是解密流量的信任根，请只分享给自己的设备。")
+                    }
+                    .sheet(isPresented: $showCAShareSheet) {
+                        ShareSheet(items: [info.pem])
+                    }
                 } else {
                     Text(settingsStore.mitmStatusMessage ?? "尚未读取 CA 状态")
                         .font(.footnote)
@@ -264,8 +279,18 @@ struct MitmCertificateView: View {
             await settingsStore.generateMitmCertificate()
             return settingsStore.mitmStatusMessage?.hasPrefix("CA 已生成") == true
         }
+        var deletion: AppCore.OldCADeletion?
         do {
             try await AppCore.shared.ensureStarted()
+            // Fork ac90aebb: delete the old CA from BOTH homes
+            // before regenerating. AFTER ensureStarted on purpose:
+            // its healCAFiles would copy a surviving old CA from
+            // one home back into a just-cleaned other home. The
+            // core overwrites this home on its own; the deletion is
+            // what lets the sync below fill the tunnel home with
+            // the fresh CA instead of leaving the old one there.
+            let result = AppCore.deleteOldCAFiles()
+            deletion = result
             let cert = try await AppCore.shared.mitmGenerateCertificate()
             settingsStore.mitmCertificate = cert.certificate
             if let info = cert.certificate {
@@ -299,6 +324,9 @@ struct MitmCertificateView: View {
                 } catch {
                     message += "。注意：CA 未能同步到隧道（\(error.localizedDescription)）——下次启动 VPN 时隧道可能会生成另一份 CA，请在 VPN 开启时重新生成一次"
                 }
+                if let deletion, deletion.hasFailures {
+                    message += "。注意：旧 CA 文件未能完全删除（\(deletion.failures.joined(separator: "；"))），隧道或应用内可能仍留有旧 CA，请重试或检查后重新生成"
+                }
                 settingsStore.mitmStatusMessage = message
                 settingsStore.save()
                 return true
@@ -313,7 +341,11 @@ struct MitmCertificateView: View {
                 await settingsStore.generateMitmCertificate()
                 return settingsStore.mitmStatusMessage?.hasPrefix("CA 已生成") == true
             }
-            settingsStore.mitmStatusMessage = "生成 CA 失败：\(error.localizedDescription)"
+            var message = "生成 CA 失败：\(error.localizedDescription)"
+            if let deletion, !deletion.deleted.isEmpty {
+                message += "（旧 CA 文件已先删除，重新生成一次即可恢复）"
+            }
+            settingsStore.mitmStatusMessage = message
             return false
         }
     }

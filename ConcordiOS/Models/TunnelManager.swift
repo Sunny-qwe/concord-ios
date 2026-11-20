@@ -217,6 +217,9 @@ final class TunnelManager: ObservableObject {
             let proto = NETunnelProviderProtocol()
             proto.providerBundleIdentifier = Self.providerBundleID
             proto.serverAddress = Self.serverAddress
+            // C2: the six iOS-only tunnel switches, from the saved
+            // settings (system defaults when untouched).
+            Self.applyNetworkSwitches(to: proto)
             created.protocolConfiguration = proto
             created.isEnabled = true
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -366,6 +369,23 @@ final class TunnelManager: ObservableObject {
         throw TunnelError.startFailed(message)
     }
 
+    /// Apply the six iOS-only NETunnelProviderProtocol switches
+    /// (C2) from the saved settings onto a protocol. The saved
+    /// defaults match the system defaults, so a user who never
+    /// touches them sees no change. Called when the protocol is
+    /// created (prepare) AND before every start (armManagerForStart),
+    /// so a toggle takes effect on the next VPN start even with an
+    /// already-saved manager. Pure NE API, core-independent.
+    private static func applyNetworkSwitches(to proto: NETunnelProviderProtocol) {
+        let settings = SettingsStore()
+        proto.includeAllNetworks = settings.includeAllNetworks
+        proto.excludeLocalNetworks = settings.excludeLocalNetworks
+        proto.excludeAPNs = settings.excludeAPNs
+        proto.excludeCellularServices = settings.excludeCellularServices
+        proto.enforceRoutes = settings.enforceRoutes
+        proto.excludeDeviceCommunication = settings.excludeDeviceCommunication
+    }
+
     /// isEnabled + disconnectOnSleep + save + reload, the FlClash
     /// pre-start arming. A save failure throws (the start must not
     /// proceed on a manager the system will reject); a reload
@@ -374,6 +394,11 @@ final class TunnelManager: ObservableObject {
     private func armManagerForStart(_ manager: NETunnelProviderManager) async throws {
         manager.isEnabled = true
         (manager.protocolConfiguration as? NETunnelProviderProtocol)?.disconnectOnSleep = false
+        // C2: re-assert the six tunnel switches before every start,
+        // so a toggle takes effect on the next start.
+        if let proto = manager.protocolConfiguration as? NETunnelProviderProtocol {
+            Self.applyNetworkSwitches(to: proto)
+        }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             manager.saveToPreferences { error in
                 if let error {

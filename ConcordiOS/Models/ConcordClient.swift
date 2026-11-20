@@ -82,6 +82,15 @@ enum ConcordMode: String, CaseIterable, Identifiable {
 enum ConcordClientError: LocalizedError {
     case transport(String)
     case decode(String)
+    /// The extension core answered `config is not applied` (wire
+    /// code -32603): the call raced ahead of config.apply — the
+    /// same call succeeds once apply finishes, so callers swallow
+    /// + retry this one error only. Same wire note as
+    /// AppCoreError.configNotApplied: the engine's string code
+    /// `core_error` never reaches the wire (api_error maps it to
+    /// ApiError::internal), so the match is on the wire code +
+    /// the exact message.
+    case configNotApplied
 
     var errorDescription: String? {
         switch self {
@@ -89,7 +98,20 @@ enum ConcordClientError: LocalizedError {
             return "传输错误：\(message)"
         case .decode(let message):
             return "解析错误：\(message)"
+        case .configNotApplied:
+            return "核心还在启动，请稍后再试"
         }
+    }
+
+    /// Maps one wire error object to the error the caller sees.
+    /// Only the exact cold-start pair (code -32603, message
+    /// `config is not applied`) becomes .configNotApplied; every
+    /// other error keeps the old .transport(message) verbatim.
+    static func fromRPCError(_ error: JSONRPCError) -> ConcordClientError {
+        if error.code == -32603 && error.message == "config is not applied" {
+            return .configNotApplied
+        }
+        return .transport(error.message)
     }
 }
 
@@ -186,7 +208,14 @@ struct JSONRPCResponse<Result: Decodable>: Decodable {
 struct JSONRPCError: Decodable {
     let code: Int
     let message: String
-    let data: String?
+    /// The wire `data` is always an OBJECT ({"kind": ...} —
+    /// proto ErrorData, e.g. {"kind": "internal"}). It was
+    /// `String?`, so decoding ANY error response threw a
+    /// DecodingError here and the core's message never reached
+    /// the caller (the tunnel path could not even recognise
+    /// `config is not applied`). JSONValue holds the object;
+    /// no caller reads it today.
+    let data: JSONValue?
 }
 
 struct EmptyParams: Encodable {}
@@ -491,6 +520,31 @@ struct ConcordConnection: Codable, Identifiable {
 
 struct ConcordConnectionSnapshot: Codable {
     let connections: [ConcordConnection]
+}
+
+/// connection.watch decoded leniently (C9): each entry is decoded
+/// on its own and a malformed one is skipped, so one bad entry
+/// cannot fail the whole snapshot. JSONDecoder's unkeyed container
+/// advances past each element whether or not its decode succeeds,
+/// so a failure here cannot desync the following entries.
+private struct TolerantConnectionSnapshot: Decodable {
+    let connections: [ConcordConnection]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let entries = try container.decode([LossyConnection].self, forKey: .connections)
+        connections = entries.compactMap(\.connection)
+    }
+
+    enum CodingKeys: String, CodingKey { case connections }
+
+    private struct LossyConnection: Decodable {
+        let connection: ConcordConnection?
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            connection = try? container.decode(ConcordConnection.self)
+        }
+    }
 }
 
 struct ConcordLogEntry: Codable, Identifiable {
@@ -1235,7 +1289,7 @@ struct MockConcordTransport: ConcordTransport {
         let data = try ConcordSampleData.jsonResponse(for: method, paramsData: paramsData)
         let envelope = try JSONDecoder().decode(JSONRPCResponse<Result>.self, from: data)
         if let error = envelope.error {
-            throw ConcordClientError.transport(error.message)
+            throw ConcordClientError.fromRPCError(error)
         }
         guard let result = envelope.result else {
             throw ConcordClientError.decode("empty result for \(method)")
@@ -1324,7 +1378,7 @@ final class ExtensionConcordTransport: ConcordTransport {
         let reply = try await TunnelManager.shared.sendProviderMessage(envelope)
         let decoded = try Self.liveDecoder.decode(JSONRPCResponse<Result>.self, from: reply)
         if let error = decoded.error {
-            throw ConcordClientError.transport(error.message)
+            throw ConcordClientError.fromRPCError(error)
         }
         guard let result = decoded.result else {
             throw ConcordClientError.decode("empty result for \(method)")
@@ -1755,7 +1809,12 @@ final class ConcordClient: ObservableObject {
     }
 
     func connectionSnapshot() async throws -> ConcordConnectionSnapshot {
-        try await call(method: "connection.watch", resultType: ConcordConnectionSnapshot.self)
+        // C9: one malformed entry must not drop the whole list —
+        // decode each entry on its own and skip the ones that fail,
+        // instead of failing the whole refresh (which left the list
+        // stale). The ConcordConnection model is unchanged.
+        let tolerant = try await call(method: "connection.watch", resultType: TolerantConnectionSnapshot.self)
+        return ConcordConnectionSnapshot(connections: tolerant.connections)
     }
 
     func connectionClose(id: UInt64) async throws {

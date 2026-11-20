@@ -158,6 +158,17 @@ struct SettingsView: View {
                         .onChange(of: settingsStore.sniffing) { _, _ in SnifferStore.shared.save() }
                     Toggle("TCP 并发", isOn: $settingsStore.tcpConcurrent)
                     Toggle("统一延迟测试", isOn: $settingsStore.unifiedDelay)
+                    // TCP 保活（核心 keep-alive-idle / interval /
+                    // disable-keep-alive；0 = 核心默认，空闲 15 秒）。
+                    // 经 general-overlay.json 下发（config.patch 没有
+                    // 这三个字段），下次启动 VPN 或点「应用通用设置到
+                    // 核心」后生效。
+                    Stepper("TCP 保活空闲：\(settingsStore.keepAliveIdle) 秒", value: $settingsStore.keepAliveIdle, in: 0...3600, step: 15)
+                    Stepper("TCP 保活间隔：\(settingsStore.keepAliveInterval) 秒", value: $settingsStore.keepAliveInterval, in: 0...3600, step: 15)
+                    Toggle("禁用 TCP 保活", isOn: $settingsStore.disableKeepAlive)
+                    Text("保活空闲 / 间隔为 0 表示用核心默认（空闲 15 秒）。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                     Toggle("IPv6", isOn: $settingsStore.ipv6)
                     Picker("日志级别", selection: $settingsStore.logLevel) {
                         ForEach(LogLevel.allCases) { level in
@@ -629,6 +640,14 @@ private enum DnsRecordFilter: String, CaseIterable {
     }
 }
 
+/// One displayed DNS row after folding (C10): the newest entry of
+/// a run of identical consecutive rows, plus how many it stands for.
+private struct FoldedDnsEntry: Identifiable {
+    var id: String { entry.id }
+    let entry: ConcordDnsEntry
+    let count: Int
+}
+
 struct DnsQueriesView: View {
     @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var client: ConcordClient
@@ -645,6 +664,30 @@ struct DnsQueriesView: View {
     private var visibleEntries: [ConcordDnsEntry] {
         dnsStore.filtered.filter { recordFilter.matches($0) }
             .filter { selectedType == nil || $0.type == selectedType }
+    }
+
+    /// Consecutive identical rows folded for display only (C10):
+    /// repeated queries flood the list. The stored entries are
+    /// untouched — only the rows shown are grouped, newest first.
+    /// One row + a ×N badge stands for N identical consecutive rows.
+    private var foldedEntries: [FoldedDnsEntry] {
+        var folded: [FoldedDnsEntry] = []
+        for entry in visibleEntries {
+            if let last = folded.last, Self.sameQuery(last.entry, entry) {
+                folded[folded.count - 1] = FoldedDnsEntry(entry: last.entry, count: last.count + 1)
+            } else {
+                folded.append(FoldedDnsEntry(entry: entry, count: 1))
+            }
+        }
+        return folded
+    }
+
+    /// Two rows are the same query when everything the row shows
+    /// matches (time and delay excluded — each query has its own).
+    private static func sameQuery(_ a: ConcordDnsEntry, _ b: ConcordDnsEntry) -> Bool {
+        a.domain == b.domain && a.type == b.type && a.initiator == b.initiator
+            && a.upstream == b.upstream && a.cached == b.cached
+            && a.answers == b.answers && a.rcode == b.rcode && a.error == b.error
     }
 
     private var availableTypes: [String] {
@@ -750,13 +793,23 @@ struct DnsQueriesView: View {
                         Text(error).font(.system(size: 10)).foregroundStyle(.red)
                     }
                 } else {
-                    ForEach(visibleEntries) { entry in
+                    ForEach(foldedEntries) { folded in
+                        let entry = folded.entry
                         Button {
                             selectedEntry = entry
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack {
                                     Text(entry.domain).font(.system(size: 13))
+                                    if folded.count > 1 {
+                                        Text("×\(folded.count)")
+                                            .font(.system(size: 10))
+                                            .fontWeight(.semibold)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.orange.opacity(0.12), in: Capsule())
+                                            .foregroundStyle(.orange)
+                                    }
                                     Spacer()
                                     Text(entry.type)
                                         .font(.system(size: 10))

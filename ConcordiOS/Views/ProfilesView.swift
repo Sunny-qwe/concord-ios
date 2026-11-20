@@ -393,10 +393,6 @@ struct ProfilesView: View {
             }
             .padding(16)
             .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
-            .overlay(
-                RoundedRectangle(cornerRadius: 20)
-                    .stroke(profile.isActive ? ConcordTheme.accent : Color.clear, lineWidth: 2)
-            )
             .shadow(color: ConcordTheme.cardShadow, radius: 6, x: 0, y: 2)
         }
         .buttonStyle(.plain)

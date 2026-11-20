@@ -193,8 +193,17 @@ final class AppCore {
             _ = try await sendRequest(method: "engine.start", params: [:], resultType: EmptyResult.self)
             loadedConfigSignature = signature
         } catch {
+            // Balance the passRetained above exactly once: if the
+            // session was opened, tearDown() closes it and the
+            // releaseCallback balances the retain (sync or async);
+            // only when the session never opened (start/open failed)
+            // does this catch own the release. Releasing in both
+            // cases would over-release and crash.
+            let hadSession = session != 0
             tearDown()
-            Unmanaged<AppCore>.fromOpaque(context).release()
+            if !hadSession {
+                Unmanaged<AppCore>.fromOpaque(context).release()
+            }
             throw error
         }
     }
@@ -324,7 +333,7 @@ final class AppCore {
                 }
                 self.coreQueue.asyncAfter(deadline: .now() + 15) {
                     if let request = self.pending.removeValue(forKey: id) {
-                        request.continuation.resume(
+                        request.resume(
                             throwing: AppCoreError.rpcFailed("调用超时（15s）"))
                     }
                 }

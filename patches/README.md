@@ -6,14 +6,14 @@ never copied into this repo: the GitHub workflow checks out
 build time. A local inspection copy lives at `../upstream/` (gitignored,
 never uploaded).
 
-- **Pinned upstream commit:** `165154c92ddec38c6fc461d52d4ed210e7e8a65e`
-  (`docs(performance): compare the Android app with the Go core over its VPN`, 2026-11-19)
-- **Produced from:** the rebase tree at `/home/hatch/concord-rebase-165154c` (7 commits
-  on top of `165154c`, `git format-patch 165154c`), rebased
-  2026-11-19 from the previous pin `145c9e75873fb22c5a3f218ff1c0a4cd3facd73c`.
-  Verified: the 7 patches apply to a fresh clone at `165154c`
+- **Pinned upstream commit:** `b0806a8b7e7b55e8f0410a832e5d00512a6499d1`
+  (`feat(netstack): BBR on the TUN and WireGuard/MASQUE IP stacks`, 2026-11-20)
+- **Produced from:** the rebase tree at `/home/hatch/concord-rebase-b0806a8` (7 commits
+  on top of `b0806a8`, `git format-patch b0806a8`), rebased
+  2026-11-20 from the previous pin `165154c92ddec38c6fc461d52d4ed210e7e8a65e`.
+  Verified: the 7 patches apply to a fresh clone at `b0806a8`
   with zero rejects and produce a tree byte-identical to the rebase tree
-  (see the "Rebase to 165154c" section). The local inspection copy at `../upstream/` (branch `ios-port`)
+  (see the "Rebase to b0806a8" section). The local inspection copy at `../upstream/` (branch `ios-port`)
   still points at the old pin until it is refreshed; the patches in this
   directory are the authority for the new pin.
 - **Apply order:** `01`, then `02`, then `03`, then `04`, then `05`, then `06`, then `07` (filenames sort in order).
@@ -35,7 +35,7 @@ never uploaded).
 ```bash
 git clone https://github.com/chen08209/concord upstream-checkout
 cd upstream-checkout
-git checkout 165154c92ddec38c6fc461d52d4ed210e7e8a65e
+git checkout b0806a8b7e7b55e8f0410a832e5d00512a6499d1
 git apply /path/to/concord-ios/patches/01-bins-ios.patch
 git apply /path/to/concord-ios/patches/02-packet-channel.patch
 git apply /path/to/concord-ios/patches/03-tun-wrap-ios-fix.patch
@@ -453,6 +453,78 @@ libclang + gcc headers):
   `concord-ffi` / `concord-ios` iOS-target checks were not re-run this
   time — they stop at the same wall; the host checks above cover the
   reworked code.)
+
+Note: `Cargo.lock` in the upstream tree is stale against the patched
+manifests (patch `01` adds the `bins/ios` member, patch `04` re-sources
+nix — neither commit regenerates the lock). Any `cargo` invocation in the
+patched tree rewrites it. That is harmless here: the workflows run
+`cargo build` without `--locked`, so the runner regenerates the lock
+itself. Do not commit a locally regenerated lock into a patch unless the
+build is switched to `--locked`.
+
+## Rebase to b0806a8 (2026-11-20)
+
+All 7 patches applied cleanly with **zero conflicts and zero content
+changes** — `01`, `03`, `04`, `05`, `06`, `07` are byte-identical to
+their `165154c` versions, and `02` differs only in the `index` blob
+hashes and one hunk line number (`schema/api.json` 4306 → 4370, because
+the 2 new methods below added 64 lines above it); the added/removed
+lines are identical. 15 commits since `165154c`, dominated by the
+netstack work in the pin subject (BBR on the TUN and WireGuard/MASQUE
+IP stacks) plus the MITM module work the Swift side must catch up on
+(see below). New patch commits on top of `b0806a8` in
+`/home/hatch/concord-rebase-b0806a8`, regenerated with
+`git format-patch b0806a8`; the regenerated patches applied to a fresh
+clone at `b0806a8` produce a tree byte-identical to the rebase tree
+(0 diff lines, after reverting the cargo-regenerated `Cargo.lock`).
+
+`schema/api.json` at the new HEAD has **71 methods** — the only
+additions are `mitm.moduleStatus` (params `{}`, result
+`MitmModuleStatusList`: per-module `enabled` / `inForce` / `problem` /
+`off` / per-resource fetch state / `refusedRules` / `hostNetwork`) and
+`mitm.fetchModule` (params `{name?: string | null}` — absent/null
+re-fetches every module's remote files; result `{}`). No method
+removed or changed. Also new: `CoreEvent` gains a `scriptNotification`
+variant (`$notification.post` from MITM scripts); `MitmModuleRule`
+gains optional `requiresResolve`; `MitmModuleRuleSet` gains optional
+`provider` (`behavior`/`format`); `MitmScriptKind` gains `rule` and
+`dns`; `ResourceKind` gains `mitmModule`.
+
+**The Swift side changes for this rebase** (additive — nothing in the
+new core breaks the existing Swift client at decode time; every new
+field is optional or ignored by Swift's synthesized `Codable`):
+- Wire the 2 new methods as the 70th/71st (`ConcordClient.
+  mitmModuleStatus` + `mitmFetchModule`, following the `mitm.readModule`
+  pattern), with `ConcordMitmModuleStatusList` et al. and sample-data
+  cases; the natural UI home is a per-module status row in
+  `MitmModulesView` (enabled / inForce / problem / per-resource state /
+  refused rules) plus a re-fetch action.
+- Module parser catch-up (offline fallback only — the core's
+  `mitm.readModule` is the primary path when the tunnel runs): `SCRIPT`
+  rules with a `requires-resolve` option; `dns` / `rule` scripts are
+  now runnable by the core (the parser's "not supported" comment is
+  now false); `[MITM] hostname-disabled`; Stash rule-provider
+  `behavior`/`format` and payload-only scripts; ignore URL rewrites
+  naming `{{{GATEWAY_ADDRESS}}}`.
+
+Local verification at the new pin (Linux, Rust 1.100.0; same libclang
+workaround as the 01d7a13 rebase — Python `clang` package's bundled
+libclang + gcc headers):
+
+- `cargo check -p concord-proto -p concord-tun --target
+  aarch64-apple-ios` — passes (covers the patch-02 channel code and
+  `TunSource::Channel`, patch 03, patch 06 and the vendored nix).
+- `cargo check -p concord-api -p concord-ffi -p concord-engine
+  -p concord-ios` (host) — all pass (12m59s; only warning:
+  `proc-macro-error2 v2.0.1` future-incompat notice — pre-existing
+  upstream, unrelated to the patches).
+- `cargo check -p concord-api --target aarch64-apple-ios` — stops at
+  the known SDK wall: `cc-rs: failed to find tool "xcrun"`. No Rust
+  code is reached past that point on Linux; the macOS runner (which has
+  `xcrun` and the iOS SDK) is the verification for the full staticlib
+  build, as before. (The `concord-ffi` / `concord-ios` iOS-target checks
+  were not re-run this time — they stop at the same wall; the host
+  checks above cover the reworked code.)
 
 Note: `Cargo.lock` in the upstream tree is stale against the patched
 manifests (patch `01` adds the `bins/ios` member, patch `04` re-sources

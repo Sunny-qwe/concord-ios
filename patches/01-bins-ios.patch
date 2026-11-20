@@ -1,6 +1,6 @@
-From 7ae62c8154826f23d470e6fc8698b796dbcf311a Mon Sep 17 00:00:00 2001
+From b4d3a85c5845f7f14891b616a37dcf7736acd756 Mon Sep 17 00:00:00 2001
 From: sunny-qwe <gmlg138888@gmail.com>
-Date: Thu, 19 Nov 2026 13:32:17 +0000
+Date: Fri, 20 Nov 2026 13:20:48 +0000
 Subject: [PATCH 1/7] ios: add bins/ios staticlib crate
 
 ---

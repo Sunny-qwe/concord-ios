@@ -1,6 +1,6 @@
-From 595c1a95e901dab36673e5b8b5ede8ce0af3d9ea Mon Sep 17 00:00:00 2001
+From d7d35b97985670c5159874974e87d8bb25989da5 Mon Sep 17 00:00:00 2001
 From: sunny-qwe <gmlg138888@gmail.com>
-Date: Thu, 19 Nov 2026 13:32:17 +0000
+Date: Fri, 20 Nov 2026 13:20:49 +0000
 Subject: [PATCH 2/7] ios: promote FakeDevice to a production packet-channel
  DeviceSource
 
@@ -385,7 +385,7 @@ index fdaabde..4c87a42 100644
  pub use callback::{Deliver, Release};
  pub use hub::{Hub, Receiver, hub, install, set_notice};
 diff --git a/crates/proto/src/types/live.rs b/crates/proto/src/types/live.rs
-index 7628781..8908d9c 100644
+index 02a4ebc..5eb0d0c 100644
 --- a/crates/proto/src/types/live.rs
 +++ b/crates/proto/src/types/live.rs
 @@ -299,8 +299,8 @@ pub enum EngineState {
@@ -728,10 +728,10 @@ index 4a701e1..0874cda 100644
      let Some(handler) = deps.dns.clone() else {
          return Ok(None);
 diff --git a/schema/api.json b/schema/api.json
-index ab6a3f1..2d85347 100644
+index 9e6cf3a..e0edadf 100644
 --- a/schema/api.json
 +++ b/schema/api.json
-@@ -4306,9 +4306,28 @@
+@@ -4370,9 +4370,28 @@
              "kind",
              "handle"
            ]

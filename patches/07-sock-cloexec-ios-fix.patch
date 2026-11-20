@@ -1,6 +1,6 @@
-From 7a2784102a8fcfab2f71b7972aaa6eb7b0a95fdb Mon Sep 17 00:00:00 2001
+From 4f3081984aeb6fdf4e1e3a8ec79d506fcb04ccc3 Mon Sep 17 00:00:00 2001
 From: sunny-qwe <gmlg138888@gmail.com>
-Date: Thu, 19 Nov 2026 13:32:26 +0000
+Date: Fri, 20 Nov 2026 13:20:49 +0000
 Subject: [PATCH 7/7] ios: drop SOCK_CLOEXEC on Apple targets
 
 ---

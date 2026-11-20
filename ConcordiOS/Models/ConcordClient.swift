@@ -3,8 +3,9 @@ import Combine
 
 // MARK: - Concord JSON-RPC 2.0 client
 //
-// Types are modelled on upstream Concord's schema/api.json (69 methods,
-// checked 2026-11-19 against commit 165154c — mitm.readModule added).
+// Types are modelled on upstream Concord's schema/api.json (71 methods,
+// checked 2026-11-20 against commit b0806a8 — mitm.moduleStatus /
+// mitm.fetchModule added).
 // See TUN_INVESTIGATION.md for the full method map.
 //
 // Two modes:
@@ -61,7 +62,8 @@ import Combine
 //                             core.releaseMemory
 //   Settings (general)        config.general, config.patch
 //   MITM                      mitm.certificate / generateCertificate /
-//                             validate / issueCertificate / runScript /
+//                             validate / readModule / moduleStatus /
+//                             fetchModule / issueCertificate / runScript /
 //                             exchanges / exchange / body — live when the
 //                             core reports features.mitm (core.capabilities).
 //                             The local CA must be installed in the system
@@ -795,11 +797,21 @@ struct ConcordMitmCertificate: Codable {
 
 struct ConcordMitmIssue: Codable {
     let index: Int
+    /// What kind of line problem this is (upstream MitmIssueKind:
+    /// syntax, missing, unknown, unsupported, invalid, pattern, jq,
+    /// resource, script). The core returns it since 01d7a13; optional
+    /// so a result that omits it still decodes.
+    let kind: String? = nil
     let message: String
 }
 
 struct ConcordMitmValidateResult: Codable {
     let issues: [String: [ConcordMitmIssue]]
+    /// The lines that take effect, by list — the same shape as
+    /// ConcordMitmModuleView.views (upstream MitmValidateResult.views,
+    /// default {}). Optional: the core returns it since 01d7a13 and
+    /// older results omit it.
+    let views: [String: [ConcordMitmLineEntry]]? = nil
 }
 
 // MARK: - mitm.readModule (upstream 165154c, the 69th method)
@@ -865,6 +877,10 @@ struct ConcordMitmModuleRule: Codable {
     let policy: ConcordMitmModulePolicy
     let noResolve: Bool
     let extendedMatching: Bool
+    /// A SCRIPT rule's script reads the address the host resolves to
+    /// (upstream b0806a8). The core serializes it only when true, so
+    /// the false default keeps decoding working when it is absent.
+    let requiresResolve: Bool = false
 }
 
 struct ConcordMitmModuleIgnored: Codable {
@@ -908,6 +924,89 @@ struct ConcordMitmModuleView: Codable {
     /// keys; kept as JSON — the app does not apply them yet.
     let network: JSONValue
     let ignored: [ConcordMitmModuleIgnored]
+}
+
+// MARK: - mitm.moduleStatus / mitm.fetchModule (upstream b0806a8, the 70th and 71st methods)
+//
+// mitm.moduleStatus reports, for each module the `mitm` section of the
+// profile in force names, whether it is enabled and in force, why it
+// could not be taken at all (problem), why its own requirement turns
+// it off (off), the state of each remote file it reads (resources),
+// the rules left out of the profile (refusedRules) and the network
+// edits it asks the host to apply (hostNetwork, kept as JSON like
+// ConcordMitmModuleView.network — the app does not apply them yet).
+// The handler is gated by mitm_enabled(): call it only when the core
+// is ready and MITM is on — like the other mitm.* calls it errors
+// when MITM is off or no config is applied.
+// mitm.fetchModule re-fetches a module's remote files (name nil =
+// every module's); it returns {}.
+
+struct ConcordMitmModuleStatusList: Codable {
+    let modules: [ConcordMitmModuleStatus]
+}
+
+struct ConcordMitmModuleStatus: Codable {
+    let name: String
+    let enabled: Bool
+    let inForce: Bool
+    let problem: ConcordMitmModuleProblem?
+    /// Why the module takes no effect as a whole (requirement /
+    /// requirementUnreadable) — the pre-existing def, reused.
+    let off: ConcordMitmModuleOff?
+    let resources: [ConcordMitmModuleResourceStatus]
+    let refusedRules: [ConcordMitmRefusedRule]
+    /// The routes and proxy bypass entries the module asks for, which
+    /// the host applies; kept as JSON like ConcordMitmModuleView.network.
+    let hostNetwork: JSONValue
+}
+
+/// Why a module could not be taken at all (upstream MitmModuleProblem,
+/// untagged on `reason`): unreadable carries a `detail`, duplicate
+/// does not.
+struct ConcordMitmModuleProblem: Codable {
+    let reason: String
+    let detail: String?
+}
+
+extension ConcordMitmModuleProblem {
+    /// Decodes `reason` first; only the unreadable variant carries a
+    /// `detail`, so a duplicate problem decodes with detail nil even
+    /// if the wire ever sent one.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let reason = try container.decode(String.self, forKey: .reason)
+        self.reason = reason
+        self.detail = reason == "unreadable"
+            ? try container.decodeIfPresent(String.self, forKey: .detail)
+            : nil
+    }
+}
+
+struct ConcordMitmModuleResourceStatus: Codable {
+    let url: String
+    /// script | map-local | jq.
+    let kind: String
+    let lines: [UInt32]
+    /// The file in the MITM resources directory the lines read; nil
+    /// when the file was never stored (the core also omits it then).
+    let file: String?
+    /// ok | fetching | failed | missing.
+    let state: String
+    /// Why the last fetch failed; nil when it did not fail.
+    let error: ConcordMitmFetchFailure?
+}
+
+struct ConcordMitmFetchFailure: Codable {
+    /// dns | tls | timeout | connection | other | http.
+    let reason: String
+    /// The HTTP status of an `http` failure; nil otherwise.
+    let status: UInt16?
+    let detail: String
+}
+
+struct ConcordMitmRefusedRule: Codable {
+    let line: UInt32
+    let detail: String
 }
 
 struct ConcordMitmPem: Codable {
@@ -1130,12 +1229,22 @@ struct ConcordCoreEvent: Codable {
     let seq: Int64?
     let origin: String?
     let change: JSONValue?
+    /// scriptNotification only (upstream b0806a8): what a MITM script
+    /// posted with `$notification.post`. `url` above is what opening
+    /// it opens. All four default nil so existing memberwise
+    /// constructions keep compiling unchanged.
+    let script: String? = nil
+    let title: String? = nil
+    let subtitle: String? = nil
+    let body: String? = nil
 
     /// One-line summary for the events feed.
     var summary: String {
         switch type {
         case "resourceUpdate":
-            let base = "提供方更新：\(name ?? "—")（\(phase ?? "—")）"
+            // kind mitmModule names a module, not a provider.
+            let label = kind == "mitmModule" ? "模块更新" : "提供方更新"
+            let base = "\(label)：\(name ?? "—")（\(phase ?? "—")）"
             if let error, !error.isEmpty { return base + "：\(error)" }
             return base
         case "dialerLoop":
@@ -1144,6 +1253,8 @@ struct ConcordCoreEvent: Codable {
             return "测速：\(name ?? "—") \(url ?? "") \(value.map { "\($0) ms" } ?? "—")"
         case "fatal":
             return "致命错误：\(message ?? "—")"
+        case "scriptNotification":
+            return "脚本通知：\(title ?? "—")"
         case "stateChanged":
             return "状态变化 #\(seq.map { "\($0)" } ?? "—")（来自 \(origin ?? "—")）"
         default:
@@ -1988,6 +2099,26 @@ final class ConcordClient: ObservableObject {
             let language: String
         }
         return try await call(method: "mitm.readModule", params: MitmReadModuleParams(text: text, arguments: arguments, attachments: attachments, language: language), resultType: ConcordMitmModuleView.self)
+    }
+
+    /// Module status from the core (upstream b0806a8): which modules
+    /// the profile in force names, whether each is enabled and in
+    /// force, and why not. Gated by mitm_enabled() in the core — call
+    /// only when the core is ready and MITM is on, like the other
+    /// mitm.* calls; it errors when MITM is off or no config is applied.
+    func mitmModuleStatus() async throws -> ConcordMitmModuleStatusList {
+        try await call(method: "mitm.moduleStatus", params: EmptyParams(), resultType: ConcordMitmModuleStatusList.self)
+    }
+
+    /// Re-fetches a module's remote files (upstream b0806a8). `name`
+    /// nil re-fetches every module's remote files. Same mitm_enabled()
+    /// gate as mitm.moduleStatus. Returns nothing (the core answers
+    /// {}), like the other empty-result calls in this client.
+    func mitmFetchModule(name: String?) async throws {
+        struct MitmFetchModuleParams: Encodable {
+            let name: String?
+        }
+        _ = try await call(method: "mitm.fetchModule", params: MitmFetchModuleParams(name: name), resultType: EmptyResult.self)
     }
 
     func mitmIssueCertificate(host: String) async throws -> ConcordMitmPem {

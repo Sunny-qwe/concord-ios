@@ -16,7 +16,7 @@ enum ConcordSampleData {
         case "core.init", "engine.start", "engine.stop", "tun.start", "tun.stop",
              "traffic.reset", "dns.clearCache", "dns.flushFakeIp", "provider.update",
              "config.patch", "network.reset", "core.releaseMemory", "geo.update",
-             "core.setPressure", "debug.crash":
+             "core.setPressure", "debug.crash", "mitm.fetchModule":
             result = AnyEncodable(EmptyResultJSON())
         case "config.validate":
             result = AnyEncodable(ConcordConfigValidateResult(issues: []))
@@ -83,6 +83,21 @@ enum ConcordSampleData {
                 meta: ConcordMitmModuleMeta(name: "示例模块", desc: nil, author: nil, icon: nil, homepage: nil, category: nil, system: nil, requirement: nil, argumentsDesc: nil),
                 off: nil, arguments: [], resources: [], declaredScripts: [], asksConsent: false,
                 issues: [:], views: [:], rules: [], ruleSets: [], network: .object([:]), ignored: []))
+        case "mitm.moduleStatus":
+            result = AnyEncodable(ConcordMitmModuleStatusList(modules: [
+                ConcordMitmModuleStatus(
+                    name: "示例模块", enabled: true, inForce: true, problem: nil, off: nil,
+                    resources: [ConcordMitmModuleResourceStatus(
+                        url: "https://example.com/module/script.js", kind: "script", lines: [4, 5],
+                        file: "script.js", state: "ok", error: nil)],
+                    refusedRules: [ConcordMitmRefusedRule(line: 12, detail: "示例：策略无对应出站，已跳过")],
+                    hostNetwork: .object([:])),
+                ConcordMitmModuleStatus(
+                    name: "示例模块-重复", enabled: false, inForce: false,
+                    problem: ConcordMitmModuleProblem(reason: "duplicate", detail: nil),
+                    off: ConcordMitmModuleOff(reason: "requirement"),
+                    resources: [], refusedRules: [], hostNetwork: .object([:])),
+            ]))
         case "mitm.issueCertificate":
             result = AnyEncodable(ConcordMitmPem(pem: ""))
         case "mitm.runScript":

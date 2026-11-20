@@ -1,6 +1,6 @@
-From 7e03f45a492eae94fd3580e28c4f351e0792a059 Mon Sep 17 00:00:00 2001
+From 5c39404c4e76acd67f2ce3b0cd636973abf32396 Mon Sep 17 00:00:00 2001
 From: sunny-qwe <gmlg138888@gmail.com>
-Date: Thu, 19 Nov 2026 13:32:26 +0000
+Date: Fri, 20 Nov 2026 13:20:49 +0000
 Subject: [PATCH 4/7] ios: vendor nix 0.31.3 with macOS-only utun gating
 
 ---

@@ -29,9 +29,10 @@ import Darwin
 //     resources the module downloaded.
 //   - `system` is advisory only: a module naming another system
 //     still applies (FlClash only warns too).
-//   - dns / rule scripts are not supported by the core itself
-//     (parse_script answers "dns scripts are not supported"), and
-//     Loon `request if … then reject(…)` / `response if …`
+//   - dns / rule scripts are read like the other runnable kinds
+//     (upstream b0806a8: the core's RUNNABLE_SCRIPTS now has 7
+//     kinds, dns and rule included), and Loon `request if …
+//     then reject(…)` / `response if …`
 //     conditionals ARE read (condition.rs: the condition folds into
 //     one URL regex and one lookahead per head; a reject answers
 //     with a map-local, or with a url-rewrite reject line for a
@@ -84,7 +85,7 @@ enum MitmModuleSkipReason: String, Codable, CaseIterable {
     case jq, jsonBody, rawHeader, conditional, relativeData
     case notDownloaded, unreadable
     case finalRule, deviceRule, managedCa, skipVerifyAll
-    case reflect, appOnly, proxies, nestedRuleSet
+    case reflect, appOnly, proxies, nestedRuleSet, runtimeValue
 
     /// Chinese label shown in the module detail view.
     var label: String {
@@ -111,6 +112,7 @@ enum MitmModuleSkipReason: String, Codable, CaseIterable {
         case .appOnly: return "仅原 App 支持"
         case .proxies: return "模块不能改代理"
         case .nestedRuleSet: return "嵌套规则集"
+        case .runtimeValue: return "运行时才有的值"
         }
     }
 }
@@ -126,6 +128,15 @@ struct MitmModuleSkip: Codable, Equatable {
 /// What a Surge module, a Loon plugin, a Quantumult X snippet or a
 /// Stash override adds, in the syntax of FlClash's own lists; the
 /// core still judges each line.
+/// A Stash rule provider's `behavior` and `format`, in mihomo's
+/// words (upstream b0806a8, core `MitmRuleProviderKind` in
+/// crates/proto/src/types/module.rs). Recorded alongside the
+/// provider set; the profile's rule provider takes them as they are.
+struct MitmRuleProviderKind: Codable, Equatable {
+    var behavior: String
+    var format: String
+}
+
 struct MitmModuleContent {
     var name: String?
     var description: String?
@@ -135,6 +146,13 @@ struct MitmModuleContent {
     /// Placed by `%INSERT%`, ahead of what other modules append.
     var insertedHostname: [String] = []
     var hostname: [String] = []
+    /// `[MITM] hostname-disabled`: entries to remove from the
+    /// composed hostname list (upstream b0806a8 — the core removes
+    /// them from the hosts list after hostname is read). The
+    /// module's own lists are already filtered in `content()`;
+    /// the list is kept so the merge can remove them from other
+    /// modules' and the profile's hostnames too.
+    var hostnameDisabled: [String] = []
     var urlRewrite: [String] = []
     var headerRewrite: [String] = []
     var bodyRewrite: [String] = []
@@ -170,6 +188,9 @@ struct MitmModuleContent {
     /// store applies these to the profile's `rule-providers`; the
     /// `RULE-SET,<name>,…` rules in `rules` name them.
     var ruleProviders: [String: [String: JSONValue]] = [:]
+    /// Each Stash rule provider's kind, keyed by the provider's
+    /// mapped name in `ruleProviders` (upstream b0806a8).
+    var ruleProviderKinds: [String: MitmRuleProviderKind] = [:]
     /// The policy names the module's rules name that no built-in
     /// covers, for the store to map to the profile's outbounds.
     var exits: Set<String> = []
@@ -208,12 +229,13 @@ struct MitmModuleContent {
     var coreIssueCount: Int = 0
 
     var isEmpty: Bool {
-        hostname.isEmpty && insertedHostname.isEmpty
+        hostname.isEmpty && insertedHostname.isEmpty && hostnameDisabled.isEmpty
             && urlRewrite.isEmpty && headerRewrite.isEmpty
             && bodyRewrite.isEmpty && mapLocal.isEmpty && script.isEmpty
             && rules.isEmpty && skipVerifyHostname.isEmpty
             && clientSourceAddress.isEmpty && requestBodyMock.isEmpty
             && forceHttpHostname.isEmpty && ruleProviders.isEmpty
+            && ruleProviderKinds.isEmpty
             && network.isEmpty && inlineResources.isEmpty
             && resourceUrls.isEmpty && skipped.isEmpty
     }
@@ -223,6 +245,7 @@ struct MitmModuleContent {
     var mitmLists: MitmModuleMerged {
         MitmModuleMerged(
             hostname: insertedHostname + hostname,
+            hostnameDisabled: hostnameDisabled,
             urlRewrite: urlRewrite,
             headerRewrite: headerRewrite,
             bodyRewrite: bodyRewrite,
@@ -234,6 +257,7 @@ struct MitmModuleContent {
             requestBodyMock: requestBodyMock,
             forceHttpHostname: forceHttpHostname,
             ruleProviders: ruleProviders,
+            ruleProviderKinds: ruleProviderKinds,
             exits: exits,
             h2: h2,
             network: network
@@ -245,6 +269,9 @@ struct MitmModuleContent {
 /// Clash rules (which go first in the profile's rule list).
 struct MitmModuleMerged {
     var hostname: [String] = []
+    /// The `hostname-disabled` entries of the merged modules, kept
+    /// for the record; `hostname` is already filtered by them.
+    var hostnameDisabled: [String] = []
     var urlRewrite: [String] = []
     var headerRewrite: [String] = []
     var bodyRewrite: [String] = []
@@ -258,16 +285,20 @@ struct MitmModuleMerged {
     /// MitmModuleContent); the core has no mitm wire key for it.
     var forceHttpHostname: [String] = []
     var ruleProviders: [String: [String: JSONValue]] = [:]
+    /// Each Stash rule provider's kind, keyed by the provider's
+    /// mapped name in `ruleProviders` (upstream b0806a8).
+    var ruleProviderKinds: [String: MitmRuleProviderKind] = [:]
     var exits: Set<String> = []
     var h2: Bool = false
     var network: MitmModuleNetwork = MitmModuleNetwork()
 
     var isEmpty: Bool {
-        hostname.isEmpty && urlRewrite.isEmpty && headerRewrite.isEmpty
+        hostname.isEmpty && hostnameDisabled.isEmpty && urlRewrite.isEmpty && headerRewrite.isEmpty
             && bodyRewrite.isEmpty && mapLocal.isEmpty && script.isEmpty
             && rules.isEmpty && skipVerifyHostname.isEmpty
             && clientSourceAddress.isEmpty && requestBodyMock.isEmpty
             && forceHttpHostname.isEmpty && ruleProviders.isEmpty
+            && ruleProviderKinds.isEmpty
             && network.isEmpty
     }
 
@@ -647,6 +678,9 @@ private let scriptTypes: Set<String> = [
 ]
 private let runnableScriptTypes: Set<String> = [
     "http-request", "http-response", "cron", "event", "generic",
+    // Upstream b0806a8: RUNNABLE_SCRIPTS now has 7 kinds — dns
+    // and rule scripts run too.
+    "dns", "rule",
 ]
 private let scriptEvents: Set<String> = [
     "network-changed", "engine-started", "profile-reloaded",
@@ -1138,7 +1172,10 @@ private let rejectActions: [String: String] = [
 private let rejectRewrites: Set<String> = ["reject", "reject-img", "reject-dict", "reject-array", "reject-200"]
 
 /// A rule's third field when it is an option, not a policy.
-private let ruleOptions: Set<String> = ["no-resolve", "extended-matching", "pre-matching"]
+/// Upstream b0806a8 (core rule.rs OPTIONS): `requires-resolve`
+/// is an option too, so a policy-less SCRIPT rule carrying it
+/// must not read it as its policy.
+private let ruleOptions: Set<String> = ["no-resolve", "extended-matching", "pre-matching", "requires-resolve"]
 
 /// Rules on what only an Apple device knows of its network or itself.
 private let deviceRuleTypes: Set<String> = [
@@ -1166,6 +1203,12 @@ private let ruleTypes: [String: String] = [
     // module reader does the same); quotes come off first, since a
     // regex or glob may contain commas.
     "URL-REGEX": "URL-REGEX", "USER-AGENT": "USER-AGENT",
+    // Upstream b0806a8: SCRIPT is a rule type (core rule.rs) —
+    // the payload is the rule script's name, and
+    // `requires-resolve` says the script reads the address the
+    // host resolves to. The payload passes through as-is, like
+    // the core's default arm (non-empty, no comma).
+    "SCRIPT": "SCRIPT",
 ]
 
 private let loonContentTypes: [String: String] = [
@@ -1207,6 +1250,7 @@ private final class MitmModuleParserEngine {
     var stashArguments: [MitmModuleArgument] = []
     var insertedHostname: [String] = []
     var hostname: [String] = []
+    var hostnameDisabled: [String] = []
     var urlRewrite: [String] = []
     var headerRewrite: [String] = []
     var bodyRewrite: [String] = []
@@ -1219,6 +1263,7 @@ private final class MitmModuleParserEngine {
     var requestBodyMock: [String] = []
     var forceHttpHostname: [String] = []
     var ruleProviders: [String: [String: JSONValue]] = [:]
+    var ruleProviderKinds: [String: MitmRuleProviderKind] = [:]
     var exits: Set<String> = []
     var h2: Bool = false
     var inlineResources: [String: String] = [:]
@@ -1282,6 +1327,16 @@ private final class MitmModuleParserEngine {
                 .trimmingCharacters(in: .whitespaces), !value.isEmpty else { return nil }
             return value
         }
+        // Upstream b0806a8: hostname-disabled removes entries from
+        // the composed hostname list, so the module's own lists
+        // lose them here, before the skip-verify hosts are read off
+        // them; the merge does the same for other modules' and the
+        // profile's hostnames. Removal is by exact entry, as the
+        // core's HostList::remove is.
+        if !hostnameDisabled.isEmpty {
+            insertedHostname.removeAll { hostnameDisabled.contains($0) }
+            hostname.removeAll { hostnameDisabled.contains($0) }
+        }
         // A line that turns verifying off names hosts on the hostname
         // lists at the end; a `*` covers everything, which a module
         // may not turn off, so it is skipped and the other hosts stand.
@@ -1313,6 +1368,7 @@ private final class MitmModuleParserEngine {
             arguments: surgeArguments + loonArguments + stashArguments,
             insertedHostname: insertedHostname,
             hostname: hostname,
+            hostnameDisabled: hostnameDisabled,
             urlRewrite: urlRewrite,
             headerRewrite: headerRewrite,
             bodyRewrite: bodyRewrite,
@@ -1325,6 +1381,7 @@ private final class MitmModuleParserEngine {
             requestBodyMock: requestBodyMock,
             forceHttpHostname: forceHttpHostname,
             ruleProviders: ruleProviders,
+            ruleProviderKinds: ruleProviderKinds,
             exits: exits,
             h2: h2,
             network: buildNetwork(),
@@ -1525,7 +1582,17 @@ private final class MitmModuleParserEngine {
         case "rule":
             readRule(section, line: line)
         case "url rewrite":
-            urlRewrite.append(line)
+            // Upstream b0806a8 (core surge.rs): a URL rewrite naming
+            // {{{GATEWAY_ADDRESS}}} is ignored — the address only
+            // exists at runtime. The core ignores it only in
+            // Surge's [URL Rewrite] section, so only this dispatch
+            // does; Loon / QX / Stash rewrites keep the core's
+            // behaviour of reading the line as written.
+            if line.contains("{{{GATEWAY_ADDRESS}}}") {
+                skip(section, line, .runtimeValue)
+            } else {
+                urlRewrite.append(line)
+            }
         case "header rewrite":
             headerRewrite.append(line)
         case "body rewrite":
@@ -1888,6 +1955,19 @@ private final class MitmModuleParserEngine {
         switch key {
         case "hostname":
             readMitmHostname(section, line: line, value: value)
+        case "hostname-disabled":
+            // Upstream b0806a8: removes entries from the composed
+            // hostname list (the core applies it after hostname).
+            // The %INSERT%/%APPEND% mark carries no meaning here —
+            // the core strips it too (surge.rs) — so only the
+            // entries are kept, and content() filters them out.
+            var disabled = value
+            if disabled.hasPrefix("%INSERT%") {
+                disabled = String(disabled.dropFirst("%INSERT%".count))
+            } else if disabled.hasPrefix("%APPEND%") {
+                disabled = String(disabled.dropFirst("%APPEND%".count))
+            }
+            hostnameDisabled.append(contentsOf: disabled.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
         case "h2":
             h2 = h2 || value.lowercased() == "true"
         case "skip-server-cert-verify":
@@ -2005,6 +2085,7 @@ private final class MitmModuleParserEngine {
         }
         var out = "\(rule.body),\(target)"
         if rule.noResolve { out += ",no-resolve" }
+        if rule.requiresResolve { out += ",requires-resolve" }
         rules.append(out)
     }
 
@@ -2105,7 +2186,7 @@ private final class MitmModuleParserEngine {
         readRuleSet(section, shown: line, value: first, policy: params["policy"] ?? "DIRECT", options: [])
     }
 
-    func translateRule(_ rawType: String, payload: String, options: [String], nested: Bool = false) -> (body: String, noResolve: Bool)? {
+    func translateRule(_ rawType: String, payload: String, options: [String], nested: Bool = false) -> (body: String, noResolve: Bool, requiresResolve: Bool)? {
         let type = rawType.trimmingCharacters(in: .whitespaces).uppercased()
         switch type {
         case "AND", "OR", "NOT":
@@ -2117,7 +2198,7 @@ private final class MitmModuleParserEngine {
                 guard let rule = translateRule(parts.first ?? "", payload: parts.count > 1 ? parts[1] : "", options: [], nested: true) else { return nil }
                 translated.append("(\(rule.body))")
             }
-            return (body: "\(type),(\(translated.joined(separator: ",")))", noResolve: false)
+            return (body: "\(type),(\(translated.joined(separator: ",")))", noResolve: false, requiresResolve: false)
         case "PROTOCOL":
             let network: String?
             switch payload.trimmingCharacters(in: .whitespaces).uppercased() {
@@ -2127,7 +2208,7 @@ private final class MitmModuleParserEngine {
             default: network = nil
             }
             guard let network else { return nil }
-            return (body: "NETWORK,\(network)", noResolve: false)
+            return (body: "NETWORK,\(network)", noResolve: false, requiresResolve: false)
         default:
             break
         }
@@ -2159,7 +2240,11 @@ private final class MitmModuleParserEngine {
         return (
             body: "\(target),\(value)",
             noResolve: ["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"].contains(target)
-                && options.contains { $0.lowercased() == "no-resolve" }
+                && options.contains { $0.lowercased() == "no-resolve" },
+            // Upstream b0806a8 (core rule.rs): only a SCRIPT rule's
+            // `requires-resolve` option sets this.
+            requiresResolve: target == "SCRIPT"
+                && options.contains { $0.lowercased() == "requires-resolve" }
         )
     }
 
@@ -3916,13 +4001,41 @@ extension MitmModuleParserEngine {
             for (key, entry) in providerMap where key != "path" {
                 provider[key] = stashJSON(entry)
             }
+            // Upstream b0806a8 (core stash/mod.rs + rule.rs): a
+            // provider's kind is its behavior and format in
+            // mihomo's words; format defaults to yaml when none is
+            // given, behavior is empty when none is given (the core
+            // then refuses the provider — the Swift parser keeps it
+            // and records the kind as read).
+            let behavior = stashText(providerMap["behavior"])
+            let format = stashText(providerMap["format"])
+            let kind = MitmRuleProviderKind(
+                behavior: behavior, format: format.isEmpty ? "yaml" : format)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             guard let data = try? encoder.encode(provider),
                   let json = String(data: data, encoding: .utf8) else { continue }
-            let mapped = ruleSetName("stash:\(name):\(json)")
+            // Upstream b0806a8 (core rule.rs): a URL provider whose
+            // kind is not classical/text is keyed
+            // `<behavior>/<format>:<url>`, a classical/text one by
+            // its bare URL; an inline one keeps the hashed name.
+            // A provider with an unknown or missing behavior is one
+            // the core refuses, so it keeps the hashed name here.
+            let url = stashText(providerMap["url"])
+            let mapped: String
+            if type == "http", !url.isEmpty,
+               ["domain", "ipcidr", "classical"].contains(kind.behavior) {
+                if kind.behavior == "classical" && kind.format == "text" {
+                    mapped = ruleSetName(url)
+                } else {
+                    mapped = ruleSetName("\(kind.behavior)/\(kind.format):\(url)")
+                }
+            } else {
+                mapped = ruleSetName("stash:\(name):\(json)")
+            }
             stashProviderNames[name] = mapped
             ruleProviders[mapped] = provider
+            ruleProviderKinds[mapped] = kind
         }
     }
 
@@ -4097,6 +4210,18 @@ func mergeMitmModules(hostname: [String], modules: [MitmModuleContent]) -> MitmM
         }
         out.exits.formUnion(module.exits)
         out.h2 = out.h2 || module.h2
+        for (name, kind) in module.ruleProviderKinds {
+            out.ruleProviderKinds[name] = kind
+        }
+        for disabled in module.hostnameDisabled where !out.hostnameDisabled.contains(disabled) {
+            out.hostnameDisabled.append(disabled)
+        }
+    }
+    // A module's hostname-disabled removes entries from the
+    // composed hostname list — the profile's own entries and other
+    // modules' — the same way the core does (config.rs).
+    for module in modules {
+        out.hostname.removeAll { module.hostnameDisabled.contains($0) }
     }
     out.network = MitmModuleNetwork.merge(modules.map(\.network))
     return out
@@ -4153,10 +4278,12 @@ enum MitmModuleParser {
             }
         }
         // The core's rule + policy, in profile rule-line form
-        // ("TYPE,VALUE,POLICY" plus ",no-resolve" when set).
+        // ("TYPE,VALUE,POLICY" plus ",no-resolve" / ",requires-resolve"
+        // when set).
         content.rules = view.rules.map { rule in
             var line = "\(rule.rule),\(rule.policy.display)"
             if rule.noResolve { line += ",no-resolve" }
+            if rule.requiresResolve { line += ",requires-resolve" }
             return line
         }
         // Declared scripts: the core gives 1-based line indices;

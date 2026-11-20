@@ -53,7 +53,7 @@ env:
   # Pinned upstream commit the patches in patches/ are diffs against.
   # Change this ONLY together with regenerating patches/ (see
   # patches/README.md); never point it at a branch.
-  UPSTREAM_REF: 165154c92ddec38c6fc461d52d4ed210e7e8a65e
+  UPSTREAM_REF: b0806a8b7e7b55e8f0410a832e5d00512a6499d1
   XCODE_PROJECT: ConcordiOS.xcodeproj
   APP_SCHEME: ConcordiOS
   STATICLIB_DIR: upstream/target/aarch64-apple-ios/release

@@ -294,7 +294,7 @@ final class AppCore {
         let groupHome = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)
         if session != 0 {
-            guard signature != loadedConfigSignature else {
+            if signature == loadedConfigSignature {
                 // The core is already running this exact config — but
                 // re-seed the provider cache anyway: the extension
                 // may have cached provider files since this core
@@ -306,7 +306,6 @@ final class AppCore {
                 // keep reporting the same nodes as missing.
                 let reseeded = Self.seedProviderCache(appHome: home, groupHome: groupHome)
                 if reseeded.copied.isEmpty { return }
-                await stop()
             }
             await stop()
         }

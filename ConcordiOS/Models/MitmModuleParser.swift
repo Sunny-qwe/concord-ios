@@ -32,12 +32,21 @@ import Darwin
 //   - dns / rule scripts are not supported by the core itself
 //     (parse_script answers "dns scripts are not supported"), and
 //     JSON-body rewrites have no core line form (BodyActionDef is
-//     Replace or Jq only), so those still skip. `request if …` /
-//     `response if …` conditionals and Loon `then script(…)` calls
-//     have no core line form either and still skip; QX
+//     Replace or Jq only), so those still skip. Loon
+//     `request if … then reject(…)` / `response if …` conditionals
+//     ARE read (condition.rs: the condition folds into one URL
+//     regex and one lookahead per head; a reject answers with a
+//     map-local, or with a url-rewrite reject line for a bare 200);
+//     `then script(…)` calls and any other `then` action still skip,
+//     as do conditions the core itself refuses. QX
 //     `url-and-header` and whole-head `request-header` /
 //     `response-header` rewrites do have one (parse_url_rewrite's
 //     `head`, `header-text-replace`) and are emitted.
+//   - Loon's legacy `pattern replacement 302` (action last) reads
+//     like the core's (legacy.rs: three tokens, last one named).
+//   - `[General]` reads `force-http-engine-hosts` into
+//     forceHttpHostname (core `force_http_hostname`); other keys
+//     still skip as settings.
 
 // MARK: - Arguments
 
@@ -127,6 +136,13 @@ struct MitmModuleContent {
     /// `request-body-mock`, from [Request Body Mock] or Stash
     /// `http.request-body-mock`).
     var requestBodyMock: [String] = []
+    /// Surge's `force-http-engine-hosts` ([General] section): plain
+    /// HTTP these hosts carry goes through the HTTP engine and their
+    /// TLS is not decrypted (core `force_http_hostname`). The core
+    /// has no runtime mitm key for it — it is module metadata the
+    /// module view reports — so it is carried here for display and
+    /// deliberately NOT put into mitmJSON.
+    var forceHttpHostname: [String] = []
     var resourceUrls: Set<String> = []
     var skipped: [MitmModuleSkip] = []
 
@@ -157,6 +173,7 @@ struct MitmModuleContent {
             && bodyRewrite.isEmpty && mapLocal.isEmpty && script.isEmpty
             && rules.isEmpty && skipVerifyHostname.isEmpty
             && clientSourceAddress.isEmpty && requestBodyMock.isEmpty
+            && forceHttpHostname.isEmpty
             && resourceUrls.isEmpty && skipped.isEmpty
     }
 
@@ -173,7 +190,8 @@ struct MitmModuleContent {
             rules: rules,
             skipVerifyHostname: skipVerifyHostname,
             clientSourceAddress: clientSourceAddress,
-            requestBodyMock: requestBodyMock
+            requestBodyMock: requestBodyMock,
+            forceHttpHostname: forceHttpHostname
         )
     }
 }
@@ -191,12 +209,16 @@ struct MitmModuleMerged {
     var skipVerifyHostname: [String] = []
     var clientSourceAddress: [String] = []
     var requestBodyMock: [String] = []
+    /// Surge's `force-http-engine-hosts`, carried for display (see
+    /// MitmModuleContent); the core has no mitm wire key for it.
+    var forceHttpHostname: [String] = []
 
     var isEmpty: Bool {
         hostname.isEmpty && urlRewrite.isEmpty && headerRewrite.isEmpty
             && bodyRewrite.isEmpty && mapLocal.isEmpty && script.isEmpty
             && rules.isEmpty && skipVerifyHostname.isEmpty
             && clientSourceAddress.isEmpty && requestBodyMock.isEmpty
+            && forceHttpHostname.isEmpty
     }
 
     /// RawConfig wire keys (kebab-case), for module-mitm.json and
@@ -729,6 +751,7 @@ private final class MitmModuleParserEngine {
     var skipVerifyHostname: [String] = []
     var clientSourceAddress: [String] = []
     var requestBodyMock: [String] = []
+    var forceHttpHostname: [String] = []
     var resourceUrls: Set<String> = []
     var skipped: [MitmModuleSkip] = []
 
@@ -790,6 +813,7 @@ private final class MitmModuleParserEngine {
             skipVerifyHostname: skipVerifyHostname,
             clientSourceAddress: clientSourceAddress,
             requestBodyMock: requestBodyMock,
+            forceHttpHostname: forceHttpHostname,
             resourceUrls: resourceUrls,
             skipped: skipped
         )
@@ -931,7 +955,9 @@ private final class MitmModuleParserEngine {
             // `request-body-mock`, compiled like map-local).
             readMapLocal(section, line: line, intoRequestMock: true)
         case "rewrite":
-            readLoonRewrite(section, line: line)
+            readLoonRewrite(section, line: line, raw: raw)
+        case "general":
+            readGeneral(section, line: line)
         case "mitm":
             readMitm(section, line: line)
         case "script":
@@ -941,6 +967,32 @@ private final class MitmModuleParserEngine {
         default:
             skip(section, line, .section)
         }
+    }
+
+    /// Reads a `[General]` line. The core reads only
+    /// `force-http-engine-hosts` from this section (surge.rs
+    /// read_general: `%APPEND%`/`%INSERT%` stripped, comma-separated
+    /// host items into `force_http_hostname`); every other key goes
+    /// to the network settings, which this parser does not carry, so
+    /// it skips as a setting — the core's reason for it.
+    func readGeneral(_ section: String, line: String) {
+        guard let equals = line.firstIndex(of: "=") else {
+            skip(section, line, .unreadable)
+            return
+        }
+        let key = String(line[..<equals]).trimmingCharacters(in: .whitespaces).lowercased()
+        let value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
+        guard key == "force-http-engine-hosts" else {
+            skip(section, line, .setting)
+            return
+        }
+        var hosts = value
+        if hosts.hasPrefix("%APPEND%") {
+            hosts = String(hosts.dropFirst("%APPEND%".count))
+        } else if hosts.hasPrefix("%INSERT%") {
+            hosts = String(hosts.dropFirst("%INSERT%".count))
+        }
+        forceHttpHostname.append(contentsOf: hosts.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
     }
 
     /// Reads Surge's `name = type=...,...` and the legacy `type pattern ...`
@@ -1220,7 +1272,7 @@ private final class MitmModuleParserEngine {
         addMapLocal(section, line: line, pattern: tokens[0].text, params: params, intoRequestMock: intoRequestMock)
     }
 
-    func addMapLocal(_ section: String, line: String, pattern: String, params: [(String, String)], intoRequestMock: Bool = false) {
+    func addMapLocal(_ section: String, line: String, pattern: String, params: [(String, String)], intoRequestMock: Bool = false, requestHead: String? = nil) {
         var params = params
         let dataType = params.first { $0.0 == "data-type" }?.1 ?? "file"
         if dataType == "file" {
@@ -1232,7 +1284,15 @@ private final class MitmModuleParserEngine {
                 params.append(("data", file))
             }
         }
-        let rendered = ([field(pattern)] + params.map { "\($0.0)=\(quoted($0.1))" }).joined(separator: " ")
+        // A condition's request head rides as a bare `request-head`
+        // field between the pattern and the key=value params
+        // (parse_map_local reads HeadConditionsDef first).
+        var fields = [field(pattern)]
+        if let head = requestHead {
+            fields.append("request-head")
+            fields.append(field(head))
+        }
+        let rendered = (fields + params.map { "\($0.0)=\(quoted($0.1))" }).joined(separator: " ")
         if intoRequestMock {
             requestBodyMock.append(rendered)
         } else {
@@ -1241,9 +1301,13 @@ private final class MitmModuleParserEngine {
     }
 
     /// Loon's legacy `pattern action ...`, which spreads over Surge's lists.
-    func readLoonRewrite(_ section: String, line: String) {
+    /// `raw` is the line before argument substitution: a conditional
+    /// reads its `${…}` variables itself (an argument test is decided
+    /// from the argument's value, as the core does), so it must see
+    /// them unsubstituted.
+    func readLoonRewrite(_ section: String, line: String, raw: String) {
         if RX.matches(conditionalPattern, line) {
-            skip(section, line, .conditional)
+            readLoonConditional(section, line: line, raw: raw)
             return
         }
         guard let tokens = lineTokens(line), tokens.count >= 2 else {
@@ -1271,6 +1335,13 @@ private final class MitmModuleParserEngine {
                 urlRewrite.append("\(pattern) \(field(tokens[1].text)) \(type)")
                 return
             }
+        }
+        // The action last (`pattern replacement 302`, legacy.rs:
+        // three tokens, the last one named) — the two Bilibili
+        // international region lines in AllInOne read this way.
+        if tokens.count == 3, ["302", "307", "header"].contains(tokens[2].text.lowercased()) {
+            urlRewrite.append("\(pattern) \(field(tokens[1].text)) \(tokens[2].text.lowercased())")
+            return
         }
         if action == "url" {
             urlRewrite.append(line)
@@ -1322,6 +1393,760 @@ private final class MitmModuleParserEngine {
             mapped.append(("header", "Content-Type:\(contentType)"))
         }
         addMapLocal(section, line: line, pattern: pattern, params: mapped)
+    }
+
+    // MARK: - Loon conditionals (`request if … then …`, core condition.rs + action.rs)
+    //
+    // A Loon new-syntax rewrite line, read the way the core reads it
+    // (loon/mod.rs read_new): the condition (any/all/test over
+    // ${url}, ${request.method}, ${response.status} and
+    // ${….header['Name']}, with == / ~=, && / || and parentheses; a
+    // test on a plugin argument is decided now from the argument's
+    // value) folds into one URL regex and one lookahead per head
+    // (condition.rs translate/test_piece). `then reject(N)` answers
+    // with a map-local (action.rs reject: a bare 200 with no body
+    // answers with a url-rewrite reject line instead); any other
+    // `then` action — url.replace, redirect, header/body edits,
+    // mocks, `then script(…)` — still skips as .conditional.
+    // A line whose arguments rule it out takes no effect at all
+    // (no output, no skip), as the core's Ok(None).
+
+    private enum LoonTemplatePart: Equatable {
+        case text(String)
+        case variable(String)
+    }
+
+    private enum LoonCondToken: Equatable {
+        case word(String)
+        case variable(String)
+        case template([LoonTemplatePart])
+        case raw(String)
+        case regex(source: String, flags: String)
+        case number(String)
+        case symbol(String)
+        case object([String])
+    }
+
+    /// The core's condition lexer (loon/lexer.rs): `${…}` variables,
+    /// double-quoted templates (escapes read, `${…}` filled),
+    /// backquoted raw strings, `/regex/flags` (a slash inside a
+    /// class or after a backslash is the regex's own), numbers,
+    /// words (letters, digits, `_`, `.`, `-`) and the symbols
+    /// == ~= && || ( ) , [ ] | =.
+    private struct LoonCondLexer {
+        private let chars: [Character]
+        private var at = 0
+
+        init(_ text: String) { chars = Array(text) }
+
+        private func peek(_ offset: Int = 0) -> Character? {
+            let i = at + offset
+            return i < chars.count ? chars[i] : nil
+        }
+
+        private func startsWith(_ s: String) -> Bool {
+            let cs = Array(s)
+            guard at + cs.count <= chars.count else { return false }
+            for (i, c) in cs.enumerated() where chars[at + i] != c { return false }
+            return true
+        }
+
+        private func isAsciiDigit(_ c: Character) -> Bool { c >= "0" && c <= "9" }
+        private func isAsciiAlpha(_ c: Character) -> Bool {
+            (c >= "a" && c <= "z") || (c >= "A" && c <= "Z")
+        }
+
+        mutating func lex() -> [LoonCondToken]? {
+            var tokens: [LoonCondToken] = []
+            while let c = peek() {
+                if c == " " || c == "\t" { at += 1; continue }
+                guard let token = next(c) else { return nil }
+                tokens.append(token)
+            }
+            return tokens
+        }
+
+        private mutating func next(_ c: Character) -> LoonCondToken? {
+            if startsWith("${") { return variable().map { .variable($0) } }
+            switch c {
+            case "\"": return template()
+            case "`": return rawString()
+            case "/": return regex()
+            case "{": return object()
+            case _ where c == "-" || isAsciiDigit(c): return number()
+            case _ where isAsciiAlpha(c) || c == "_": return .word(word())
+            default:
+                for symbol in ["==", "~=", "&&", "||", "(", ")", ",", "[", "]", "|", "="] {
+                    if startsWith(symbol) { at += symbol.count; return .symbol(symbol) }
+                }
+                return nil
+            }
+        }
+
+        private mutating func variable() -> String? {
+            var i = at + 2
+            while i < chars.count && chars[i] != "}" { i += 1 }
+            guard i < chars.count else { return nil }
+            let name = String(chars[(at + 2)..<i]).trimmingCharacters(in: .whitespaces)
+            at = i + 1
+            return name.isEmpty ? nil : name
+        }
+
+        private mutating func template() -> LoonCondToken? {
+            at += 1
+            var parts: [LoonTemplatePart] = []
+            var text = ""
+            var closed = false
+            while let c = peek() {
+                if c == "\"" { at += 1; closed = true; break }
+                if startsWith("${") {
+                    if !text.isEmpty { parts.append(.text(text)); text = "" }
+                    guard let name = variable() else { return nil }
+                    parts.append(.variable(name))
+                    continue
+                }
+                if c == "\\" {
+                    if startsWith("\\${") { text += "${"; at += 3; continue }
+                    guard let e = peek(1) else { return nil }
+                    switch e {
+                    case "n": text += "\n"
+                    case "r": text += "\r"
+                    case "t": text += "\t"
+                    default: text.append(e)
+                    }
+                    at += 2
+                    continue
+                }
+                text.append(c)
+                at += 1
+            }
+            guard closed else { return nil }
+            if !text.isEmpty || parts.isEmpty { parts.append(.text(text)) }
+            return .template(parts)
+        }
+
+        private mutating func rawString() -> LoonCondToken? {
+            at += 1
+            var text = ""
+            while let c = peek() {
+                if startsWith("``") { text += "`"; at += 2; continue }
+                at += 1
+                if c == "`" { return .raw(text) }
+                text.append(c)
+            }
+            return nil
+        }
+
+        private mutating func regex() -> LoonCondToken? {
+            var i = at + 1
+            var inClass = false
+            var escaped = false
+            var end: Int?
+            while i < chars.count {
+                let c = chars[i]
+                if escaped { escaped = false }
+                else if c == "\\" { escaped = true }
+                else if c == "[" { inClass = true }
+                else if c == "]" { inClass = false }
+                else if c == "/" && !inClass { end = i; break }
+                i += 1
+            }
+            guard let end else { return nil }
+            let source = String(chars[(at + 1)..<end])
+            var j = end + 1
+            var flags = ""
+            while j < chars.count && (chars[j] == "i" || chars[j] == "m" || chars[j] == "s") {
+                flags.append(chars[j]); j += 1
+            }
+            at = j
+            return .regex(source: source, flags: flags)
+        }
+
+        private mutating func object() -> LoonCondToken? {
+            at += 1
+            var names: [String] = []
+            while true {
+                skipSpaces()
+                guard startsWith("${") else { return nil }
+                guard let name = variable() else { return nil }
+                names.append(name)
+                skipSpaces()
+                if peek() == "," { at += 1; continue }
+                if peek() == "}" { at += 1; return .object(names) }
+                return nil
+            }
+        }
+
+        private mutating func skipSpaces() {
+            while peek() == " " || peek() == "\t" { at += 1 }
+        }
+
+        private mutating func number() -> LoonCondToken? {
+            let start = at
+            var i = at
+            while i < chars.count {
+                let c = chars[i]
+                let rel = i - start
+                if isAsciiDigit(c) || c == "." || c == "e" || c == "E" || c == "+" {
+                    i += 1; continue
+                }
+                if c == "-" && (rel == 0 || (i > start && (chars[i - 1] == "e" || chars[i - 1] == "E"))) {
+                    i += 1; continue
+                }
+                break
+            }
+            let text = String(chars[start..<i])
+            guard Double(text) != nil else { return nil }
+            at = i
+            return .number(text)
+        }
+
+        private mutating func word() -> String {
+            let start = at
+            while let c = peek(),
+                  isAsciiAlpha(c) || isAsciiDigit(c) || c == "_" || c == "." || c == "-" {
+                at += 1
+            }
+            return String(chars[start..<at])
+        }
+    }
+
+    private struct LoonCondCursor {
+        var tokens: [LoonCondToken]
+        var at = 0
+
+        func peek() -> LoonCondToken? { at < tokens.count ? tokens[at] : nil }
+
+        mutating func next() -> LoonCondToken? {
+            guard at < tokens.count else { return nil }
+            defer { at += 1 }
+            return tokens[at]
+        }
+
+        mutating func symbol(_ s: String) -> Bool {
+            if peek() == .symbol(s) { at += 1; return true }
+            return false
+        }
+
+        mutating func word(_ w: String) -> Bool {
+            if peek() == .word(w) { at += 1; return true }
+            return false
+        }
+    }
+
+    private indirect enum LoonCond {
+        case any([LoonCond])
+        case all([LoonCond])
+        case test(LoonCondTest)
+        case known(Bool)
+    }
+
+    private struct LoonCondTest {
+        enum Subject {
+            case url
+            case method
+            case status
+            case header(response: Bool, name: String)
+        }
+        enum Check {
+            case equals(String?)
+            case finds(String)
+        }
+        var subject: Subject
+        var check: Check
+        var capture: String?
+    }
+
+    /// What a condition matches: a regex over the URL, and over
+    /// each head a regex of lookaheads (condition.rs Match).
+    private struct LoonMatch {
+        var url: String
+        var request: String?
+        var response: String?
+    }
+
+    private enum LoonPiece {
+        case url(regex: String, plain: Bool)
+        case head(response: Bool, lookahead: String)
+    }
+
+    func readLoonConditional(_ section: String, line: String, raw: String) {
+        var lexer = LoonCondLexer(raw)
+        guard let tokens = lexer.lex() else {
+            skip(section, line, .conditional)
+            return
+        }
+        var cursor = LoonCondCursor(tokens: tokens)
+        let response: Bool
+        if cursor.word("request") { response = false }
+        else if cursor.word("response") { response = true }
+        else { skip(section, line, .conditional); return }
+        guard cursor.word("if") else { skip(section, line, .conditional); return }
+        guard let tree = loonParseAny(&cursor, response: response) else {
+            skip(section, line, .conditional)
+            return
+        }
+        let matched: LoonMatch
+        switch loonFold(tree) {
+        case .known(false):
+            return // the arguments rule the line out: no effect, no skip
+        case .known(true):
+            matched = LoonMatch(url: "^", request: nil, response: nil)
+        case let folded:
+            guard let translated = loonTranslate(folded) else {
+                skip(section, line, .conditional)
+                return
+            }
+            matched = translated
+        }
+        guard cursor.word("then") else { skip(section, line, .conditional); return }
+        if !loonEmitConditionalActions(&cursor, section: section, line: line, matched: matched) {
+            skip(section, line, .conditional)
+        }
+    }
+
+    private func loonParseAny(_ cursor: inout LoonCondCursor, response: Bool) -> LoonCond? {
+        guard let first = loonParseAll(&cursor, response: response) else { return nil }
+        var branches = [first]
+        while cursor.symbol("||") {
+            guard let next = loonParseAll(&cursor, response: response) else { return nil }
+            branches.append(next)
+        }
+        return branches.count == 1 ? branches[0] : .any(branches)
+    }
+
+    private func loonParseAll(_ cursor: inout LoonCondCursor, response: Bool) -> LoonCond? {
+        var items: [LoonCond] = []
+        while true {
+            if cursor.symbol("(") {
+                guard let inner = loonParseAny(&cursor, response: response) else { return nil }
+                guard cursor.symbol(")") else { return nil }
+                items.append(inner)
+            } else {
+                guard let test = loonParseTest(&cursor, response: response) else { return nil }
+                items.append(test)
+            }
+            if !cursor.symbol("&&") { break }
+        }
+        return items.count == 1 ? items[0] : .all(items)
+    }
+
+    private func loonParseTest(_ cursor: inout LoonCondCursor, response: Bool) -> LoonCond? {
+        guard case .variable(let name)? = cursor.next() else { return nil }
+        let op: String
+        if cursor.symbol("==") { op = "==" }
+        else if cursor.symbol("~=") { op = "~=" }
+        else { return nil }
+        guard let value = cursor.next() else { return nil }
+        var capture: String?
+        if cursor.word("as") {
+            guard op == "~=" else { return nil }
+            guard case .word(let captureName)? = cursor.next() else { return nil }
+            capture = captureName
+        }
+        let subject: LoonCondTest.Subject
+        switch name {
+        case "url": subject = .url
+        case "request.method": subject = .method
+        case "response.status": subject = .status
+        default:
+            if let header = loonHeaderVariable(name) {
+                subject = .header(response: header.response, name: header.name)
+            } else {
+                // A test on a plugin argument, decided now.
+                return loonArgumentTest(name: name, op: op, value: value).map { .known($0) }
+            }
+        }
+        let onResponse: Bool
+        switch subject {
+        case .status: onResponse = true
+        case .header(let isResponse, _): onResponse = isResponse
+        default: onResponse = false
+        }
+        if onResponse && !response { return nil }
+        let check: LoonCondTest.Check
+        if op == "~=" {
+            guard let regex = loonRegexValue(value) else { return nil }
+            check = .finds(regex)
+        } else {
+            switch (subject, value) {
+            case (.status, .number(let status)):
+                check = .equals(status)
+            case (.header, .word("null")):
+                check = .equals(nil)
+            case (.status, _):
+                return nil
+            default:
+                guard let string = loonStringValue(value) else { return nil }
+                check = .equals(string)
+            }
+        }
+        return .test(LoonCondTest(subject: subject, check: check, capture: capture))
+    }
+
+    private func loonHeaderVariable(_ name: String) -> (response: Bool, name: String)? {
+        guard let range = name.range(of: ".header[") else { return nil }
+        let side = String(name[..<range.lowerBound])
+        var rest = String(name[range.upperBound...])
+        guard rest.hasSuffix("]") else { return nil }
+        rest = String(rest.dropLast()).trimmingCharacters(in: .whitespaces)
+        rest = rest.trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
+        switch side {
+        case "request": return (false, rest)
+        case "response": return (true, rest)
+        default: return nil
+        }
+    }
+
+    private func loonDeclaredArgument(_ name: String) -> MitmModuleArgument? {
+        (surgeArguments + loonArguments + stashArguments).first { $0.name == name }
+    }
+
+    /// A test on a plugin argument, decided now as the argument's
+    /// value is known (condition.rs argument_test).
+    private func loonArgumentTest(name: String, op: String, value: LoonCondToken) -> Bool? {
+        guard let argument = loonDeclaredArgument(name) else { return nil }
+        let actual = valueOf(argument)
+        if op == "~=" {
+            guard let source = loonRegexValue(value) else { return nil }
+            guard let re = try? NSRegularExpression(pattern: source) else { return nil }
+            let range = NSRange(actual.startIndex..., in: actual)
+            return re.firstMatch(in: actual, range: range) != nil
+        }
+        switch value {
+        case .number(let text):
+            if let a = Double(actual), let b = Double(text) { return a == b }
+            return actual == text
+        case .word("true"): return actual == "true"
+        case .word("false"): return actual == "false"
+        case .word("null"): return false
+        case .word: return nil
+        default:
+            guard let expected = loonStringValue(value) else { return nil }
+            return actual == expected
+        }
+    }
+
+    /// The right of `~=`: a regex as written, or a string argument holding one.
+    private func loonRegexValue(_ token: LoonCondToken) -> String? {
+        switch token {
+        case .regex(let source, let flags):
+            return loonScoped(source, flags: flags)
+        case .variable(let name):
+            guard let argument = loonDeclaredArgument(name) else { return nil }
+            return valueOf(argument)
+        default:
+            return nil
+        }
+    }
+
+    private func loonStringValue(_ token: LoonCondToken) -> String? {
+        switch token {
+        case .template(let parts):
+            var out = ""
+            for part in parts {
+                switch part {
+                case .text(let text): out += text
+                case .variable(let name):
+                    guard let filled = loonFillVariable(name) else { return nil }
+                    out += filled
+                }
+            }
+            return out
+        case .raw(let text):
+            return text
+        case .variable(let name):
+            guard let argument = loonDeclaredArgument(name) else { return nil }
+            return valueOf(argument)
+        default:
+            return nil
+        }
+    }
+
+    private func loonFillVariable(_ name: String) -> String? {
+        if name == "url" || name.hasPrefix("request.") || name.hasPrefix("response.") {
+            return nil
+        }
+        guard let argument = loonDeclaredArgument(name) else { return nil }
+        return valueOf(argument)
+    }
+
+    private func loonScoped(_ source: String, flags: String) -> String {
+        flags.isEmpty ? source : "(?\(flags):\(source))"
+    }
+
+    private func loonRegexEscape(_ text: String) -> String {
+        NSRegularExpression.escapedPattern(for: text)
+    }
+
+    /// `regex` with its `^` and `$` outside classes standing for the
+    /// start and end of the value it is found in (condition.rs
+    /// anchored).
+    private func loonAnchored(_ regex: String, start: String, end: String) -> String {
+        var out = ""
+        var inClass = false
+        let chars = Array(regex)
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\\" {
+                out.append(c)
+                if i + 1 < chars.count { out.append(chars[i + 1]); i += 1 }
+            } else if c == "[" && !inClass {
+                inClass = true; out.append(c)
+            } else if c == "]" && inClass {
+                inClass = false; out.append(c)
+            } else if c == "^" && !inClass {
+                out += start
+            } else if c == "$" && !inClass {
+                out += end
+            } else {
+                out.append(c)
+            }
+            i += 1
+        }
+        return out
+    }
+
+    private func loonFold(_ cond: LoonCond) -> LoonCond {
+        switch cond {
+        case .all(let items):
+            var kept: [LoonCond] = []
+            for item in items.map(loonFold) {
+                if case .known(let value) = item {
+                    if !value { return .known(false) }
+                } else {
+                    kept.append(item)
+                }
+            }
+            if kept.isEmpty { return .known(true) }
+            if kept.count == 1 { return kept[0] }
+            return .all(kept)
+        case .any(let branches):
+            var kept: [LoonCond] = []
+            for branch in branches.map(loonFold) {
+                if case .known(let value) = branch {
+                    if value { return .known(true) }
+                } else {
+                    kept.append(branch)
+                }
+            }
+            if kept.isEmpty { return .known(false) }
+            if kept.count == 1 { return kept[0] }
+            return .any(kept)
+        default:
+            return cond
+        }
+    }
+
+    private func loonTranslate(_ tree: LoonCond) -> LoonMatch? {
+        let items: [LoonCond]
+        if case .all(let all) = tree { items = all } else { items = [tree] }
+        var urls: [String] = []
+        var plainUrls = 0
+        var request: [String] = []
+        var response: [String] = []
+        var captures: [String] = []
+        for item in items {
+            if case .test(let test) = item, let capture = test.capture {
+                // Captures only feed a url.replace replacement, which
+                // this reader does not emit, so the name is only
+                // checked (a declared argument, or a repeat, is an
+                // error in the core) and never used.
+                if loonDeclaredArgument(capture) != nil || captures.contains(capture) {
+                    return nil
+                }
+                captures.append(capture)
+            }
+            guard let piece = loonPiece(item) else { return nil }
+            switch piece {
+            case .url(let regex, let plain):
+                plainUrls += plain ? 1 : 0
+                urls.append(regex)
+            case .head(let isResponse, let lookahead):
+                if isResponse { response.append(lookahead) } else { request.append(lookahead) }
+            }
+        }
+        let head = { (lookaheads: [String]) -> String? in
+            lookaheads.isEmpty ? nil : "^" + lookaheads.joined()
+        }
+        let url: String
+        switch urls.count {
+        case 0: url = "^"
+        case 1: url = urls[0]
+        default: url = loonAllOf(urls)
+        }
+        return LoonMatch(url: url, request: head(request), response: head(response))
+    }
+
+    private func loonAllOf(_ regexes: [String]) -> String {
+        "^" + regexes.map { "(?=[\\s\\S]*?(?:\($0)))" }.joined()
+    }
+
+    private func loonPiece(_ cond: LoonCond) -> LoonPiece? {
+        switch cond {
+        case .test(let test):
+            return loonTestPiece(test)
+        case .all(let items):
+            var pieces: [LoonPiece] = []
+            for item in items {
+                guard let piece = loonPiece(item) else { return nil }
+                pieces.append(piece)
+            }
+            return loonJoin(pieces, any: false)
+        case .any(let branches):
+            var pieces: [LoonPiece] = []
+            for branch in branches {
+                guard let piece = loonPiece(branch) else { return nil }
+                pieces.append(piece)
+            }
+            return loonJoin(pieces, any: true)
+        case .known:
+            return nil
+        }
+    }
+
+    /// Pieces that must all pass, or with `any` that one must, as
+    /// one: the core tests the URL and each head apart, so the
+    /// pieces must all be on one of them (condition.rs join).
+    private func loonJoin(_ pieces: [LoonPiece], any: Bool) -> LoonPiece? {
+        if pieces.allSatisfy({ if case .url = $0 { return true }; return false }) {
+            let regexes = pieces.compactMap { piece -> String? in
+                if case .url(let regex, _) = piece { return regex }
+                return nil
+            }
+            if any {
+                return .url(regex: regexes.map { "(?:\($0))" }.joined(separator: "|"), plain: false)
+            }
+            return .url(regex: loonAllOf(regexes), plain: false)
+        }
+        var side: Bool?
+        var lookaheads: [String] = []
+        for piece in pieces {
+            guard case .head(let response, let lookahead) = piece else { return nil }
+            if let side, side != response { return nil }
+            side = response
+            lookaheads.append(lookahead)
+        }
+        let lookahead = any ? "(?:\(lookaheads.joined(separator: "|")))" : lookaheads.joined()
+        return .head(response: side ?? false, lookahead: lookahead)
+    }
+
+    private func loonTestPiece(_ test: LoonCondTest) -> LoonPiece {
+        switch test.subject {
+        case .url:
+            switch test.check {
+            case .equals(let value):
+                return .url(regex: "^\(loonRegexEscape(value ?? ""))$", plain: true)
+            case .finds(let regex):
+                return .url(regex: regex, plain: true)
+            }
+        case .method:
+            switch test.check {
+            case .equals(let value):
+                return .head(response: false, lookahead: "(?=\(loonRegexEscape(value ?? "")) )")
+            case .finds(let regex):
+                return .head(response: false, lookahead: "(?=[^ ]*?(?:\(loonAnchored(regex, start: "^", end: "(?= )")))[^ ]* )")
+            }
+        case .status:
+            switch test.check {
+            case .equals(let value):
+                return .head(response: true, lookahead: "(?=\\S+ \(loonRegexEscape(value ?? ""))(?: |\\r\\n))")
+            case .finds(let regex):
+                return .head(response: true, lookahead: "(?=\\S+ \\d*?(?:\(loonAnchored(regex, start: "(?<= )", end: "(?=[ \\r])")))\\d*(?: |\\r\\n))")
+            }
+        case .header(let response, let name):
+            let namePattern = "(?i:\(loonRegexEscape(name)))"
+            switch test.check {
+            case .equals(nil):
+                return .head(response: response, lookahead: "(?![\\s\\S]*\\r\\n\(namePattern):)")
+            case .equals(let value):
+                return .head(response: response, lookahead: "(?=[\\s\\S]*\\r\\n\(namePattern): \(loonRegexEscape(value ?? ""))\\r\\n)")
+            case .finds(let regex):
+                return .head(response: response, lookahead: "(?=[\\s\\S]*\\r\\n\(namePattern): [^\\r\\n]*?(?:\(loonAnchored(regex, start: "(?<=\\n\(namePattern): )", end: "(?=\\r\\n)")))[^\\r\\n]*\\r\\n)")
+            }
+        }
+    }
+
+    /// The `then …` actions, `|`-separated; only the reject family
+    /// has a line form here. False means the line does not read.
+    private func loonEmitConditionalActions(_ cursor: inout LoonCondCursor, section: String, line: String, matched: LoonMatch) -> Bool {
+        while true {
+            guard case .word(let name)? = cursor.next() else { return false }
+            guard cursor.symbol("(") else { return false }
+            var status: String?
+            var body: String?
+            if !cursor.symbol(")") {
+                guard case .number(let number)? = cursor.next() else { return false }
+                status = number
+                if cursor.symbol(",") {
+                    guard let bodyToken = cursor.next() else { return false }
+                    guard let string = loonStringValue(bodyToken) else { return false }
+                    body = string
+                }
+                guard cursor.symbol(")") else { return false }
+            }
+            guard let status,
+                  loonEmitConditionalReject(name: name, status: status, body: body, section: section, line: line, matched: matched) else {
+                return false
+            }
+            if cursor.symbol("|") { continue }
+            return cursor.at == cursor.tokens.count
+        }
+    }
+
+    /// One `then reject(…)` action (action.rs reject): a bare 200
+    /// with no body answers with a url-rewrite reject line; anything
+    /// else answers with a map-local. A response-side condition
+    /// cannot answer here — the action runs before the response it
+    /// tests — so such a line does not read.
+    private func loonEmitConditionalReject(name: String, status: String, body: String?, section: String, line: String, matched: LoonMatch) -> Bool {
+        if matched.response != nil { return false }
+        guard let code = UInt16(status), (100...599).contains(code) else { return false }
+        if code < 200 { return false }
+        let quick: String?
+        switch name {
+        case "reject": quick = "reject-200"
+        case "reject_img": quick = "reject-img"
+        case "reject_dict": quick = "reject-dict"
+        case "reject_array": quick = "reject-array"
+        case "reject_video": quick = nil
+        default: return false
+        }
+        if code == 200, body == nil, let quick {
+            // The request-head condition, if any, rides as
+            // `url-and-header` (parse_url_rewrite).
+            if let head = matched.request {
+                urlRewrite.append("\(field(matched.url)) \(field(head)) url-and-header \(quick)")
+            } else {
+                urlRewrite.append("\(field(matched.url)) \(quick)")
+            }
+            return true
+        }
+        let (dataType, data, contentType): (String, String, String)
+        switch name {
+        case "reject_img":
+            (dataType, data, contentType) = ("tiny-gif", "", "image/gif")
+        case "reject_dict":
+            (dataType, data, contentType) = ("json", "{}", "application/json")
+        case "reject_array":
+            (dataType, data, contentType) = ("json", "[]", "application/json")
+        case "reject_video":
+            (dataType, data, contentType) = ("text", "", "video/mp4")
+        default:
+            (dataType, data, contentType) = ("text", body ?? "", "text/plain; charset=utf-8")
+        }
+        addMapLocal(
+            section, line: line, pattern: matched.url,
+            params: [
+                ("data-type", dataType),
+                ("data", data),
+                ("status-code", "\(code)"),
+                ("header", "Content-Type:\(contentType)"),
+            ],
+            requestHead: matched.request
+        )
+        return true
     }
 
     /// Reads a line of a Quantumult X snippet, which may stand outside
@@ -2131,6 +2956,7 @@ func mergeMitmModules(hostname: [String], modules: [MitmModuleContent]) -> MitmM
         out.skipVerifyHostname += lists.skipVerifyHostname
         out.clientSourceAddress += lists.clientSourceAddress
         out.requestBodyMock += lists.requestBodyMock
+        out.forceHttpHostname += lists.forceHttpHostname
         out.rules += module.rules
     }
     return out

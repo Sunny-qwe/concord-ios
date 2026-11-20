@@ -60,7 +60,9 @@ enum ZipArchive {
     /// real integrity check for the entry.
     private static func inflateRawDeflate(_ data: Data, expectedSize: Int) -> Data? {
         guard !data.isEmpty, expectedSize >= 0 else { return Data() }
-        var stream = compression_stream()
+        // compression_stream has no zero-arg init in Swift: the C
+        // struct's memberwise init needs all five fields.
+        var stream = compression_stream(dst_ptr: nil, dst_size: 0, src_ptr: nil, src_size: 0, state: nil)
         guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
             return nil
         }

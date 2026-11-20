@@ -38,6 +38,20 @@ enum ConcordIntentError: LocalizedError {
     }
 }
 
+/// After a stop request, poll briefly for a terminal (not-running)
+/// status. stop() itself waits up to 5 s and then gives up
+/// silently, so this is the only confirmation the tunnel is really
+/// down (audit B19).
+private func vpnConfirmedStopped() async -> Bool {
+    let deadline = Date().addingTimeInterval(2)
+    while Date() < deadline {
+        let running = await MainActor.run { TunnelManager.shared.isRunning }
+        if !running { return true }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+    }
+    return await MainActor.run { !TunnelManager.shared.isRunning }
+}
+
 struct StartVPNIntent: AppIntent {
     static var title: LocalizedStringResource = "开启 VPN"
     static var description = IntentDescription("启动 Concord VPN 隧道。")
@@ -58,8 +72,26 @@ struct StopVPNIntent: AppIntent {
     static var description = IntentDescription("停止 Concord VPN 隧道。")
 
     func perform() async throws -> some IntentResult {
+        // prepare() FIRST: in a fresh Shortcuts process the manager
+        // has not been loaded yet, so stop() would run against a
+        // stale (possibly nil) manager. The same stale-read root
+        // cause as B18/B20.
+        do {
+            try await TunnelManager.shared.prepare()
+        } catch {
+            throw ConcordIntentError.failed(
+                "读取 VPN 状态失败：\(error.localizedDescription)。请打开 Concord App 手动关闭，或在快捷指令里用「打开 URL」动作打开 concord://vpn/off")
+        }
         await TunnelManager.shared.stop()
-        return .result(dialog: "VPN 已关闭")
+        // stop() is best-effort (it waits up to 5 s for a terminal
+        // status, then gives up silently), so verify instead of
+        // claiming success unconditionally (audit B19): poll
+        // briefly, then report honestly when the tunnel is still up.
+        if await vpnConfirmedStopped() {
+            return .result(dialog: "VPN 已关闭")
+        }
+        throw ConcordIntentError.failed(
+            "停止 VPN 未生效：隧道仍在运行。请打开 Concord App 手动关闭，或在快捷指令里用「打开 URL」动作打开 concord://vpn/off")
     }
 }
 
@@ -68,10 +100,28 @@ struct ToggleVPNIntent: AppIntent {
     static var description = IntentDescription("VPN 开着就关闭，关着就开启。")
 
     func perform() async throws -> some IntentResult {
+        // prepare() FIRST, then read the real status: in a fresh
+        // Shortcuts process TunnelManager.status starts .invalid and
+        // is only synced inside prepare(), so reading isRunning
+        // before it is always false and toggle could never turn the
+        // VPN off (audit B18). App-internal concord://vpn/toggle
+        // already worked because the app's manager is prepared.
+        do {
+            try await TunnelManager.shared.prepare()
+        } catch {
+            throw ConcordIntentError.failed(
+                "读取 VPN 状态失败：\(error.localizedDescription)。请打开 Concord App 手动切换，或在快捷指令里用「打开 URL」动作打开 concord://vpn/toggle")
+        }
         let running = await MainActor.run { TunnelManager.shared.isRunning }
         if running {
             await TunnelManager.shared.stop()
-            return .result(dialog: "VPN 已关闭")
+            // Same verification as StopVPNIntent (audit B19): stop()
+            // is best-effort, so confirm before claiming "已关闭".
+            if await vpnConfirmedStopped() {
+                return .result(dialog: "VPN 已关闭")
+            }
+            throw ConcordIntentError.failed(
+                "停止 VPN 未生效：隧道仍在运行。请打开 Concord App 手动关闭，或在快捷指令里用「打开 URL」动作打开 concord://vpn/off")
         }
         do {
             try await TunnelManager.shared.start()
@@ -116,6 +166,17 @@ struct SetOutboundModeIntent: AppIntent {
         // 2. Apply live when the tunnel is running, via a hand-built
         // config.patch JSON-RPC request over the tunnel IPC (same
         // envelope ConcordClient builds: snake_case params).
+        //
+        // prepare() FIRST, then read the real status: in a fresh
+        // Shortcuts process isRunning is always false before
+        // prepare(), so the live patch was skipped and the intent
+        // claimed "下次启动 VPN 时生效" even while the VPN was
+        // running (audit B20).
+        do {
+            try await TunnelManager.shared.prepare()
+        } catch {
+            return .result(dialog: "已保存为\(outbound.label)，但读取 VPN 状态失败（\(error.localizedDescription)），无法确认是否已实时应用；下次启动 VPN 时生效")
+        }
         let running = await MainActor.run { TunnelManager.shared.isRunning }
         guard running else {
             return .result(dialog: "已保存为\(outbound.label)，下次启动 VPN 时生效")

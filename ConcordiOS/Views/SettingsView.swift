@@ -19,15 +19,14 @@ struct SettingsView: View {
     @State private var showMitmEnableConfirm = false
     // FlClash general/port_form.dart: HTTP / redir / tproxy ports
     // (0 = disabled, otherwise 1024–49151, no conflicts) and the
-    // find-process-mode toggle (always/off) + MITM h2 /
-    // decrypt-untrusted. These live in @AppStorage until the
-    // SettingsStore owner wires them into general.json / mitm.json
-    // (see the v0.2.32 handoff: keys port, redir-port,
+    // find-process-mode picker (strict/always/off, default strict)
+    // + MITM h2 / decrypt-untrusted. These live in @AppStorage
+    // until the SettingsStore owner wires them into general.json /
+    // mitm.json (see the v0.2.32 handoff: keys port, redir-port,
     // tproxy-port, find-process-mode, h2, decrypt-tls).
     @AppStorage("ConcordiOS.httpPort") private var httpPort = 0
     @AppStorage("ConcordiOS.redirPort") private var redirPort = 0
     @AppStorage("ConcordiOS.tproxyPort") private var tproxyPort = 0
-    @AppStorage("ConcordiOS.findProcessModeAlways") private var findProcessAlways = false
     @AppStorage("ConcordiOS.mitmH2") private var mitmH2 = false
     @AppStorage("ConcordiOS.mitmDecryptUntrusted") private var mitmDecryptUntrusted = false
 
@@ -133,14 +132,30 @@ struct SettingsView: View {
                     NavigationLink("鉴权与外部控制器") {
                         GeneralAuthView()
                     }
-                    Stepper("延迟测试超时：\(settingsStore.delayTestTimeout) ms", value: $settingsStore.delayTestTimeout, in: 1000...30000, step: 1000)
-                    Toggle("始终查找进程", isOn: $findProcessAlways)
-                        .onChange(of: findProcessAlways) { _, _ in settingsStore.save() }
-                    Text("进程查找方式：打开为 always，关闭为 off；核心默认 strict。核心当前报告：\(settingsStore.findProcessMode ?? "未知")。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
+                    Stepper("延迟测试超时：\(settingsStore.delayTestTimeout) ms", value: $settingsStore.delayTestTimeout, in: 500...8000, step: 500)
+                    // B4: three states, not a toggle — the old
+                    // always/off switch forced "off" on everyone who
+                    // never touched it, disabling PROCESS-NAME /
+                    // PROCESS-PATH rules. Default strict = the core
+                    // default; the picked value travels via
+                    // general-overlay.json (SettingsStore).
+                    Picker("进程查找方式", selection: $settingsStore.findProcessModeSetting) {
+                        Text("默认（strict）").tag("strict")
+                        Text("始终（always）").tag("always")
+                        Text("关闭（off）").tag("off")
+                    }
+                    Text("进程查找方式：默认 strict（核心默认）；always 始终按进程匹配，off 关闭进程匹配。核心当前报告：\(settingsStore.findProcessMode ?? "未知")。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                     Toggle("切换配置后自动关闭连接", isOn: $settingsStore.autoCloseConnections)
                     Toggle("流量嗅探", isOn: $settingsStore.sniffing)
+                        // B6: the master switch only takes effect
+                        // when sniffer.json is re-saved (effective
+                        // enable = master && page switch).
+                        // SettingsStore.save() also propagates it;
+                        // this makes the wiring explicit at the
+                        // switch itself.
+                        .onChange(of: settingsStore.sniffing) { _, _ in SnifferStore.shared.save() }
                     Toggle("TCP 并发", isOn: $settingsStore.tcpConcurrent)
                     Toggle("统一延迟测试", isOn: $settingsStore.unifiedDelay)
                     Toggle("IPv6", isOn: $settingsStore.ipv6)
@@ -695,6 +710,13 @@ struct DnsQueriesView: View {
                 if let message = dnsStore.lastActionMessage {
                     Text(message).font(.system(size: 10)).foregroundStyle(.green)
                 }
+                // Failures of the actions above (clear cache /
+                // clear Fake-IP, or a VPN-off attempt) only wrote
+                // lastError — render it here so the failure is
+                // visible with its real reason (audit B16).
+                if let error = dnsStore.lastError {
+                    Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                }
             }
             Section("查询记录（dns.watch）") {
                 Picker("筛选", selection: $recordFilter) {
@@ -720,6 +742,12 @@ struct DnsQueriesView: View {
                     Text(dnsStore.filtered.isEmpty ? "暂无 DNS 查询记录" : "没有符合筛选的记录")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
+                    // A failed refresh (e.g. VPN off) only wrote
+                    // lastError — show the real reason instead of a
+                    // bare "暂无记录" (audit B16).
+                    if let error = dnsStore.lastError, dnsStore.filtered.isEmpty {
+                        Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                    }
                 } else {
                     ForEach(visibleEntries) { entry in
                         Button {
@@ -1010,6 +1038,17 @@ struct ProvidersView: View {
                     .foregroundStyle(.secondary)
                     .listRowBackground(Color.clear)
             }
+            // Tools B16: the old copy here (via RuleStore's trigger
+            // message) promised "稍后刷新列表查看", but the core
+            // never returns provider health state, so no refresh
+            // can ever show a result. The trigger message itself
+            // is fixed in RuleStore (another worker) to this same
+            // wording; this footnote states it on this page too,
+            // next to the 健康检查 swipe action above.
+            Text("健康检查已触发，但核心不返回提供方健康状态，无法显示结果")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .listRowBackground(Color.clear)
             if let error = ruleStore.lastError {
                 Text(error)
                     .font(.system(size: 10))

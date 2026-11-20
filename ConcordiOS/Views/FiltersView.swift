@@ -5,8 +5,11 @@ import SwiftUI
 // (profile.extractActiveProfileFilters). Editing a filter rewrites
 // it in the active profile's YAML and records the override, so a
 // later subscription update re-applies it (see ProfileStore).
-// The filter is validated against the core before saving
-// (validate.filters).
+// The filter is validated LOCALLY (regex syntax) before saving —
+// no core round-trip, so editing works with the VPN off (config
+// B19; FlClash's filters.dart has no core-validation step
+// either). The core still validates on the next apply if it is
+// available.
 
 struct FiltersView: View {
     @EnvironmentObject private var profileStore: ProfileStore
@@ -91,18 +94,19 @@ struct FiltersView: View {
     private func saveFilter() {
         guard let group = editingGroup else { return }
         let filter = editingFilter.trimmingCharacters(in: .whitespaces)
-        Task {
+        // B19: validate locally (regex syntax) — no core needed.
+        // An empty filter clears the group's filter; anything else
+        // must compile as a regular expression. The core still
+        // validates on the next apply when it is reachable.
+        if !filter.isEmpty {
             do {
-                // Validate against the core first.
-                let issues = try await profileStore.client.validateFilters(filters: [filter])
-                if !issues.isEmpty {
-                    message = "过滤器无效：\(issues[0].message)"
-                    return
-                }
+                _ = try NSRegularExpression(pattern: filter)
             } catch {
-                message = "校验失败（核心未连接）：\(error.localizedDescription)"
+                message = "过滤器无效（正则表达式错误）：\(error.localizedDescription)"
                 return
             }
+        }
+        Task {
             // Record the override, then rewrite the active file.
             proxyStore.filterOverrides[group] = filter
             proxyStore.save()

@@ -170,7 +170,20 @@ struct ConnectionsView: View {
                 ConnectionDetailView(connection: connection, isLive: detailIsLive)
             }
             .refreshable { await connectionStore.refresh() }
-            .task { if connectionStore.connections.isEmpty { await connectionStore.refresh() } }
+            // Live feed (audit B30): poll every 1 s while this page
+            // is visible, like FlClash's Requests page — rows appear
+            // / disappear and durations tick. The task is cancelled
+            // when the page disappears; polling pauses while the VPN
+            // is off (refresh would only re-read the stale snapshot).
+            .task {
+                if connectionStore.connections.isEmpty { await connectionStore.refresh() }
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard !Task.isCancelled else { break }
+                    guard TunnelManager.shared.isRunning else { continue }
+                    await connectionStore.refresh()
+                }
+            }
     }
 
     /// One connection row, shared by the live and recent feeds.

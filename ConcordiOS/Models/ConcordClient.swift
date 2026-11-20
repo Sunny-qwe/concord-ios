@@ -246,6 +246,11 @@ struct ConcordConfigPatchParams: Encodable {
     var ipv6: Bool?
     var tcpConcurrent: Bool?
     var unifiedDelay: Bool?
+    /// Find-process mode ("strict"/"always"/"off"; core
+    /// ConfigPatchParams `find_process_mode`, wire key snake_case
+    /// like the other fields — the Rust struct's fields are
+    /// snake_case and the client's encoder converts to snake_case).
+    var findProcessMode: String?
     /// External-controller secret (core ConfigPatchParams `secret`).
     var secret: String?
     /// Local inbound auth lines, `user:password` (core
@@ -468,6 +473,31 @@ struct ConcordDnsEntry: Codable, Identifiable {
     let error: String?
     let delay: Int64
     let time: Int64
+}
+
+/// The core omits `upstream` when it is empty (upstream
+/// crates/proto/src/types/live.rs: `#[serde(default,
+/// skip_serializing_if = "String::is_empty")]`), so a missing key
+/// decodes as "" instead of failing the whole dns.watch snapshot.
+/// The property stays a plain String (not String?) so DnsStore /
+/// SettingsView, which read `.upstream` directly, need no change.
+/// The decoder lives in an extension on purpose: a custom init in
+/// the struct body would suppress the memberwise initializer that
+/// ConcordSampleData builds sample entries with.
+extension ConcordDnsEntry {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        domain = try container.decode(String.self, forKey: .domain)
+        type = try container.decode(String.self, forKey: .type)
+        initiator = try container.decode(String.self, forKey: .initiator)
+        upstream = try container.decodeIfPresent(String.self, forKey: .upstream) ?? ""
+        cached = try container.decodeIfPresent(Bool.self, forKey: .cached)
+        answers = try container.decode([String].self, forKey: .answers)
+        rcode = try container.decodeIfPresent(String.self, forKey: .rcode)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+        delay = try container.decode(Int64.self, forKey: .delay)
+        time = try container.decode(Int64.self, forKey: .time)
+    }
 }
 
 struct ConcordDnsSnapshot: Decodable {
@@ -1063,6 +1093,21 @@ let concordProbeServiceNames = [
     "discord", "bilibili",
 ]
 
+/// The IP-info sources FlClash races for probe.outboundIp
+/// (FlClash lib/common/service_probe.dart `ipInfoSources`): the core
+/// takes the first source whose body mentions a public IP, so several
+/// sources make the probe survive any one of them being blocked.
+let concordOutboundIpUrls = [
+    "https://www.cloudflare.com/cdn-cgi/trace",
+    "https://api.ip.sb/geoip",
+    "https://ipinfo.io/json",
+    "https://ipwho.is",
+    "https://get.geojs.io/v1/ip/geo.json",
+    "https://api.country.is",
+    "https://api.ipquery.io/?format=json",
+    "https://ident.me/json",
+]
+
 // MARK: - MITM capture types (mitm.exchanges / exchange / body)
 //
 // Wire keys are kebab-case ("request-size", "original-url",
@@ -1185,22 +1230,21 @@ final class ExtensionConcordTransport: ConcordTransport {
     }()
 
     /// Stream methods and the snapshot file + freshness rule for each.
-    /// Traffic / connections go stale fast (10 s); logs / dns only
-    /// change when an event arrives, so any existing file is the latest
-    /// known buffer (a missing file means the tunnel never wrote one).
-    /// proxy.watch is the same: groups change rarely, and the extension
-    /// rewrites the file on every subscribe, so any existing file is
-    /// the last known table. delay.run.poll reads the run accumulator
-    /// the extension writes while a batch delay test is in flight.
-    /// route.watch / engine.state are latest-policy streams too — the
-    /// file only changes when the stamp/state moves, so any existing
-    /// file is the last known value. events.watch accumulates into a
-    /// buffer like log/dns.watch.
+    /// Every snapshot expires after 10 s, like traffic/connections:
+    /// the extension only rewrites a file while the tunnel is alive,
+    /// so a file older than that is a previous run's stale data, not
+    /// current state. log / dns / route / events / engine used to
+    /// have no max-age, so after the VPN stopped the app kept showing
+    /// the last run's logs, DNS entries, events and engine status as
+    /// if they were live. delay.run.poll is the one exception: it
+    /// reads the run accumulator the extension writes while a batch
+    /// delay test is in flight, and a missing file there means "not
+    /// started yet", which the poller already handles by retrying.
     private static let streamSnapshots: [String: (file: String, maxAgeSeconds: TimeInterval?)] = [
         "traffic.watch": ("traffic", 10),
         "connection.watch": ("connections", 10),
-        "log.watch": ("logs", nil),
-        "dns.watch": ("dns", nil),
+        "log.watch": ("logs", 10),
+        "dns.watch": ("dns", 10),
         // proxy.watch used to have no max-age, so a stale
         // proxies.json (written by a previous tunnel run, or an
         // empty one from a run whose core had not finished
@@ -1210,9 +1254,9 @@ final class ExtensionConcordTransport: ConcordTransport {
         // proxy.groups, then to the local YAML.
         "proxy.watch": ("proxies", 10),
         "delay.run.poll": ("delay", nil),
-        "route.watch": ("route", nil),
-        "events.watch": ("events", nil),
-        "engine.state": ("engine", nil),
+        "route.watch": ("route", 10),
+        "events.watch": ("events", 10),
+        "engine.state": ("engine", 10),
     ]
 
     private struct SnapshotFile<Payload: Decodable>: Decodable {
@@ -1394,7 +1438,11 @@ final class ConcordClient: ObservableObject {
         return try await call(method: "proxy.states", params: ProxyStatesParams(names: names), resultType: ConcordProxyStates.self).proxies
     }
 
-    func delayTest(proxy: String, url: String? = nil, timeout: UInt64? = nil) async throws -> ConcordDelayResult {
+    /// Tests one proxy's delay (delay.test). `timeout` defaults to
+    /// 8000 ms — FlClash's defaultDelayTestTimeout (lib/common/
+    /// constant.dart); passing nil used to leave the core default of
+    /// 5 s in force, so nodes slower than 5 s always showed "超时".
+    func delayTest(proxy: String, url: String? = nil, timeout: UInt64? = 8000) async throws -> ConcordDelayResult {
         try await call(method: "delay.test", params: ConcordDelayTestParams(proxy: proxy, url: url, timeout: timeout, expected: nil), resultType: ConcordDelayResult.self)
     }
 
@@ -1402,7 +1450,8 @@ final class ConcordClient: ObservableObject {
     /// the subscription ({sub, snapshot}); the results arrive as events
     /// the extension accumulates into snapshots/delay.json — poll them
     /// with delayRunPoll(). The run ends by itself with a `done` event.
-    func delayRunStart(proxies: [String], url: String? = nil, timeout: UInt64? = nil, concurrency: UInt32? = nil) async throws -> DelayRunStart {
+    /// `timeout` defaults to 8000 ms, as in delayTest.
+    func delayRunStart(proxies: [String], url: String? = nil, timeout: UInt64? = 8000, concurrency: UInt32? = nil) async throws -> DelayRunStart {
         struct DelayRunParams: Encodable {
             let proxies: [String]
             let url: String?
@@ -1603,9 +1652,13 @@ final class ConcordClient: ObservableObject {
     }
 
     func profileInspect(path: String) async throws -> ConcordProfileInspect {
-        // profile.inspect takes ProfileParams { path } in the schema.
-        struct ProfileParams: Encodable { let path: String }
-        return try await call(method: "profile.inspect", params: ProfileParams(path: path), resultType: ConcordProfileInspect.self)
+        // profile.inspect takes ProfileParams { profile: ProfileRef }
+        // (schema/api.json + crates/api/src/control.rs:750). The flat
+        // {"path": ...} this sent before is rejected with
+        // invalid_params (missing `profile`) — same nested shape as
+        // profile.outbounds above.
+        struct ProfileParams: Encodable { let profile: ConcordProfileRef }
+        return try await call(method: "profile.inspect", params: ProfileParams(profile: ConcordProfileRef(path: path)), resultType: ConcordProfileInspect.self)
     }
 
     func providerList() async throws -> ConcordProviderList {
@@ -1749,9 +1802,25 @@ final class ConcordClient: ObservableObject {
         _ = try await call(method: "core.releaseMemory", resultType: EmptyResult.self)
     }
 
-    func probeOutboundIp(url: String? = nil) async throws -> ConcordOutboundIp {
-        struct OutboundIpParams: Encodable { let url: String? }
-        return try await call(method: "probe.outboundIp", params: OutboundIpParams(url: url), resultType: ConcordOutboundIp.self)
+    /// Asks the core for the exit IP through one proxy
+    /// (probe.outboundIp). Schema OutboundIpParams (upstream
+    /// crates/proto/src/types/probe.rs:18): {proxy: String, urls:
+    /// Vec<String>, timeout?: u64 ms} — the old {"url": "<single>"}
+    /// shape was rejected with invalid_params (missing `proxy`,
+    /// wrong `url` key). `proxy` "" means unpinned: the core routes
+    /// the probe like normal traffic (upstream crates/engine/src/
+    /// probe/fetch.rs: only a non-empty proxy pins the dial) — that
+    /// is FlClash's `routedOutbound` case, what the no-arg callers
+    /// (TrafficStore, DiagnosticsView) want. `urls` nil races
+    /// FlClash's ip-info sources (concordOutboundIpUrls); `timeout`
+    /// defaults to FlClash's 6 s (outboundIpTimeoutDuration).
+    func probeOutboundIp(proxy: String = "", urls: [String]? = nil, timeout: UInt64? = 6000) async throws -> ConcordOutboundIp {
+        struct OutboundIpParams: Encodable {
+            let proxy: String
+            let urls: [String]
+            let timeout: UInt64?
+        }
+        return try await call(method: "probe.outboundIp", params: OutboundIpParams(proxy: proxy, urls: urls ?? concordOutboundIpUrls, timeout: timeout), resultType: ConcordOutboundIp.self)
     }
 
     /// Checks the known services through one proxy (probe.services).

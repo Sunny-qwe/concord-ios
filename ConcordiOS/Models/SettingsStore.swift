@@ -53,7 +53,7 @@ final class SettingsStore: ObservableObject {
     @Published var unifiedDelay: Bool = false
     @Published var sniffing: Bool = true
     @Published var globalUa: String = ""
-    @Published var delayTestTimeout: Int = 5000
+    @Published var delayTestTimeout: Int = 8000
 
     // Local network (FlClash: Tools -> 常规 -> 本地网络设置,
     // iOS): CIDRs excluded from the tunnel routes, private-range
@@ -73,8 +73,22 @@ final class SettingsStore: ObservableObject {
     @Published var autoCheckUpdate: Bool = false
     @Published var openLogs: Bool = false
     /// The core's find-process mode (config.general, display-only:
-    /// it is not patchable — see ConcordConfigPatchParams).
+    /// what the core currently reports, via refreshFromCore). The
+    /// value the user picks lives in findProcessModeSetting below.
+    /// NOTE: api.json's ConfigPatchParams HAS findProcessMode, so
+    /// it IS patchable in principle — but our ConcordConfigPatchParams
+    /// (ConcordClient.swift) has no such field yet, so the picked
+    /// value travels via general-overlay.json instead.
     @Published var findProcessMode: String?
+    /// The process-matching mode the user picked (SettingsView
+    /// picker): "strict" (the core default — crates/config/src/
+    /// general.rs), "always" or "off". Persisted in Saved and
+    /// written to general-overlay.json as `find-process-mode`
+    /// (see saveSharedFiles). The old always/off bool toggle
+    /// forced "off" for everyone who never touched it, which
+    /// disabled PROCESS-NAME / PROCESS-PATH rules (config B4).
+    @Published var findProcessModeSetting: String = "strict"
+
 
     // TUN (extension parameters, passed to tun.start)
     @Published var tunEnabled: Bool = true
@@ -87,6 +101,12 @@ final class SettingsStore: ObservableObject {
     @Published var dnsNameserver: String = "https://dns.alidns.com/dns-query"
     @Published var dnsFakeIpEnabled: Bool = true
     @Published var dnsFakeIpRange: String = "198.18.0.1/16"
+    /// DNS 用 IPv6 (core `dns.ipv6`, default false — FlClash
+    /// Dns.ipv6, independent of the general `ipv6` switch which
+    /// defaults true and also drives the tunnel IPv6 address +
+    /// default route). Written to dns.json; the global switch is
+    /// left alone (config B9).
+    @Published var dnsIpv6: Bool = false
     // DNS completion (FlClash Dns model; upstream
     // crates/config/src/keys.rs dns_defaults). Lists are edited in
     // DnsSettingsView; the fake-IP toggle and the enhanced-mode
@@ -274,6 +294,7 @@ final class SettingsStore: ObservableObject {
         var dnsNameserver: String
         var dnsFakeIpEnabled: Bool
         var dnsFakeIpRange: String
+        var dnsIpv6: Bool
         var dnsListen: String
         var dnsPreferH3: Bool
         var dnsUseHosts: Bool
@@ -329,10 +350,11 @@ final class SettingsStore: ObservableObject {
         var bypassPrivateRoute: Bool
         var dnsHijack: Bool
         var hideIp: Bool
+        var findProcessModeSetting: String
 
         // The MITM fields are new: decode them leniently so settings
         // saved before they existed still load.
-        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, openLogs: Bool = false, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftnsci.com", "www.msftnsci.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 64, hideIp: Bool = false) {
+        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, openLogs: Bool = false, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftnsci.com", "www.msftnsci.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 64, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict") {
             self.mode = mode
             self.logLevel = logLevel
             self.mixedPort = mixedPort
@@ -372,6 +394,8 @@ final class SettingsStore: ObservableObject {
             self.bypassPrivateRoute = bypassPrivateRoute
             self.dnsHijack = dnsHijack
             self.hideIp = hideIp
+            self.dnsIpv6 = dnsIpv6
+            self.findProcessModeSetting = findProcessModeSetting
             self.dnsListen = dnsListen
             self.dnsPreferH3 = dnsPreferH3
             self.dnsUseHosts = dnsUseHosts
@@ -485,14 +509,34 @@ final class SettingsStore: ObservableObject {
             externalControllerSecret = try c.decodeIfPresent(String.self, forKey: .externalControllerSecret) ?? ""
             externalControllerEnabled = try c.decodeIfPresent(Bool.self, forKey: .externalControllerEnabled) ?? false
             hideIp = try c.decodeIfPresent(Bool.self, forKey: .hideIp) ?? false
+            dnsIpv6 = try c.decodeIfPresent(Bool.self, forKey: .dnsIpv6) ?? false
+            // Pre-tri-state installs only had the always/off bool:
+            // on = "always", anything else = the core default
+            // "strict" (the old "off" was the B4 bug — it forced
+            // process matching off for everyone who never touched
+            // the toggle).
+            let legacyAlways = UserDefaults.standard.object(forKey: "ConcordiOS.findProcessModeAlways") as? Bool ?? false
+            let rawMode = try c.decodeIfPresent(String.self, forKey: .findProcessModeSetting)
+            findProcessModeSetting = ["strict", "always", "off"].contains(rawMode ?? "") ? rawMode! : (legacyAlways ? "always" : "strict")
         }
     }
 
     func save() {
-        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, openLogs: openLogs, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, dnsListen: dnsListen, dnsPreferH3: dnsPreferH3, dnsUseHosts: dnsUseHosts, dnsUseSystemHosts: dnsUseSystemHosts, dnsRespectRules: dnsRespectRules, dnsIpv6Timeout: dnsIpv6Timeout, dnsCacheAlgorithm: dnsCacheAlgorithm, dnsCacheMaxSize: dnsCacheMaxSize, dnsEnhancedMode: dnsEnhancedMode, dnsFakeIpRange6: dnsFakeIpRange6, dnsFakeIpFilter: dnsFakeIpFilter, dnsFakeIpFilterMode: dnsFakeIpFilterMode, dnsFakeIpTtl: dnsFakeIpTtl, dnsDefaultNameserver: dnsDefaultNameserver, dnsNameserverPolicy: dnsNameserverPolicy, dnsExtraNameservers: dnsExtraNameservers, dnsFallback: dnsFallback, dnsFallbackLazyQuery: dnsFallbackLazyQuery, dnsProxyServerNameserver: dnsProxyServerNameserver, dnsProxyServerNameserverPolicy: dnsProxyServerNameserverPolicy, dnsDirectNameserver: dnsDirectNameserver, dnsDirectNameserverFollowPolicy: dnsDirectNameserverFollowPolicy, dnsFallbackFilterGeoip: dnsFallbackFilterGeoip, dnsFallbackFilterGeoipCode: dnsFallbackFilterGeoipCode, dnsFallbackFilterGeosite: dnsFallbackFilterGeosite, dnsFallbackFilterIpcidr: dnsFallbackFilterIpcidr, dnsFallbackFilterDomain: dnsFallbackFilterDomain, interfaceName: interfaceName, interfaceNameMode: interfaceNameMode, userAgents: userAgents, authEnabled: authEnabled, authUsername: authUsername, authPassword: authPassword, externalControllerSecret: externalControllerSecret, externalControllerEnabled: externalControllerEnabled, mitmSkipServerCertVerify: mitmSkipServerCertVerify, mitmAutoQuicBlock: mitmAutoQuicBlock, mitmTrustedFingerprint: mitmTrustedFingerprint, mitmCapture: mitmCapture, mitmCaptureEntries: mitmCaptureEntries, hideIp: hideIp)
+        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, openLogs: openLogs, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, dnsListen: dnsListen, dnsPreferH3: dnsPreferH3, dnsUseHosts: dnsUseHosts, dnsUseSystemHosts: dnsUseSystemHosts, dnsRespectRules: dnsRespectRules, dnsIpv6Timeout: dnsIpv6Timeout, dnsCacheAlgorithm: dnsCacheAlgorithm, dnsCacheMaxSize: dnsCacheMaxSize, dnsEnhancedMode: dnsEnhancedMode, dnsFakeIpRange6: dnsFakeIpRange6, dnsFakeIpFilter: dnsFakeIpFilter, dnsFakeIpFilterMode: dnsFakeIpFilterMode, dnsFakeIpTtl: dnsFakeIpTtl, dnsDefaultNameserver: dnsDefaultNameserver, dnsNameserverPolicy: dnsNameserverPolicy, dnsExtraNameservers: dnsExtraNameservers, dnsFallback: dnsFallback, dnsFallbackLazyQuery: dnsFallbackLazyQuery, dnsProxyServerNameserver: dnsProxyServerNameserver, dnsProxyServerNameserverPolicy: dnsProxyServerNameserverPolicy, dnsDirectNameserver: dnsDirectNameserver, dnsDirectNameserverFollowPolicy: dnsDirectNameserverFollowPolicy, dnsFallbackFilterGeoip: dnsFallbackFilterGeoip, dnsFallbackFilterGeoipCode: dnsFallbackFilterGeoipCode, dnsFallbackFilterGeosite: dnsFallbackFilterGeosite, dnsFallbackFilterIpcidr: dnsFallbackFilterIpcidr, dnsFallbackFilterDomain: dnsFallbackFilterDomain, interfaceName: interfaceName, interfaceNameMode: interfaceNameMode, userAgents: userAgents, authEnabled: authEnabled, authUsername: authUsername, authPassword: authPassword, externalControllerSecret: externalControllerSecret, externalControllerEnabled: externalControllerEnabled, mitmSkipServerCertVerify: mitmSkipServerCertVerify, mitmAutoQuicBlock: mitmAutoQuicBlock, mitmTrustedFingerprint: mitmTrustedFingerprint, mitmCapture: mitmCapture, mitmCaptureEntries: mitmCaptureEntries, hideIp: hideIp, dnsIpv6: dnsIpv6, findProcessModeSetting: findProcessModeSetting)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
         saveSharedFiles()
+        // B6: the master sniffing switch lives here, but the
+        // effective enable (master && SnifferStore.enable) is
+        // written by SnifferStore.save() into sniffer.json — so a
+        // master-switch change only propagates if sniffer.json is
+        // re-saved. Do it on every settings save (the blob above
+        // is already persisted, so savedSniffing() reads the new
+        // value). No loop: SnifferStore.save() never touches this
+        // store. Cheap (one small JSON write) and covers every
+        // path that flips the switch (view, refreshFromCore,
+        // backup restore).
+        SnifferStore.shared.save()
     }
 
     /// Re-read the settings from UserDefaults and rewrite the shared
@@ -544,6 +588,46 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Write the shared settings files the PacketTunnel extension
+    /// reads at boot (tunnel.json, mitm.json, dns.json,
+    /// general.json, general-overlay.json, sniffer.json, ntp.json)
+    /// with the current UI defaults — but ONLY when the file is
+    /// missing. Never overwrites an existing file, so saved user
+    /// settings (or a backup restore) are never clobbered; calling
+    /// it again is a no-op once every file exists. Idempotent.
+    /// Call at app launch and at TunnelManager.start() (another
+    /// worker wires those call sites). Fresh installs had no
+    /// dns.json / sniffer.json / general.json at all, so the core
+    /// ran its own defaults (DNS disabled, mixed-port 0,
+    /// tcp-concurrent off) contradicting the UI (config B2).
+    /// hosts.json is deliberately NOT created here: the extension
+    /// only overlays hosts when the file exists, and an empty {}
+    /// would wipe the active subscription's own hosts (config
+    /// B16). overrides.json / added-rules.json / module-mitm.json
+    /// are likewise left alone: missing means "no override",
+    /// which is the correct default.
+    func ensureSharedFilesExist() {
+        saveSharedFiles(onlyIfMissing: true)
+        if let url = ConfigStore.sharedFileURL(name: ConfigStore.snifferFileName),
+           !FileManager.default.fileExists(atPath: url.path) {
+            SnifferStore.shared.save()
+        }
+        if let url = ConfigStore.sharedFileURL(name: ConfigStore.ntpFileName),
+           !FileManager.default.fileExists(atPath: url.path) {
+            NtpStore.shared.save()
+        }
+    }
+
+    /// Writes one shared JSON file, optionally only when it does
+    /// not exist yet (see ensureSharedFilesExist). Silently
+    /// skipped when the App Group container is unavailable.
+    private func writeSharedJSON(_ dict: [String: Any], name: String, onlyIfMissing: Bool = false) {
+        guard let url = ConfigStore.sharedFileURL(name: name) else { return }
+        if onlyIfMissing, FileManager.default.fileExists(atPath: url.path) { return }
+        guard let data = try? JSONSerialization.data(withJSONObject: dict) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
     /// Writes the files the PacketTunnel extension reads:
     /// tunnel.json (tun.start + interface settings), mitm.json
     /// (merged into config.apply's overlay), dns.json (ditto) and
@@ -551,7 +635,7 @@ final class SettingsStore: ObservableObject {
     /// config.patch, so saved general settings take effect on the next
     /// VPN start even without tapping "apply"). Silently skipped when
     /// the App Group container is unavailable.
-    private func saveSharedFiles() {
+    private func saveSharedFiles(onlyIfMissing: Bool = false) {
         let dnsServers = tunDns.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -565,10 +649,7 @@ final class SettingsStore: ObservableObject {
             "bypass-private-route": bypassPrivateRoute,
             "dns-hijack": dnsHijack,
         ]
-        if let url = ConfigStore.sharedFileURL(name: ConfigStore.tunnelSettingsFileName),
-           let data = try? JSONSerialization.data(withJSONObject: tunnel) {
-            try? data.write(to: url, options: .atomic)
-        }
+        writeSharedJSON(tunnel, name: ConfigStore.tunnelSettingsFileName, onlyIfMissing: onlyIfMissing)
         // mitm.json uses the core's RawConfig keys verbatim, so the
         // extension can pass it as the "mitm" overlay value unchanged.
         // decrypt-tls / ca-fingerprint come from mitmConfig, so a
@@ -589,10 +670,7 @@ final class SettingsStore: ObservableObject {
         if mitmCapture {
             mitm["limits"] = ["capture-entries": mitmCaptureEntries]
         }
-        if let url = ConfigStore.sharedFileURL(name: ConfigStore.mitmFileName),
-           let data = try? JSONSerialization.data(withJSONObject: mitm) {
-            try? data.write(to: url, options: .atomic)
-        }
+        writeSharedJSON(mitm, name: ConfigStore.mitmFileName, onlyIfMissing: onlyIfMissing)
         // dns.json likewise: the core's DnsConfig keys are kebab-case
         // ("enhanced-mode", "fake-ip-range" — upstream
         // crates/config/src/dns.rs), so the extension passes it as the
@@ -606,7 +684,7 @@ final class SettingsStore: ObservableObject {
         var dns: [String: Any] = [
             "enable": dnsEnabled,
             "enhanced-mode": dnsEnhancedMode,
-            "ipv6": ipv6,
+            "ipv6": dnsIpv6,
             "ipv6-timeout": dnsIpv6Timeout,
             "prefer-h3": dnsPreferH3,
             "use-hosts": dnsUseHosts,
@@ -681,10 +759,7 @@ final class SettingsStore: ObservableObject {
             fallbackFilter["domain"] = dnsFallbackFilterDomain
         }
         dns["fallback-filter"] = fallbackFilter
-        if let url = ConfigStore.sharedFileURL(name: ConfigStore.dnsFileName),
-           let data = try? JSONSerialization.data(withJSONObject: dns) {
-            try? data.write(to: url, options: .atomic)
-        }
+        writeSharedJSON(dns, name: ConfigStore.dnsFileName, onlyIfMissing: onlyIfMissing)
         // general.json: the general settings in ConfigPatchParams wire
         // keys (snake_case), patched by the extension at tunnel start.
         var general: [String: Any] = [
@@ -702,10 +777,7 @@ final class SettingsStore: ObservableObject {
         general["secret"] = externalControllerSecret
         general["authentication"] = authPatchLines
         general["external_controller"] = externalControllerAddress
-        if let url = ConfigStore.sharedFileURL(name: ConfigStore.generalSettingsFileName),
-           let data = try? JSONSerialization.data(withJSONObject: general) {
-            try? data.write(to: url, options: .atomic)
-        }
+        writeSharedJSON(general, name: ConfigStore.generalSettingsFileName, onlyIfMissing: onlyIfMissing)
         // general-overlay.json: top-level RawConfig keys config.patch
         // cannot carry (global-ua, interface-name). The extension
         // merges them into config.apply's overlay. interface-name
@@ -713,10 +785,12 @@ final class SettingsStore: ObservableObject {
         // clear = "", custom = the name.
         // The extra inbound ports and find-process-mode are the same
         // kind of key: the core's ConfigPatchParams has NO port /
-        // redir-port / tproxy-port / find-process-mode field (see
-        // ConcordConfigPatchParams), so they must NOT go into
-        // general.json — the startup config.patch would drop them
-        // (or fail). They travel here instead, as RawConfig
+        // redir-port / tproxy-port / socks-port field — and although
+        // api.json's ConfigPatchParams DOES have findProcessMode,
+        // our ConcordConfigPatchParams (ConcordClient.swift) has no
+        // such field yet — so they must NOT go into general.json:
+        // the startup config.patch would drop them (or fail). They
+        // travel here instead, as RawConfig
         // kebab-case keys, exactly as FlClash writes them into
         // rawConfig (task.dart:197-202). The values live in
         // UserDefaults (@AppStorage in SettingsView); the extension
@@ -728,7 +802,19 @@ final class SettingsStore: ObservableObject {
         overlay["port"] = defaults.integer(forKey: "ConcordiOS.httpPort")
         overlay["redir-port"] = defaults.integer(forKey: "ConcordiOS.redirPort")
         overlay["tproxy-port"] = defaults.integer(forKey: "ConcordiOS.tproxyPort")
-        overlay["find-process-mode"] = defaults.bool(forKey: "ConcordiOS.findProcessModeAlways") ? "always" : "off"
+        // B3: socks-port is a real RawConfig T0 key (core
+        // crates/config/src/keys.rs, default 0 = disabled) and the
+        // only way to reach it — ConfigPatchParams has no socks
+        // field. 0 disables the listener, matching the UI. The
+        // extension merges this file into config.apply's overlay
+        // at tunnel start AND on every live re-apply, so the UI
+        // value and "restore default ports" now actually take
+        // effect (previously the stepper wrote a dead value).
+        overlay["socks-port"] = socksPort
+        // B4: the picked mode (default "strict", the core default).
+        // The old bool wrote "always"/"off" and forced "off" on
+        // everyone who never touched the toggle.
+        overlay["find-process-mode"] = findProcessModeSetting
         let ua = globalUa.trimmingCharacters(in: .whitespaces)
         if !ua.isEmpty {
             overlay["global-ua"] = ua
@@ -744,10 +830,7 @@ final class SettingsStore: ObservableObject {
         default:
             break
         }
-        if let url = ConfigStore.sharedFileURL(name: ConfigStore.generalOverlayFileName),
-           let data = try? JSONSerialization.data(withJSONObject: overlay) {
-            try? data.write(to: url, options: .atomic)
-        }
+        writeSharedJSON(overlay, name: ConfigStore.generalOverlayFileName, onlyIfMissing: onlyIfMissing)
     }
 
     /// The `user:password` lines for config.patch: one line while
@@ -796,7 +879,7 @@ final class SettingsStore: ObservableObject {
         unifiedDelay = saved.unifiedDelay
         sniffing = saved.sniffing
         globalUa = saved.globalUa
-        delayTestTimeout = saved.delayTestTimeout
+        delayTestTimeout = min(max(saved.delayTestTimeout, 500), 8000)
         tunEnabled = saved.tunEnabled
         tunStack = saved.tunStack
         tunMtu = saved.tunMtu
@@ -860,6 +943,8 @@ final class SettingsStore: ObservableObject {
         externalControllerSecret = saved.externalControllerSecret
         externalControllerEnabled = saved.externalControllerEnabled
         hideIp = saved.hideIp
+        dnsIpv6 = saved.dnsIpv6
+        findProcessModeSetting = saved.findProcessModeSetting
     }
 
     /// Pull the general config from the core (config.general) into the UI.
@@ -906,16 +991,20 @@ final class SettingsStore: ObservableObject {
                 mode: mode.rawValue, logLevel: logLevel.rawValue,
                 mixedPort: mixedPort, allowLan: allowLan, ipv6: ipv6,
                 tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay,
+                findProcessMode: findProcessModeSetting,
                 secret: externalControllerSecret,
                 authentication: authPatchLines,
                 externalController: externalControllerAddress))
             // The patch cannot carry the RawConfig keys that live in
             // general-overlay.json / mitm.json / dns.json (extra
-            // ports, find-process-mode, h2, listen-routing-mark —
-            // ConfigPatchParams has no such fields). Re-apply the
-            // config so the extension re-merges those shared files
-            // into the overlay (same mechanism as applyDnsSettings).
-            // A re-apply failure does not undo the patch above.
+            // ports, h2, listen-routing-mark — ConfigPatchParams has
+            // no such fields). find-process-mode DOES travel via this
+            // patch (live) and via general-overlay.json (merged at
+            // config.apply / boot) — same value, so they cannot
+            // disagree. Re-apply the config so the extension
+            // re-merges those shared files into the overlay (same
+            // mechanism as applyDnsSettings). A re-apply failure
+            // does not undo the patch above.
             do {
                 _ = try await client.configApply(profilePath: nil)
                 generalApplyMessage = "通用设置已应用到核心"
@@ -1112,6 +1201,31 @@ final class SettingsStore: ObservableObject {
         guard !host.trimmingCharacters(in: .whitespaces).isEmpty else {
             mitmStatusMessage = "请先输入要签发证书的主机名"
             return
+        }
+        // B38: the tunnel path below only works while the VPN is
+        // running (client talks to the extension core). When it is
+        // off in live mode, fall back to the in-app core — the same
+        // pattern as MitmCertificateView's CA generation (v0.2.35
+        // Item C): AppCore.ensureStarted() boots the core
+        // in-process, then AppCore.mitmIssueCertificate issues the
+        // leaf there. If the tunnel starts while the in-app core is
+        // booting, AppCore refuses (tunnelRunning) and the call falls
+        // through to the tunnel-core path below.
+        if client.mode == .live, !TunnelManager.shared.isRunning {
+            do {
+                try await AppCore.shared.ensureStarted()
+                let pem = try await AppCore.shared.mitmIssueCertificate(host: host)
+                mitmIssuedPem = pem.pem
+                mitmStatusMessage = "已为 \(host) 签发叶证书（应用内核心，可用于验证信任链）"
+                return
+            } catch {
+                if case AppCoreError.tunnelRunning = error {
+                    // Fall through to the tunnel-core path below.
+                } else {
+                    mitmStatusMessage = "应用内核心签发失败：\(error.localizedDescription)"
+                    return
+                }
+            }
         }
         do {
             let pem = try await client.mitmIssueCertificate(host: host)

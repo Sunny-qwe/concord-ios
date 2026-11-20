@@ -197,6 +197,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var pending: [Int: PendingRequest] = [:]
     private var subscriptions: [Int: StreamKind] = [:]
 
+    // Config B1 — the fingerprint of the core's (tun, tun_inet4,
+    // ipv6) triple the CURRENT channel runner was started with
+    // (see tunTripleFingerprint). reconcile_tun kills the runner
+    // whenever a live apply/patch moves that triple, so after
+    // forwarding one, maybeRestartChannelTun compares fingerprints
+    // and re-runs tun.start when they differ. Nil before the first
+    // tun.start.
+    private var channelTunFingerprint: String?
+    /// The reason the last TUN re-start failed, if any (config B1):
+    /// written to tun-restart-needed.json for the app's Dashboard
+    /// banner, so a dead data plane is never silent. Nil when the
+    /// runner is up or was intentionally not restarted.
+    private var tunRestartNeeded: String?
+    private let tunRestartNeededFileName = "tun-restart-needed.json"
+
     // Live tables behind the snapshot files (see header comment).
     private var connectionTable: [UInt64: [String: Any]] = [:]
     private var logBuffer: [[String: Any]] = []
@@ -454,6 +469,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         packetsOut = 0
         packetsDroppedFull = 0
         ringFullStreak = 0
+        // Config B1: a new run gets a fresh runner and a fresh
+        // fingerprint baseline; a previous run's restart-needed flag
+        // must not survive into it.
+        channelTunFingerprint = nil
+        clearTunRestartNeeded()
     }
 
     private func bootCore(context: UnsafeMutableRawPointer) async throws {
@@ -517,46 +537,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // / dns.json when the user configured them in the app (see
         // header comment).
         var applyParams: [String: Any] = ["profile": ["path": configURL.path]]
-        var overlay: [String: Any] = [:]
-        if let mitm = mergedMitmOverlay() {
-            overlay["mitm"] = mitm
-        }
-        if let rules = overlayRules() {
-            overlay["rules"] = rules
-        }
-        if let dns = effectiveSection(file: dnsFileName, section: "dns") {
-            overlay["dns"] = dns
-        }
-        if let ntp = effectiveSection(file: ntpFileName, section: "ntp") {
-            overlay["ntp"] = ntp
-        }
-        if let sniffer = effectiveSection(file: snifferFileName, section: "sniffer") {
-            overlay["sniffer"] = sniffer
-        }
-        if let tun = effectiveSection(file: nil, section: "tun") {
-            overlay["tun"] = tun
-        }
-        if let hosts = readSharedJSON(name: hostsFileName) {
-            overlay["hosts"] = hosts
-        }
-        if let generalOverlay = readSharedJSON(name: generalOverlayFileName) {
-            for (key, value) in generalOverlay {
-                overlay[key] = value
-            }
-        }
-        // General overrides (test-url, geodata-loader, …) are
-        // top-level RawConfig keys: they merge straight into the
-        // overlay. ipv6 / unified-delay / tcp-concurrent overrides
-        // are ALSO in the overlay (so a live re-apply honours them),
-        // but the startup config.patch below runs after config.apply
-        // and would clobber them with the base general.json values —
-        // so the same three keys are folded into that patch too (see
-        // the patch block).
-        if let generalOverrides = effectiveTopLevelOverrides(section: "general") {
-            for (key, value) in generalOverrides {
-                overlay[key] = value
-            }
-        }
+        // The same overlay the live re-apply path merges (see
+        // buildApplyOverlay): startup and live applies must see
+        // identical fragments, or the B1 fingerprint below would
+        // report a change on the first live apply when nothing moved.
+        let overlay = buildApplyOverlay()
         if !overlay.isEmpty {
             applyParams["overlay"] = overlay
         }
@@ -578,6 +563,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // in once at startup, so they take effect on the next VPN start
         // without the user tapping "apply". A failure here must not fail
         // the tunnel: the settings can still be applied live later.
+        // Kept for the B1 fingerprint below: the patch's ipv6 is part
+        // of the core's (tun, tun_inet4, ipv6) triple.
+        var startupPatchParams: [String: Any]?
         if let general = readSharedJSON(name: generalSettingsFileName), !general.isEmpty {
             do {
                 // General overrides for the keys that also travel via
@@ -593,6 +581,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     }
                 }
                 _ = try await sendCoreRequest(method: "config.patch", params: patch, timeoutSeconds: 60)
+                // Only record the patch in the B1 fingerprint once
+                // it actually applied: if it failed, a later live
+                // patch of the same values is a real change and must
+                // re-start the runner instead of being missed.
+                startupPatchParams = patch
             } catch {
                 Self.log.error("startup config.patch failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -611,29 +604,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         channelHandle = handle
 
-        // FlClash PacketTunnelNetworkConfiguration: the tun address
-        // is 198.18.0.1/30 (not /32) — the core gets the same /30
-        // prefix the NE interface uses.
-        var addresses = ["\(tunnelAddress)/30"]
-        if tun.ipv6 {
-            // The core parses each address as a CIDR prefix and sorts
-            // IPv4 into inet4_address, IPv6 into inet6_address
-            // (upstream crates/engine/src/tun.rs vpn_options); the
-            // default below is the core's own DEFAULT_INET6.
-            addresses.append(tun.ipv6Address)
-        }
-        var tunParams: [String: Any] = [
-            "source": ["kind": "channel", "handle": handle],
-            "stack": tun.stack,
-            "mtu": tun.mtu,
-            "address": addresses,
-            "dns": tun.dns,
-        ]
-        if let congestionController = tun.congestionController {
-            tunParams["congestionController"] = congestionController
-        }
+        let tunParams = tunStartParams(handle: handle, tun: tun)
         recordStartup("tun-start")
         _ = try await sendCoreRequest(method: "tun.start", params: tunParams, timeoutSeconds: 60)
+        // Config B1: the runner this tun.start created is the
+        // baseline — a later live apply/patch that moves the triple
+        // kills it, and the fingerprint tells the re-start check
+        // what "unchanged" looks like.
+        channelTunFingerprint = tunTripleFingerprint(overlay: overlay, patchParams: startupPatchParams)
+        clearTunRestartNeeded()
         // Tunnel interface: the system owns routing; the core must not
         // install routes (upstream: Os::Other -> NullBackend on iOS).
         // IPv6 is configured from tunnel.json when the user enabled it
@@ -709,6 +688,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         isStopping = true
         recordStartup("stopped")
         writeVPNDiagnostics(stage: "stopped")
+        // Interface B8 (stop-part): drop the stale snapshots now,
+        // while the files still belong to this run — the app must
+        // never read last-round logs / DNS / route / engine data as
+        // if it were current after the tunnel stops.
+        deleteStaleSnapshots()
         pumpRunning = false
         drainTimer?.cancel()
         drainTimer = nil
@@ -784,38 +768,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // dns.json (see header comment). A request that already
         // carries an overlay is forwarded untouched.
         if (request["method"] as? String) == "config.apply" && request["overlay"] == nil {
-            var overlay: [String: Any] = [:]
-            if let mitm = mergedMitmOverlay() {
-                overlay["mitm"] = mitm
-            }
-            if let rules = overlayRules() {
-                overlay["rules"] = rules
-            }
-            if let dns = effectiveSection(file: dnsFileName, section: "dns") {
-                overlay["dns"] = dns
-            }
-            if let ntp = effectiveSection(file: ntpFileName, section: "ntp") {
-                overlay["ntp"] = ntp
-            }
-            if let sniffer = effectiveSection(file: snifferFileName, section: "sniffer") {
-                overlay["sniffer"] = sniffer
-            }
-            if let tun = effectiveSection(file: nil, section: "tun") {
-                overlay["tun"] = tun
-            }
-            if let hosts = readSharedJSON(name: hostsFileName) {
-                overlay["hosts"] = hosts
-            }
-            if let generalOverlay = readSharedJSON(name: generalOverlayFileName) {
-                for (key, value) in generalOverlay {
-                    overlay[key] = value
-                }
-            }
-            if let generalOverrides = effectiveTopLevelOverrides(section: "general") {
-                for (key, value) in generalOverrides {
-                    overlay[key] = value
-                }
-            }
+            let overlay = buildApplyOverlay()
             if !overlay.isEmpty {
                 request["overlay"] = overlay
             }
@@ -863,6 +816,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         Task {
             do {
                 let response = try await self.forwardAppRequest(request, appID: appID)
+                // Config B1: a live config.apply / config.patch that
+                // moved the core's (tun, tun_inet4, ipv6) triple
+                // killed the channel TUN runner in reconcile_tun —
+                // re-start it before answering, so the app's "已应用"
+                // is not a lie about a dead data plane. A failed
+                // re-start is reported via tun-restart-needed.json,
+                // not by failing the apply (the apply itself
+                // succeeded).
+                if let method = request["method"] as? String,
+                   method == "config.apply" || method == "config.patch" {
+                    await self.maybeRestartChannelTun(after: request)
+                }
                 completionHandler?(response)
             } catch {
                 completionHandler?(self.errorEnvelope(id: appID, message: error.localizedDescription))
@@ -1014,8 +979,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         registerStream(result: route, kind: .route)
         // events.watch has NO snapshot — its CoreEvent items only
         // arrive as events, so the extension accumulates them like
-        // log/dns.watch.
-        let events = try await sendCoreRequest(method: "events.watch", params: ["credit": 8], timeoutSeconds: 60)
+        // log/dns.watch. delays + state are requested explicitly:
+        // both default false in the 165154c schema
+        // (EventsWatchParams), so a bare {credit: 8} never delivers
+        // `delay` or `stateChanged` events at all.
+        let events = try await sendCoreRequest(method: "events.watch", params: [
+            "delays": true, "state": true, "credit": 8,
+        ], timeoutSeconds: 60)
         registerStream(result: events, kind: .events)
         // engine.state snapshot is the current EngineStatus; its
         // events are EngineStatus values (latest policy).
@@ -1054,7 +1024,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 case .dns: params = ["credit": 8]
                 case .proxy: params = ["credit": 8]
                 case .route: params = ["credit": 8]
-                case .events: params = ["credit": 8]
+                // Like the startup subscribe: delays + state, or the
+                // re-subscribed stream goes silent on delay /
+                // stateChanged events again (interface B12).
+                case .events: params = ["delays": true, "state": true, "credit": 8]
                 case .engine: params = ["credit": 8]
                 }
                 let result = try await self.sendCoreRequest(method: kind.methodName, params: params, timeoutSeconds: 60)
@@ -1512,6 +1485,257 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    // MARK: - Config B1: re-start the channel TUN runner after a live apply/patch
+    //
+    // Verified against the pinned core (165154c):
+    //   * crates/engine/src/engine/tun.rs reconcile_tun(): after every
+    //     config.apply (setup_as) and config.patch (update_as ->
+    //     reconcile_listeners -> reconcile_tun), the core compares the
+    //     desired triple (applied.tun, applied.tun_inet4, applied.
+    //     general.ipv6) with the held tun_config. Any difference
+    //     closes the TUN runner first; then, when applied.tun.enable
+    //     is false it returns with NO runner, and when true it tries
+    //     DeviceSource::Create — which cannot succeed on iOS
+    //     (tun-rs has no DeviceBuilder there). Either way the
+    //     packet-channel runner this extension started is dead, and
+    //     nothing restarts it: the VPN still shows connected while
+    //     traffic goes direct. tun_inet4 comes from the DNS
+    //     fake-ip-range (crates/engine/src/tun.rs inet4_of), so a
+    //     fake-ip-range change kills it too.
+    //   * The channel device half is consumed by the FIRST tun.start
+    //     (crates/api/src/channels.rs take_device() returns None
+    //     afterwards), so a re-start MUST open a fresh channel —
+    //     re-invoking tun.start with the old handle fails with
+    //     not_found("handle"). start_channel_tun() closes the old
+    //     runner, starts a new one on the fresh device, and — while
+    //     the engine runs — resets resolver connections and the
+    //     route table, i.e. it restores the data plane.
+    // The fingerprint below tracks the triple as the extension can
+    // see it (profile bytes + overlay/patch tun fragment + effective
+    // fake-ip-range + ipv6 sources + tunnel.json values feeding
+    // tun.start). It is deliberately conservative: any component
+    // moving triggers a re-start attempt, because a missed kill
+    // silently drops the data plane while a spurious re-start costs
+    // only a sub-second blip. The whole-file profile hash is safe
+    // here: the app rewrites config.yaml only on profile switch /
+    // edit (ProfileStore.applyProfile), never on a plain re-apply.
+    // LIMITS, stated honestly: (a) a profile that explicitly sets
+    // `tun: {enable: false}` is indistinguishable from the default
+    // (no tun section) without a YAML parser, so the runner is
+    // restarted anyway — matching startup, which also starts the
+    // channel runner regardless of the profile's tun.enable (only
+    // tunnel.json's `enabled` gates it); (b) a live IPv6 flip is
+    // only half-fixed — the runner is restarted with the new
+    // addresses, but the NE interface's IPv6 settings are built at
+    // startup, so IPv6 packets still cannot enter the tunnel until
+    // the VPN itself restarts; IPv4 is restored immediately.
+
+    /// The tun.start params for one channel handle, factored out of
+    /// bootCore so a re-start builds exactly the same params from
+    /// the current tunnel.json (FlClash: the tun address is
+    /// 198.18.0.1/30; the core sorts each CIDR prefix into its
+    /// inet4/inet6 address, crates/engine/src/tun.rs vpn_options).
+    private func tunStartParams(handle: UInt64, tun: TunnelSettings) -> [String: Any] {
+        var addresses = ["\(tunnelAddress)/30"]
+        if tun.ipv6 {
+            addresses.append(tun.ipv6Address)
+        }
+        var params: [String: Any] = [
+            "source": ["kind": "channel", "handle": handle],
+            "stack": tun.stack,
+            "mtu": tun.mtu,
+            "address": addresses,
+            "dns": tun.dns,
+        ]
+        if let congestionController = tun.congestionController {
+            params["congestionController"] = congestionController
+        }
+        return params
+    }
+
+    /// FNV-1a hex of a file's bytes — a cheap content hash for the
+    /// profile component of the fingerprint (no CryptoKit import).
+    private func fnv1aHex(_ data: Data) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in data {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        return String(format: "%016llx", hash)
+    }
+
+    /// Canonical (sorted-key) JSON of the tun-relevant inputs, as a
+    /// comparable string. `overlay` is the config.apply overlay the
+    /// extension merged (or the app's own); `patchParams` is the
+    /// config.patch params. Components: the profile bytes (its tun:
+    //  section and dns.fake-ip-range), the tun fragment, the
+    // effective fake-ip-range (-> tun_inet4), every ipv6 source
+    // (overlay key, patch key, general.json), and the tunnel.json
+    // values that feed tun.start directly.
+    private func tunTripleFingerprint(overlay: [String: Any]?, patchParams: [String: Any]?) -> String {
+        var doc: [String: Any] = [:]
+        if let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID),
+           let data = try? Data(contentsOf: container.appendingPathComponent(configFileName)) {
+            doc["profile"] = fnv1aHex(data)
+        } else {
+            doc["profile"] = "missing"
+        }
+        if let tun = overlay?["tun"] {
+            doc["tun"] = tun
+        } else if let tun = patchParams?["tun"] {
+            doc["tun"] = tun
+        } else {
+            doc["tun"] = NSNull()
+        }
+        doc["fakeIpRange"] = effectiveSection(file: dnsFileName, section: "dns")?["fake-ip-range"] ?? NSNull()
+        var ipv6: [String: Any] = [:]
+        if let value = overlay?["ipv6"] { ipv6["overlay"] = value }
+        if let value = patchParams?["ipv6"] { ipv6["patch"] = value }
+        if let general = readSharedJSON(name: generalSettingsFileName),
+           let value = general["ipv6"] { ipv6["general"] = value }
+        doc["ipv6"] = ipv6
+        if let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) {
+            let tun = readTunnelSettings(container: container)
+            doc["tunnel"] = [
+                "enabled": tun.enabled,
+                "stack": tun.stack,
+                "mtu": tun.mtu,
+                "ipv6": tun.ipv6,
+                "ipv6Address": tun.ipv6Address,
+                "dns": tun.dns,
+                "congestionController": tun.congestionController ?? NSNull(),
+            ] as [String: Any]
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        return "\(doc)"
+    }
+
+    /// True when the new config intentionally disables TUN: the
+    /// overlay / patch tun fragment says enable=false, or
+    /// tunnel.json (the Settings switch, the same gate as the
+    /// startup tunDisabled throw) says off. In that case the core
+    /// means "no runner" and no re-start is attempted.
+    private func tunDisabledIn(overlay: [String: Any]?, patchParams: [String: Any]?) -> Bool {
+        if let tun = overlay?["tun"] as? [String: Any],
+           (tun["enable"] as? Bool) == false { return true }
+        if let tun = patchParams?["tun"] as? [String: Any],
+           (tun["enable"] as? Bool) == false { return true }
+        if let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID),
+           !readTunnelSettings(container: container).enabled { return true }
+        return false
+    }
+
+    /// After a forwarded config.apply / config.patch succeeded,
+    /// re-start the channel TUN runner when the triple moved.
+    /// No-op when nothing tun-relevant changed, when TUN is
+    /// intentionally off, or when there is no runner to restore.
+    /// A failed re-start never fails the apply (it succeeded) —
+    /// it records the honest "需要重启 VPN" state instead.
+    private func maybeRestartChannelTun(after request: [String: Any]) async {
+        guard session != 0, channelHandle != 0, !isStopping else { return }
+        let method = request["method"] as? String ?? ""
+        let overlay = request["overlay"] as? [String: Any]
+        let patchParams = method == "config.patch"
+            ? (request["params"] as? [String: Any]) : nil
+        let fingerprint = tunTripleFingerprint(overlay: overlay, patchParams: patchParams)
+        guard fingerprint != channelTunFingerprint else { return }
+        if tunDisabledIn(overlay: overlay, patchParams: patchParams) {
+            channelTunFingerprint = fingerprint
+            clearTunRestartNeeded()
+            Self.log.info("live \(method, privacy: .public) disabled TUN; runner stays stopped by design")
+            return
+        }
+        do {
+            try await restartChannelTun()
+            channelTunFingerprint = fingerprint
+            clearTunRestartNeeded()
+            Self.log.info("TUN runner restarted after live \(method, privacy: .public) (triple changed)")
+        } catch {
+            let reason = "配置已应用，但 TUN 数据面重启失败（\(error.localizedDescription)）：流量可能不再走代理，请重启 VPN 恢复"
+            tunRestartNeeded = reason
+            writeTunRestartNeeded(reason: reason)
+            Self.log.error("TUN restart after live \(method, privacy: .public) failed: \(error.localizedDescription, privacy: .public); restart the VPN to restore the data plane")
+        }
+    }
+
+    /// Opens a FRESH packet channel and re-runs tun.start on it
+    /// (the old handle's device half was consumed by the first
+    /// tun.start and cannot be re-used). On success the pump is
+    /// swapped onto the new channel and the old channel is closed;
+    /// on failure the new channel is closed and the old handle is
+    /// left alone (its runner is already dead — the caller records
+    /// the restart-needed state instead of pretending otherwise).
+    private func restartChannelTun() async throws {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) else {
+            throw TunnelSetupError.noAppGroup
+        }
+        let tun = readTunnelSettings(container: container)
+        guard tun.enabled else {
+            throw TunnelSetupError.tunDisabled
+        }
+        let oldHandle = channelHandle
+        let newHandle = concord_ios_packet_channel_open()
+        guard newHandle != 0 else {
+            throw TunnelSetupError.channelFailed
+        }
+        do {
+            let params = tunStartParams(handle: newHandle, tun: tun)
+            _ = try await sendCoreRequest(method: "tun.start", params: params, timeoutSeconds: 60)
+        } catch {
+            concord_ios_packet_channel_close(newHandle)
+            throw error
+        }
+        channelHandle = newHandle
+        if oldHandle != 0 {
+            concord_ios_packet_channel_close(oldHandle)
+        }
+    }
+
+    /// Writes the restart-needed flag for the app's Dashboard
+    /// (TunnelManager.checkTunRestartNeeded reads it).
+    private func writeTunRestartNeeded(reason: String) {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) else { return }
+        let record: [String: Any] = [
+            "reason": reason,
+            "updatedAt": Int64(Date().timeIntervalSince1970 * 1000),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: record) else { return }
+        try? data.write(to: container.appendingPathComponent(tunRestartNeededFileName), options: .atomic)
+    }
+
+    /// Clears the restart-needed flag (successful start / restart).
+    private func clearTunRestartNeeded() {
+        tunRestartNeeded = nil
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) else { return }
+        try? FileManager.default.removeItem(at: container.appendingPathComponent(tunRestartNeededFileName))
+    }
+
+    /// Deletes stale snapshot files (interface B8, stop-part) so the
+    /// app never shows last-round data as current after the tunnel
+    /// stops. The ConcordClient maxAge part (another worker) is the
+    /// backstop; deleting here removes the files at the source.
+    /// Also clears the TUN restart-needed flag: with the VPN off
+    /// there is no data plane to restart.
+    private func deleteStaleSnapshots() {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) else { return }
+        let snapshots = container.appendingPathComponent("snapshots")
+        for name in ["logs", "dns", "route", "engine"] {
+            try? FileManager.default.removeItem(at: snapshots.appendingPathComponent("\(name).json"))
+        }
+        try? FileManager.default.removeItem(at: container.appendingPathComponent(tunRestartNeededFileName))
+        tunRestartNeeded = nil
+    }
+
     // MARK: - Shared files (App Group)
 
     private struct TunnelSettings {
@@ -1582,6 +1806,51 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return (NEIPv4Route(destinationAddress: address, subnetMask: mask), nil)
     }
 
+    /// The config.apply overlay, built from the shared files (see
+    /// the header comment). Used identically by the startup apply
+    /// in bootCore and by live re-applies in handleAppMessage, so
+    /// both see the same fragments — including the "tun" fragment
+    /// the B1 fingerprint compares.
+    private func buildApplyOverlay() -> [String: Any] {
+        var overlay: [String: Any] = [:]
+        if let mitm = mergedMitmOverlay() {
+            overlay["mitm"] = mitm
+        }
+        if let rules = overlayRules() {
+            overlay["rules"] = rules
+        }
+        if let dns = effectiveSection(file: dnsFileName, section: "dns") {
+            overlay["dns"] = dns
+        }
+        if let ntp = effectiveSection(file: ntpFileName, section: "ntp") {
+            overlay["ntp"] = ntp
+        }
+        if let sniffer = effectiveSection(file: snifferFileName, section: "sniffer") {
+            overlay["sniffer"] = sniffer
+        }
+        if let tun = effectiveSection(file: nil, section: "tun") {
+            overlay["tun"] = tun
+        }
+        if let hosts = readSharedJSON(name: hostsFileName) {
+            overlay["hosts"] = hosts
+        }
+        if let generalOverlay = readSharedJSON(name: generalOverlayFileName) {
+            for (key, value) in generalOverlay {
+                overlay[key] = value
+            }
+        }
+        // General overrides (test-url, geodata-loader, …) are
+        // top-level RawConfig keys: they merge straight into the
+        // overlay. ipv6 / unified-delay / tcp-concurrent overrides
+        // are ALSO in the overlay (so a live re-apply honours them).
+        if let generalOverrides = effectiveTopLevelOverrides(section: "general") {
+            for (key, value) in generalOverrides {
+                overlay[key] = value
+            }
+        }
+        return overlay
+    }
+
     /// The MITM overlay for config.apply: the user's own mitm.json
     /// first, then the enabled modules' merged lists from
     /// module-mitm.json (user hostnames first, so an exclusion the
@@ -1615,15 +1884,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return rules
     }
 
-    /// The overlay's top-level "rules": the user's added rules first,
-    /// then the enabled modules' merged rules. Nil when there are none.
+    /// The overlay's top-level "rules": the enabled modules' merged
+    /// rules FIRST, then the user's added rules (FlClash
+    /// rawConfig['rules'] = [...mitm.rules, ...rules] — rules here
+    /// already has the added rules first). The core prepends overlay
+    /// rules before the profile's own, so on a conflict the module
+    /// rule wins, like FlClash. Nil when there are none.
     private func overlayRules() -> [String]? {
         var rules: [String] = []
-        if let added = readSharedJSONArray(name: addedRulesFileName) {
-            rules.append(contentsOf: added)
-        }
         if let modules = moduleRules() {
             rules.append(contentsOf: modules)
+        }
+        if let added = readSharedJSONArray(name: addedRulesFileName) {
+            rules.append(contentsOf: added)
         }
         return rules.isEmpty ? nil : rules
     }

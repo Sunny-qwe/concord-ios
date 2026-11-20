@@ -178,6 +178,45 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
 final class CustomSubscriptionStore: ObservableObject {
     @Published var subscriptions: [CustomSubscription] = []
 
+    /// Which custom subscription was last baked into which profile
+    /// (profile UUID string → custom-subscription UUID string).
+    /// ProfileStore reads this when a subscription updates or when
+    /// the user switches to a profile, so the baked blocks are
+    /// re-applied from the store instead of being wiped (B9/B10).
+    /// Persisted in UserDefaults (not in custom-subscriptions.json,
+    /// whose shape must keep decoding old files).
+    private static let bakeMapKey = "ConcordiOS.customBakeMap.v1"
+
+    private static func bakeMap() -> [String: String] {
+        UserDefaults.standard.dictionary(forKey: bakeMapKey) as? [String: String] ?? [:]
+    }
+
+    private static func saveBakeMap(_ map: [String: String]) {
+        UserDefaults.standard.set(map, forKey: bakeMapKey)
+    }
+
+    /// Records that `subscriptionID` was baked into `profileID`
+    /// (called by the editor's "应用到当前配置").
+    static func noteBaked(subscriptionID: UUID, into profileID: UUID) {
+        var map = bakeMap()
+        map[profileID.uuidString] = subscriptionID.uuidString
+        saveBakeMap(map)
+    }
+
+    /// The custom subscription baked into `profileID`, if any.
+    static func bakedSubscriptionID(for profileID: UUID) -> UUID? {
+        guard let raw = bakeMap()[profileID.uuidString] else { return nil }
+        return UUID(uuidString: raw)
+    }
+
+    /// Drops the mapping for `profileID` (the mapped subscription
+    /// was deleted).
+    static func clearBakedSubscription(for profileID: UUID) {
+        var map = bakeMap()
+        map.removeValue(forKey: profileID.uuidString)
+        saveBakeMap(map)
+    }
+
     private var fileURL: URL? {
         ConfigStore.sharedFileURL(name: "custom-subscriptions.json")
     }
@@ -217,6 +256,15 @@ final class CustomSubscriptionStore: ObservableObject {
     func delete(_ sub: CustomSubscription) {
         subscriptions.removeAll { $0.id == sub.id }
         save()
+        // Drop bake-map entries pointing at the deleted
+        // subscription: the next update of an affected profile
+        // falls back to the blocks already in its file instead of
+        // resurrecting a deleted subscription (see ProfileStore).
+        var map = Self.bakeMap()
+        for (profileID, subID) in map where subID == sub.id.uuidString {
+            map.removeValue(forKey: profileID)
+        }
+        Self.saveBakeMap(map)
     }
 
     // MARK: - Baking into the active profile YAML
@@ -255,6 +303,74 @@ final class CustomSubscriptionStore: ObservableObject {
         )
         result = bakeDialers(sub.dialers, into: result)
         return result
+    }
+
+    /// Carries the marker-delimited custom blocks (groups /
+    /// providers / rules) and the inline `dialer-proxy:` lines from
+    /// an OLD profile text into a fresh download, verbatim. Used
+    /// when no bake-map entry exists for the profile (bakes made
+    /// before the map existed). The fresh text never has the blocks
+    /// already, so this is a pure re-insert; a block missing from
+    /// the old text is simply not carried over.
+    static func reapplyBakedBlocks(from oldText: String, into newText: String) -> String {
+        var result = newText
+        for (key, begin, end) in [
+            ("proxy-groups:", groupsBegin, groupsEnd),
+            ("proxy-providers:", proxyProvidersBegin, proxyProvidersEnd),
+            ("rule-providers:", ruleProvidersBegin, ruleProvidersEnd),
+            ("rules:", rulesBegin, rulesEnd),
+        ] {
+            let oldLines = oldText.components(separatedBy: "\n")
+            guard let beginIndex = oldLines.firstIndex(of: begin),
+                  let endIndex = oldLines.firstIndex(of: end),
+                  endIndex > beginIndex else { continue }
+            let inner = Array(oldLines[(beginIndex + 1)..<endIndex])
+            guard !inner.isEmpty else { continue }
+            result = bakeSection(result, key: key, begin: begin, end: end, lines: inner)
+        }
+        let dialers = extractDialers(from: oldText)
+        if !dialers.isEmpty {
+            result = bakeDialers(dialers, into: result)
+        }
+        return result
+    }
+
+    /// Reads `dialer-proxy:` lines out of a profile's `proxies:`
+    /// section, paired with the `- name:` line above each one.
+    /// Exact-name matching: a dialer for "US" must not land on
+    /// "US-2" (the old contains() match did exactly that).
+    static func extractDialers(from text: String) -> [CustomDialer] {
+        var out: [CustomDialer] = []
+        let lines = text.components(separatedBy: "\n")
+        guard let proxiesIndex = lines.firstIndex(where: { $0 == "proxies:" || $0.hasPrefix("proxies: ") }) else {
+            return out
+        }
+        var currentName: String?
+        for line in lines[(proxiesIndex + 1)...] {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") && !trimmed.isEmpty { break }
+            if trimmed.hasPrefix("- name:") {
+                currentName = Self.exactName(from: trimmed)
+            } else if trimmed.hasPrefix("dialer-proxy:"), let name = currentName {
+                let value = Self.exactName(from: trimmed, key: "dialer-proxy:")
+                if !value.isEmpty {
+                    out.append(CustomDialer(proxy: name, dialer: value))
+                }
+            }
+        }
+        return out
+    }
+
+    /// The value after `- name:` / `dialer-proxy:` with quotes
+    /// stripped — the whole value, not a substring match.
+    private static func exactName(from line: String, key: String = "- name:") -> String {
+        guard let range = line.range(of: key) else { return "" }
+        var value = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+        if (value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2) ||
+            (value.hasPrefix("'") && value.hasSuffix("'") && value.count >= 2) {
+            value = String(value.dropFirst().dropLast())
+        }
+        return value
     }
 
     /// Insert (or re-insert) a marker-delimited block right after
@@ -333,7 +449,7 @@ final class CustomSubscriptionStore: ObservableObject {
         for dialer in dialers where !dialer.proxy.isEmpty && !dialer.dialer.isEmpty {
             guard let nameIndex = lines[(proxiesIndex + 1)...].firstIndex(where: {
                 $0.trimmingCharacters(in: .whitespaces).hasPrefix("- name:") &&
-                $0.contains(dialer.proxy)
+                Self.exactName(from: $0.trimmingCharacters(in: .whitespaces)) == dialer.proxy
             }) else { continue }
             var end = lines.count
             for i in (nameIndex + 1)..<lines.count {

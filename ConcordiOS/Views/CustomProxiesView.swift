@@ -11,6 +11,7 @@ struct CustomProxiesView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @StateObject private var store = CustomProxyStore()
     @State private var editing: CustomProxy?
+    @State private var editingRawIndex: Int?
     @State private var message: String?
 
     var body: some View {
@@ -54,6 +55,39 @@ struct CustomProxiesView: View {
                     Label("添加代理", systemImage: "plus")
                 }
             }
+            // "添加到本地"的节点 (rawProxies): the full definition
+            // as the core wrote it — ws-opts / grpc-opts /
+            // reality-opts / flow / alpn included. They used to be
+            // invisible here and undeletable anywhere; now they are
+            // listed with edit + delete. Edit only touches
+            // name / server / port (the form cannot express the
+            // rest, so the remaining keys are kept verbatim).
+            Section("本地添加的节点（\(store.rawProxies.count) 个）") {
+                if store.rawProxies.isEmpty {
+                    Text("还没有通过「添加到本地」加入的节点。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(Array(store.rawProxies.enumerated()), id: \.offset) { index, definition in
+                    Button {
+                        editingRawIndex = index
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(definition.objectValue?["name"]?.stringValue ?? "—")
+                                Text("\(definition.objectValue?["type"]?.stringValue ?? "—") · \(definition.objectValue?["server"]?.stringValue ?? "—"):\(rawPortText(definition))")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                .onDelete { offsets in
+                    deleteRawProxies(at: offsets)
+                }
+            }
             if let message {
                 Section {
                     Text(message)
@@ -70,6 +104,36 @@ struct CustomProxiesView: View {
                 Task { await saveProxy(saved) }
             }
         }
+        .sheet(isPresented: Binding(
+            get: { editingRawIndex != nil },
+            set: { if !$0 { editingRawIndex = nil } }
+        )) {
+            if let index = editingRawIndex, store.rawProxies.indices.contains(index) {
+                RawProxyEditView(definition: store.rawProxies[index]) { saved in
+                    store.rawProxies[index] = saved
+                    store.save()
+                    Task { await bakeIntoProfile() }
+                } onDelete: {
+                    deleteRawProxies(at: IndexSet(integer: index))
+                }
+            }
+        }
+    }
+
+    private func rawPortText(_ definition: JSONValue) -> String {
+        guard let port = definition.objectValue?["port"] else { return "—" }
+        if case .int(let value) = port { return String(value) }
+        if case .double(let value) = port { return String(Int(value)) }
+        return "—"
+    }
+
+    /// Deletes raw ("添加到本地") nodes for real: removed from
+    /// the store, persisted, and re-baked out of the profile.
+    private func deleteRawProxies(at offsets: IndexSet) {
+        store.rawProxies.remove(atOffsets: offsets)
+        store.save()
+        editingRawIndex = nil
+        Task { await bakeIntoProfile() }
     }
 
     private func saveProxy(_ proxy: CustomProxy) async {
@@ -203,5 +267,98 @@ struct CustomProxyFormView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Raw ("添加到本地") node editor
+
+/// Edits one raw node definition losslessly for the fields the
+/// form can express (name / server / port); every other key
+/// (ws-opts, grpc-opts, reality-opts, flow, alpn, …) is kept
+/// verbatim in the JSON object. The full definition is shown
+/// below so the user can see what is preserved. Delete removes
+/// the node from the store (and, via the caller's re-bake, from
+/// the profile) for real.
+struct RawProxyEditView: View {
+    let definition: JSONValue
+    var onSave: (JSONValue) -> Void
+    var onDelete: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var server: String
+    @State private var portText: String
+
+    init(definition: JSONValue, onSave: @escaping (JSONValue) -> Void, onDelete: @escaping () -> Void) {
+        self.definition = definition
+        self.onSave = onSave
+        self.onDelete = onDelete
+        let object = definition.objectValue ?? [:]
+        _name = State(initialValue: object["name"]?.stringValue ?? "")
+        _server = State(initialValue: object["server"]?.stringValue ?? "")
+        var port = ""
+        if let value = object["port"], case .int(let number) = value {
+            port = String(number)
+        }
+        _portText = State(initialValue: port)
+    }
+
+    private var yamlText: String {
+        YAMLValue.proxyItemLines(for: definition, indent: 2).joined(separator: "\n")
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("基本") {
+                    TextField("名称", text: $name)
+                    TextField("服务器", text: $server)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                    TextField("端口", text: $portText)
+                        .keyboardType(.numberPad)
+                    Text("只能改这三项：其余参数（传输选项等）不在表单里，会按原样保留。")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                Section("完整定义（原样保留）") {
+                    Text(yamlText)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Section {
+                    Button("删除此节点", role: .destructive) {
+                        onDelete()
+                        dismiss()
+                    }
+                }
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .navigationTitle("编辑本地节点")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        save()
+                        dismiss()
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
+    }
+
+    private func save() {
+        guard var dict = definition.objectValue else { return }
+        dict["name"] = .string(name.trimmingCharacters(in: .whitespaces))
+        let trimmedServer = server.trimmingCharacters(in: .whitespaces)
+        if !trimmedServer.isEmpty { dict["server"] = .string(trimmedServer) }
+        if let port = Int(portText.trimmingCharacters(in: .whitespaces)), port > 0 {
+            dict["port"] = .int(Int64(port))
+        }
+        onSave(.object(dict))
     }
 }

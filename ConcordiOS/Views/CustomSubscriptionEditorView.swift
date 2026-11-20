@@ -358,7 +358,16 @@ struct CustomSubscriptionEditorView: View {
             message = "没有可写入的当前配置（先导入一个订阅）"
             return
         }
+        guard let active = profileStore.activeProfile else {
+            message = "没有可写入的当前配置（先导入一个订阅）"
+            return
+        }
         text = CustomSubscriptionStore.bake(sub, into: text)
+        // Record which custom subscription lives in this profile,
+        // so a later subscription update (or switching back to it)
+        // re-applies these blocks from the store instead of wiping
+        // them (B9/B10).
+        CustomSubscriptionStore.noteBaked(subscriptionID: sub.id, into: active.id)
         message = await profileStore.saveActiveProfileYAML(text)
         if let live = await profileStore.reapplyActive() {
             message = (message ?? "") + " " + live

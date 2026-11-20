@@ -84,6 +84,14 @@ final class MitmScriptStore: ObservableObject {
         scripts = decoded.sorted { ($0.order, $0.id) < ($1.order, $1.id) }
     }
 
+    /// Re-read the script registry from disk (used after a backup
+    /// restore). Note: MitmScriptsView owns a private
+    /// MitmScriptStore instance, so BackupView cannot reach it —
+    /// the page re-loads from disk the next time it opens.
+    func reload() {
+        load()
+    }
+
     private func persist() {
         guard let dir = scriptsDirectoryURL, let url = registryURL,
               let data = try? JSONEncoder().encode(scripts) else { return }
@@ -186,7 +194,7 @@ final class MitmScriptStore: ObservableObject {
         updatingIds.insert(script.id)
         defer { updatingIds.remove(script.id) }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let data = try await mitmDownloadValidated(from: url)
             guard data.count <= maxMitmResourceSize else {
                 lastError = "“\(script.label)”超过 \(maxMitmResourceSize / 1_048_576) MB，放弃更新"
                 return

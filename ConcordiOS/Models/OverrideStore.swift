@@ -116,8 +116,15 @@ final class OverrideStore: ObservableObject {
         switch section {
         case .general:
             return [
+                // B24: test-url is NOT a core RawConfig key — it is
+                // config.apply / config.patch Options.testUrl, which
+                // the app never sends. It is stored client-side only
+                // (see testURL(scope:)) and stripped from
+                // overrides.json before it can reach the core, so
+                // the core never logs unknown_key for it.
                 OverrideKeySpec(key: "test-url", label: "测速地址", kind: .text,
-                                defaultValue: .string("")),
+                                defaultValue: .string(""),
+                                description: "只在 App 内用作测速地址兜底，不会发给核心（核心没有这个配置键）"),
                 OverrideKeySpec(key: "unified-delay", label: "统一延迟测试", kind: .toggle,
                                 defaultValue: .bool(false)),
                 OverrideKeySpec(key: "tcp-concurrent", label: "TCP 并发", kind: .toggle,
@@ -173,26 +180,46 @@ final class OverrideStore: ObservableObject {
             ]
         case .tun:
             return [
-                OverrideKeySpec(key: "mtu", label: "MTU", kind: .number, defaultValue: .int(9000), min: 1280, max: 65535),
+                // B12: on iOS only MTU + congestion-controller reach
+                // tun.start (PacketTunnelProvider.readTunnelSettings);
+                // every other key below only enters Applied.tun, whose
+                // DeviceSource::Create path never runs on iOS — so
+                // the key is stored and sent, but has no effect on
+                // this platform. Each dead key says so in its
+                // description (shown in the row and the add sheet).
+                OverrideKeySpec(key: "mtu", label: "MTU", kind: .number, defaultValue: .int(9000), min: 1280, max: 65535,
+                                description: "在 iOS 上生效：下次启动 VPN 时经 tun.start 应用"),
                 OverrideKeySpec(key: "congestion-controller", label: "拥塞控制算法", kind: .text, defaultValue: .string("cubic"),
-                                description: "如 cubic、bbr；由核心在 tun.start 时使用"),
+                                description: "如 cubic、bbr；在 iOS 上生效：下次启动 VPN 时经 tun.start 应用"),
                 OverrideKeySpec(key: "strict-route", label: "严格路由", kind: .toggle, defaultValue: .bool(false),
-                                description: "强制所有流量走 TUN 路由表"),
-                OverrideKeySpec(key: "route-address", label: "路由地址", kind: .stringList, defaultValue: .array([])),
-                OverrideKeySpec(key: "route-exclude-address", label: "排除路由地址", kind: .stringList, defaultValue: .array([])),
-                OverrideKeySpec(key: "dns-hijack", label: "DNS 劫持", kind: .stringList, defaultValue: .array([.string("any:53")])),
-                OverrideKeySpec(key: "udp-timeout", label: "UDP 超时（秒）", kind: .number, defaultValue: .int(300), min: 1),
-                OverrideKeySpec(key: "disable-icmp-forwarding", label: "禁用 ICMP 转发", kind: .toggle, defaultValue: .bool(false)),
-                OverrideKeySpec(key: "gso", label: "GSO", kind: .toggle, defaultValue: .bool(false)),
-                OverrideKeySpec(key: "include-interface", label: "包含网卡", kind: .stringList, defaultValue: .array([])),
-                OverrideKeySpec(key: "exclude-interface", label: "排除网卡", kind: .stringList, defaultValue: .array([])),
-                OverrideKeySpec(key: "include-uid", label: "包含 UID", kind: .numberList, defaultValue: .array([])),
-                OverrideKeySpec(key: "exclude-uid", label: "排除 UID", kind: .numberList, defaultValue: .array([])),
-                OverrideKeySpec(key: "exclude-src-port", label: "排除源端口", kind: .numberList, defaultValue: .array([])),
-                OverrideKeySpec(key: "exclude-dst-port", label: "排除目标端口", kind: .numberList, defaultValue: .array([])),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
+                OverrideKeySpec(key: "route-address", label: "路由地址", kind: .stringList, defaultValue: .array([]),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
+                OverrideKeySpec(key: "route-exclude-address", label: "排除路由地址", kind: .stringList, defaultValue: .array([]),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径；要排除路由请用「网络」页的本机网络设置（写 tunnel.json，由系统路由生效）"),
+                OverrideKeySpec(key: "dns-hijack", label: "DNS 劫持", kind: .stringList, defaultValue: .array([.string("any:53")]),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径；隧道内的 DNS 劫持由扩展在 tun.start 时直接配置"),
+                OverrideKeySpec(key: "udp-timeout", label: "UDP 超时（秒）", kind: .number, defaultValue: .int(300), min: 1,
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
+                OverrideKeySpec(key: "disable-icmp-forwarding", label: "禁用 ICMP 转发", kind: .toggle, defaultValue: .bool(false),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
+                OverrideKeySpec(key: "gso", label: "GSO", kind: .toggle, defaultValue: .bool(false),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
+                OverrideKeySpec(key: "include-interface", label: "包含网卡", kind: .stringList, defaultValue: .array([]),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
+                OverrideKeySpec(key: "exclude-interface", label: "排除网卡", kind: .stringList, defaultValue: .array([]),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
+                OverrideKeySpec(key: "include-uid", label: "包含 UID", kind: .numberList, defaultValue: .array([]),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
+                OverrideKeySpec(key: "exclude-uid", label: "排除 UID", kind: .numberList, defaultValue: .array([]),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
+                OverrideKeySpec(key: "exclude-src-port", label: "排除源端口", kind: .numberList, defaultValue: .array([]),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
+                OverrideKeySpec(key: "exclude-dst-port", label: "排除目标端口", kind: .numberList, defaultValue: .array([]),
+                                description: "iOS 上无效：该键只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路"),
                 OverrideKeySpec(key: "loopback-address", label: "回流地址", kind: .stringList,
                                 defaultValue: .array([]),
-                                description: "发往这些 IPv4 地址的 TCP 连接在虚拟接口上折返回本机；核心接受该配置（tun.loopback-address），但当前版本尚未实现回流路由"),
+                                description: "iOS 上无效：核心接受该配置（tun.loopback-address），但当前版本尚未实现回流路由"),
             ]
         case .sniffer:
             return [
@@ -220,6 +247,47 @@ final class OverrideStore: ObservableObject {
                                 description: "iOS 不允许 App 修改系统时间，该值会传给核心，由核心决定是否执行"),
             ]
         }
+    }
+
+    // MARK: - Client-side test URL (config B24)
+
+    /// The client-side fallback test URL: the general `test-url`
+    /// override, profile scope winning over global. This value is
+    /// stored client-side ONLY and is never sent to the core —
+    /// there is no such RawConfig key (it is config.apply /
+    /// config.patch `Options.testUrl`, which the app never sends;
+    /// the core would only log `unknown_key` for it). ProxyStore
+    /// reads it as the fallback delay-test URL when a group has no
+    /// testUrl of its own. Returns nil when unset or blank.
+    /// READ ACCESSOR for ProxyStore: `OverrideStore.shared.testURL(scope:)`
+    /// (instance) or `OverrideStore.savedTestURL(profileID:)` (static).
+    func testURL(scope: String?) -> String? {
+        if let scope,
+           let value = profiles[scope]?["general"]?["test-url"]?.stringValue,
+           !value.trimmingCharacters(in: .whitespaces).isEmpty {
+            return value.trimmingCharacters(in: .whitespaces)
+        }
+        if let value = global["general"]?["test-url"]?.stringValue,
+           !value.trimmingCharacters(in: .whitespaces).isEmpty {
+            return value.trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
+    /// Static read for callers without the shared store
+    /// (ProxyStore): `OverrideStore.savedTestURL(profileID:)` —
+    /// profile scope wins over global; nil when unset/blank.
+    static func savedTestURL(profileID: UUID?) -> String? {
+        shared.testURL(scope: profileID?.uuidString)
+    }
+
+    /// The general section with `test-url` removed: that key must
+    /// never reach the core (see testURL(scope:)). The stored
+    /// value itself is untouched.
+    private static func withoutTestURL(_ dict: [String: [String: JSONValue]]) -> [String: [String: JSONValue]] {
+        var out = dict
+        out["general"]?.removeValue(forKey: "test-url")
+        return out
     }
 
     // MARK: - Scope access
@@ -283,12 +351,14 @@ final class OverrideStore: ObservableObject {
     }
 
     /// The shared overrides.json the extension merges into
-    /// config.apply's overlay. Written on every change.
+    /// config.apply's overlay. Written on every change. `test-url`
+    /// is stripped here (config B24): it is stored client-side
+    /// only and must never reach the core.
     private func writeSharedFile() {
         var doc: [String: Any] = [:]
         if let activeProfileID { doc["activeProfileId"] = activeProfileID }
-        doc["global"] = jsonObject(global)
-        doc["profiles"] = profiles.mapValues { jsonObject($0) }
+        doc["global"] = jsonObject(Self.withoutTestURL(global))
+        doc["profiles"] = profiles.mapValues { jsonObject(Self.withoutTestURL($0)) }
         guard let url = ConfigStore.sharedFileURL(name: ConfigStore.overridesFileName),
               let data = try? JSONSerialization.data(withJSONObject: doc) else { return }
         try? data.write(to: url, options: .atomic)
@@ -327,6 +397,11 @@ final class OverrideStore: ObservableObject {
             global = saved.global
             profiles = saved.profiles
         }
+        // B24: strip the client-side-only test-url from the shared
+        // file (it must never reach the core); the stored value in
+        // UserDefaults is untouched.
+        global = withoutTestURL(global)
+        profiles = profiles.mapValues { withoutTestURL($0) }
         let doc: [String: Any] = [
             "activeProfileId": id.uuidString,
             "global": global.mapValues { section in
@@ -384,16 +459,26 @@ final class OverrideStore: ObservableObject {
 
     /// The YAML text for one scope: one top-level mapping per
     /// section that has enabled keys. Read-only preview (there is
-    /// no YAML parser in the app to parse edits back).
+    /// no YAML parser in the app to parse edits back). `test-url`
+    /// is left out of the preview (config B24): it is stored
+    /// client-side only and never sent to the core, so showing it
+    /// here would imply it is applied; a note line says so when
+    /// one is stored.
     func yamlText(scope: String?) -> String {
         var doc: [String: JSONValue] = [:]
         for section in OverrideSection.allCases {
-            let values = state(scope: scope, section: section)
+            var values = state(scope: scope, section: section)
+            if section == .general { values.removeValue(forKey: "test-url") }
             guard !values.isEmpty else { continue }
             doc[section.rawValue] = .object(Self.expanded(values))
         }
-        guard !doc.isEmpty else { return "# 暂无覆盖项\n" }
-        return YAMLValue.lines(for: .object(doc), indent: 0).joined(separator: "\n") + "\n"
+        var text = doc.isEmpty
+            ? "# 暂无覆盖项\n"
+            : YAMLValue.lines(for: .object(doc), indent: 0).joined(separator: "\n") + "\n"
+        if testURL(scope: scope) != nil {
+            text += "# 注：test-url 只保存在 App 内用作测速地址兜底，不会发给核心\n"
+        }
+        return text
     }
 
     // MARK: - Apply

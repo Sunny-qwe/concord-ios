@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // MARK: - Main navigation (reference screenshots IMG_1082 / IMG_1083)
 // Four tabs — 仪表盘 / 代理 / 配置 / 工具 — in a floating white
@@ -45,6 +46,10 @@ struct ContentView: View {
 
     @State private var selectedTab: AppTab = .dashboard
     @State private var updateAlertMessage: String?
+    /// The 20-minute subscription auto-update timer (S8): a
+    /// Combine cancellable held in @State so it lives as long as
+    /// the root view and is cancelled with it.
+    @State private var profileUpdateTimer: AnyCancellable?
     @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = false
     @AppStorage("ConcordiOS.geoAutoUpdateHours") private var geoAutoUpdateHours = 24.0
 
@@ -77,6 +82,14 @@ struct ContentView: View {
         .preferredColorScheme(themeStore.colorScheme)
         .environment(\.dynamicTypeSize, themeStore.dynamicTypeSize ?? .large)
         .task {
+            // S2 (config B2): make sure the shared files the
+            // extension reads (dns.json / sniffer.json /
+            // general.json / tunnel.json / mitm.json) exist before
+            // anything boots the core — a fresh install without
+            // them makes the core run its own defaults (DNS
+            // disabled) instead of the UI's. Only missing files
+            // are written; existing ones are never overwritten.
+            settingsStore.ensureSharedFilesExist()
             // Load the first snapshot for every page once, like FlClash
             // does when the home page mounts.
             await proxyStore.refresh()
@@ -88,11 +101,26 @@ struct ContentView: View {
             // (they live in SettingsStore's saved blob).
             profileStore.checkCertificate = settingsStore.checkCertificate
             profileStore.autoCloseConnections = settingsStore.autoCloseConnections
-            // "自动更新订阅" is a real switch now: refresh remote
-            // profiles on launch (updateAll re-applies the active one).
+            // S8: the global auto-update switch for
+            // updateDueProfiles(), synced the same way.
+            profileStore.globalAutoUpdateEnabled = settingsStore.autoUpdateProfiles
+            // "自动更新订阅" is a real switch now: update only the
+            // URL profiles that are actually due (global switch +
+            // per-profile switch + interval), not every profile on
+            // every launch (S8: updateAll() updated all of them).
             if settingsStore.autoUpdateProfiles {
-                await profileStore.updateAll()
+                await profileStore.updateDueProfiles()
             }
+            // S8: 20-minute timer (FlClash auto-update scheduler):
+            // re-check due profiles while the app stays open.
+            // updateDueProfiles() itself refuses to do anything
+            // while the global switch is off, so no extra gating
+            // is needed here.
+            profileUpdateTimer = Timer.publish(every: 1200, on: .main, in: .common)
+                .autoconnect()
+                .sink { _ in
+                    Task { await profileStore.updateDueProfiles() }
+                }
             // Geo auto-update (ResourcesView setting): refresh the
             // three Geo databases when the interval has elapsed.
             if geoAutoUpdate {
@@ -123,6 +151,18 @@ struct ContentView: View {
                 await connectionStore.refresh()
                 await logStore.refresh()
             }
+        }
+        // NOTE (audit A1): a node picked while the VPN was off is
+        // applied on the tunnel-connected edge by ProxyStore's own
+        // tunnel-status subscription (applyPendingSelectionsOnConnect,
+        // with a bounded retry) — there is deliberately NO second
+        // trigger here. An earlier .onChange(of: isRunning) trigger
+        // fired the same refresh on the .connecting edge too, racing
+        // the subscription's own refresh.
+        .onChange(of: settingsStore.autoUpdateProfiles) { _, enabled in
+            // S8: keep the due-update gate in sync when the user
+            // flips the switch in Settings while the app runs.
+            profileStore.globalAutoUpdateEnabled = enabled
         }
         .alert("发现更新", isPresented: Binding(
             get: { updateAlertMessage != nil },

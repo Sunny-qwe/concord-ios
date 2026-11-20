@@ -26,7 +26,11 @@ struct LiveConnection: Identifiable {
 
     init(_ c: ConcordConnection) {
         id = c.connectionId
-        start = Date(timeIntervalSince1970: TimeInterval(c.start))
+        // Upstream ConnectionInfo.start is unix MILLIS
+        // (crates/api/src/convert.rs: `start: unix_millis(...)`) —
+        // dividing by 1000; the old code read millis as seconds and
+        // put every connection ~56000 years in the future.
+        start = Date(timeIntervalSince1970: TimeInterval(c.start) / 1000)
         network = c.network
         source = "\(c.sourceIp):\(c.sourcePort)"
         destination = c.destinationIp.map { "\($0):\(c.destinationPort)" } ?? ":\(c.destinationPort)"

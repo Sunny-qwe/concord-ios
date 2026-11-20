@@ -11,11 +11,13 @@ import UniformTypeIdentifiers
 // re-downloads via update (FlClash behavior).
 //
 // Honest gaps, stated in the UI:
-// - Auto-update is stored but no periodic scheduler is wired yet;
-//   manual 更新 remains the path.
-// - The age key is stored per profile and never logged; verified in
-//   code, it is never read back anywhere (no download or decrypt
-//   path consumes it yet).
+// - Auto-update is stored and updateDueProfiles() honors the
+//   per-profile switch + interval; the 20-minute timer that calls
+//   it is wired by another worker — until then manual 更新 remains
+//   the path (the page still says so below).
+// - The age key is stored per profile and never logged; it is now
+//   consumed on download / update / file upload via the core's
+//   config.decrypt (ProfileStore), which needs a running tunnel.
 // - ConfigEditorView now edits THIS profile's file (v0.2.32),
 //   active or not, so the file row's editor opens the right file.
 // - An uploaded file is staged until save (FlClash stages its
@@ -355,6 +357,23 @@ struct EditProfileView: View {
         let trimmedKey = ageSecretKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let interval = Int(intervalText)
         let effectiveAutoUpdate = turnOffAutoUpdate ? false : autoUpdate
+        // FlClash edit.dart: a staged file wins over a URL change —
+        // the file branch saves the file and never re-downloads in
+        // the same save, so the upload cannot be overwritten by a
+        // fresh download (B13). And meta is persisted only AFTER
+        // the file write succeeds, so a file failure leaves no
+        // partial save behind (B14).
+        if let data = pendingFileData {
+            await profileStore.updateProfileFile(
+                profile, data: data,
+                ageSecretKey: trimmedKey.isEmpty ? nil : trimmedKey
+            )
+            if let error = profileStore.lastError {
+                validationError = error
+                return
+            }
+        }
+        let keyChanged = (profile.ageSecretKey ?? "") != trimmedKey
         let urlChanged = profileStore.updateProfileMeta(
             profile,
             name: trimmedName,
@@ -363,14 +382,19 @@ struct EditProfileView: View {
             autoUpdate: effectiveAutoUpdate,
             autoUpdateIntervalMinutes: effectiveAutoUpdate ? interval : profile.autoUpdateIntervalMinutes
         )
-        if let data = pendingFileData {
-            await profileStore.updateProfileFile(profile, data: data)
-            if let error = profileStore.lastError {
-                validationError = error
-                return
-            }
+        // A file was just uploaded: do not re-download over it in
+        // this save, even when the URL (or key) also changed. The
+        // next manual / automatic update will fetch from the new
+        // URL; the auto-update prompt above already warned about
+        // that when auto-update is on.
+        guard pendingFileData == nil else {
+            dismiss()
+            return
         }
-        if urlChanged,
+        // FlClash edit.dart hasUpdate = URL or age-key changed:
+        // either one re-downloads (the key is needed to decrypt an
+        // age-encrypted download).
+        if urlChanged || keyChanged,
            let fresh = profileStore.profiles.first(where: { $0.id == profile.id }) {
             await profileStore.update(fresh)
             if let error = profileStore.lastError {

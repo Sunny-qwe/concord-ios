@@ -138,7 +138,10 @@ struct DnsSettingsView: View {
                 Toggle("使用系统 Hosts", isOn: $settingsStore.dnsUseSystemHosts)
                 Toggle("遵循规则", isOn: $settingsStore.dnsRespectRules)
                 Toggle("优先 HTTP/3", isOn: $settingsStore.dnsPreferH3)
-                Toggle("DNS 用 IPv6", isOn: $settingsStore.ipv6)
+                Toggle("DNS 用 IPv6", isOn: $settingsStore.dnsIpv6)
+                Text("只控制 DNS 解析是否用 IPv6（核心 dns.ipv6，默认关），不影响通用里的 IPv6 开关。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Stepper("IPv6 超时：\(settingsStore.dnsIpv6Timeout) ms", value: $settingsStore.dnsIpv6Timeout, in: 0...10000, step: 10)
             }
             Section("上游与备用") {

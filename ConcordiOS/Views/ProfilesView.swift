@@ -20,9 +20,11 @@ import CoreImage
 // - No .custom ProfileKind exists in this app (only url/file), so
 //   every profile takes the non-custom menu path; there is no rename
 //   action (renaming happens via the Edit page's name field).
-// - No subscriptionInfo (used/total traffic, expiry) is stored on
-//   Profile, so the card subtitle is the FlClash fallback:
-//   远程 (URL) / 本地 (file).
+// - subscriptionInfo (used/total traffic, expiry) is stored on
+//   Profile from the download's subscription-userinfo header, so
+//   the card subtitle is the FlClash usage line when present and
+//   the 远程 (URL) / 本地 (file) fallback otherwise; expiry shows
+//   as "剩余 N 天" (≤ 7 天红色警告）.
 // - No provider-in-use lookup exists (providers are per-config YAML,
 //   not profile-linked), so delete always uses the plain
 //   "确定删除当前{label}吗？" text, never the provider-in-use variant.
@@ -227,9 +229,21 @@ struct ProfilesView: View {
                 if deleteTarget != nil {
                     Button("删除", role: .destructive) {
                         if let profile = deleteTarget {
-                            profileStore.delete(profile)
+                            deleteTarget = nil
+                            // FlClash deleteProfile: deleting the
+                            // active profile switches to the next one
+                            // (or stops the VPN when none remain) —
+                            // never leaves the tunnel running deleted
+                            // config.
+                            Task {
+                                await profileStore.deleteProfile(profile)
+                                if let error = profileStore.lastError {
+                                    alertMessage = error
+                                }
+                            }
+                        } else {
+                            deleteTarget = nil
                         }
-                        deleteTarget = nil
                     }
                     Button("取消", role: .cancel) { deleteTarget = nil }
                 } else {
@@ -330,10 +344,21 @@ struct ProfilesView: View {
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text(profile.kind == .url ? "远程" : "本地")
+                    // FlClash card subtitle: the usage line when
+                    // the provider sent subscription-userinfo, else
+                    // the 远程 / 本地 fallback.
+                    Text(profileSubtitle(profile))
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    if let info = profile.subscriptionInfo,
+                       profile.kind == .url,
+                       let expiry = info.expiryLine() {
+                        Text(expiry.text)
+                            .font(.system(size: 13))
+                            .foregroundStyle(expiry.warning ? .red : .secondary)
+                            .lineLimit(1)
+                    }
                     // FlClash _GroupsCountChip (profiles.dart:585):
                     // the number of proxy groups, parsed locally.
                     if let count = groupCounts[profile.id], count > 0 {
@@ -499,6 +524,15 @@ struct ProfilesView: View {
             alertMessage = "更新失败（\(failures.count) 个）：\n"
                 + failures.map { "· \($0.name)：\($0.error)" }.joined(separator: "\n")
         }
+    }
+
+    /// Card subtitle for one profile: "已用 X / 共 Y" when the
+    /// provider sent subscription-userinfo, else 远程 / 本地.
+    private func profileSubtitle(_ profile: Profile) -> String {
+        if profile.kind == .url, let line = profile.subscriptionInfo?.usageLine {
+            return line
+        }
+        return profile.kind == .url ? "远程" : "本地"
     }
 
     /// Groups counts for the cards, from the local YAML parse

@@ -102,7 +102,13 @@ struct MitmCertificateView: View {
             }
             Section("MITM 配置") {
                 Toggle("启用 MITM", isOn: $settingsStore.mitmEnabled)
+                    // Save on change, like the settings page's copy
+                    // of this pair (audit B37): without this the
+                    // switch silently reverted on leaving the page
+                    // unless "保存并应用" was tapped.
+                    .onChange(of: settingsStore.mitmEnabled) { _, _ in settingsStore.save() }
                 Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
+                    .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
                 NavigationLink {
                     MitmHostnameEditorView()
                 } label: {
@@ -157,15 +163,19 @@ struct MitmCertificateView: View {
         // FlClash mitm.dart:53-73: re-check trust when the app
         // comes back from iOS Settings (the user may just have
         // installed / trusted the CA there). Only re-runs when a CA
-        // is present and the core is live; it never overwrites the
-        // result with a "cannot check" while there is nothing to
-        // check.
+        // is present and the tunnel is running: the auto-check stays
+        // tunnel-gated on purpose (a VPN-off check would boot the
+        // in-app core on every foreground), while the manual
+        // "检测信任状态" button works VPN-off via AppCore (audit
+        // B38). Either way a failed check must NOT overwrite a good
+        // result with "无法检测".
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active,
                   !isCheckingTrust,
                   settingsStore.mitmAvailable,
                   settingsStore.mitmCertificate != nil,
-                  settingsStore.client.mode == .live else { return }
+                  settingsStore.client.mode == .live,
+                  TunnelManager.shared.isRunning else { return }
             Task { await checkTrust() }
         }
     }
@@ -256,6 +266,14 @@ struct MitmCertificateView: View {
     /// leaf is evaluated against the system trust store. No CA, no
     /// live core, or a failed issuance means "cannot check", not
     /// "untrusted" — those are reported separately.
+    ///
+    /// Tunnel off: the leaf is issued by the in-app core
+    /// (AppCore.mitmIssueCertificate, audit B38) — the manual
+    /// "检测信任状态" button works with the VPN off. The
+    /// scenePhase auto-check above stays tunnel-gated on purpose:
+    /// booting the in-app core on every foreground just to check
+    /// trust would be slow. A failed VPN-off check never overwrites
+    /// a previous good ("已受信任") result.
     private func checkTrust() async {
         guard settingsStore.client.mode == .live else {
             trustResult = MitmTrustResult(
@@ -272,8 +290,34 @@ struct MitmCertificateView: View {
         isCheckingTrust = true
         defer { isCheckingTrust = false }
         do {
-            let leafPem = try await settingsStore.client
-                .mitmIssueCertificate(host: MitmTrustResult.checkHost).pem
+            let leafPem: String
+            if TunnelManager.shared.isRunning {
+                leafPem = try await settingsStore.client
+                    .mitmIssueCertificate(host: MitmTrustResult.checkHost).pem
+            } else {
+                // VPN off: issue the leaf from the in-app core.
+                do {
+                    try await AppCore.shared.ensureStarted()
+                    leafPem = try await AppCore.shared
+                        .mitmIssueCertificate(host: MitmTrustResult.checkHost).pem
+                } catch {
+                    if case AppCoreError.tunnelRunning = error {
+                        // The tunnel started mid-check: use it.
+                        leafPem = try await settingsStore.client
+                            .mitmIssueCertificate(host: MitmTrustResult.checkHost).pem
+                    } else {
+                        // Keep a good result: the CA was already
+                        // proven trusted and the AppCore failure
+                        // says nothing about trust.
+                        if trustResult?.isReady != true {
+                            trustResult = MitmTrustResult(
+                                isReady: false,
+                                message: "无法检测：应用内核心签发叶证书失败：\(error.localizedDescription)")
+                        }
+                        return
+                    }
+                }
+            }
             guard let leafData = Self.derData(fromPEM: leafPem),
                   let leaf = SecCertificateCreateWithData(nil, leafData as CFData) else {
                 trustResult = MitmTrustResult(

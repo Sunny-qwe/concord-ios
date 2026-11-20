@@ -48,6 +48,20 @@ final class TunnelManager: ObservableObject {
     /// Set by stop() so the observer can tell a user-initiated stop
     /// from a system/core failure. Cleared by start().
     private var userInitiatedStop = false
+    /// The D1 timeout reason, set by confirmTunnelUp() when a start
+    /// never reaches a terminal state: the status observer's
+    /// failed-start branch fires right after (the stop above lands
+    /// .disconnected) and must surface THIS message, not the generic
+    /// "扩展未完成启动" fallback. Consumed once by the observer.
+    private var pendingStartFailureMessage: String?
+    /// Set when the extension reports it could not restart the TUN
+    /// runner after a live config change (config B1): the config
+    /// applied, but the data plane is down until the VPN restarts.
+    /// Read from the extension's tun-restart-needed.json (see
+    /// checkTunRestartNeeded); the Dashboard shows it on the VPN
+    /// card. Cleared when the file is gone (next successful start
+    /// or restart clears it in the extension).
+    @Published private(set) var tunRestartNeeded: String?
     /// True while this start attempt ever reached .connected.
     /// A connecting -> disconnected transition with this false is a
     /// FAILED START (the extension's startTunnel never completed),
@@ -114,8 +128,16 @@ final class TunnelManager: ObservableObject {
                     // extension's startTunnel failed. Do NOT let
                     // On-Demand restart it — suspend the rules and
                     // surface the diagnostic instead of looping.
-                    self.lastError = self.lastStartupDiagnostic()
-                        ?? "VPN 启动失败（扩展未完成启动）"
+                    // D1/D6: a confirmTunnelUp() timeout already named
+                    // the reason — prefer it over the generic fallback
+                    // (and over a stale diagnostic from an older run).
+                    if let pending = self.pendingStartFailureMessage {
+                        self.pendingStartFailureMessage = nil
+                        self.lastError = pending
+                    } else {
+                        self.lastError = self.lastStartupDiagnostic()
+                            ?? "VPN 启动失败（扩展未完成启动）"
+                    }
                     Task { await OnDemandStore.shared.suspendRules() }
                 } else if old == .connected {
                     // A drop from a running tunnel: count rapid
@@ -227,10 +249,12 @@ final class TunnelManager: ObservableObject {
     /// only when the user opted in (the store defaults OFF; FlClash
     /// iOS never installs the rules at all). A synchronous throw
     /// suspends any installed rules. After the start call, the
-    /// tunnel is confirmed: up to 30 s for .connected; a
-    /// .disconnected arrival throws the diagnostic error, and a
-    /// timeout while still .connecting returns success (the
-    /// observer surfaces any later failure). The in-app core
+    /// tunnel is confirmed: up to 45 s for .connected (FlClash
+    /// waitForTunnelStatus); a .disconnected arrival throws the
+    /// diagnostic error, and a timeout while still .connecting /
+    /// .disconnecting / .invalid / .reasserting STOPS the tunnel
+    /// and throws (D1 — a start that never reaches a terminal state
+    /// is a failed start, never a silent success). The in-app core
     /// (AppCore, delay tests with the VPN off) is stopped first —
     /// two cores must never run at once.
     @MainActor
@@ -239,6 +263,15 @@ final class TunnelManager: ObservableObject {
         guard let manager else {
             throw TunnelError.noManager
         }
+        // S2 (config B2): make sure the shared files the extension
+        // reads (dns.json / sniffer.json / general.json / tunnel.json
+        // / mitm.json) exist before the core boots — a fresh install
+        // without them makes the core run its own defaults (DNS
+        // disabled) instead of the UI's. SettingsStore has no shared
+        // instance, so a short-lived one loads the persisted
+        // settings; ensureSharedFilesExist only writes files that
+        // are missing, never overwrites existing ones.
+        SettingsStore().ensureSharedFilesExist()
         userInitiatedStop = false
         unexpectedDisconnect = false
         crashLoopActive = false
@@ -286,21 +319,26 @@ final class TunnelManager: ObservableObject {
         }
         // The start call only means the system accepted the start;
         // confirm the tunnel actually came up (FlClash
-        // waitForTunnelStatus, simplified: 30 s, no generation
+        // waitForTunnelStatus, 45 s, simplified: no generation
         // machinery). On-Demand rules are installed only now — a
         // failed start never arms them.
         try await confirmTunnelUp()
         _ = await OnDemandStore.shared.installRulesIfNeeded()
     }
 
-    /// Waits up to 30 s for the tunnel to reach .connected after
-    /// startVPNTunnel succeeded. Throws the startup diagnostic when
-    /// the tunnel lands on .disconnected; returns normally on
-    /// .connected, or on timeout while still .connecting (the status
-    /// observer surfaces any later failure).
+    /// Waits up to 45 s for the tunnel to reach .connected after
+    /// startVPNTunnel succeeded (FlClash waitForTunnelStatus, 45 s).
+    /// Decides only on a terminal state: .connected returns,
+    /// .disconnected throws the startup diagnostic. A timeout while
+    /// still .connecting / .disconnecting / .invalid / .reasserting
+    /// is a FAILED start, not a slow one (D1): the tunnel is
+    /// stopped so it cannot sit in .connecting forever showing
+    /// "运行中", and a real error is thrown (D6 — ProxyStore.toggle
+    /// turns the throw into proxyStore.startError, and lastError /
+    /// pendingStartFailureMessage carry it to the Dashboard banner).
     @MainActor
     private func confirmTunnelUp() async throws {
-        let deadline = Date().addingTimeInterval(30)
+        let deadline = Date().addingTimeInterval(45)
         while Date() < deadline {
             switch status {
             case .connected:
@@ -315,6 +353,11 @@ final class TunnelManager: ObservableObject {
             }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
+        let message = "VPN 启动超时（45 秒内未连接），已停止隧道：扩展可能启动缓慢或已无响应，请检查配置后重试"
+        lastError = message
+        pendingStartFailureMessage = message
+        manager?.connection.stopVPNTunnel()
+        throw TunnelError.startFailed(message)
     }
 
     /// isEnabled + disconnectOnSleep + save + reload, the FlClash
@@ -399,6 +442,25 @@ final class TunnelManager: ObservableObject {
         return "VPN 阶段：\(record.stage)"
     }
 
+    /// Reads the extension's tun-restart-needed.json (config B1):
+    /// written when a live config change killed the TUN runner and
+    /// the extension could not restart it, deleted on the next
+    /// successful start / restart / stop. No expiry is applied —
+    /// the file's lifecycle is the deletion, so a present file
+    /// means the running tunnel's data plane is down right now.
+    /// Called by the Dashboard on appear / pull-refresh.
+    func checkTunRestartNeeded() {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
+              let data = try? Data(contentsOf: container.appendingPathComponent("tun-restart-needed.json")),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let reason = json["reason"] as? String, !reason.isEmpty else {
+            tunRestartNeeded = nil
+            return
+        }
+        tunRestartNeeded = reason
+    }
+
     /// Stop the system VPN. The extension's stopTunnel tears down the
     /// core (tun.stop -> engine.stop -> close session). An explicit
     /// stop MUST win over On-Demand: the installed rules are
@@ -465,14 +527,27 @@ final class TunnelManager: ObservableObject {
 
     /// Send one JSON-RPC request to the extension and await its reply.
     /// Throws TunnelError.notRunning unless the tunnel is connected,
-    /// and TunnelError.noReply when the extension answers nothing.
-    func sendProviderMessage(_ data: Data) async throws -> Data {
+    /// TunnelError.noReply when the extension answers nothing, and
+    /// TunnelError.timedOut when the extension does not answer within
+    /// the deadline (interface B1 / proxy B4 — a dead extension used
+    /// to hang every live call forever). The deadline comes from the
+    /// method, FlClash's values (lib/core/interface.dart,
+    /// lib/common/constant.dart): delay calls 30 s
+    /// (delayTestGuardDuration), snapshots / probes and everything
+    /// else 10 s (_snapshotTimeout), slow config / profile / provider
+    /// / geo loads 60 s (the extension's own boot timeout for
+    /// config.apply). An explicit timeoutSeconds overrides the table.
+    func sendProviderMessage(_ data: Data, timeoutSeconds: TimeInterval? = nil) async throws -> Data {
         guard isRunning, let session = manager?.connection as? NETunnelProviderSession else {
             throw TunnelError.notRunning
         }
+        let method = Self.methodName(in: data) ?? "?"
+        let timeout = timeoutSeconds ?? Self.timeoutForMethod(method)
         return try await withCheckedThrowingContinuation { continuation in
+            let claim = ReplyClaim()
             do {
                 try session.sendProviderMessage(data) { reply in
+                    guard claim.claim() else { return }
                     if let reply {
                         continuation.resume(returning: reply)
                     } else {
@@ -480,9 +555,58 @@ final class TunnelManager: ObservableObject {
                     }
                 }
             } catch {
+                guard claim.claim() else { return }
                 continuation.resume(throwing: error)
+                return
+            }
+            // The timeout resumes the continuation (so the caller is
+            // never left suspended); a late reply after that is
+            // dropped by the claim. The session call itself has no
+            // cancel API — a timed-out call's reply is simply ignored.
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                guard claim.claim() else { return }
+                continuation.resume(throwing: TunnelError.timedOut(method, timeout))
             }
         }
+    }
+
+    /// The "method" field of a JSON-RPC envelope, for the timeout
+    /// table below. Nil when the bytes are not a request object.
+    private static func methodName(in data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return object["method"] as? String
+    }
+
+    /// FlClash-matching deadline for one extension call (see
+    /// sendProviderMessage). Delay tests may legitimately spend up
+    /// to 8 s queueing + 8 s probing twice over, so they get the
+    /// 30 s guard; config / profile / provider / geo work may
+    /// download, so it gets 60 s; everything else answers fast or
+    /// the extension is dead, so 10 s.
+    private static func timeoutForMethod(_ method: String) -> TimeInterval {
+        if method.hasPrefix("delay.") { return 30 }
+        if method.hasPrefix("config.") || method.hasPrefix("profile.")
+            || method.hasPrefix("provider.") || method == "geo.update"
+            || method == "ruleSet.compile" || method == "convert.subscription" {
+            return 60
+        }
+        return 10
+    }
+}
+
+/// One-shot guard so a sendProviderMessage reply and its timeout
+/// can never resume the same continuation twice (which would trap).
+private final class ReplyClaim: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !claimed else { return false }
+        claimed = true
+        return true
     }
 }
 
@@ -490,6 +614,7 @@ enum TunnelError: LocalizedError {
     case noManager
     case notRunning
     case noReply
+    case timedOut(String, TimeInterval)
     case transitionTimedOut
     case startFailed(String)
 
@@ -501,6 +626,8 @@ enum TunnelError: LocalizedError {
             return "VPN 隧道未运行：请先在仪表盘启动 VPN，再查看实时数据"
         case .noReply:
             return "扩展未回复（隧道可能正在启动或已断开）"
+        case .timedOut(let method, let seconds):
+            return "扩展在 \(Int(seconds)) 秒内未回复 \(method)：隧道可能已死但状态仍显示已连接，请重启 VPN"
         case .transitionTimedOut:
             return "VPN 状态切换超时，请稍后再试"
         case .startFailed(let message):

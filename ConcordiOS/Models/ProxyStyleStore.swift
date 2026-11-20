@@ -77,6 +77,20 @@ final class ProxyStyleStore: ObservableObject {
         Self.defaults.set(hideTimeout, forKey: "ConcordiOS.proxies.hideTimeout")
     }
 
+    /// Re-reads the persisted keys (audit B8: after a backup restore
+    /// the keys change behind this instance's back; the Proxies page
+    /// must show the restored style without restarting the app).
+    /// The didSet save() on each property writes the same values
+    /// back — harmless.
+    func reload() {
+        style = Style(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.style") ?? "") ?? .list
+        sort = ProxySort(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.sort") ?? "") ?? .default
+        layout = Layout(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.layout") ?? "") ?? .standard
+        cardType = CardType(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.cardType") ?? "") ?? .standard
+        iconStyle = IconStyle(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.iconStyle") ?? "") ?? .filled
+        hideTimeout = Self.defaults.bool(forKey: "ConcordiOS.proxies.hideTimeout")
+    }
+
     /// Grid columns for the node cards (FlClash common/layout.dart
     /// getProxiesColumns): base = max(ceil((width - 32) / 250), 2);
     /// tight adds one column, loose takes one away (min 1).

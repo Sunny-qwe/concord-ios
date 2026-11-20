@@ -103,6 +103,18 @@ final class IconSetStore: ObservableObject {
         }
     }
 
+    /// Re-read the persisted pack (used after a backup restore:
+    /// the restore writes the key behind this store's back).
+    /// Assigning through the property would re-save the same value,
+    /// so this reads the key directly and only publishes a change.
+    func reload() {
+        let saved = UserDefaults.standard.string(forKey: Self.storageKey) ?? "default"
+        let packID = Self.packs.contains(where: { $0.id == saved }) ? saved : "default"
+        if packID != selectedPackID {
+            selectedPackID = packID
+        }
+    }
+
     private func save() {
         UserDefaults.standard.set(selectedPackID, forKey: Self.storageKey)
     }

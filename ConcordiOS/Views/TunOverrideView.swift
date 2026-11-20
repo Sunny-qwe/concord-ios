@@ -10,12 +10,19 @@ import SwiftUI
 //
 // How the keys reach the core: the extension merges the effective
 // tun overrides into config.apply's overlay as "tun" (the core
-// parses them into TunConfig — strict-route, udp-timeout,
-// dns-hijack, route lists, …), and mtu + congestion-controller
+// parses them into TunConfig), and mtu + congestion-controller
 // are additionally folded into tun.start via tunnel.json
-// (readTunnelSettings). enable / device / stack / auto-route stay
-// owned by the extension and are never overridden here: on iOS the
-// device is the packet channel, not a named interface.
+// (readTunnelSettings). BUT on iOS only mtu +
+// congestion-controller have any effect: the rest only enter
+// Applied.tun, whose DeviceSource::Create path never runs on
+// iOS (config B12) — the packet-channel TUN is the only data
+// plane. The per-key descriptions in OverrideStore say so, this
+// page says so, and the save button below deliberately does NOT
+// live-apply (a live config.apply touching the tun triple would
+// close the channel runner and never restart it — config B1).
+// enable / device / stack / auto-route stay owned by the
+// extension and are never overridden here: on iOS the device is
+// the packet channel, not a named interface.
 
 struct TunOverrideView: View {
     @ObservedObject private var store = OverrideStore.shared
@@ -27,6 +34,9 @@ struct TunOverrideView: View {
         List {
             Section {
                 Text("TUN 覆盖只对启用的项生效：没启用的项用订阅自己的值。全局覆盖对所有订阅生效，单个订阅的覆盖优先于全局。启用、协议栈、MTU 基础值在「网络」页；这里的 MTU 覆盖会盖掉它。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text("iOS 上只有两项真正生效——MTU 和拥塞控制（下次启动 VPN 时经 tun.start 应用）。其余项在 iOS 上无效：严格路由、路由地址、排除路由地址、DNS 劫持、UDP 超时、禁用 ICMP 转发、GSO、包含/排除网卡、包含/排除 UID、排除源端口、排除目标端口、回流地址——它们只进核心的 TUN 设备创建路径，而 iOS 的包通道 TUN 从不走那条路（核心接受回流地址但尚未实现）。每项在行内和添加页也有同样的说明；改这些无效项不会改变任何行为。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -50,8 +60,19 @@ struct TunOverrideView: View {
                 }
             }
             Section {
-                Button("应用覆盖") {
-                    Task { await store.applyOverrides() }
+                // B12 + config B1: this page deliberately does NOT
+                // live-apply. applyOverrides() runs config.apply,
+                // and any live apply that touches the (tun,
+                // tun_inet4, ipv6) triple closes the packet-channel
+                // TUN runner and never restarts it — and on this
+                // page most keys are iOS-dead anyway, so a live
+                // apply would risk killing the tunnel for nothing.
+                // Save only: MTU / congestion-controller take effect
+                // at the next VPN start (via tun.start); the dead
+                // keys take effect never, as noted above.
+                Button("保存覆盖（下次启动 VPN 时生效）") {
+                    store.save()
+                    store.applyMessage = "已保存，下次启动 VPN 时生效（MTU 与拥塞控制）；其余 TUN 键在 iOS 上无效，改了也不会生效，且不会为此重载运行中的隧道。"
                 }
                 if let message = store.applyMessage {
                     Text(message)

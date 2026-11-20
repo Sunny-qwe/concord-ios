@@ -334,13 +334,37 @@ final class MitmModuleStore: ObservableObject {
     /// module or an updated script does not leave files behind. Only
     /// touches <AppGroup>/mitm/resources — the CA store lives in
     /// <AppGroup>/mitm/ itself and is never swept.
+    ///
+    /// Standalone scripts' runnable copies live in the same
+    /// directory (MitmScriptStore.writeResourceCopy, content-hash
+    /// name), so the retain set also includes every
+    /// `resourceName` in the scripts registry
+    /// (<AppGroup>/mitm/scripts/scripts.json): toggling, updating
+    /// or deleting any module must not break a running standalone
+    /// script (audit B39).
     private func sweepResources() {
         guard let dir = resourcesDirectoryURL else { return }
-        let referenced = Set(modules.flatMap { $0.resources.values })
+        var referenced = Set(modules.flatMap { $0.resources.values })
+        referenced.formUnion(standaloneScriptResourceNames())
         guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
         for file in files where !referenced.contains(file.lastPathComponent) {
             try? FileManager.default.removeItem(at: file)
         }
+    }
+
+    /// The content-hash resource names of the standalone scripts
+    /// (MitmScriptStore registry), so sweepResources() keeps their
+    /// runnable copies. Read straight from the registry file: the
+    /// module store must not depend on the script store's live
+    /// instance (Shortcuts / background refresh may not have one).
+    private func standaloneScriptResourceNames() -> Set<String> {
+        guard let container = containerURL else { return [] }
+        let registry = container.appendingPathComponent("mitm")
+            .appendingPathComponent("scripts")
+            .appendingPathComponent("scripts.json")
+        guard let data = try? Data(contentsOf: registry),
+              let scripts = try? JSONDecoder().decode([MitmScript].self, from: data) else { return [] }
+        return Set(scripts.compactMap(\.resourceName))
     }
 
     // MARK: - Resources
@@ -356,7 +380,7 @@ final class MitmModuleStore: ObservableObject {
         for urlString in urls {
             guard let url = URL(string: urlString) else { continue }
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let data = try await mitmDownloadValidated(from: url)
                 guard data.count <= maxMitmResourceSize else { continue }
                 let name = mitmResourceName(source: urlString, bytes: data)
                 try data.write(to: dir.appendingPathComponent(name), options: .atomic)
@@ -386,7 +410,7 @@ final class MitmModuleStore: ObservableObject {
         isBusy = true
         defer { isBusy = false }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let data = try await mitmDownloadValidated(from: url)
             guard let moduleText = String(data: data, encoding: .utf8), !moduleText.isEmpty else {
                 lastError = "下载的模块内容为空"
                 return
@@ -467,7 +491,7 @@ final class MitmModuleStore: ObservableObject {
             let previousText = readText(module)
             let text: String
             if let urlString = module.url, let url = URL(string: urlString) {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let data = try await mitmDownloadValidated(from: url)
                 guard let downloaded = String(data: data, encoding: .utf8), !downloaded.isEmpty else {
                     lastError = "更新失败：下载内容为空"
                     return
@@ -640,4 +664,47 @@ final class MitmModuleStore: ObservableObject {
         let name = (last as NSString).deletingPathExtension
         return name.isEmpty ? "模块" : name
     }
+}
+
+// MARK: - Validated downloads (audit B40)
+//
+// Module / script downloads used to ignore the HTTP response, so a
+// dead link's 404 HTML error page was stored as a module or a .js
+// resource for the core to run. Every download in this file,
+// MitmScriptStore and MitmScriptsView goes through here: non-2xx
+// and HTML error pages fail with an honest error and are never
+// stored.
+
+/// Downloads `url` and rejects anything that is not a successful
+/// (2xx) non-HTML response. Throws MitmModuleError with the real
+/// reason (HTTP status or "HTML error page").
+func mitmDownloadValidated(from url: URL) async throws -> Data {
+    let (data, response) = try await URLSession.shared.data(from: url)
+    guard let http = response as? HTTPURLResponse else {
+        throw MitmModuleError(message: "下载失败：服务器没有返回 HTTP 响应")
+    }
+    guard (200...299).contains(http.statusCode) else {
+        throw MitmModuleError(message: "下载失败：HTTP \(http.statusCode)")
+    }
+    if let mimeType = http.mimeType, mimeType.lowercased().contains("html") {
+        throw MitmModuleError(message: "下载失败：服务器返回了 HTML 错误页（HTTP \(http.statusCode)），不是模块/脚本")
+    }
+    if mitmDataLooksLikeHTML(data) {
+        throw MitmModuleError(message: "下载失败：内容是 HTML 错误页，不是模块/脚本")
+    }
+    return data
+}
+
+/// True when the bytes start with an HTML document marker
+/// (after whitespace / a UTF-8 BOM): a 404 page served with a
+/// 200 status and a generic content type.
+func mitmDataLooksLikeHTML(_ data: Data) -> Bool {
+    var bytes = data
+    if bytes.starts(with: [0xEF, 0xBB, 0xBF]) { bytes.removeFirst(3) }
+    let prefix = bytes.prefix(256)
+    guard let head = String(bytes: prefix, encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased() else { return false }
+    return head.hasPrefix("<!doctype") || head.hasPrefix("<html")
+        || head.hasPrefix("<head") || head.hasPrefix("<title")
 }

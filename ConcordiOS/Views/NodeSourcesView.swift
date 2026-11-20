@@ -3,13 +3,13 @@ import SwiftUI
 // MARK: - Node sources (FlClash: lib/views/profiles/node_sources.dart)
 // For every node, which subscription / provider it came from.
 // Provenance is derived from the profile files themselves
-// (ProfileStore.localNodeNames, a line scan of each profile's
-// `proxies:` section — no core needed) and, on demand, enriched
-// with the core's convert.subscription output (node types). Local
-// custom nodes come from CustomProxyStore. Proxy-provider nodes
-// are not listed in a profile's `proxies:` section; the
-// "从核心读取" button resolves those through the core when the
-// tunnel is running.
+// (ProfileStore.localProxyGroups, a line scan of each profile's
+// `proxies:` / `proxy-providers:` sections — no core needed, so
+// it works with the tunnel stopped; provider nodes resolve from
+// their files / the core's cached copies, and show their type +
+// provider offline). "从核心读取" still enriches with the core's
+// convert.subscription output when the tunnel is running.
+// Local custom nodes come from CustomProxyStore.
 
 struct NodeSourcesView: View {
     @EnvironmentObject private var profileStore: ProfileStore
@@ -23,6 +23,16 @@ struct NodeSourcesView: View {
         var id: String { name }
         let name: String
         var type: String
+        /// Proxy-provider the node came from, when it did not come
+        /// from the profile's own `proxies:` section (resolved
+        /// offline from the provider's file / cached copy).
+        var provider: String?
+
+        init(name: String, type: String, provider: String? = nil) {
+            self.name = name
+            self.type = type
+            self.provider = provider
+        }
     }
 
     struct NodeSourceSection: Identifiable {
@@ -77,8 +87,8 @@ struct NodeSourcesView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(node.name).font(.system(size: 13))
-                                if !node.type.isEmpty {
-                                    Text(node.type)
+                                if !node.type.isEmpty || node.provider != nil {
+                                    Text(nodeDetail(node))
                                         .font(.system(size: 13))
                                         .foregroundStyle(.secondary)
                                 }
@@ -98,17 +108,39 @@ struct NodeSourcesView: View {
         }
     }
 
+    /// "type · 提供方：name" (either part alone when the other is
+    /// missing — a provider node with no cached file has no type
+    /// offline, a literal node has no provider).
+    private func nodeDetail(_ node: NodeEntry) -> String {
+        var parts: [String] = []
+        if !node.type.isEmpty { parts.append(node.type) }
+        if let provider = node.provider, !provider.isEmpty {
+            parts.append("提供方：\(provider)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     /// Local provenance only: every profile's own `proxies:` names
-    /// plus the locally added custom nodes.
+    /// plus the locally added custom nodes. Types and providers
+    /// come from the same offline parse (proxy-provider nodes are
+    /// resolved from their files / the core's cached copies).
     private func rebuildFromLocalFiles() {
         var built: [NodeSourceSection] = profileStore.profiles.map { profile in
-            NodeSourceSection(
+            let nodes: [NodeEntry]
+            if let parsed = profileStore.localProxyGroups(for: profile) {
+                nodes = parsed.nodes.map {
+                    NodeEntry(name: $0.name, type: $0.type == "unknown" ? "" : $0.type, provider: $0.provider)
+                }
+            } else {
+                nodes = profileStore.localNodeNames(for: profile).map {
+                    NodeEntry(name: $0, type: "")
+                }
+            }
+            return NodeSourceSection(
                 profileID: profile.id,
                 profileName: profile.name,
                 kindLabel: profile.kind.rawValue,
-                nodes: profileStore.localNodeNames(for: profile).map {
-                    NodeEntry(name: $0, type: "")
-                }
+                nodes: nodes
             )
         }
         let customNames = customProxyStore.proxies.map { NodeEntry(name: $0.name, type: $0.type) }

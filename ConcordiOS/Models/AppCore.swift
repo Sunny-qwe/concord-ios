@@ -392,8 +392,11 @@ final class AppCore {
 
     /// One node's delay (delay.test). The core must already be
     /// started (ensureStarted); a transport failure throws and the
-    /// caller must NOT record it as a node failure.
-    func delayTest(proxy: String, url: String? = nil, timeout: UInt64? = nil) async throws -> ConcordDelayResult {
+    /// caller must NOT record it as a node failure. The timeout
+    /// defaults to 8000ms (FlClash defaultDelayTestTimeout; audit
+    /// B1 — the core default is 5000ms, which times out nodes
+    /// FlClash still reports); callers pass it explicitly too.
+    func delayTest(proxy: String, url: String? = nil, timeout: UInt64? = 8000) async throws -> ConcordDelayResult {
         var params: [String: Any] = ["proxy": proxy]
         if let url { params["url"] = url }
         if let timeout { params["timeout"] = timeout }
@@ -404,7 +407,9 @@ final class AppCore {
     /// is the subscription ({sub, snapshot}); the results arrive as
     /// events the core accumulates here — poll them with
     /// delayRunPoll(). The run ends by itself with a `done` event.
-    func delayRunStart(proxies: [String], url: String? = nil, timeout: UInt64? = nil, concurrency: UInt32? = nil) async throws -> DelayRunStart {
+    /// The timeout defaults to 8000ms (FlClash
+    /// defaultDelayTestTimeout; audit B1).
+    func delayRunStart(proxies: [String], url: String? = nil, timeout: UInt64? = 8000, concurrency: UInt32? = nil) async throws -> DelayRunStart {
         var params: [String: Any] = ["proxies": proxies]
         if let url { params["url"] = url }
         if let timeout { params["timeout"] = timeout }
@@ -450,6 +455,39 @@ final class AppCore {
     /// report success in that case.
     func mitmGenerateCertificate() async throws -> ConcordMitmCertificate {
         try await sendRequest(method: "mitm.generateCertificate", params: [:], resultType: ConcordMitmCertificate.self, timeoutSeconds: 60)
+    }
+
+    /// Issues a leaf certificate for one host via the in-app core
+    /// (mitm.issueCertificate) — the AppCore side of audit B38:
+    /// MitmCertificateView's trust check and
+    /// SettingsStore.issueMitmCertificate use this when the VPN is
+    /// off, instead of reporting that no such wrapper exists. Same
+    /// shape as mitmGenerateCertificate; the core must already be
+    /// started (ensureStarted).
+    func mitmIssueCertificate(host: String) async throws -> ConcordMitmPem {
+        try await sendRequest(method: "mitm.issueCertificate", params: ["host": host], resultType: ConcordMitmPem.self, timeoutSeconds: 60)
+    }
+
+    // MARK: DNS tools (audit B16)
+    //
+    // dns.query / dns.clearCache / dns.flushFakeIp via the in-app
+    // core, so the DNS tools work with the VPN off. The core must
+    // already be started (ensureStarted). The query history
+    // (refresh/dns.watch) still comes from the extension snapshot
+    // only — it has no AppCore equivalent.
+
+    func dnsQuery(name: String, qtype: String? = nil) async throws -> ConcordDnsQueryResult {
+        var params: [String: Any] = ["name": name]
+        if let qtype { params["qtype"] = qtype }
+        return try await sendRequest(method: "dns.query", params: params, resultType: ConcordDnsQueryResult.self, timeoutSeconds: 15)
+    }
+
+    func dnsClearCache() async throws {
+        _ = try await sendRequest(method: "dns.clearCache", params: [:], resultType: EmptyResult.self, timeoutSeconds: 15)
+    }
+
+    func dnsFlushFakeIp() async throws {
+        _ = try await sendRequest(method: "dns.flushFakeIp", params: [:], resultType: EmptyResult.self, timeoutSeconds: 15)
     }
 
     // MARK: - MITM CA sync (v0.2.35 Item C follow-up)

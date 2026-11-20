@@ -97,23 +97,100 @@ final class ExtendConfigStore: ObservableObject {
     /// Bake the match target as a final `MATCH,<target>` rule at
     /// the end of the profile's `rules:` section (marker-delimited,
     /// so re-applying replaces it). An empty target removes it.
+    /// First match wins in Clash-style rule evaluation, so the
+    /// MATCH MUST be last: baking it first (as this used to do)
+    /// swallowed all traffic into the target and made every other
+    /// rule dead (config B21). FlClash appends the match target as
+    /// the final rule.
     static func bakeMatchTarget(_ target: String, into text: String) -> String {
         var lines = text.components(separatedBy: "\n")
+        // Remove a previous bake. Two shapes exist: the block
+        // form (marker lines around a `  - MATCH,…` item) and the
+        // flow form (markers wrapped around a `rules: […]` line
+        // whose list gained a trailing MATCH item).
         if let begin = lines.firstIndex(of: matchTargetBegin),
            let end = lines.firstIndex(of: matchTargetEnd), end >= begin {
-            lines.removeSubrange(begin...end)
+            if end == begin + 2,
+               lines[begin + 1].trimmingCharacters(in: .whitespaces).hasPrefix("rules:"),
+               lines[begin + 1].contains("[") {
+                // Flow form: clean the baked MATCH out of the
+                // rules line, then drop just the marker lines
+                // (the rules line itself must stay).
+                lines[begin + 1] = Self.flowRulesLineRemovingMatch(lines[begin + 1])
+                lines.remove(at: end)
+                lines.remove(at: begin)
+            } else {
+                lines.removeSubrange(begin...end)
+            }
         }
         let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return lines.joined(separator: "\n") }
         let block = [matchTargetBegin, "  - MATCH,\(trimmed)", matchTargetEnd]
         if let keyIndex = lines.firstIndex(where: { $0 == "rules:" || $0.hasPrefix("rules: ") }) {
-            lines.insert(contentsOf: block, at: keyIndex + 1)
+            let rulesLine = lines[keyIndex]
+            if rulesLine == "rules:" {
+                // Block-style section: append at its END — the
+                // section runs to the next top-level key (a
+                // non-indented, non-empty line containing ":") or
+                // EOF. Everything after that key belongs to another
+                // section and must keep following the MATCH.
+                var insertAt = lines.count
+                var i = keyIndex + 1
+                while i < lines.count {
+                    let line = lines[i]
+                    if !line.hasPrefix(" ") && !line.hasPrefix("\t") && !line.isEmpty && line.contains(":") {
+                        insertAt = i
+                        break
+                    }
+                    i += 1
+                }
+                lines.insert(contentsOf: block, at: insertAt)
+            } else if rulesLine.contains("[") && rulesLine.contains("]") {
+                // Flow-style `rules: […]`: append the MATCH inside
+                // the brackets, wrapped in the markers so a re-bake
+                // can find and replace it.
+                lines[keyIndex] = Self.flowRulesLineAddingMatch(rulesLine, target: trimmed)
+                lines.insert(matchTargetBegin, at: keyIndex)
+                lines.insert(matchTargetEnd, at: keyIndex + 2)
+            } else {
+                // A `rules:` line with other trailing content we
+                // cannot parse: leave the target unbaked rather
+                // than emit invalid YAML.
+                return lines.joined(separator: "\n")
+            }
         } else {
             if let last = lines.last, !last.isEmpty { lines.append("") }
             lines.append("rules:")
             lines.append(contentsOf: block)
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Append `, MATCH,<target>` inside a flow-style `rules: […]`
+    /// line, just before the closing bracket.
+    private static func flowRulesLineAddingMatch(_ line: String, target: String) -> String {
+        guard let close = line.lastIndex(of: "]") else { return line }
+        let inner = line[line.startIndex..<close].trimmingCharacters(in: .whitespaces)
+        let separator = inner.hasSuffix("[") ? "" : ", "
+        return line.replacingCharacters(in: close..<line.index(after: close),
+                                        with: "\(separator)MATCH,\(target)]")
+    }
+
+    /// Remove a trailing `, MATCH,…` item from a flow-style
+    /// `rules: […]` line (only called when our markers prove the
+    /// item is one we baked — never touches a user's own MATCH).
+    /// Also handles the empty-list bake (`rules: [MATCH,…]`).
+    private static func flowRulesLineRemovingMatch(_ line: String) -> String {
+        if let matchRange = line.range(of: ", MATCH,", options: .backwards),
+           let close = line[matchRange.upperBound...].firstIndex(of: "]") {
+            return line.replacingCharacters(in: matchRange.lowerBound..<close, with: "")
+        }
+        if let open = line.firstIndex(of: "["),
+           line[line.index(after: open)...].hasPrefix("MATCH,"),
+           let close = line[line.index(after: open)...].firstIndex(of: "]") {
+            return line.replacingCharacters(in: line.index(after: open)..<close, with: "")
+        }
+        return line
     }
 
     // MARK: - Script mode

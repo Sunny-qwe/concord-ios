@@ -45,8 +45,11 @@ final class DnsStore: ObservableObject {
     @MainActor
     func clearCache() async {
         do {
-            try await client.dnsClearCache()
+            try await runDns(
+                tunnel: { try await self.client.dnsClearCache() },
+                appCore: { try await AppCore.shared.dnsClearCache() })
             lastActionMessage = "DNS 缓存已清除"
+            lastError = nil
         } catch {
             lastError = error.localizedDescription
         }
@@ -55,8 +58,11 @@ final class DnsStore: ObservableObject {
     @MainActor
     func flushFakeIp() async {
         do {
-            try await client.dnsFlushFakeIp()
+            try await runDns(
+                tunnel: { try await self.client.dnsFlushFakeIp() },
+                appCore: { try await AppCore.shared.dnsFlushFakeIp() })
             lastActionMessage = "Fake-IP 映射已清除"
+            lastError = nil
         } catch {
             lastError = error.localizedDescription
         }
@@ -72,11 +78,43 @@ final class DnsStore: ObservableObject {
             return
         }
         do {
-            queriedResult = try await client.dnsQuery(name: host, qtype: qtype)
+            queriedResult = try await runDns(
+                tunnel: { try await self.client.dnsQuery(name: host, qtype: qtype) },
+                appCore: { try await AppCore.shared.dnsQuery(name: host, qtype: qtype) })
             queryError = nil
         } catch {
             queriedResult = nil
             queryError = error.localizedDescription
         }
+    }
+
+    /// Runs one DNS action against the tunnel core when it is up, or
+    /// the in-app core (booted on demand) when the VPN is off (audit
+    /// B16). If the tunnel starts while AppCore is booting, AppCore
+    /// refuses to run alongside it (AppCoreError.tunnelRunning) —
+    /// the tunnel core is used instead, not reported as a failure.
+    private func runDns<T>(tunnel: () async throws -> T, appCore: () async throws -> T) async throws -> T {
+        if hasCore {
+            return try await tunnel()
+        }
+        do {
+            try await AppCore.shared.ensureStarted()
+        } catch {
+            if case AppCoreError.tunnelRunning = error {
+                return try await tunnel()
+            }
+            throw error
+        }
+        return try await appCore()
+    }
+
+    /// True when the DNS tools can reach the tunnel core: the tunnel
+    /// is running, or the client is in sample mode. With the VPN off
+    /// in live mode the in-app core (AppCore, booted on demand by
+    /// runDns) is the fallback (audit B16). The query history
+    /// (refresh/dns.watch) still comes from the extension snapshot
+    /// only: it has no AppCore equivalent.
+    private var hasCore: Bool {
+        client.mode == .sample || TunnelManager.shared.isRunning
     }
 }

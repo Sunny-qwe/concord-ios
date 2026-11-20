@@ -363,7 +363,7 @@ private struct MitmScriptImportURLView: View {
                         Task {
                             defer { isImporting = false }
                             do {
-                                let (data, _) = try await URLSession.shared.data(from: url)
+                                let data = try await mitmDownloadValidated(from: url)
                                 guard let content = String(data: data, encoding: .utf8) else {
                                     scriptStore.lastError = "下载的内容不是 UTF-8 文本"
                                     return

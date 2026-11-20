@@ -19,6 +19,83 @@ import Combine
 //     is copied). Updating the active profile re-applies it the same way.
 // Profile paths sent to the core are absolute (see ConfigStore).
 
+/// Subscription traffic + expiry, parsed from the provider's
+/// `subscription-userinfo` response header (FlClash
+/// models/profile.dart `SubscriptionInfo`: upload / download /
+/// total are bytes, expire is a unix timestamp in seconds, 0 =
+/// absent). Stored on the Profile so the card and the dashboard
+/// can show it offline — the core's provider info needs the
+/// tunnel running and matches by name, which breaks on rename.
+struct SubscriptionInfo: Codable, Equatable {
+    var upload: Int64
+    var download: Int64
+    var total: Int64
+    var expire: Int64
+
+    init(upload: Int64 = 0, download: Int64 = 0, total: Int64 = 0, expire: Int64 = 0) {
+        self.upload = upload
+        self.download = download
+        self.total = total
+        self.expire = expire
+    }
+
+    var usedBytes: Int64 { upload + download }
+
+    var usageFraction: Double? {
+        total > 0 ? min(1.0, Double(usedBytes) / Double(total)) : nil
+    }
+
+    var expireDate: Date? {
+        expire > 0 ? Date(timeIntervalSince1970: TimeInterval(expire)) : nil
+    }
+
+    /// "已用 1.2 GB / 共 10 GB" (FlClash card subtitle); nil when
+    /// the provider sent no usable totals.
+    var usageLine: String? {
+        guard total > 0 else { return usedBytes > 0 ? "已用 \(Self.byteCount(usedBytes))" : nil }
+        return "已用 \(Self.byteCount(usedBytes)) / 共 \(Self.byteCount(total))"
+    }
+
+    /// ("剩余 12 天", warning) — warning when ≤ 7 days left or
+    /// already expired; nil when the provider sent no expiry.
+    func expiryLine(now: Date = Date()) -> (text: String, warning: Bool)? {
+        guard let date = expireDate else { return nil }
+        let days = Int(ceil(date.timeIntervalSince(now) / 86400))
+        if days < 0 { return ("已过期", true) }
+        if days == 0 { return ("今天到期", true) }
+        return ("剩余 \(days) 天", days <= 7)
+    }
+
+    static func byteCount(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    /// Parses `upload=..; download=..; total=..; expire=..`
+    /// (FlClash `SubscriptionInfo.formHString`). Returns nil when
+    /// the header is absent or carries none of the four keys.
+    static func parse(header: String?) -> SubscriptionInfo? {
+        guard let header, !header.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        var map: [String: Int64] = [:]
+        for field in header.split(separator: ";") {
+            guard let eq = field.firstIndex(of: "=") else { continue }
+            let key = field[..<eq].trimmingCharacters(in: .whitespaces).lowercased()
+            let raw = field[field.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            if let value = Int64(raw) {
+                map[key] = value
+            } else if let decimal = Double(raw), decimal.isFinite {
+                map[key] = Int64(decimal)
+            }
+        }
+        guard !map.isEmpty else { return nil }
+        return SubscriptionInfo(
+            upload: map["upload"] ?? 0,
+            download: map["download"] ?? 0,
+            total: map["total"] ?? 0,
+            expire: map["expire"] ?? 0
+        )
+    }
+}
+
 enum ProfileKind: String, Codable, CaseIterable {
     case url = "订阅链接"
     case file = "本地文件"
@@ -37,13 +114,21 @@ struct Profile: Identifiable, Codable {
     /// (FlClash edit page; stored per profile, never logged).
     var ageSecretKey: String?
     /// Auto-update switch + interval in minutes (FlClash edit page).
-    /// The periodic scheduler is not wired yet — updating stays
-    /// manual via 更新； the values are stored so the edit page is
-    /// faithful and the scheduler can use them later.
+    /// Wired by updateDueProfiles(): a profile is due when the
+    /// global auto-update switch is on, its own switch is on, and
+    /// lastUpdateDate + interval has passed. The 20-minute timer
+    /// that calls updateDueProfiles lives outside this store.
     var autoUpdate: Bool
     var autoUpdateIntervalMinutes: Int?
+    /// Traffic + expiry from the last download's
+    /// `subscription-userinfo` header (FlClash SubscriptionInfo).
+    /// Nil when the provider sends no such header; persisted in
+    /// profiles.v1 so cards show it offline. DashboardView reads
+    /// this same field (integration pass) instead of matching
+    /// providers by name.
+    var subscriptionInfo: SubscriptionInfo?
 
-    init(id: UUID = UUID(), name: String, kind: ProfileKind, urlString: String? = nil, fileName: String? = nil, updatedAt: Date? = nil, isActive: Bool = false, note: String? = nil, ageSecretKey: String? = nil, autoUpdate: Bool = false, autoUpdateIntervalMinutes: Int? = nil) {
+    init(id: UUID = UUID(), name: String, kind: ProfileKind, urlString: String? = nil, fileName: String? = nil, updatedAt: Date? = nil, isActive: Bool = false, note: String? = nil, ageSecretKey: String? = nil, autoUpdate: Bool = false, autoUpdateIntervalMinutes: Int? = nil, subscriptionInfo: SubscriptionInfo? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -55,6 +140,7 @@ struct Profile: Identifiable, Codable {
         self.ageSecretKey = ageSecretKey
         self.autoUpdate = autoUpdate
         self.autoUpdateIntervalMinutes = autoUpdateIntervalMinutes
+        self.subscriptionInfo = subscriptionInfo
     }
 }
 
@@ -99,11 +185,122 @@ final class ProfileStore: ObservableObject {
     var autoCloseConnections: Bool = false
 
     private lazy var insecureSession: URLSession = {
-        URLSession(configuration: .default, delegate: InsecureCertificateDelegate(), delegateQueue: nil)
+        URLSession(configuration: Self.subscriptionSessionConfiguration, delegate: InsecureCertificateDelegate(), delegateQueue: nil)
     }()
 
+    private lazy var secureSubscriptionSession: URLSession = {
+        URLSession(configuration: Self.subscriptionSessionConfiguration)
+    }()
+
+    /// Subscription downloads (FlClash request.dart: 20 s timeout,
+    /// `clash-verge/... Clash.Meta` User-Agent — many providers
+    /// refuse requests with no UA or with a bare URLSession UA).
+    /// The shared session's defaults (60 s request / 7 day
+    /// resource, no UA) let a trickling connection stall a launch
+    /// auto-update for hours and 404/403 HTML pages through.
+    private static var subscriptionSessionConfiguration: URLSessionConfiguration {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 20
+        config.timeoutIntervalForResource = 20
+        config.httpAdditionalHeaders = ["User-Agent": "clash-verge/v2.4.2 ClashforWindows/0.20.39 Clash.Meta"]
+        return config
+    }
+
+    /// Global auto-update switch (SettingsStore.autoUpdateProfiles),
+    /// synced from SettingsStore by ContentView the same way
+    /// checkCertificate / autoCloseConnections are. updateDueProfiles
+    /// refuses to update anything while this is off.
+    var globalAutoUpdateEnabled: Bool = true
+
     private var subscriptionSession: URLSession {
-        checkCertificate ? URLSession.shared : insecureSession
+        checkCertificate ? secureSubscriptionSession : insecureSession
+    }
+
+    /// Downloads one subscription: 20 s timeout, User-Agent set,
+    /// HTTP status checked (a non-2xx is an honest error — an HTML
+    /// error page must never reach the YAML parser), and the
+    /// `subscription-userinfo` header + `content-disposition`
+    /// filename parsed (FlClash profile.update).
+    private func downloadSubscription(from url: URL) async throws -> (data: Data, info: SubscriptionInfo?, fileName: String?) {
+        var request = URLRequest(url: url, timeoutInterval: 20)
+        request.setValue("clash-verge/v2.4.2 ClashforWindows/0.20.39 Clash.Meta", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await subscriptionSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "订阅服务器没有返回 HTTP 响应"])
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw NSError(domain: "ConcordiOS", code: http.statusCode, userInfo: [
+                NSLocalizedDescriptionKey: "订阅服务器返回 HTTP \(http.statusCode)（\(HTTPURLResponse.localizedString(forStatusCode: http.statusCode))），没有拿到配置"])
+        }
+        let info = SubscriptionInfo.parse(header: http.value(forHTTPHeaderField: "subscription-userinfo"))
+        return (data, info, Self.dispositionFileName(http.value(forHTTPHeaderField: "content-disposition")))
+    }
+
+    /// `attachment; filename="sub.yaml"` → `sub.yaml`
+    /// (FlClash getFileNameForDisposition). Nil when absent.
+    private static func dispositionFileName(_ header: String?) -> String? {
+        guard let header else { return nil }
+        for part in header.split(separator: ";") {
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            guard trimmed.lowercased().hasPrefix("filename=") else { continue }
+            var value = String(trimmed.dropFirst("filename=".count))
+                .trimmingCharacters(in: .whitespaces)
+            if value.hasPrefix("UTF-8''") { value = String(value.dropFirst("UTF-8''".count)) }
+            if (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
+                value = String(value.dropFirst().dropLast())
+            }
+            let decoded = value.removingPercentEncoding ?? value
+            return decoded.isEmpty ? nil : decoded
+        }
+        return nil
+    }
+
+    // MARK: - age-encrypted subscriptions (FlClash validateProfile)
+
+    /// An age-encrypted file starts with the `age-encryption.org/v1`
+    /// header line. FlClash decrypts it with the profile's
+    /// ageSecretKey (core config.decrypt) and rewrites the plaintext
+    /// in place before validating. config.decrypt takes
+    /// `{profile: {path}, key, output: {inline: true}}`
+    /// (165154c schema ConfigDecryptParams — config.validate takes
+    /// only `{profile}`, no key) and runs in the extension core, so
+    /// it needs live mode + a running tunnel. The sample mock
+    /// returns fixed sample text, so sample mode must never
+    /// decrypt. Returns `.success(data)` unchanged when the data
+    /// is not age-encrypted, `.success(plaintext)` after a
+    /// decrypt, or `.failure(reason)` with the honest reason the
+    /// download / save cannot proceed.
+    private func decryptAgeDataIfNeeded(_ data: Data, key: String?) async -> Result<Data, String> {
+        guard Self.looksAgeEncrypted(data) else { return .success(data) }
+        guard let key, !key.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return .failure("该订阅是 age 加密的，但没有填写 age 私钥：请在编辑页填写后再更新")
+        }
+        guard client.mode == .live, TunnelManager.shared.isRunning else {
+            return .failure("该订阅是 age 加密的，需先启动 VPN 才能解密（解密由扩展内的核心执行）")
+        }
+        guard let dir = profilesDirectory else {
+            return .failure("App Group 容器不可用，无法解密 age 订阅")
+        }
+        let tempURL = dir.appendingPathComponent(".age-decrypt.yaml")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try data.write(to: tempURL, options: .atomic)
+            let plain = try await client.configDecrypt(profilePath: tempURL.path, key: key)
+            guard !plain.isEmpty else {
+                return .failure("age 解密结果为空：请检查私钥是否正确")
+            }
+            return .success(Data(plain.utf8))
+        } catch {
+            return .failure("age 解密失败：\(error.localizedDescription)")
+        }
+    }
+
+    private static func looksAgeEncrypted(_ data: Data) -> Bool {
+        let head = data.prefix(64)
+        guard let text = String(data: head, encoding: .ascii) else { return false }
+        return text.contains("age-encryption.org/v1")
     }
 
     var activeProfile: Profile? {
@@ -225,9 +422,12 @@ final class ProfileStore: ObservableObject {
             guard !linkLines.isEmpty else { continue }
             var proxies: [JSONValue] = []
             var failedCount = 0
+            var warnings: [String] = []
             for line in linkLines {
                 switch NodeLinkParser.parse(line) {
-                case .success(let node): proxies.append(node.jsonValue)
+                case .success(let node):
+                    proxies.append(node.jsonValue)
+                    warnings.append(contentsOf: node.warnings)
                 case .failure: failedCount += 1
                 }
             }
@@ -241,7 +441,13 @@ final class ProfileStore: ObservableObject {
             }
             guard !proxies.isEmpty else { continue }
             let yaml = DefaultConfig.yaml(proxies: proxies)
-            let note = "识别到 \(proxies.count) 个节点" + (failedCount > 0 ? "，\(failedCount) 行解析失败" : "")
+            var note = "识别到 \(proxies.count) 个节点" + (failedCount > 0 ? "，\(failedCount) 行解析失败" : "")
+            // Transport warnings (e.g. a link's ws/grpc/http option
+            // the parser could not represent) are part of the
+            // import result, not silent: surface the first one.
+            if let firstWarning = warnings.first {
+                note += "（注意：\(firstWarning)\(warnings.count > 1 ? " 等 \(warnings.count) 处" : "")）"
+            }
             return .success((Data(yaml.utf8), note))
         }
         return .failure(NodeLinkError(message: Self.localSanityCheck(data) ?? "订阅内容无法识别：既不是 Clash 配置，也没有可识别的节点链接"))
@@ -286,16 +492,32 @@ final class ProfileStore: ObservableObject {
             return
         }
         do {
-            let (data, _) = try await subscriptionSession.data(from: url)
+            let downloaded = try await downloadSubscription(from: url)
+            // Age-encrypted body (FlClash validateProfile): a fresh
+            // add has no stored key yet, so it cannot be decrypted
+            // here. Save the ciphertext as-is with an honest note —
+            // the user fills the age key in 编辑 and 更新 decrypts
+            // it with the stored key (see update()). Activating
+            // before that fails with the age-specific message in
+            // applyProfile, never with a generic parse error.
+            if Self.looksAgeEncrypted(downloaded.data) {
+                let profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), note: "age 加密：请在编辑页填写私钥后点「更新」解密", subscriptionInfo: downloaded.info)
+                profiles.append(profile)
+                try saveProfileFile(profile: profile, data: downloaded.data)
+                statusMessage = "已导入订阅 \(profile.name)（age 加密，待填写私钥后更新解密）"
+                save()
+                lastError = nil
+                return
+            }
             let normalized: (data: Data, note: String?)
-            switch await normalizedSubscriptionData(data) {
+            switch await normalizedSubscriptionData(downloaded.data) {
             case .success(let value):
                 normalized = value
             case .failure(let reason):
                 lastError = "订阅内容异常：\(reason.message)"
                 return
             }
-            var profile = Profile(name: name.isEmpty ? url.host ?? "订阅" : name, kind: .url, urlString: urlString, updatedAt: Date())
+            var profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), subscriptionInfo: downloaded.info)
             profiles.append(profile)
             try saveProfileFile(profile: profile, data: normalized.data)
             statusMessage = "已导入订阅 \(profile.name)" + (normalized.note.map { "（\($0)）" } ?? "")
@@ -331,13 +553,59 @@ final class ProfileStore: ObservableObject {
         }
     }
 
+    /// FlClash autoUpdateProfiles (providers/actions/profiles.dart):
+    /// update only URL profiles where the global switch is on AND
+    /// the profile's own autoUpdate is on AND lastUpdateDate +
+    /// autoUpdateDuration has passed (a profile never updated is
+    /// due). Per-profile failures are collected into lastError
+    /// ("更新失败（N 个）：…" with each name + reason) instead of
+    /// being overwritten by the next profile's success; a fully
+    /// successful run clears lastError.
+    /// Exact signature for the timer worker (20-minute timer +
+    /// replacing the launch blanket updateAll() in ContentView):
+    ///   `await profileStore.updateDueProfiles()`
+    /// The global switch is read from `globalAutoUpdateEnabled`,
+    /// synced from SettingsStore.autoUpdateProfiles by ContentView.
+    @MainActor
+    func updateDueProfiles() async {
+        guard globalAutoUpdateEnabled else { return }
+        var failures: [(name: String, error: String)] = []
+        for profile in profiles where profile.kind == .url {
+            guard profile.autoUpdate else { continue }
+            let intervalMinutes = profile.autoUpdateIntervalMinutes ?? 1440
+            if let last = profile.updatedAt {
+                guard Date() >= last.addingTimeInterval(TimeInterval(intervalMinutes * 60)) else { continue }
+            }
+            await update(profile)
+            if let error = lastError {
+                failures.append((profile.name, error))
+                lastError = nil
+            }
+        }
+        if failures.isEmpty {
+            lastError = nil
+        } else {
+            lastError = "自动更新失败（\(failures.count) 个）：\n"
+                + failures.map { "· \($0.name)：\($0.error)" }.joined(separator: "\n")
+        }
+    }
+
     @MainActor
     func update(_ profile: Profile) async {
         guard let urlString = profile.urlString, let url = URL(string: urlString) else { return }
         do {
-            let (downloaded, _) = try await subscriptionSession.data(from: url)
+            let downloaded = try await downloadSubscription(from: url)
+            // Age-encrypted download: decrypt with the stored key
+            // before any YAML check (FlClash validateProfile).
+            let plainData: Data
+            switch await decryptAgeDataIfNeeded(downloaded.data, key: profile.ageSecretKey) {
+            case .success(let data): plainData = data
+            case .failure(let reason):
+                lastError = "更新 \(profile.name) 失败：\(reason)"
+                return
+            }
             let normalized: Data
-            switch await normalizedSubscriptionData(downloaded) {
+            switch await normalizedSubscriptionData(plainData) {
             case .success(let value):
                 normalized = value.data
             case .failure(let reason):
@@ -345,12 +613,18 @@ final class ProfileStore: ObservableObject {
                 return
             }
             // A fresh download would wipe the user's local additions
-            // (custom proxies, filter overrides) that live baked into
-            // the active profile's YAML: re-apply them before saving.
-            let data = profile.isActive ? reapplyLocalOverrides(to: normalized) : normalized
+            // (custom proxies, filter overrides, custom-subscription
+            // blocks) that live baked into the profile's YAML: re-
+            // apply them before saving. This runs for EVERY profile,
+            // not just the active one — a non-active profile's bake
+            // blocks must survive its own update too (B10).
+            let data = reapplyLocalOverrides(to: normalized, for: profile)
             try saveProfileFile(profile: profile, data: data)
             if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
                 profiles[index].updatedAt = Date()
+                // The header may be absent on this download: then the
+                // old info is stale and must go, not linger.
+                profiles[index].subscriptionInfo = downloaded.info
             }
             save()
             // Updating the active profile must take effect: re-apply it
@@ -369,12 +643,66 @@ final class ProfileStore: ObservableObject {
         }
     }
 
+    /// Removes one profile's file + list entry. This is the
+    /// low-level primitive: deleting the ACTIVE profile must go
+    /// through deleteProfile(_:) instead, which switches to the
+    /// next profile (or stops the VPN when none remain) — deleting
+    /// here alone would leave the tunnel running deleted config.
+    /// Kept synchronous because UnifiedImport replaces the
+    /// "我的节点" profile through it; that call site still needs
+    /// migrating to deleteProfile (open seam, see report).
     func delete(_ profile: Profile) {
         if let url = fileURL(for: profile) {
             try? FileManager.default.removeItem(at: url)
         }
         profiles.removeAll { $0.id == profile.id }
         save()
+    }
+
+    /// Deletes a profile the FlClash way (profiles.dart
+    /// deleteProfile): remove it, then — when it was active —
+    /// switch to the first remaining profile (and apply it); when
+    /// none remain, clear the current config + inspect and stop
+    /// the VPN. The tunnel never keeps running deleted config.
+    /// profile.clearEffect cannot be called: it takes the numeric
+    /// id the host assigned the profile, and this app never learns
+    /// one (profiles are UUIDs; the core keeps its provider
+    /// downloads under <home>/profiles/providers/<numeric-id>,
+    /// unreachable from here). The orphaned core-side provider
+    /// cache for the deleted profile is therefore left to the
+    /// core, not deleted.
+    @MainActor
+    func deleteProfile(_ profile: Profile) async {
+        let wasActive = profile.isActive
+        let name = profile.name
+        delete(profile)
+        guard wasActive else {
+            statusMessage = "已删除 \(name)"
+            return
+        }
+        if let next = profiles.first {
+            await activate(next)
+            if let error = lastError {
+                // The fallback switch failed: the tunnel would still
+                // be running the deleted config in memory, so stop
+                // it rather than leave it running with no profile.
+                await TunnelManager.shared.stop()
+                lastError = "已删除 \(name)，但切换到 \(next.name) 失败，已停止 VPN：\(error)"
+            } else {
+                statusMessage = "已删除 \(name)，已切换到 \(next.name)"
+            }
+            return
+        }
+        // No profiles remain: clear the stale shared config + the
+        // stale inspect, and stop the VPN (FlClash setRunning(false)).
+        inspect = nil
+        if let shared = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)?
+            .appendingPathComponent(ConfigStore.configFileName) {
+            try? FileManager.default.removeItem(at: shared)
+        }
+        await TunnelManager.shared.stop()
+        statusMessage = "已删除 \(name)，没有剩余订阅，VPN 已停止"
+        lastError = nil
     }
 
     /// Persist a drag-reordered profile list (ProfilesView onMove).
@@ -421,9 +749,24 @@ final class ProfileStore: ObservableObject {
     }
 
     /// Replace a profile's YAML file (FlClash edit page's upload).
+    /// An age-encrypted upload is decrypted FIRST with the given
+    /// key (falling back to the profile's stored key) — the YAML
+    /// sanity check runs on the plaintext, not the ciphertext
+    /// (FlClash saveFile validates with the key). When the tunnel
+    /// is stopped the core cannot decrypt, so the save fails
+    /// honestly instead of storing ciphertext that can never apply.
     /// Validates locally first; when the profile is active the new
     /// file is re-applied like an update, so it takes effect.
-    func updateProfileFile(_ profile: Profile, data: Data) async {
+    func updateProfileFile(_ profile: Profile, data: Data, ageSecretKey: String? = nil) async {
+        var data = data
+        if Self.looksAgeEncrypted(data) {
+            switch await decryptAgeDataIfNeeded(data, key: ageSecretKey ?? profile.ageSecretKey) {
+            case .success(let plain): data = plain
+            case .failure(let reason):
+                lastError = "文件内容异常：\(reason)"
+                return
+            }
+        }
         if let problem = Self.localSanityCheck(data) {
             lastError = "文件内容异常：\(problem)"
             return
@@ -510,6 +853,19 @@ final class ProfileStore: ObservableObject {
     struct LocalProxyNode {
         let name: String
         let type: String
+        /// Name of the proxy-provider this node came from, when it
+        /// did not come from the profile's own `proxies:` section.
+        /// Nil for literal nodes. ProxyStore.loadLocalGroups must
+        /// pass this through to ProxyNode.provider (open seam: that
+        /// file belongs to another worker) for the Proxies page to
+        /// show it; NodeSourcesView already displays it.
+        let provider: String?
+
+        init(name: String, type: String, provider: String? = nil) {
+            self.name = name
+            self.type = type
+            self.provider = provider
+        }
     }
 
     struct LocalProxyGroup {
@@ -517,31 +873,90 @@ final class ProfileStore: ObservableObject {
         let type: String
         let nodeNames: [String]
         let testURL: String
+        /// Raw filter expressions, kept so callers can see why a
+        /// group has the members it has; nodeNames already has the
+        /// filter evaluated against the parsed node list.
+        let filter: String
+        let excludeFilter: String
+        /// Provider names from the group's `use:` list.
+        let useProviders: [String]
+
+        init(name: String, type: String, nodeNames: [String], testURL: String,
+             filter: String = "", excludeFilter: String = "", useProviders: [String] = []) {
+            self.name = name
+            self.type = type
+            self.nodeNames = nodeNames
+            self.testURL = testURL
+            self.filter = filter
+            self.excludeFilter = excludeFilter
+            self.useProviders = useProviders
+        }
+    }
+
+    /// One proxy-provider declaration from the profile's
+    /// `proxy-providers:` section.
+    struct LocalProxyProvider {
+        let name: String
+        let type: String
+        let url: String
+        let path: String
+        let filter: String
+        let excludeFilter: String
     }
 
     struct LocalProxyGroups {
         let nodes: [LocalProxyNode]
         let groups: [LocalProxyGroup]
+        let providers: [LocalProxyProvider]
     }
 
-    /// Parse `proxies:` (name + type) and `proxy-groups:` (name, type,
-    /// member list, url) from a profile's local YAML. Returns nil when
-    /// the file is missing or has neither section. A config with
-    /// proxies but no groups gets one synthesized "GLOBAL" select
-    /// group holding all of them (what the core synthesizes too).
+    /// Parse `proxies:` (name + type), `proxy-groups:` (name, type,
+    /// member list, `use:`, filter / exclude-filter, url) and
+    /// `proxy-providers:` from a profile's local YAML. Provider
+    /// nodes are resolved offline: `file` providers are read from
+    /// their file, `http` providers from the core's cached copy
+    /// (their `path:`, relative to the profile or the App Group
+    /// container, which is the core's home). An http provider with
+    /// no cached file cannot be resolved offline — its nodes stay
+    /// unknown until the tunnel runs, and the group keeps only its
+    /// literal / other members rather than inventing any.
+    /// Group members are literal `proxies:` + `use:` provider
+    /// nodes, filtered by the group's filter / exclude-filter
+    /// (mihomo regex over the node name; a group with a filter but
+    /// no literal / `use:` members filters the whole node pool).
+    /// Returns nil when the file is missing or has neither section.
+    /// A config with proxies but no groups gets one synthesized
+    /// "GLOBAL" select group holding all of them (what the core
+    /// synthesizes too).
     func localProxyGroups(for profile: Profile) -> LocalProxyGroups? {
         guard let url = fileURL(for: profile),
               let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         var nodes: [LocalProxyNode] = []
         var groups: [LocalProxyGroup] = []
+        var providers: [LocalProxyProvider] = []
         var section: String? = nil
-        // Current item being collected, with its indent.
+        // Current list item being collected, with its indent.
         var itemIndent = -1
         var item: [String: String] = [:]
         var itemMembers: [String] = []
         var itemMembersFlow: [String]? = nil
-        var inMemberList = false
-        var memberListIndent = -1
+        var itemUse: [String] = []
+        var itemUseFlow: [String]? = nil
+        var listKey: String? = nil
+        var listIndent = -1
+        // Current proxy-provider mapping entry being collected.
+        var providerName: String? = nil
+        var providerFields: [String: String] = [:]
+        func flushProvider() {
+            guard let name = providerName else { return }
+            providers.append(LocalProxyProvider(
+                name: name, type: providerFields["type"] ?? "http",
+                url: providerFields["url"] ?? "", path: providerFields["path"] ?? "",
+                filter: providerFields["filter"] ?? "",
+                excludeFilter: providerFields["exclude-filter"] ?? ""))
+            providerName = nil
+            providerFields = [:]
+        }
         func flushItem() {
             guard section != nil, !item.isEmpty else { return }
             if section == "proxies" {
@@ -553,13 +968,17 @@ final class ProfileStore: ObservableObject {
                     let members = itemMembersFlow ?? itemMembers
                     groups.append(LocalProxyGroup(
                         name: name, type: item["type"] ?? "select",
-                        nodeNames: members, testURL: item["url"] ?? ""))
+                        nodeNames: members, testURL: item["url"] ?? "",
+                        filter: item["filter"] ?? "", excludeFilter: item["exclude-filter"] ?? "",
+                        useProviders: itemUseFlow ?? itemUse))
                 }
             }
             item = [:]
             itemMembers = []
             itemMembersFlow = nil
-            inMemberList = false
+            itemUse = []
+            itemUseFlow = nil
+            listKey = nil
         }
         for rawLine in text.components(separatedBy: "\n") {
             let line = rawLine.replacingOccurrences(of: "\r", with: "")
@@ -568,28 +987,46 @@ final class ProfileStore: ObservableObject {
             if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
             if indent == 0 {
                 flushItem()
+                flushProvider()
                 itemIndent = -1
                 if trimmed == "proxies:" || trimmed.hasPrefix("proxies: ") {
                     section = "proxies"
                 } else if trimmed == "proxy-groups:" || trimmed.hasPrefix("proxy-groups: ") {
                     section = "proxy-groups"
+                } else if trimmed == "proxy-providers:" || trimmed.hasPrefix("proxy-providers: ") {
+                    section = "proxy-providers"
                 } else {
                     section = nil
                 }
                 continue
             }
             guard section != nil else { continue }
+            if section == "proxy-providers" {
+                // Mapping style: "  name:" starts a provider,
+                // deeper "key: value" lines are its fields. A flow
+                // mapping ("  name: {type: http, ...}") is not
+                // handled — the live core path stays authoritative.
+                if indent == 2, trimmed.hasSuffix(":"), !trimmed.hasPrefix("- ") {
+                    flushProvider()
+                    providerName = Self.unquote(String(trimmed.dropLast()).trimmingCharacters(in: .whitespaces))
+                } else if providerName != nil, indent > 2, let kv = Self.yamlKeyValue(trimmed) {
+                    providerFields[kv.key] = kv.value
+                }
+                continue
+            }
             if trimmed.hasPrefix("- ") || trimmed == "-" {
-                // A deeper-indented "- " while collecting a member list
-                // is a member, not a new item.
-                if inMemberList && indent > memberListIndent {
+                // A deeper-indented "- " while collecting a member
+                // list is a member, not a new item.
+                if let key = listKey, indent > listIndent {
                     let value = Self.unquote(String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces))
-                    if !value.isEmpty { itemMembers.append(value) }
+                    if !value.isEmpty {
+                        if key == "proxies" { itemMembers.append(value) } else { itemUse.append(value) }
+                    }
                     continue
                 }
                 flushItem()
                 itemIndent = indent
-                inMemberList = false
+                listKey = nil
                 let rest = trimmed == "-" ? "" : String(trimmed.dropFirst(2))
                 if !rest.isEmpty, let kv = Self.yamlKeyValue(rest) {
                     if kv.key == "proxies", let flow = Self.flowList(kv.value) {
@@ -601,32 +1038,182 @@ final class ProfileStore: ObservableObject {
                 continue
             }
             guard itemIndent >= 0, indent > itemIndent else { continue }
-            if inMemberList && indent > memberListIndent {
+            if listKey != nil, indent <= listIndent { listKey = nil }
+            if let key = listKey, indent > listIndent {
                 if trimmed.hasPrefix("- ") {
                     let value = Self.unquote(String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces))
-                    if !value.isEmpty { itemMembers.append(value) }
+                    if !value.isEmpty {
+                        if key == "proxies" { itemMembers.append(value) } else { itemUse.append(value) }
+                    }
                 }
                 continue
             }
             guard let kv = Self.yamlKeyValue(trimmed) else { continue }
-            if section == "proxy-groups" && kv.key == "proxies" {
+            if section == "proxy-groups" && (kv.key == "proxies" || kv.key == "use") {
                 if let flow = Self.flowList(kv.value) {
-                    itemMembersFlow = flow
+                    if kv.key == "proxies" { itemMembersFlow = flow } else { itemUseFlow = flow }
+                } else if kv.value.isEmpty {
+                    listKey = kv.key
+                    listIndent = indent
                 } else {
-                    inMemberList = true
-                    memberListIndent = indent
+                    item[kv.key] = kv.value
                 }
             } else {
                 item[kv.key] = kv.value
             }
         }
         flushItem()
-        if nodes.isEmpty && groups.isEmpty { return nil }
+        flushProvider()
+        if nodes.isEmpty && groups.isEmpty && providers.isEmpty { return nil }
+        // Resolve provider nodes offline (C1).
+        let profileDir = url.deletingLastPathComponent()
+        var providerNodes: [LocalProxyNode] = []
+        for provider in providers {
+            providerNodes.append(contentsOf: Self.resolveProviderNodes(provider, profileDirectory: profileDir))
+        }
+        var allNodes = nodes
+        var seenNames = Set(nodes.map(\.name))
+        for node in providerNodes where !seenNames.contains(node.name) {
+            allNodes.append(node)
+            seenNames.insert(node.name)
+        }
+        // Evaluate group filters (C2): literal members + `use:`
+        // provider nodes, filtered by filter / exclude-filter. A
+        // group with a filter but no literal / `use:` source
+        // filters the whole node pool instead of showing 0.
+        let nodeNames = Set(allNodes.map(\.name))
+        let resolvedGroups = groups.map { group -> LocalProxyGroup in
+            var members: [String] = []
+            var seen: Set<String> = []
+            func add(_ name: String) {
+                guard !name.isEmpty, !seen.contains(name) else { return }
+                seen.insert(name)
+                members.append(name)
+            }
+            for name in group.nodeNames { add(name) }
+            for providerName in group.useProviders {
+                for node in providerNodes where node.provider == providerName { add(node.name) }
+            }
+            if !group.filter.isEmpty || !group.excludeFilter.isEmpty {
+                if members.isEmpty {
+                    for node in allNodes where Self.matchesFilter(node.name, filter: group.filter, excludeFilter: group.excludeFilter) {
+                        add(node.name)
+                    }
+                } else {
+                    members = members.filter { name in
+                        // Nested-group names and built-ins are not
+                        // nodes: they pass through unfiltered.
+                        guard nodeNames.contains(name) else { return true }
+                        return Self.matchesFilter(name, filter: group.filter, excludeFilter: group.excludeFilter)
+                    }
+                }
+            }
+            return LocalProxyGroup(
+                name: group.name, type: group.type, nodeNames: members,
+                testURL: group.testURL, filter: group.filter,
+                excludeFilter: group.excludeFilter, useProviders: group.useProviders)
+        }
+        groups = resolvedGroups
         if groups.isEmpty {
             groups = [LocalProxyGroup(name: "GLOBAL", type: "select",
-                                      nodeNames: nodes.map(\.name), testURL: "")]
+                                      nodeNames: allNodes.map(\.name), testURL: "")]
         }
-        return LocalProxyGroups(nodes: nodes, groups: groups)
+        return LocalProxyGroups(nodes: allNodes, groups: groups, providers: providers)
+    }
+
+    /// mihomo group filter: `filter` is a regex the node name must
+    /// match, `exclude-filter` one it must not match. An invalid
+    /// regex falls back to a plain substring match instead of
+    /// dropping every member.
+    private static func matchesFilter(_ name: String, filter: String, excludeFilter: String) -> Bool {
+        if !filter.isEmpty, !matchesRegex(filter, in: name) { return false }
+        if !excludeFilter.isEmpty, matchesRegex(excludeFilter, in: name) { return false }
+        return true
+    }
+
+    private static func matchesRegex(_ pattern: String, in text: String) -> Bool {
+        if let regex = try? NSRegularExpression(pattern: pattern) {
+            let range = NSRange(text.startIndex..., in: text)
+            return regex.firstMatch(in: text, range: range) != nil
+        }
+        return text.contains(pattern)
+    }
+
+    /// Reads one provider's nodes from its local file. `file`
+    /// providers use their `path:`; `http` providers use their
+    /// cached `path:` (mihomo writes the download there, relative
+    /// to the config dir) or the conventional cache locations
+    /// under the App Group container (the core's home). Returns []
+    /// when no file is found — the nodes stay unknown offline.
+    private static func resolveProviderNodes(_ provider: LocalProxyProvider, profileDirectory: URL) -> [LocalProxyNode] {
+        let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)
+        var candidates: [URL] = []
+        func addCandidate(_ path: String) {
+            guard !path.isEmpty else { return }
+            if path.hasPrefix("/") {
+                candidates.append(URL(fileURLWithPath: path))
+            } else {
+                candidates.append(profileDirectory.appendingPathComponent(path))
+                if let container { candidates.append(container.appendingPathComponent(path)) }
+            }
+        }
+        addCandidate(provider.path)
+        if provider.type == "http" {
+            if let container {
+                candidates.append(container.appendingPathComponent("providers/\(provider.name).yaml"))
+                candidates.append(container.appendingPathComponent("providers/proxies/\(provider.name).yaml"))
+                candidates.append(container.appendingPathComponent("providers/\(provider.name)"))
+            }
+            candidates.append(profileDirectory.appendingPathComponent("\(provider.name).yaml"))
+        }
+        for candidate in candidates {
+            guard let text = try? String(contentsOf: candidate, encoding: .utf8) else { continue }
+            let parsed = parseProxyListItems(text)
+            guard !parsed.isEmpty else { continue }
+            return parsed
+                .filter { Self.matchesFilter($0.name, filter: provider.filter, excludeFilter: provider.excludeFilter) }
+                .map { LocalProxyNode(name: $0.name, type: $0.type, provider: provider.name) }
+        }
+        return []
+    }
+
+    /// Scans a provider file's `proxies:` section for name + type
+    /// (same line-scan approach as localProxyGroups, no core).
+    private static func parseProxyListItems(_ text: String) -> [(name: String, type: String)] {
+        var out: [(name: String, type: String)] = []
+        var inProxies = false
+        var item: [String: String] = [:]
+        var itemIndent = -1
+        func flush() {
+            if let name = item["name"] {
+                out.append((name: name, type: item["type"] ?? "unknown"))
+            }
+            item = [:]
+        }
+        for rawLine in text.components(separatedBy: "\n") {
+            let line = rawLine.replacingOccurrences(of: "\r", with: "")
+            let indent = line.prefix(while: { $0 == " " || $0 == "\t" }).count
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            if indent == 0 {
+                flush()
+                itemIndent = -1
+                inProxies = trimmed == "proxies:" || trimmed.hasPrefix("proxies: ")
+                continue
+            }
+            guard inProxies else { continue }
+            if trimmed.hasPrefix("- ") || trimmed == "-" {
+                flush()
+                itemIndent = indent
+                let rest = trimmed == "-" ? "" : String(trimmed.dropFirst(2))
+                if !rest.isEmpty, let kv = yamlKeyValue(rest) { item[kv.key] = kv.value }
+                continue
+            }
+            guard itemIndent >= 0, indent > itemIndent, let kv = yamlKeyValue(trimmed) else { continue }
+            item[kv.key] = kv.value
+        }
+        flush()
+        return out
     }
 
     /// "key: value" split for one YAML scalar line; strips matching
@@ -692,9 +1279,19 @@ final class ProfileStore: ObservableObject {
     }
 
     /// Validates, copies and applies one profile's YAML. Used by both
-    /// activate and update (of the active profile).
+    /// activate and update (of the active profile). Switching to a
+    /// profile re-bakes its local overrides first (B10): a profile
+    /// whose custom-subscription blocks were wiped by an earlier
+    /// update gets them back from the store / its on-disk file.
     @MainActor
     private func applyProfile(_ profile: Profile, data: Data) async {
+        // An age-encrypted file is not a config yet: point at the
+        // key + 更新 instead of a generic parse error.
+        if Self.looksAgeEncrypted(data) {
+            lastError = "切换失败：该订阅是 age 加密的，请先在编辑页填写 age 私钥并点「更新」解密"
+            return
+        }
+        let data = reapplyLocalOverrides(to: data, for: profile)
         if let problem = Self.localSanityCheck(data) {
             lastError = "切换失败：\(problem)"
             return
@@ -775,16 +1372,48 @@ final class ProfileStore: ObservableObject {
         try? await client.connectionCloseAll()
     }
 
-    /// Re-bake the user's local additions (custom proxies, filter
-    /// overrides) into freshly downloaded profile data. Used when a
-    /// subscription update replaces the active profile's file, so the
-    /// update never silently drops them.
-    func reapplyLocalOverrides(to data: Data) -> Data {
+    /// Re-bake the user's local additions into freshly downloaded
+    /// (or newly switched-to) profile data, so a subscription
+    /// update never silently drops them:
+    ///  - form + raw custom proxies (CustomProxyStore, global)
+    ///  - per-group filter overrides (global)
+    ///  - custom-subscription blocks (groups / providers / rules /
+    ///    dialers): the store is the source of truth, found through
+    ///    the bake map (which custom subscription was last applied
+    ///    to this profile); when there is no map entry, the blocks
+    ///    already in this profile's on-disk file are carried over
+    ///    verbatim, so bakes made before the map existed survive.
+    /// Baking is idempotent (markers are removed before re-insert),
+    /// so calling it twice on the same text is safe.
+    func reapplyLocalOverrides(to data: Data, for profile: Profile) -> Data {
         guard let text = String(data: data, encoding: .utf8) else { return data }
         var result = CustomProxyStore.bakeCurrent(into: text)
         let store = CustomProxyStore()
         result = CustomProxyStore.bakeFilterOverrides(store.filterOverrides, into: result)
+        let customStore = CustomSubscriptionStore()
+        if let subID = CustomSubscriptionStore.bakedSubscriptionID(for: profile.id) {
+            if let sub = customStore.subscriptions.first(where: { $0.id == subID }) {
+                result = CustomSubscriptionStore.bake(sub, into: result)
+            } else {
+                // The mapped custom subscription was deleted: drop
+                // the stale mapping, but keep whatever blocks the
+                // profile file already has (deleting the list entry
+                // alone must never wipe a profile's baked content).
+                CustomSubscriptionStore.clearBakedSubscription(for: profile.id)
+                if let oldText = oldProfileText(for: profile) {
+                    result = CustomSubscriptionStore.reapplyBakedBlocks(from: oldText, into: result)
+                }
+            }
+        } else if let oldText = oldProfileText(for: profile) {
+            result = CustomSubscriptionStore.reapplyBakedBlocks(from: oldText, into: result)
+        }
         return result.data(using: .utf8) ?? data
+    }
+
+    /// The profile's current on-disk YAML text, if it has a file.
+    private func oldProfileText(for profile: Profile) -> String? {
+        guard let url = fileURL(for: profile) else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
     }
 
     /// Re-applies the active profile live (config.apply with no

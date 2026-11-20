@@ -207,7 +207,7 @@ final class RuleStore: ObservableObject {
     func healthCheckProvider(_ provider: ConcordProviderInfo) async {
         do {
             try await client.providerHealthCheck(name: provider.name)
-            providerActionMessage = "已触发 \(provider.name) 的健康检查（后台进行，稍后刷新列表查看）"
+            providerActionMessage = "健康检查已触发，但核心不返回提供方健康状态，无法显示结果"
             lastError = nil
         } catch {
             lastError = error.localizedDescription

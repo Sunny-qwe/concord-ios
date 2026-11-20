@@ -138,8 +138,4 @@ final class LogStore: ObservableObject {
             lastError = error.localizedDescription
         }
     }
-
-    func clear() {
-        entries.removeAll()
-    }
 }

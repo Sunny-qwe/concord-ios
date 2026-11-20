@@ -2,9 +2,10 @@ import SwiftUI
 import UIKit
 
 // MARK: - Logs (FlClash: LogsView, lib/views/logs.dart)
-// FlClash logs page: level filter, search, auto-scroll, clear and
-// export. Backed by Concord log.watch (stream of LogEntry) and
-// core.lastWarnings.
+// FlClash logs page: level filter, search, auto-scroll and export
+// (no clear button — the rows come from the extension snapshot, so
+// clearing the in-memory list would only fake it). Backed by Concord
+// log.watch (stream of LogEntry) and core.lastWarnings.
 
 struct LogsView: View {
     @EnvironmentObject private var logStore: LogStore
@@ -110,28 +111,36 @@ struct LogsView: View {
                     if eventStore.filtered.isEmpty {
                         ContentUnavailableView("暂无事件", systemImage: "bolt", description: Text("核心事件（提供方更新、测速、致命错误、状态变化）会显示在这里"))
                     } else {
-                        List(eventStore.filtered) { entry in
-                            HStack(alignment: .top, spacing: 8) {
-                                Text(ConcordFormat.time(entry.receivedAtMillis))
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 64, alignment: .leading)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(entry.event.type)
+                        ScrollViewReader { proxy in
+                            List(eventStore.filtered) { entry in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text(ConcordFormat.time(entry.receivedAtMillis))
                                         .font(.system(size: 10))
-                                        .fontWeight(.semibold)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(eventColor(entry.event.type).opacity(0.15), in: Capsule())
-                                        .foregroundStyle(eventColor(entry.event.type))
-                                    Text(entry.event.summary)
-                                        .font(.system(size: 10))
-                                        .lineLimit(3)
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 64, alignment: .leading)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.event.type)
+                                            .font(.system(size: 10))
+                                            .fontWeight(.semibold)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(eventColor(entry.event.type).opacity(0.15), in: Capsule())
+                                            .foregroundStyle(eventColor(entry.event.type))
+                                        Text(entry.event.summary)
+                                            .font(.system(size: 10))
+                                            .lineLimit(3)
+                                    }
+                                }
+                                .id(entry.id)
+                            }
+                            .listStyle(.insetGrouped)
+                            .scrollContentBackground(.hidden)
+                            .onChange(of: eventStore.filtered.count) { _, _ in
+                                if logStore.autoScroll, let last = eventStore.filtered.last {
+                                    proxy.scrollTo(last.id, anchor: .bottom)
                                 }
                             }
                         }
-                        .listStyle(.insetGrouped)
-                        .scrollContentBackground(.hidden)
                     }
                     if let updated = eventStore.lastUpdated {
                         Text("上次更新：\(updated.formatted(date: .abbreviated, time: .shortened))")
@@ -174,11 +183,11 @@ struct LogsView: View {
                             Image(systemName: "square.and.arrow.up")
                         }
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { logStore.clear() } label: {
-                            Image(systemName: "trash")
-                        }
-                    }
+                    // No clear button: the old trash button only
+                    // emptied the in-memory list and the rows came
+                    // back on the next refresh from the extension
+                    // snapshot (audit B27). FlClash has no clear
+                    // button either — only export.
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -208,10 +217,24 @@ struct LogsView: View {
             .refreshable {
                 if tab == .logs { await logStore.refresh() } else { await eventStore.refresh() }
             }
-            .task { if logStore.entries.isEmpty { await logStore.refresh() } }
-            .onChange(of: tab) { _, newTab in
-                if newTab == .events, eventStore.entries.isEmpty {
-                    Task { await eventStore.refresh() }
+            // Live feed (audit B26/B35): poll the active tab every
+            // 1 s like FlClash, only while this page is visible and
+            // the tunnel is running. The task restarts when the tab
+            // changes (id: tab) and is cancelled when the page
+            // disappears, so polling stops with the VPN off or the
+            // view gone. New rows auto-scroll via the onChange
+            // handlers on each list.
+            .task(id: tab) {
+                if tab == .logs {
+                    if logStore.entries.isEmpty { await logStore.refresh() }
+                } else if eventStore.entries.isEmpty {
+                    await eventStore.refresh()
+                }
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard !Task.isCancelled else { break }
+                    guard TunnelManager.shared.isRunning else { continue }
+                    if tab == .logs { await logStore.refresh() } else { await eventStore.refresh() }
                 }
             }
     }

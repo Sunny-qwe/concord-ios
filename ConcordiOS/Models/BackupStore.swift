@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Compression
 
 // MARK: - Backup / restore (FlClash: backup & restore)
 // FlClash can export all of its data and import it back. There is no
@@ -7,14 +8,16 @@ import Combine
 // zip file holding every app-owned file in the App Group container
 // (profiles, config.yaml, settings JSONs, MITM modules + resources)
 // plus a userdefaults.json capturing the UserDefaults blobs the
-// stores keep there (profiles metadata, settings, theme, core mode).
+// stores keep there (profiles metadata, settings, theme, core mode,
+// and every other persisted user setting — see
+// backupUserDefaultsKeys).
 // Live snapshots (snapshots/*.json) are NOT backed up: the extension
 // rewrites them continuously and they regenerate on the next refresh.
 //
-// The zip is written and read by ZipArchive below — a minimal
-// stored-only (method 0, no compression) ZIP reader/writer, so the
-// app needs no third-party dependency. The files are mostly small
-// YAML/JSON, so storing them uncompressed is fine.
+// The zip is written and read by ZipArchive below — a stored-only
+// (method 0) writer, and a reader that also accepts deflate
+// (method 8, the default of Files and most zip tools), so a backup
+// re-saved by another tool still restores. No third-party dependency.
 //
 // Restore is all-or-nothing: the zip is unpacked to a staging dir
 // and validated (manifest + CRCs) BEFORE anything is touched; the
@@ -22,8 +25,11 @@ import Combine
 // the replace rolls the safety copy back. A corrupt file therefore
 // reports a clear error and leaves the app untouched.
 
-/// Minimal stored-only ZIP (method 0) writer/reader. Only what the
-/// backup needs: no compression, no encryption, no multi-disk.
+/// Minimal ZIP (method 0 stored + method 8 deflate) writer/reader.
+/// The writer stores uncompressed; the reader also inflates deflate
+/// entries (Compression framework, raw-deflate via a zlib stream —
+/// see inflateRawDeflate), so backups re-saved by Files or another
+/// tool restore. No encryption, no multi-disk.
 enum ZipArchive {
     struct Entry {
         let path: String
@@ -32,15 +38,65 @@ enum ZipArchive {
 
     enum ZipError: LocalizedError {
         case invalidArchive(String)
-        case unsupportedMethod
+        case unsupportedMethod(Int)
         case corruptEntry(String)
 
         var errorDescription: String? {
             switch self {
             case .invalidArchive(let detail): return "不是有效的备份文件（\(detail)）"
-            case .unsupportedMethod: return "备份文件用了不支持的压缩方式（只支持未压缩存储）"
+            case .unsupportedMethod(let method): return "备份文件用了不支持的压缩方式（方法 \(method)，只支持未压缩存储和 deflate）"
             case .corruptEntry(let detail): return "备份文件损坏：\(detail)"
             }
+        }
+    }
+
+    /// Inflates one raw-deflate (RFC 1951) stream — the compression
+    /// ZIP method 8 uses. The Compression framework only speaks
+    /// zlib-framed (RFC 1950) streams, so a minimal zlib header is
+    /// prepended; the 4-byte Adler-32 trailer a zlib stream would
+    /// carry is absent, so decoding ends when the input runs out
+    /// instead of at a stream-end marker. That is fine here: the
+    /// caller checks the result's length and CRC-32, which is the
+    /// real integrity check for the entry.
+    private static func inflateRawDeflate(_ data: Data, expectedSize: Int) -> Data? {
+        guard !data.isEmpty, expectedSize >= 0 else { return Data() }
+        var stream = compression_stream()
+        guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
+            return nil
+        }
+        defer { compression_stream_destroy(&stream) }
+        // 0x78 0x01: zlib header, no/low compression, valid FCHECK.
+        var input = Data([0x78, 0x01])
+        input.append(data)
+        var output = Data()
+        output.reserveCapacity(expectedSize)
+        let chunkSize = 65_536
+        var outBuffer = [UInt8](repeating: 0, count: chunkSize)
+        return input.withUnsafeBytes { inputPtr -> Data? in
+            guard let inputBase = inputPtr.baseAddress else { return nil }
+            stream.src_ptr = inputBase.assumingMemoryBound(to: UInt8.self)
+            stream.src_size = input.count
+            while true {
+                let produced: Int = outBuffer.withUnsafeMutableBytes { outPtr -> Int in
+                    guard let outBase = outPtr.baseAddress else { return 0 }
+                    stream.dst_ptr = outBase.assumingMemoryBound(to: UInt8.self)
+                    stream.dst_size = chunkSize
+                    let status = compression_stream_process(&stream, 0)
+                    let count = chunkSize - stream.dst_size
+                    if count > 0 {
+                        output.append(outBase.assumingMemoryBound(to: UInt8.self), count: count)
+                    }
+                    if status == COMPRESSION_STATUS_END { return -1 }
+                    if status == COMPRESSION_STATUS_ERROR { return -2 }
+                    return count
+                }
+                if produced == -1 { break }
+                // No end marker (missing Adler trailer): stop on a
+                // stream error, or when the input is exhausted and
+                // this pass produced nothing.
+                if produced == -2 || (produced == 0 && stream.src_size == 0) { break }
+            }
+            return output
         }
     }
 
@@ -205,7 +261,7 @@ enum ZipArchive {
             if path.hasPrefix("/") || path.split(separator: "/").contains("..") {
                 throw ZipError.corruptEntry("非法路径 \(path)")
             }
-            guard method == 0 else { throw ZipError.unsupportedMethod }
+            guard method == 0 || method == 8 else { throw ZipError.unsupportedMethod(Int(method)) }
             // Local header: 30 bytes + name + extra, then the data.
             guard localOffset + 30 <= data.count, read32(data, localOffset) == 0x04034B50 else {
                 throw ZipError.invalidArchive("本地文件头损坏")
@@ -213,15 +269,28 @@ enum ZipArchive {
             let localNameLength = Int(read16(data, localOffset + 26))
             let localExtraLength = Int(read16(data, localOffset + 28))
             let dataStart = localOffset + 30 + localNameLength + localExtraLength
-            guard dataStart + compressedSize <= data.count,
-                  compressedSize == uncompressedSize else {
+            guard dataStart + compressedSize <= data.count else {
                 throw ZipError.corruptEntry("文件 \(path) 长度不对")
             }
-            let fileData = data[dataStart..<(dataStart + compressedSize)]
+            let fileData: Data
+            if method == 0 {
+                guard compressedSize == uncompressedSize else {
+                    throw ZipError.corruptEntry("文件 \(path) 长度不对")
+                }
+                fileData = Data(data[dataStart..<(dataStart + compressedSize)])
+            } else {
+                // Deflate: inflate, then check the real length and
+                // CRC-32 below (the same checks as stored entries).
+                guard let inflated = inflateRawDeflate(Data(data[dataStart..<(dataStart + compressedSize)]), expectedSize: uncompressedSize),
+                      inflated.count == uncompressedSize else {
+                    throw ZipError.corruptEntry("文件 \(path) 解压失败或长度不对")
+                }
+                fileData = inflated
+            }
             guard crc32(fileData) == crc else {
                 throw ZipError.corruptEntry("文件 \(path) 校验失败")
             }
-            entries.append(Entry(path: path, data: Data(fileData)))
+            entries.append(Entry(path: path, data: fileData))
             offset = nameStart + nameLength + extraLength + commentLength
         }
         return entries
@@ -235,16 +304,117 @@ final class BackupStore: ObservableObject {
     static let userDefaultsFileName = "userdefaults.json"
 
     /// UserDefaults keys that hold app state (everything else in the
-    /// backup is files in the App Group container).
+    /// backup is files in the App Group container). Everything the
+    /// UI claims the backup contains lives here — not just the four
+    /// original blobs (audit B7): WebDAV account, icon set, font,
+    /// language, disclaimer consent, geo settings, MITM H2 /
+    /// decrypt-untrusted, dashboard layout / display keys, update
+    /// timestamps, port keys, proxy-list display keys, and the
+    /// per-store blobs (sniffer / NTP / overrides / on-demand).
     static let backupUserDefaultsKeys = [
+        // Original four blobs.
         "ConcordiOS.profiles.v1",
         "ConcordiOS.settings.v1",
         "ConcordiOS.theme.v1",
         "ConcordiOS.mode.v1",
+        // Per-store blobs.
+        "ConcordiOS.sniffer.v1",
+        "ConcordiOS.ntp.v1",
+        "ConcordiOS.overrides.v1",
+        "ConcordiOS.ondemand.v1",
+        // WebDAV account.
+        "ConcordiOS.webdav.url",
+        "ConcordiOS.webdav.username",
+        "ConcordiOS.webdav.password",
+        "ConcordiOS.webdav.fileName",
+        // Icon set / font / language / disclaimer.
+        "ConcordiOS.iconSet.pack.v1",
+        "ConcordiOS.font.family.v1",
+        "ConcordiOS.appLanguage",
+        "ConcordiOS.disclaimer.consented",
+        "ConcordiOS.disclaimer.consentedAt",
+        // Geo settings.
+        "ConcordiOS.geoAutoUpdate",
+        "ConcordiOS.geoAutoUpdateHours",
+        "ConcordiOS.geoLastUpdate",
+        "ConcordiOS.geoURL.MMDB",
+        "ConcordiOS.geoURL.GEOSITE",
+        "ConcordiOS.geoURL.ASN",
+        // MITM flags stored outside settings.v1.
+        "ConcordiOS.mitmH2",
+        "ConcordiOS.mitmDecryptUntrusted",
+        // Dashboard layout / display.
+        "ConcordiOS.dashboard.order",
+        "ConcordiOS.dashboard.densityCompact",
+        "ConcordiOS.dashboard.show.vpn",
+        "ConcordiOS.dashboard.show.status",
+        "ConcordiOS.dashboard.show.speed",
+        "ConcordiOS.dashboard.show.stats",
+        "ConcordiOS.dashboard.show.profile",
+        "ConcordiOS.dashboard.show.mode",
+        "ConcordiOS.dashboard.show.groups",
+        "ConcordiOS.dashboard.show.memory",
+        "ConcordiOS.dashboard.show.services",
+        "ConcordiOS.dashboard.show.intranet",
+        "ConcordiOS.dashboard.show.update",
+        // Update-check state.
+        "ConcordiOS.update.lastSha",
+        "ConcordiOS.update.lastMessage",
+        "ConcordiOS.update.lastIsNew",
+        "ConcordiOS.update.lastDate",
+        "ConcordiOS.update.lastChecked",
+        "ConcordiOS.lastSeenHead",
+        // Ports / misc.
+        "ConcordiOS.httpPort",
+        "ConcordiOS.redirPort",
+        "ConcordiOS.tproxyPort",
+        "ConcordiOS.dnsListenRoutingMark",
+        "ConcordiOS.findProcessModeAlways",
+        // Proxy-list display.
+        "ConcordiOS.proxies.style",
+        "ConcordiOS.proxies.sort",
+        "ConcordiOS.proxies.layout",
+        "ConcordiOS.proxies.cardType",
+        "ConcordiOS.proxies.iconStyle",
+        "ConcordiOS.proxies.hideTimeout",
     ]
 
-    /// Keys whose UserDefaults value is a String (the rest are Data).
-    private static let stringKeys: Set<String> = ["ConcordiOS.mode.v1"]
+    /// Keys whose UserDefaults value is a String (the rest are Data
+    /// or plist scalars — see UserDefaultsBackup.plistValues).
+    private static let stringKeys: Set<String> = [
+        "ConcordiOS.mode.v1",
+        "ConcordiOS.webdav.url",
+        "ConcordiOS.webdav.username",
+        "ConcordiOS.webdav.password",
+        "ConcordiOS.webdav.fileName",
+        "ConcordiOS.iconSet.pack.v1",
+        "ConcordiOS.font.family.v1",
+        "ConcordiOS.appLanguage",
+        "ConcordiOS.geoURL.MMDB",
+        "ConcordiOS.geoURL.GEOSITE",
+        "ConcordiOS.geoURL.ASN",
+        "ConcordiOS.update.lastSha",
+        "ConcordiOS.update.lastMessage",
+        "ConcordiOS.update.lastDate",
+        "ConcordiOS.lastSeenHead",
+        "ConcordiOS.dashboard.order",
+        "ConcordiOS.proxies.style",
+        "ConcordiOS.proxies.sort",
+        "ConcordiOS.proxies.layout",
+        "ConcordiOS.proxies.cardType",
+        "ConcordiOS.proxies.iconStyle",
+    ]
+
+    /// Keys whose value is a Data blob (Codable store snapshots).
+    private static let dataKeys: Set<String> = [
+        "ConcordiOS.profiles.v1",
+        "ConcordiOS.settings.v1",
+        "ConcordiOS.theme.v1",
+        "ConcordiOS.sniffer.v1",
+        "ConcordiOS.ntp.v1",
+        "ConcordiOS.overrides.v1",
+        "ConcordiOS.ondemand.v1",
+    ]
 
     @Published var statusMessage: String?
     @Published var lastError: String?
@@ -262,6 +432,27 @@ final class BackupStore: ObservableObject {
         /// key -> base64 of the raw value (Data as-is, String as UTF-8).
         let values: [String: String]
         let stringKeys: [String]
+        /// key -> base64 of a binary-plist encoding of the value,
+        /// for plist scalars (Bool / Int / Double) that are neither
+        /// Data nor String. Absent in backups written before v0.2.36.
+        let plistValues: [String: String]
+
+        init(values: [String: String], stringKeys: [String], plistValues: [String: String] = [:]) {
+            self.values = values
+            self.stringKeys = stringKeys
+            self.plistValues = plistValues
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case values, stringKeys, plistValues
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            values = try c.decodeIfPresent([String: String].self, forKey: .values) ?? [:]
+            stringKeys = try c.decodeIfPresent([String].self, forKey: .stringKeys) ?? []
+            plistValues = try c.decodeIfPresent([String: String].self, forKey: .plistValues) ?? [:]
+        }
     }
 
     /// Build the backup zip in tmp and return its URL for ShareLink.
@@ -290,19 +481,30 @@ final class BackupStore: ObservableObject {
             entries.append(ZipArchive.Entry(path: relative, data: data))
             files.append(relative)
         }
-        // UserDefaults blobs.
+        // UserDefaults blobs. Data and String values go in the
+        // original `values` bucket (old backups restore as before);
+        // plist scalars (Bool / Int / Double) go in `plistValues`,
+        // encoded as binary plists so their types survive.
         var values: [String: String] = [:]
+        var plistValues: [String: String] = [:]
         for key in Self.backupUserDefaultsKeys {
             if Self.stringKeys.contains(key) {
                 if let string = UserDefaults.standard.string(forKey: key),
                    let data = string.data(using: .utf8) {
                     values[key] = data.base64EncodedString()
                 }
-            } else if let data = UserDefaults.standard.data(forKey: key) {
-                values[key] = data.base64EncodedString()
+            } else if Self.dataKeys.contains(key) {
+                if let data = UserDefaults.standard.data(forKey: key) {
+                    values[key] = data.base64EncodedString()
+                }
+            } else if let object = UserDefaults.standard.object(forKey: key),
+                      let plist = try? PropertyListSerialization.data(
+                        fromPropertyList: object, format: .binary, options: 0) {
+                plistValues[key] = plist.base64EncodedString()
             }
         }
-        let defaultsBackup = UserDefaultsBackup(values: values, stringKeys: Array(Self.stringKeys))
+        let defaultsBackup = UserDefaultsBackup(
+            values: values, stringKeys: Array(Self.stringKeys), plistValues: plistValues)
         entries.append(ZipArchive.Entry(
             path: Self.userDefaultsFileName,
             data: try JSONEncoder().encode(defaultsBackup)))
@@ -377,13 +579,14 @@ final class BackupStore: ObservableObject {
         }
         // Safety copy of the current state, for rollback. A
         // profiles-only restore only copies what it will replace.
+        // Snapshot the live objects (not just Data blobs: most of
+        // the backed-up keys are Strings / plist scalars).
         let safetyDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("Concord-恢复前备份-\(Self.backupFileStamp())")
-        var savedDefaults: [String: Data?] = [:]
+        var savedObjects: [String: Any?] = [:]
         for key in Self.backupUserDefaultsKeys {
-            savedDefaults[key] = UserDefaults.standard.data(forKey: key)
+            savedObjects[key] = UserDefaults.standard.object(forKey: key)
         }
-        let savedMode = UserDefaults.standard.string(forKey: "ConcordiOS.mode.v1")
         /// The container files this restore replaces.
         let filesToRestore: [String] = {
             switch scope {
@@ -438,37 +641,48 @@ final class BackupStore: ObservableObject {
                 try data.write(to: target, options: .atomic)
             }
             // Restore the UserDefaults blobs (profiles-only restores
-            // just the profile list).
+            // just the profile list). Keys missing from the backup
+            // are removed ONLY for the original four keys: older
+            // backups predate the other keys, and deleting them on
+            // a restore from an old backup would wipe settings the
+            // user still has.
             let defaultsKeys: [String] = {
                 switch scope {
                 case .all: return Self.backupUserDefaultsKeys
                 case .profilesOnly: return ["ConcordiOS.profiles.v1"]
                 }
             }()
+            let removableKeys: Set<String> = [
+                "ConcordiOS.profiles.v1", "ConcordiOS.settings.v1",
+                "ConcordiOS.theme.v1", "ConcordiOS.mode.v1",
+            ]
             for key in defaultsKeys {
-                if let base64 = defaultsBackup.values[key],
-                   let data = Data(base64Encoded: base64) {
+                if let base64 = defaultsBackup.plistValues[key],
+                   let plistData = Data(base64Encoded: base64),
+                   let object = try? PropertyListSerialization.propertyList(
+                       from: plistData, options: [], format: nil) {
+                    UserDefaults.standard.set(object, forKey: key)
+                } else if let base64 = defaultsBackup.values[key],
+                          let data = Data(base64Encoded: base64) {
                     if defaultsBackup.stringKeys.contains(key),
                        let string = String(data: data, encoding: .utf8) {
                         UserDefaults.standard.set(string, forKey: key)
                     } else {
                         UserDefaults.standard.set(data, forKey: key)
                     }
-                } else {
+                } else if removableKeys.contains(key) {
                     UserDefaults.standard.removeObject(forKey: key)
                 }
             }
         } catch {
             // Roll back: restore the safety copy and the old defaults.
             try? BackupStore.rollback(container: container, safetyDir: safetyDir, scope: scope)
-            for (key, data) in savedDefaults {
-                if let data { UserDefaults.standard.set(data, forKey: key) }
-                else { UserDefaults.standard.removeObject(forKey: key) }
-            }
-            if let savedMode {
-                UserDefaults.standard.set(savedMode, forKey: "ConcordiOS.mode.v1")
-            } else {
-                UserDefaults.standard.removeObject(forKey: "ConcordiOS.mode.v1")
+            for (key, object) in savedObjects {
+                if let object {
+                    UserDefaults.standard.set(object, forKey: key)
+                } else {
+                    UserDefaults.standard.removeObject(forKey: key)
+                }
             }
             throw NSError(domain: "ConcordiOS", code: 7, userInfo: [
                 NSLocalizedDescriptionKey: "恢复中途失败，已恢复到恢复前状态：\(error.localizedDescription)"])

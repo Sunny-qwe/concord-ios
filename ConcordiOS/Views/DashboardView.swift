@@ -340,6 +340,17 @@ struct DashboardView: View {
             subscription = nil
             return
         }
+        // Audit B37: the profile already carries its subscription
+        // info (parsed from subscription-userinfo at download time,
+        // Profile.subscriptionInfo) — use it first. It works with
+        // the VPN off and does not depend on a provider whose name
+        // happens to match the profile. provider.get is only the
+        // fallback when the profile has no usable stored info (e.g.
+        // imported before this field existed).
+        if let stored = profile.subscriptionInfo, stored.total > 0 || stored.expire > 0 {
+            subscription = ConcordSubscriptionInfo(upload: stored.upload, download: stored.download, total: stored.total, expire: stored.expire)
+            return
+        }
         let candidates = ruleStore.providers
         guard let provider = candidates.first(where: { $0.name == profile.name })
             ?? candidates.first(where: { $0.type == "proxy" }) else {
@@ -366,7 +377,12 @@ struct DashboardView: View {
         defer { ipChecking = false }
         let started = Date()
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            // Interface B3 (DashboardView part): a stalled ip-api.com
+            // used to hang this lookup forever (URLSession.shared
+            // defaults: 60 s request / 7 days resource). 10 s, then
+            // the card shows "服务失败" instead of hanging.
+            let request = URLRequest(url: url, timeoutInterval: 10)
+            let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { ipFetchFailed = true; return }
             let decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
             guard decoded.status == "success" else { ipFetchFailed = true; return }
@@ -396,6 +412,7 @@ struct DashboardView: View {
     }
 
     private func refreshAll() async {
+        tunnelManager.checkTunRestartNeeded()
         await proxyStore.refresh()
         await connectionStore.refresh()
         await trafficStore.refresh()
@@ -436,6 +453,7 @@ struct DashboardView: View {
             if proxyStore.isRunning && tunnelStartedAt == nil {
                 tunnelStartedAt = Date()
             }
+            tunnelManager.checkTunRestartNeeded()
             intranetIp = DeviceNetwork.localIPv4Address()
             intranetLoaded = true
             await fetchIPInfo()
@@ -539,7 +557,7 @@ struct DashboardView: View {
             }
         case .speed: if showSpeed { speedCard }
         case .mode: if showMode { modeCard }
-        case .vpn: if showVpn { vpnCard }
+        case .vpn: if showVpn { vpnCardSection }
         case .intranet: if showIntranet { intranetCard }
         case .services: if showServices { servicesCard }
         case .profile: if showProfile { profileCard }
@@ -923,6 +941,115 @@ struct DashboardView: View {
     // switch keeps working (see V3 in the audit: ours actually
     // toggles the tunnel, FlClash's iOS switch is a no-op).
 
+    /// The VPN card plus its banners (D5): the disconnect / crash-loop
+    /// / TUN-restart banners live HERE, on the main VPN card, where
+    /// they are always visible — not inside the Services card's
+    /// collapsed "expanded" section, where the disconnect banner used
+    /// to hide and the crash-loop banner had no reader at all.
+    private var vpnCardSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            vpnCard
+            // Unexpected disconnect (moved from expandedServices):
+            // the tunnel dropped without the user asking (system
+            // kill, core stall, failed start). One tap reconnects
+            // via the same path as the play button; the flag clears
+            // on the next successful connect. A watchdog-triggered
+            // restart under On-Demand clears it by itself when the
+            // tunnel comes back.
+            if tunnelManager.unexpectedDisconnect {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("VPN 意外断开")
+                            .font(.system(size: 13, weight: .semibold))
+                        // The extension's startup diagnostic (if any)
+                        // names the exact stage where the start died;
+                        // otherwise fall back to the app-side error.
+                        Text(tunnelManager.lastStartupDiagnostic() ?? tunnelManager.lastError ?? "隧道被系统关闭或核心停止响应。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("重新连接") {
+                        Task { await proxyStore.toggle() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            }
+            // Crash loop (D5): 3 rapid drops in 5 minutes — the
+            // tunnel is crash-looping and On-Demand auto-reconnect
+            // has been suspended, so this must be visible, not
+            // hidden in a collapsed card. The reason is the
+            // lastError the crash-loop detector set.
+            if tunnelManager.crashLoopActive {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("VPN 反复掉线，已暂停自动重连")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(tunnelManager.lastError ?? "隧道在短时间内多次掉线，系统已暂停自动重连，请检查配置后手动重新启动。")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("重新连接") {
+                        Task { await proxyStore.toggle() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            }
+            // TUN restart needed (config B1): a live config change
+            // killed the TUN runner and the extension could not
+            // restart it — the config applied, but traffic no longer
+            // goes through the proxy until the VPN restarts. The
+            // flag is TunnelManager.tunRestartNeeded, read from the
+            // extension's tun-restart-needed.json.
+            if let tunRestartNeeded = tunnelManager.tunRestartNeeded {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("TUN 数据面需要重启 VPN")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(tunRestartNeeded)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("重启 VPN") {
+                        Task {
+                            await TunnelManager.shared.stop()
+                            // stop() waits up to 5 s for
+                            // .disconnected; make sure the tunnel
+                            // really settled before toggling, or the
+                            // toggle would stop again instead of
+                            // starting. A start failure lands in
+                            // proxyStore.startError, like the play
+                            // button's.
+                            let deadline = Date().addingTimeInterval(10)
+                            while TunnelManager.shared.isRunning && Date() < deadline {
+                                try? await Task.sleep(for: .milliseconds(200))
+                            }
+                            await proxyStore.toggle()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+    }
+
     private var vpnCard: some View {
         HStack(spacing: 12) {
             VpnBadge(enabled: proxyStore.isRunning)
@@ -1159,36 +1286,9 @@ struct DashboardView: View {
             }
             LabeledContent("VPN 隧道", value: tunnelStatusText)
                 .font(.system(size: 13, weight: .semibold))
-            // Unexpected disconnect (Batch F): the tunnel dropped
-            // without the user asking (system kill, core stall, failed
-            // start). One tap reconnects via the same path as the play
-            // button; the flag clears on the next successful connect.
-            // A watchdog-triggered restart under On-Demand clears it
-            // by itself when the tunnel comes back.
-            if tunnelManager.unexpectedDisconnect {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("VPN 意外断开")
-                            .font(.system(size: 13, weight: .semibold))
-                        // The extension's startup diagnostic (if any)
-                        // names the exact stage where the start died;
-                        // otherwise fall back to the app-side error.
-                        Text(tunnelManager.lastStartupDiagnostic() ?? tunnelManager.lastError ?? "隧道被系统关闭或核心停止响应。")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("重新连接") {
-                        Task { await proxyStore.toggle() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-                .padding(10)
-                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-            }
+            // D5: the unexpected-disconnect banner used to live here,
+            // inside this collapsed section — it now lives on the main
+            // VPN card (vpnCardSection), always visible.
             if onDemandStore.enabled {
                 Text("按需连接已开启：断网或切换网络后系统会自动重连。")
                     .font(.system(size: 10))

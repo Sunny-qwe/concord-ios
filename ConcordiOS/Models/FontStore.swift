@@ -51,6 +51,15 @@ final class FontStore: ObservableObject {
         selectedFamily = UserDefaults.standard.string(forKey: Self.storageKey)
     }
 
+    /// Re-read the persisted family (used after a backup restore:
+    /// the restore writes the key behind this store's back).
+    func reload() {
+        let saved = UserDefaults.standard.string(forKey: Self.storageKey)
+        if saved != selectedFamily {
+            selectedFamily = saved
+        }
+    }
+
     func select(_ family: String?) {
         selectedFamily = family
     }

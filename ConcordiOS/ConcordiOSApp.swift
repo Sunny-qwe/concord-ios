@@ -26,6 +26,10 @@ struct ConcordiOSApp: App {
     @StateObject private var mitmModuleStore: MitmModuleStore
     @StateObject private var themeStore: ThemeStore
     @StateObject private var fontStore: FontStore
+    // The Proxies page style store lives here (not in ProxiesView)
+    // so a backup restore can reload it like the other stores
+    // (audit B8); ProxiesView reads the same instance.
+    @StateObject private var proxyStyleStore = ProxyStyleStore()
 
     init() {
         let client = ConcordClient()
@@ -41,7 +45,12 @@ struct ConcordiOSApp: App {
         proxyStore.profileStore = profileStore
         _profileStore = StateObject(wrappedValue: profileStore)
         _ruleStore = StateObject(wrappedValue: RuleStore(client: client))
-        _settingsStore = StateObject(wrappedValue: SettingsStore(client: client))
+        let settingsStore = SettingsStore(client: client)
+        _settingsStore = StateObject(wrappedValue: settingsStore)
+        // ProxyStore's delay timeout reads the live setting through
+        // here (audit B1: 8000ms FlClash default); it falls back to
+        // the persisted blob when this is unset.
+        proxyStore.settingsStore = settingsStore
         _dnsStore = StateObject(wrappedValue: DnsStore(client: client))
         _mitmStore = StateObject(wrappedValue: MitmStore(client: client))
         _eventStore = StateObject(wrappedValue: EventStore(client: client))
@@ -79,6 +88,7 @@ struct ConcordiOSApp: App {
                 .environmentObject(mitmModuleStore)
                 .environmentObject(themeStore)
                 .environmentObject(fontStore)
+                .environmentObject(proxyStyleStore)
                 .environmentObject(TunnelManager.shared)
                 .environment(\.font, fontStore.rootFont)
                 .onOpenURL { url in

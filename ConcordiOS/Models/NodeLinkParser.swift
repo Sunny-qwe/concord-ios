@@ -42,6 +42,18 @@ struct ParsedNode {
     let type: String
     /// Ordered YAML fields (name first, then type, then the rest).
     let fields: [(key: String, value: NodeYamlValue)]
+    /// Non-fatal transport caveats (e.g. a link option the Clash
+    /// YAML cannot represent). The node is still imported with the
+    /// closest representation — never silently degraded: the
+    /// importer surfaces the first warning with the import result.
+    let warnings: [String]
+
+    init(name: String, type: String, fields: [(key: String, value: NodeYamlValue)], warnings: [String] = []) {
+        self.name = name
+        self.type = type
+        self.fields = fields
+        self.warnings = warnings
+    }
 
     /// JSON form, for merging with core-decoded proxies into one
     /// default config (see DefaultConfig).
@@ -211,23 +223,37 @@ enum NodeLinkParser {
         let (mainRaw, query) = splitQuery(noFragment)
         let main = mainRaw.hasSuffix("/") ? String(mainRaw.dropLast()) : mainRaw
         if main.contains("@") {
-            // Form 2: BASE64(method:password)@host:port
+            // Form 2: BASE64(method:password)@host:port — or the
+            // plaintext form method:password@host:port. The
+            // plaintext form always contains ":", which is not a
+            // base64 character, so a base64 decode of it fails and
+            // the plaintext attempt below is reached.
             guard let at = main.firstIndex(of: "@") else {
                 return .failure(NodeLinkError(message: "ss 链接格式不对"))
             }
             let encoded = String(main[..<at])
             let hostPort = String(main[main.index(after: at)...])
-            guard let data = decodeBase64(encoded),
-                  let credential = String(data: data, encoding: .utf8),
-                  let colon = credential.firstIndex(of: ":") else {
-                return .failure(NodeLinkError(message: "ss 链接的账号部分不是有效的 base64（应为 method:password）"))
+            if let data = decodeBase64(encoded),
+               let credential = String(data: data, encoding: .utf8),
+               let colon = credential.firstIndex(of: ":") {
+                let method = String(credential[..<colon])
+                let password = String(credential[credential.index(after: colon)...])
+                guard let (host, port) = splitHostPort(hostPort) else {
+                    return .failure(NodeLinkError(message: "ss 链接没有有效的服务器地址"))
+                }
+                return makeSS(name: name, method: method, password: password, host: host, port: port, query: query)
             }
-            let method = String(credential[..<colon])
-            let password = String(credential[credential.index(after: colon)...])
-            guard let (host, port) = splitHostPort(hostPort) else {
-                return .failure(NodeLinkError(message: "ss 链接没有有效的服务器地址"))
+            // Form 2b: plaintext method:password@host:port
+            let plain = percentDecode(encoded)
+            if let colon = plain.firstIndex(of: ":") {
+                let method = String(plain[..<colon])
+                let password = String(plain[plain.index(after: colon)...])
+                if !method.isEmpty, !password.isEmpty,
+                   let (host, port) = splitHostPort(hostPort) {
+                    return makeSS(name: name, method: method, password: password, host: host, port: port, query: query)
+                }
             }
-            return makeSS(name: name, method: method, password: password, host: host, port: port, query: query)
+            return .failure(NodeLinkError(message: "ss 链接的账号部分无法解析（应为 base64 或明文 method:password）"))
         }
         // Form 1: BASE64(method:password@host:port)
         guard let data = decodeBase64(main),
@@ -293,12 +319,28 @@ enum NodeLinkParser {
             return .failure(NodeLinkError(message: "vmess 链接的端口无效"))
         }
         let nodeName = name ?? nonEmpty(obj["ps"] as? String) ?? "\(server):\(port)"
-        let tls = ((obj["tls"] as? String) ?? "").lowercased() == "tls"
+        // "tls" arrives as a JSON boolean in many generators and as
+        // the string "tls" in others; both mean TLS on.
+        let tls: Bool
+        if let tlsBool = obj["tls"] as? Bool {
+            tls = tlsBool
+        } else if let tlsString = obj["tls"] as? String {
+            tls = tlsString.lowercased() == "tls" || tlsString == "1"
+        } else {
+            tls = false
+        }
         let net = ((obj["net"] as? String) ?? "tcp").lowercased()
         let aid = intValue(obj["aid"]) ?? 0
         let host = nonEmpty(obj["host"] as? String) ?? ""
         let path = nonEmpty(obj["path"] as? String) ?? ""
         let sni = nonEmpty(obj["sni"] as? String) ?? ""
+        // "type" is the obfuscation, not the transport: "http"
+        // means HTTP obfuscation over TCP (Clash http-opts).
+        let obfs = ((obj["type"] as? String) ?? "none").lowercased()
+        var warnings: [String] = []
+        if obfs != "none" && obfs != "http" {
+            warnings.append("vmess 混淆类型 \(obfs) 不受支持，已忽略")
+        }
         var fields: [(key: String, value: NodeYamlValue)] = [
             ("name", .string(nodeName)),
             ("type", .string("vmess")),
@@ -325,10 +367,21 @@ enum NodeLinkParser {
             if !host.isEmpty { h2.append(("host", .string(host))) }
             if !path.isEmpty { h2.append(("path", .string(path))) }
             if !h2.isEmpty { fields.append(("h2-opts", .map(h2))) }
+        case "tcp":
+            // HTTP obfuscation over TCP ("type": "http" in the
+            // vmess JSON): Clash http-opts.
+            if obfs == "http" {
+                var http: [(key: String, value: NodeYamlValue)] = [
+                    ("method", .string("GET")),
+                    ("path", .string(path.isEmpty ? "/" : path)),
+                ]
+                if !host.isEmpty { http.append(("headers", .map([("Host", .string(host))]))) }
+                fields.append(("http-opts", .map(http)))
+            }
         default:
             break
         }
-        return .success(ParsedNode(name: nodeName, type: "vmess", fields: fields))
+        return .success(ParsedNode(name: nodeName, type: "vmess", fields: fields, warnings: warnings))
     }
 
     // MARK: - Trojan
@@ -346,6 +399,14 @@ enum NodeLinkParser {
         }
         let nodeName = name ?? "\(host):\(port)"
         let sni = nonEmpty(query["sni"]) ?? nonEmpty(query["peer"]) ?? host
+        // Transport: ?type=ws|grpc (+ path/host), ?type=tcp (default).
+        // An unrepresentable type is kept verbatim with a warning —
+        // never silently downgraded to plain trojan.
+        let transport = (query["type"] ?? "tcp").lowercased()
+        var warnings: [String] = []
+        if transport != "tcp" && transport != "ws" && transport != "grpc" {
+            warnings.append("trojan 传输类型 \(transport) 不受支持，已保留原值，核心可能无法使用")
+        }
         var fields: [(key: String, value: NodeYamlValue)] = [
             ("name", .string(nodeName)),
             ("type", .string("trojan")),
@@ -355,10 +416,31 @@ enum NodeLinkParser {
             ("sni", .string(sni)),
             ("udp", .bool(true)),
         ]
+        if transport != "tcp" { fields.append(("network", .string(transport))) }
+        switch transport {
+        case "ws":
+            let path = nonEmpty(query["path"]) ?? "/"
+            var ws: [(key: String, value: NodeYamlValue)] = [("path", .string(path))]
+            if let hostHeader = nonEmpty(query["host"]) {
+                ws.append(("headers", .map([("Host", .string(hostHeader))])))
+            }
+            fields.append(("ws-opts", .map(ws)))
+        case "grpc":
+            let serviceName = nonEmpty(query["serviceName"]) ?? nonEmpty(query["path"]) ?? ""
+            fields.append(("grpc-opts", .map([("grpc-service-name", .string(serviceName))])))
+        default:
+            break
+        }
+        if let alpn = nonEmpty(query["alpn"]) {
+            let values = alpn.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            if !values.isEmpty {
+                fields.append(("alpn", .array(values.map { .string($0) })))
+            }
+        }
         if query["allowInsecure"] == "1" {
             fields.append(("skip-cert-verify", .bool(true)))
         }
-        return .success(ParsedNode(name: nodeName, type: "trojan", fields: fields))
+        return .success(ParsedNode(name: nodeName, type: "trojan", fields: fields, warnings: warnings))
     }
 
     // MARK: - VLESS
@@ -379,6 +461,15 @@ enum NodeLinkParser {
         let network = (query["type"] ?? "tcp").lowercased()
         let sni = nonEmpty(query["sni"]) ?? ""
         let flow = nonEmpty(query["flow"]) ?? ""
+        var warnings: [String] = []
+        // Clash vless has no encryption field: anything other than
+        // "none" is dropped — with a warning, not silently.
+        if let encryption = nonEmpty(query["encryption"]), encryption.lowercased() != "none" {
+            warnings.append("vless encryption=\(encryption) 不受支持，已忽略")
+        }
+        if network != "tcp" && network != "ws" && network != "grpc" && network != "http" && network != "h2" {
+            warnings.append("vless 传输类型 \(network) 不受支持，已保留原值，核心可能无法使用")
+        }
         var fields: [(key: String, value: NodeYamlValue)] = [
             ("name", .string(nodeName)),
             ("type", .string("vless")),
@@ -402,6 +493,21 @@ enum NodeLinkParser {
         case "grpc":
             let serviceName = nonEmpty(query["serviceName"]) ?? ""
             fields.append(("grpc-opts", .map([("grpc-service-name", .string(serviceName))])))
+        case "http":
+            let path = nonEmpty(query["path"]) ?? "/"
+            var http: [(key: String, value: NodeYamlValue)] = [
+                ("method", .string("GET")),
+                ("path", .string(path)),
+            ]
+            if let hostHeader = nonEmpty(query["host"]) {
+                http.append(("headers", .map([("Host", .string(hostHeader))])))
+            }
+            fields.append(("http-opts", .map(http)))
+        case "h2":
+            var h2: [(key: String, value: NodeYamlValue)] = []
+            if let hostHeader = nonEmpty(query["host"]) { h2.append(("host", .string(hostHeader))) }
+            if let path = nonEmpty(query["path"]) { h2.append(("path", .string(path))) }
+            if !h2.isEmpty { fields.append(("h2-opts", .map(h2))) }
         default:
             break
         }
@@ -420,6 +526,6 @@ enum NodeLinkParser {
         if query["allowInsecure"] == "1" {
             fields.append(("skip-cert-verify", .bool(true)))
         }
-        return .success(ParsedNode(name: nodeName, type: "vless", fields: fields))
+        return .success(ParsedNode(name: nodeName, type: "vless", fields: fields, warnings: warnings))
     }
 }

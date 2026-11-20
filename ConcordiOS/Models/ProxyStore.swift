@@ -30,10 +30,25 @@ struct ProxyGroup: Identifiable {
     var icon: String
 }
 
+/// A delay-test result key (FlClash delayTestKey): the test URL
+/// actually used + the real node name. Stored alongside the
+/// legacy name-keyed `latencies` in ProxyStore.
+struct LatencyKey: Hashable {
+    let testUrl: String
+    let name: String
+}
+
 final class ProxyStore: ObservableObject {
     @Published var isRunning = false
     @Published var groups: [ProxyGroup] = []
     @Published var latencies: [String: Int32] = [:]
+    /// Latency keyed by (testUrl, real node name) — FlClash
+    /// DelayMap (audit B3/B7). `latencies` above stays name-keyed
+    /// because DashboardView reads latencies[name] (that file is
+    /// out of scope for this batch); this map is what the Proxies
+    /// page displays, via applyLatencies(), so one node can hold
+    /// a different delay per test address.
+    @Published var latenciesByURL: [LatencyKey: Int32] = [:]
     /// Group names with a delay test in flight (per-group spinners).
     @Published var testingGroups: Set<String> = []
     /// Node names with a single-node delay test in flight (per-node
@@ -173,13 +188,27 @@ final class ProxyStore: ObservableObject {
     /// the local fallback reads the active profile's YAML through it.
     weak var profileStore: ProfileStore?
 
+    /// The settings store, linked by the app at startup
+    /// (ConcordiOSApp, next to the profileStore line above):
+    /// the delay-test timeout is read from it (audit B1). Until
+    /// it is linked, the persisted settings blob is read instead,
+    /// then the FlClash default 8000ms — see delayTimeoutMs.
+    weak var settingsStore: SettingsStore?
+
+    /// Last tunnel-connected state seen by the status subscription
+    /// (audit A1): the connect edge is what triggers applying
+    /// pending selections.
+    private var wasTunnelConnected = false
+
     /// Node selections made while the VPN is off, persisted per
     /// profile in UserDefaults as {profileID: {group: proxy}}.
-    /// Applied to the core by refresh() once it is reachable again.
-    /// Every successful live selection is recorded here too, so the
-    /// local fallback keeps showing the same pick after the tunnel
-    /// stops. The value is the proxy.select argument: a node name,
-    /// or "" to clear a url-test/fallback pin.
+    /// Applied to the core by refresh() once it is reachable again,
+    /// and by applyPendingSelectionsOnConnect() on the
+    /// tunnel-connected edge (audit A1). Every successful live
+    /// selection is recorded here too, so the local fallback keeps
+    /// showing the same pick after the tunnel stops. The value is
+    /// the proxy.select argument: a node name, or "" to clear a
+    /// url-test/fallback pin.
     private let pendingSelectionsKey = "concord.pendingSelections"
 
     private func loadPendingSelections() -> [String: [String: String]] {
@@ -227,6 +256,19 @@ final class ProxyStore: ObservableObject {
             .sink { [weak self] status in
                 guard let self, self.client.mode == .live else { return }
                 self.isRunning = status == .connected || status == .connecting || status == .reasserting
+                // Audit A1: the tunnel just came up — apply any
+                // selections made while it was off. They sit in
+                // UserDefaults until now; no view refreshes on
+                // connect, so without this edge the "启动后自动应用"
+                // promise never happens. The apply itself is a
+                // refresh (core groups first, then pending picks);
+                // entries the core accepts are dropped, so a later
+                // reconnect is a no-op.
+                let connected = status == .connected
+                if connected, !self.wasTunnelConnected {
+                    Task { await self.applyPendingSelectionsOnConnect() }
+                }
+                self.wasTunnelConnected = connected
             }
             .store(in: &cancellables)
     }
@@ -302,7 +344,7 @@ final class ProxyStore: ObservableObject {
                 type: g.type,
                 nodes: (g.all ?? []).map { name in
                     let info = nodeTypes[name]
-                    return ProxyNode(name: name, type: info?.type ?? "unknown", provider: info?.provider, latencyMs: latencies[name])
+                    return ProxyNode(name: name, type: info?.type ?? "unknown", provider: info?.provider, latencyMs: nil)
                 },
                 selectedNodeName: g.now,
                 testUrl: g.testUrl,
@@ -310,6 +352,9 @@ final class ProxyStore: ObservableObject {
                 icon: g.icon
             )
         }
+        // Latencies are keyed by (testUrl, real node) now (B3):
+        // fill each row from its resolved target, not the raw name.
+        applyLatencies()
     }
 
     /// Build the group list from the local parse. Returns false when
@@ -320,13 +365,19 @@ final class ProxyStore: ObservableObject {
     private func loadLocalGroups(_ local: ProfileStore.LocalProxyGroups, profileID: UUID) -> Bool {
         guard !local.groups.isEmpty else { return false }
         let typeByName = Dictionary(uniqueKeysWithValues: local.nodes.map { ($0.name, $0.type) })
+        // Provider attribution for the offline list (audit C1):
+        // a node that came from a proxy-provider shows its provider
+        // name, like the live path. Literal nodes have no provider.
+        let providerByName: [String: String] = Dictionary(uniqueKeysWithValues: local.nodes.compactMap { node in
+            node.provider.map { (node.name, $0) }
+        })
         groups = local.groups.map { g in
             let pending = pendingSelection(profileID: profileID, group: g.name)
             return ProxyGroup(
                 name: g.name,
                 type: g.type,
                 nodes: g.nodeNames.map { name in
-                    ProxyNode(name: name, type: typeByName[name] ?? localBuiltinType(name), provider: nil, latencyMs: nil)
+                    ProxyNode(name: name, type: typeByName[name] ?? localBuiltinType(name), provider: providerByName[name], latencyMs: nil)
                 },
                 selectedNodeName: g.type == "select" ? pending : nil,
                 testUrl: g.testURL,
@@ -374,6 +425,32 @@ final class ProxyStore: ObservableObject {
         }
         if changed {
             try? await fetchCoreGroups()
+        }
+    }
+
+    /// Applies off-VPN selections now that the tunnel is up (audit
+    /// A1). Called from the tunnel-status subscription in init, so
+    /// the "启动后自动应用" promise holds without any view having
+    /// to refresh on connect; the coordinator can also call this
+    /// directly from a connect call site. No-op in sample mode or
+    /// with no active profile. Refreshing re-reads the core groups
+    /// first (the local fallback list cannot be applied), and
+    /// refresh() itself applies the pending selections.
+    @MainActor
+    func applyPendingSelectionsOnConnect() async {
+        guard client.mode == .live else { return }
+        guard let profile = profileStore?.activeProfile else { return }
+        await refresh(activeProfile: profile)
+        // The tunnel can report .connected a moment before the
+        // extension's core snapshot is readable; in that case the
+        // refresh above fell back to the local list and the
+        // selections are still pending. One bounded retry covers
+        // the boot race — the entries stay in UserDefaults either
+        // way, so a later manual refresh would still apply them.
+        if isLocalFallback, !(loadPendingSelections()[profile.id.uuidString]?.isEmpty ?? true) {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled else { return }
+            await refresh(activeProfile: profile)
         }
     }
 
@@ -435,6 +512,120 @@ final class ProxyStore: ObservableObject {
         }
     }
 
+    // MARK: - Delay-test targets, timeout, URL fallback (audit B1/B2/B3/B24)
+
+    /// One dial target after nested-group resolution (FlClash
+    /// computeRealSelectedProxyState / _resolveDelayTestTargets):
+    /// the real node to dial + the URL to dial it with ("" = the
+    /// core default). Hashable on (testUrl, proxyName) — the same
+    /// key upstream dedupes and stores delays under.
+    private struct DelayTarget: Hashable {
+        let proxyName: String
+        let testUrl: String
+    }
+
+    /// Delay-test timeout in ms (FlClash defaultDelayTestTimeout =
+    /// 8000; audit B1). The linked SettingsStore wins; otherwise
+    /// the persisted settings blob; otherwise 8000. Another worker
+    /// is changing the stored default 5000 -> 8000 — this reads
+    /// the live property either way, so no value is baked in here.
+    private var delayTimeoutMs: UInt64 {
+        if let ms = settingsStore?.delayTestTimeout, ms > 0 { return UInt64(ms) }
+        if let ms = Self.persistedDelayTestTimeout(), ms > 0 { return UInt64(ms) }
+        return 8000
+    }
+
+    /// The persisted settings blob's delayTestTimeout, if readable
+    /// (SettingsStore saves under "ConcordiOS.settings.v1").
+    private static func persistedDelayTestTimeout() -> Int? {
+        struct SavedTimeout: Decodable {
+            var delayTestTimeout: Int?
+        }
+        guard let data = UserDefaults.standard.data(forKey: "ConcordiOS.settings.v1"),
+              let saved = try? JSONDecoder().decode(SavedTimeout.self, from: data) else { return nil }
+        return saved.delayTestTimeout
+    }
+
+    /// First non-blank value, trimmed (FlClash takeFirstValid).
+    private func firstNonEmpty(_ values: String?...) -> String? {
+        for value in values {
+            if let trimmed = value?.trimmingCharacters(in: .whitespaces), !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
+    }
+
+    /// The stored override `test-url` (general section), read-only
+    /// through OverrideStore's existing `state(scope:section:)`
+    /// accessor — profile-scoped wins over global. FlClash keeps
+    /// testUrl out of the core patch and uses it client-side as
+    /// the delay fallback (audit B24); removing it from the
+    /// overlay is another worker's job.
+    private func overrideTestURL() -> String? {
+        let profileScope = profileStore?.activeProfile?.id.uuidString
+        for scope in [profileScope, nil] {
+            guard let stored = OverrideStore.shared.state(scope: scope, section: .general)["test-url"],
+                  case .string(let value) = stored,
+                  let trimmed = firstNonEmpty(value) else { continue }
+            return trimmed
+        }
+        return nil
+    }
+
+    /// A group's effective delay-test URL (FlClash realTestUrl):
+    /// the group's own testUrl, else the stored override
+    /// test-url, else "" (core default).
+    private func effectiveTestURL(for group: ProxyGroup) -> String {
+        firstNonEmpty(group.testUrl, overrideTestURL()) ?? ""
+    }
+
+    /// Resolves a group member to the real node FlClash would dial
+    /// (FlClash common/compute.dart getRealSelectedProxyState):
+    /// while the name is itself a group, follow that group's
+    /// current pick — live: the core's `now`; offline select: the
+    /// remembered pick; offline url-test/fallback: the pinned 首选 —
+    /// and take the nested group's own testUrl at each hop (each
+    /// hop overwrites, so the innermost group's URL wins; an empty
+    /// one falls back to the enclosing group's URL below). Returns
+    /// nil when the resolved name parses empty (upstream skips it),
+    /// the pick is stale (no longer a member — a subscription
+    /// update renamed or dropped it), or a group cycle is found.
+    private func resolveDelayTarget(memberName: String, fallbackTestUrl: String) -> DelayTarget? {
+        var name = memberName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return nil }
+        var testUrl = ""
+        var seenGroups: Set<String> = []
+        while let nested = groups.first(where: { $0.name == name }) {
+            guard seenGroups.insert(name).inserted else { return nil }
+            testUrl = nested.testUrl.trimmingCharacters(in: .whitespaces)
+            let pick = (nested.selectedNodeName ?? nested.fixed ?? "").trimmingCharacters(in: .whitespaces)
+            guard !pick.isEmpty else { return nil }
+            guard nested.nodes.contains(where: { $0.name == pick }) || groups.contains(where: { $0.name == pick }) else { return nil }
+            name = pick
+        }
+        return DelayTarget(proxyName: name, testUrl: testUrl.isEmpty ? fallbackTestUrl : testUrl)
+    }
+
+    /// Records one result under both keys: the name key keeps
+    /// DashboardView working (it reads latencies[name] — that
+    /// file is out of scope for this batch); the (testUrl, name)
+    /// key is what the Proxies page displays, so one node can
+    /// hold a different delay per test address (audit B3/B7).
+    private func recordLatency(name: String, url: String, value: Int32) {
+        latencies[name] = value
+        latenciesByURL[LatencyKey(testUrl: url.trimmingCharacters(in: .whitespaces), name: name)] = value
+    }
+
+    /// The delay to show for a resolved target: the
+    /// (testUrl, real name) entry first, the legacy name entry as
+    /// fallback (e.g. a result whose URL the core echoed
+    /// differently from the URL requested).
+    private func latency(for target: DelayTarget) -> Int32? {
+        latenciesByURL[LatencyKey(testUrl: target.testUrl, name: target.proxyName)]
+            ?? latencies[target.proxyName]
+    }
+
     /// Batch latency test for every node. In live mode this uses
     /// delay.run: one stream tests all nodes at once and the extension
     /// accumulates the results into snapshots/delay.json, which is
@@ -450,13 +641,23 @@ final class ProxyStore: ObservableObject {
     @MainActor
     func testLatency() async {
         lastTest = .all
-        var nodes: [(name: String, url: String?)] = []
+        // Every member of every group, resolved to the real node
+        // FlClash would dial (nested groups -> their current pick,
+        // audit B3) with that pick's test URL (audit B24 fallback
+        // included). DIRECT is dial-tested like any other node
+        // (audit B2): only a name that parses empty is skipped.
+        // Targets dedupe on (testUrl, real name), as upstream does.
+        var seen = Set<DelayTarget>()
+        var targets: [DelayTarget] = []
         for group in groups {
-            for node in group.nodes where node.type != "DIRECT" {
-                nodes.append((name: node.name, url: group.testUrl.isEmpty ? nil : group.testUrl))
+            let fallback = effectiveTestURL(for: group)
+            for node in group.nodes {
+                guard let target = resolveDelayTarget(memberName: node.name, fallbackTestUrl: fallback),
+                      seen.insert(target).inserted else { continue }
+                targets.append(target)
             }
         }
-        await runLatencyTest(nodes: nodes, groupNames: Set(groups.map { $0.name }), batchURL: nil)
+        await runLatencyTest(targets: targets, groupNames: Set(groups.map { $0.name }))
     }
 
     /// Batch latency test for one group only (the bolt on a group
@@ -469,14 +670,30 @@ final class ProxyStore: ObservableObject {
     func testLatency(group: ProxyGroup, nodeNames: [String]? = nil) async {
         lastTest = .group(group, nodeNames: nodeNames)
         let names = nodeNames.map { Set($0) }
-        let nodes = group.nodes.filter { $0.type != "DIRECT" && (names == nil || names!.contains($0.name)) }
-            .map { (name: $0.name, url: group.testUrl) }
-        await runLatencyTest(nodes: nodes, groupNames: [group.name], batchURL: group.testUrl.isEmpty ? nil : group.testUrl)
+        let fallback = effectiveTestURL(for: group)
+        var seen = Set<DelayTarget>()
+        var targets: [DelayTarget] = []
+        for node in group.nodes where names == nil || names!.contains(node.name) {
+            guard let target = resolveDelayTarget(memberName: node.name, fallbackTestUrl: fallback),
+                  seen.insert(target).inserted else { continue }
+            targets.append(target)
+        }
+        await runLatencyTest(targets: targets, groupNames: [group.name])
     }
 
+    /// Runs the resolved targets. One delay.run batch per distinct
+    /// test URL (the batch takes a single URL for all its proxies),
+    /// then a sequential delay.test pass for whatever the batches
+    /// did not complete. A batch that never reports `done` keeps
+    /// its partial results and returns without the sequential pass
+    /// (audit B5 behaviour, untouched — B5 is out of scope).
+    /// Every delay call passes the timeout explicitly (audit B1):
+    /// SettingsStore.delayTestTimeout, else the FlClash default
+    /// 8000ms. A failed test stays "untested" — a throw never
+    /// records a latency, and only a returned -2 marks a failure.
     @MainActor
-    private func runLatencyTest(nodes: [(name: String, url: String?)], groupNames: Set<String>, batchURL: String?) async {
-        guard !nodes.isEmpty, testingGroups.isDisjoint(with: groupNames) else { return }
+    private func runLatencyTest(targets: [DelayTarget], groupNames: Set<String>) async {
+        guard !targets.isEmpty, testingGroups.isDisjoint(with: groupNames) else { return }
         testingGroups.formUnion(groupNames)
         defer { testingGroups.subtract(groupNames) }
         // A new test supersedes the old failure: clear the banner
@@ -499,59 +716,84 @@ final class ProxyStore: ObservableObject {
                 return
             }
         }
+        var pending = targets
         if client.mode == .live {
-            let names = nodes.map { $0.name }
-            do {
-                if useAppCore {
-                    _ = try await AppCore.shared.delayRunStart(proxies: names, url: batchURL)
-                } else {
-                    _ = try await client.delayRunStart(proxies: names, url: batchURL)
-                }
-                var polls = 0
-                while polls < 120, !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    polls += 1
-                    do {
-                        let snapshot: DelayRunSnapshot
-                        if useAppCore {
-                            guard let polled = await AppCore.shared.delayRunPoll() else { continue }
-                            snapshot = polled
-                        } else {
-                            snapshot = try await client.delayRunPoll()
-                        }
-                        for result in snapshot.results {
-                            latencies[result.name] = result.value
-                        }
-                        applyLatencies()
-                        if snapshot.done {
-                            lastError = nil
-                            return
-                        }
-                    } catch is TunnelError {
-                        // The extension has not written the run file
-                        // yet — keep polling, do not fail.
-                        continue
+            // One batch per distinct test URL: a single delay.run
+            // cannot honour mixed URLs, so the all-groups path no
+            // longer funnels every group through the core default
+            // (audit B9 falls out of the B3 fix).
+            let partitions = Dictionary(grouping: targets, by: { $0.testUrl })
+            var batchIncomplete = false
+            for testUrl in partitions.keys.sorted() {
+                let batch = partitions[testUrl]!
+                let names = batch.map { $0.proxyName }
+                do {
+                    if useAppCore {
+                        _ = try await AppCore.shared.delayRunStart(proxies: names, url: testUrl.isEmpty ? nil : testUrl, timeout: delayTimeoutMs)
+                    } else {
+                        _ = try await client.delayRunStart(proxies: names, url: testUrl.isEmpty ? nil : testUrl, timeout: delayTimeoutMs)
                     }
+                    var polls = 0
+                    var done = false
+                    while polls < 120, !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        polls += 1
+                        do {
+                            let snapshot: DelayRunSnapshot
+                            if useAppCore {
+                                guard let polled = await AppCore.shared.delayRunPoll() else { continue }
+                                snapshot = polled
+                            } else {
+                                snapshot = try await client.delayRunPoll()
+                            }
+                            for result in snapshot.results {
+                                recordLatency(name: result.name, url: result.url, value: result.value)
+                                pending.removeAll { $0.proxyName == result.name && ($0.testUrl.isEmpty || result.url.isEmpty || $0.testUrl == result.url) }
+                            }
+                            applyLatencies()
+                            if snapshot.done {
+                                done = true
+                                break
+                            }
+                        } catch is TunnelError {
+                            // The extension has not written the run file
+                            // yet — keep polling, do not fail.
+                            continue
+                        }
+                    }
+                    if !done {
+                        // The run is still going (or its file never appeared):
+                        // keep the partial results and let the next test
+                        // start a fresh run.
+                        batchIncomplete = true
+                        break
+                    }
+                } catch {
+                    // This partition's run never started, or its
+                    // poll failed for a non-transient reason — its
+                    // targets fall through to the sequential loop.
+                    continue
                 }
-                // The run is still going (or its file never appeared):
-                // keep the partial results and let the next test
-                // start a fresh run.
+            }
+            if batchIncomplete {
                 lastError = nil
                 return
-            } catch {
-                // delay.run failed to start — fall through to the
-                // sequential delay.test loop below.
+            }
+            if pending.isEmpty {
+                lastError = nil
+                return
             }
         }
-        for node in nodes {
+        for target in pending {
             do {
                 let result: ConcordDelayResult
+                let url = target.testUrl.isEmpty ? nil : target.testUrl
                 if useAppCore {
-                    result = try await AppCore.shared.delayTest(proxy: node.name, url: node.url)
+                    result = try await AppCore.shared.delayTest(proxy: target.proxyName, url: url, timeout: delayTimeoutMs)
                 } else {
-                    result = try await client.delayTest(proxy: node.name, url: node.url)
+                    result = try await client.delayTest(proxy: target.proxyName, url: url, timeout: delayTimeoutMs)
                 }
-                latencies[node.name] = result.value
+                recordLatency(name: result.name, url: result.url, value: result.value)
             } catch {
                 // A throw means the CALL failed (transport / core
                 // down), not that the node failed: the core reports
@@ -567,14 +809,18 @@ final class ProxyStore: ObservableObject {
         lastError = nil
     }
 
-    /// One node's delay (the per-node chip tap). Passes the group's
-    /// test URL (FlClash _handleTestCurrentDelay). Uses the app-side
-    /// core when the VPN is off; a transport failure only sets
-    /// lastError and leaves the chip unchanged. The node is marked
-    /// testing first (FlClash shows a spinner while a card's test
-    /// runs) and a failure is surfaced as testError — the Proxies
-    /// page shows it — so the tap is never silent: spinner, then a
-    /// real latency, or the honest reason it could not run.
+    /// One node's delay (the per-node chip tap). The tapped row may
+    /// itself be a nested group: it is resolved to the real node it
+    /// currently picks, dialled with that nested group's own test
+    /// URL (audit B3, FlClash _handleTestCurrentDelay +
+    /// _resolveDelayTestTargets); a plain node is dialled with the
+    /// group's test URL, else the stored override test-url (B24),
+    /// else the core default. Every call passes the timeout
+    /// explicitly (audit B1). Uses the app-side core when the VPN
+    /// is off; a transport failure only sets lastError/testError
+    /// and leaves the chip unchanged (never -2, never silent).
+    /// A nested group with no current pick cannot be dialled: the
+    /// chip stays untested and the banner says why.
     @MainActor
     func testLatency(node: ProxyNode, testURL: String? = nil) async {
         guard !testingNodes.contains(node.name) else { return }
@@ -583,15 +829,23 @@ final class ProxyStore: ObservableObject {
         testErrorIsGeoSeed = false
         lastTest = .node(node, testURL: testURL)
         defer { testingNodes.remove(node.name) }
+        let fallbackURL = firstNonEmpty(testURL, overrideTestURL()) ?? ""
+        guard let target = resolveDelayTarget(memberName: node.name, fallbackTestUrl: fallbackURL) else {
+            let reason = "该节点当前没有可测速的真实节点（策略组未选择节点）"
+            lastError = reason
+            testError = reason
+            return
+        }
         do {
             let result: ConcordDelayResult
+            let url = target.testUrl.isEmpty ? nil : target.testUrl
             if client.mode == .live && !TunnelManager.shared.isRunning {
                 try await AppCore.shared.ensureStarted()
-                result = try await AppCore.shared.delayTest(proxy: node.name, url: testURL)
+                result = try await AppCore.shared.delayTest(proxy: target.proxyName, url: url, timeout: delayTimeoutMs)
             } else {
-                result = try await client.delayTest(proxy: node.name, url: testURL)
+                result = try await client.delayTest(proxy: target.proxyName, url: url, timeout: delayTimeoutMs)
             }
-            latencies[node.name] = result.value
+            recordLatency(name: result.name, url: result.url, value: result.value)
             applyLatencies()
         } catch {
             noteTestError(error)
@@ -601,9 +855,17 @@ final class ProxyStore: ObservableObject {
     private func applyLatencies() {
         groups = groups.map { g in
             var g = g
+            let fallback = effectiveTestURL(for: g)
             g.nodes = g.nodes.map { n in
                 var n = n
-                n.latencyMs = latencies[n.name]
+                // A row that is itself a group shows the delay of
+                // the real node it currently picks, under that
+                // pick's test URL (audit B3).
+                if let target = resolveDelayTarget(memberName: n.name, fallbackTestUrl: fallback) {
+                    n.latencyMs = latency(for: target)
+                } else {
+                    n.latencyMs = latencies[n.name]
+                }
                 return n
             }
             return g

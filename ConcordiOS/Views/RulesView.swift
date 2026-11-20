@@ -362,7 +362,10 @@ struct ProviderDetailView: View {
                     Button("健康检查（provider.healthCheck）") {
                         Task { await ruleStore.healthCheckProvider(provider) }
                     }
-                    Text("健康检查在后台进行，触发后稍等再刷新列表查看。")
+                    // Tools B16: the old copy promised a result on
+                    // refresh, but the core never returns provider
+                    // health state, so no refresh can show one.
+                    Text("健康检查已触发，但核心不返回提供方健康状态，无法显示结果")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                     if let message = ruleStore.providerActionMessage {

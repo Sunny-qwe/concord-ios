@@ -17,6 +17,12 @@ struct BackupView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var mitmModuleStore: MitmModuleStore
     @EnvironmentObject private var themeStore: ThemeStore
+    @EnvironmentObject private var fontStore: FontStore
+    @EnvironmentObject private var proxyStyleStore: ProxyStyleStore
+    @EnvironmentObject private var proxyStore: ProxyStore
+    @EnvironmentObject private var ruleStore: RuleStore
+    @EnvironmentObject private var dnsStore: DnsStore
+    @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var client: ConcordClient
 
     @StateObject private var backupStore = BackupStore()
@@ -243,12 +249,22 @@ struct BackupView: View {
         do {
             let summary = try await backupStore.restore(from: pickedURL, scope: restoreScope)
             // Reload every store that keeps its state on disk, so the
-            // pages show the restored data without restarting the app.
+            // pages show the restored data without restarting the app
+            // (audit B8): the UserDefaults-backed ones re-read their
+            // keys, and the live-data ones re-pull from the core.
+            // IconSetStore is a singleton, not an environment object.
             profileStore.reload()
             settingsStore.reload()
             mitmModuleStore.reload()
             themeStore.reload()
+            fontStore.reload()
+            proxyStyleStore.reload()
+            IconSetStore.shared.reload()
             client.reloadMode()
+            await proxyStore.refresh()
+            await ruleStore.refresh()
+            await dnsStore.refresh()
+            await trafficStore.refresh()
             message = summary
             // Re-apply the restored active profile live when the
             // tunnel is running; otherwise it takes effect at the

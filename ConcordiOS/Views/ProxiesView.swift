@@ -30,7 +30,7 @@ struct ProxiesView: View {
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var client: ConcordClient
-    @StateObject private var styleStore = ProxyStyleStore()
+    @EnvironmentObject private var styleStore: ProxyStyleStore
     @ObservedObject private var iconSetStore = IconSetStore.shared
     @StateObject private var customStore = CustomProxyStore()
     @State private var searchText = ""
@@ -918,7 +918,9 @@ struct ProxiesView: View {
 
     /// The group's test URL for a single-node delay test (FlClash
     /// _handleTestCurrentDelay, card.dart:273-283); nil when the
-    /// group has none, so the core falls back to its default.
+    /// group has none — ProxyStore then falls back to the stored
+    /// override test-url (audit B24), and the core default after
+    /// that. Nested groups are resolved inside ProxyStore.
     private func nodeTestURL(_ group: ProxyGroup) -> String? {
         group.testUrl.isEmpty ? nil : group.testUrl
     }

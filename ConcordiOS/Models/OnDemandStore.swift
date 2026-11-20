@@ -44,6 +44,13 @@ final class OnDemandStore: ObservableObject {
     /// otherwise setting the message would reinstall forever.
     private var lastInstalledEnabled: Bool?
     private var lastInstalledSSIDs: [String]?
+    /// Generation bumped by every suspendRules() (O2): an install
+    /// whose awaited manager save was in flight while a suspend
+    /// landed must not stand — the install re-checks this after
+    /// its save and re-clears instead of leaving re-installed rules
+    /// behind. Only suspends bump it (edits are handled by the
+    /// post-save re-check below, not by a generation).
+    private var suspendEpoch = 0
 
     private struct Saved: Codable {
         var version: Int = 2
@@ -89,22 +96,59 @@ final class OnDemandStore: ObservableObject {
 
     /// Installs the rules when they changed since the last install.
     /// Returns false when the manager save failed (and reports it).
+    /// O1: rules are installed ONLY while the VPN is running — the
+    /// autosave sink fires on every @Published change, including
+    /// enabling On-Demand or editing SSIDs while the VPN is off, and
+    /// installing then would arm an auto-start the user never asked
+    /// for (FlClash iOS sets isOnDemandEnabled = false on every
+    /// start; our install point is TunnelManager.start(), after a
+    /// successful confirm). While off this returns false WITHOUT
+    /// updating lastInstalled*, so the next start re-installs.
+    /// O2: the install's manager save awaits, so a suspend (explicit
+    /// stop) or a newer edit can land mid-flight. After the save,
+    /// a suspend is re-applied (the install must not overwrite the
+    /// clear) and a newer edit re-runs the install (the save must
+    /// not leave stale rules behind). lastInstalled* is set before
+    /// the await so a failure does not spin the autosave sink into
+    /// a retry loop — the "重新应用" button resets it explicitly.
     @MainActor
     @discardableResult
     func installRulesIfNeeded() async -> Bool {
         guard enabled != lastInstalledEnabled || excludedSSIDs != lastInstalledSSIDs else {
             return true
         }
-        lastInstalledEnabled = enabled
-        lastInstalledSSIDs = excludedSSIDs
+        guard TunnelManager.shared.isRunning else {
+            return false
+        }
+        let installingEnabled = enabled
+        let installingSSIDs = excludedSSIDs
+        let epoch = suspendEpoch
+        lastInstalledEnabled = installingEnabled
+        lastInstalledSSIDs = installingSSIDs
         do {
             try await TunnelManager.shared.updateOnDemandRules(
-                enabled: enabled, excludedSSIDs: excludedSSIDs)
-            return true
+                enabled: installingEnabled, excludedSSIDs: installingSSIDs)
         } catch {
             applyMessage = "按需规则保存失败：\(error.localizedDescription)"
             return false
         }
+        // A suspend landed while the save was in flight: the save
+        // may have overwritten the clear, so re-clear and report
+        // not-installed (lastInstalled* back to nil, so the next
+        // manual start re-arms the preference).
+        if suspendEpoch != epoch {
+            lastInstalledEnabled = nil
+            lastInstalledSSIDs = nil
+            await suspendRules()
+            return false
+        }
+        // A newer edit landed while the save was in flight: the
+        // installed rules are already stale — install the current
+        // values instead of leaving the old ones in place.
+        if enabled != installingEnabled || excludedSSIDs != installingSSIDs {
+            return await installRulesIfNeeded()
+        }
+        return true
     }
 
     /// Clears the installed On-Demand rules WITHOUT touching the
@@ -118,6 +162,10 @@ final class OnDemandStore: ObservableObject {
     /// rules must never block the stop itself.
     @MainActor
     func suspendRules() async {
+        // O2: bump the generation so an install whose save is in
+        // flight notices the suspend when it resumes and re-clears
+        // instead of leaving its rules installed.
+        suspendEpoch += 1
         lastInstalledEnabled = nil
         lastInstalledSSIDs = nil
         try? await TunnelManager.shared.updateOnDemandRules(enabled: false, excludedSSIDs: [])
@@ -126,8 +174,17 @@ final class OnDemandStore: ObservableObject {
     /// Installs (or clears) the on-demand rules on the saved VPN
     /// manager, and reports the result. The "重新应用" button calls
     /// this; every edit goes through the autosave sink instead.
+    /// O1: with the VPN off there is nothing to install — say so
+    /// honestly instead of reporting success for rules that will
+    /// only be installed at the next start.
     @MainActor
     func apply() async {
+        guard TunnelManager.shared.isRunning else {
+            applyMessage = enabled
+                ? "VPN 未启动：按需规则将在下次启动 VPN 时安装"
+                : "按需连接已关闭"
+            return
+        }
         lastInstalledEnabled = nil
         guard await installRulesIfNeeded() else { return }
         applyMessage = enabled

@@ -278,7 +278,11 @@ final class UnifiedImporter: ObservableObject {
             }
         }
         for (index, line, node) in localParsed {
-            results.append(ImportLineResult(order: index, line: line, kind: .nodes, succeeded: true, message: "已解析节点「\(node.name)」"))
+            // Surface parser warnings (e.g. a transport option the
+            // local model cannot represent, kept with a warning) so
+            // the import does not look cleaner than it is.
+            let warning = node.warnings.first.map { "（\($0)）" } ?? ""
+            results.append(ImportLineResult(order: index, line: line, kind: .nodes, succeeded: true, message: "已解析节点「\(node.name)」\(warning)"))
         }
         for (index, line, reason) in failed {
             if coreSucceeded.contains(index) {
@@ -294,8 +298,13 @@ final class UnifiedImporter: ObservableObject {
         guard !allProxies.isEmpty else { return }
         let yaml = DefaultConfig.yaml(proxies: allProxies)
         // Replace semantics: a previous "我的节点" is overwritten.
+        // deleteProfile (audit B1) handles the active case: if the
+        // old "我的节点" was the active profile it switches away /
+        // stops the VPN instead of leaving the tunnel running a
+        // deleted config — the new profile is activated at the end
+        // of importText anyway.
         if let existing = profileStore.profiles.first(where: { $0.name == DefaultConfig.profileName }) {
-            profileStore.delete(existing)
+            await profileStore.deleteProfile(existing)
         }
         let beforeCount = profileStore.profiles.count
         profileStore.addFromFile(name: DefaultConfig.profileName, data: Data(yaml.utf8))

@@ -43,6 +43,10 @@ struct ConcordiOSApp: App {
         // The Proxies page falls back to the active profile's local
         // YAML when the VPN is off; ProxyStore reads it through here.
         proxyStore.profileStore = profileStore
+        // The app-side core heals a stale shared config.yaml from
+        // the active profile and names it in the boot report
+        // (FIX 1a + FIX 2, v0.2.45); AppCore reads it through here.
+        AppCore.profileStore = profileStore
         _profileStore = StateObject(wrappedValue: profileStore)
         _ruleStore = StateObject(wrappedValue: RuleStore(client: client))
         let settingsStore = SettingsStore(client: client)

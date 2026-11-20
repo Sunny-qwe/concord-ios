@@ -243,6 +243,22 @@ final class ProfileStore: ObservableObject {
             throw NSError(domain: "ConcordiOS", code: http.statusCode, userInfo: [
                 NSLocalizedDescriptionKey: "订阅服务器返回 HTTP \(http.statusCode)（\(HTTPURLResponse.localizedString(forStatusCode: http.statusCode))），没有拿到配置"])
         }
+        // HTML guard (FIX 3b): some links answer HTTP 200 with a web
+        // page instead of subscription content — a Cloudflare
+        // "Just a moment..." challenge, a Telegram web page, or an
+        // error page. That HTML must never be saved as a profile:
+        // fail here with a precise message instead of a generic
+        // parse failure downstream (normalizedSubscriptionData
+        // would only reject it as "订阅内容无法识别"). Same
+        // sniffing as the module downloads (audit B40:
+        // mitmDataLooksLikeHTML — BOM / leading whitespace
+        // tolerated, case-insensitive `<!doctype` / `<html`).
+        // downloadSubscription is the single download funnel for
+        // both import (addFromURL) and update, so both benefit.
+        if mitmDataLooksLikeHTML(data) {
+            throw NSError(domain: "ConcordiOS", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "下载到的是一张网页（可能是验证 / 人机验证页面），不是订阅内容：请在浏览器里打开链接完成验证，或确认该链接是订阅链接后再试"])
+        }
         let info = SubscriptionInfo.parse(header: http.value(forHTTPHeaderField: "subscription-userinfo"))
         return (data, info, Self.dispositionFileName(http.value(forHTTPHeaderField: "content-disposition")))
     }
@@ -493,16 +509,82 @@ final class ProfileStore: ObservableObject {
 
     // MARK: Import / update / delete
 
+    /// A t.me link (bot / channel / join link, any path — e.g. a
+    /// bot link with `?start=`) is not a subscription link.
+    /// Returns the actionable hint when `urlString` points at
+    /// t.me, nil otherwise. Host match only: `t.me` or a subdomain
+    /// of it.
+    static func telegramLinkHint(for urlString: String) -> String? {
+        guard let host = URL(string: urlString)?.host?.lowercased(),
+              host == "t.me" || host.hasSuffix(".t.me") else { return nil }
+        return "这是 Telegram 链接（t.me），不是订阅链接：请在 Telegram 里打开它，从机器人或频道里获取真正的订阅链接，再粘贴到这里导入"
+    }
+
+    /// Classifies a subscription download/save failure into a
+    /// specific, actionable message (FIX 3 diagnostics): TLS vs
+    /// timeout vs HTTP status vs network — instead of a bare
+    /// wrapped `error.localizedDescription`, which says what
+    /// happened ("请求超时") but not why, and which the import
+    /// row then wraps in a second "导入失败：". NSError values
+    /// thrown by downloadSubscription already carry a specific
+    /// message (HTTP status, HTML page, no HTTP response) and pass
+    /// through unchanged via localizedDescription; URLError is
+    /// mapped by code below; anything else (e.g. a save failure)
+    /// also passes its localizedDescription through. No
+    /// "导入失败：" prefix here — the caller (UnifiedImporter's
+    /// row, update's "更新 … 失败：") adds its own. Diagnose
+    /// only: download behaviour is unchanged (no fallback, no
+    /// retry, no timeout change).
+    static func subscriptionFailureMessage(_ error: Error) -> String {
+        guard let urlError = error as? URLError else {
+            return error.localizedDescription
+        }
+        switch urlError.code {
+        case .timedOut:
+            return "下载超时（20 秒内没有完成）：请检查网络后重试"
+        case .serverCertificateUntrusted, .serverCertificateHasBadDate,
+             .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot,
+             .clientCertificateRejected, .clientCertificateRequired,
+             .secureConnectionFailed:
+            return "证书校验失败：订阅服务器的证书不受信任（校园网等网络可能替换了证书）。请检查网络，或在设置里关闭「校验订阅证书」后重试"
+        case .notConnectedToInternet:
+            return "没有网络连接：请检查网络后重试"
+        case .networkConnectionLost:
+            return "网络连接中断：请检查网络后重试"
+        case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+            return "无法连接订阅服务器：请检查链接是否正确、网络是否正常"
+        case .cancelled:
+            return "下载已取消"
+        case .unsupportedURL:
+            return "不支持的 URL：请确认链接以 http:// 或 https:// 开头"
+        default:
+            return "下载失败（\(urlError.code.rawValue)）：\(urlError.localizedDescription)"
+        }
+    }
+
     @MainActor
     func addFromURL(name: String, urlString: String) async {
+        // Telegram links are not subscriptions (FIX 3a): a t.me
+        // bot / channel link serves a Telegram web page, never
+        // Clash YAML. Intercept before any download: on-device the
+        // URLSession failure surfaced as the bare system error
+        // "不支持的 URL" (URLError.unsupportedURL, -1002 — that
+        // string lives in iOS, not in this repo), with no hint
+        // why. This is the single funnel (both the unified import
+        // page and the Profiles "+" menu come through here), so
+        // every entry point gets the hint.
+        if let hint = Self.telegramLinkHint(for: urlString) {
+            lastError = hint
+            return
+        }
         // Duplicate-URL guard (FlClash add.dart:76-79): the same
         // subscription URL must not create a second profile. This
         // is the single funnel — both the Profiles "+" menu and the
         // unified import page (UnifiedImporter.importSubscriptionURL)
         // come through here.
         let normalized = urlString.trimmingCharacters(in: .whitespaces)
-        if profiles.contains(where: { $0.kind == .url && $0.urlString?.trimmingCharacters(in: .whitespaces) == normalized }) {
-            lastError = "该订阅链接已存在"
+        if let existing = profiles.first(where: { $0.kind == .url && $0.urlString?.trimmingCharacters(in: .whitespaces) == normalized }) {
+            lastError = "该订阅链接已存在（「\(existing.name)」）：请直接更新该订阅，或先删除它再导入"
             return
         }
         guard let url = URL(string: urlString) else {
@@ -543,7 +625,12 @@ final class ProfileStore: ObservableObject {
             save()
             lastError = nil
         } catch {
-            lastError = "导入失败：\(error.localizedDescription)"
+            // Specific cause, no "导入失败：" prefix here — the
+            // UnifiedImporter row adds the single "导入失败：" in
+            // front of lastError (previously this produced the
+            // doubled "导入失败：导入失败：…" with only the bare
+            // system string behind it).
+            lastError = Self.subscriptionFailureMessage(error)
         }
     }
 
@@ -658,7 +745,7 @@ final class ProfileStore: ObservableObject {
                 lastError = nil
             }
         } catch {
-            lastError = "更新 \(profile.name) 失败：\(error.localizedDescription)"
+            lastError = "更新 \(profile.name) 失败：\(Self.subscriptionFailureMessage(error))"
         }
     }
 
@@ -842,6 +929,16 @@ final class ProfileStore: ObservableObject {
                     break
                 }
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("- {"), trimmed.hasSuffix("}") {
+                    // Flow mapping: "- { name: X, type: ... }"
+                    // (subscription files written entirely in flow
+                    // style have no "- name:" lines at all).
+                    let inner = String(trimmed.dropFirst(3).dropLast())
+                    for kv in Self.flowMappingPairs(inner) where kv.key == "name" {
+                        if !kv.value.isEmpty { names.append(kv.value) }
+                    }
+                    continue
+                }
                 guard trimmed.hasPrefix("- name:") else { continue }
                 var value = String(trimmed.dropFirst("- name:".count))
                     .trimmingCharacters(in: .whitespaces)
@@ -1047,11 +1144,28 @@ final class ProfileStore: ObservableObject {
                 itemIndent = indent
                 listKey = nil
                 let rest = trimmed == "-" ? "" : String(trimmed.dropFirst(2))
-                if !rest.isEmpty, let kv = Self.yamlKeyValue(rest) {
-                    if kv.key == "proxies", let flow = Self.flowList(kv.value) {
-                        itemMembersFlow = flow
-                    } else {
-                        item[kv.key] = kv.value
+                if !rest.isEmpty {
+                    if rest.hasPrefix("{"), rest.hasSuffix("}") {
+                        // Flow mapping: "- { name: X, type: y,
+                        // proxies: [...] }" — one line holds the
+                        // whole item. Split on top-level commas
+                        // (flowMappingPairs), then feed each pair
+                        // through the same handling as the
+                        // block-style fields below.
+                        for kv in Self.flowMappingPairs(String(rest.dropFirst().dropLast())) {
+                            if section == "proxy-groups" && (kv.key == "proxies" || kv.key == "use"),
+                               let flow = Self.flowList(kv.value) {
+                                if kv.key == "proxies" { itemMembersFlow = flow } else { itemUseFlow = flow }
+                            } else {
+                                item[kv.key] = kv.value
+                            }
+                        }
+                    } else if let kv = Self.yamlKeyValue(rest) {
+                        if kv.key == "proxies", let flow = Self.flowList(kv.value) {
+                            itemMembersFlow = flow
+                        } else {
+                            item[kv.key] = kv.value
+                        }
                     }
                 }
                 continue
@@ -1259,6 +1373,49 @@ final class ProfileStore: ObservableObject {
         return inner.split(separator: ",").map { unquote(String($0).trimmingCharacters(in: .whitespaces)) }.filter { !$0.isEmpty }
     }
 
+    /// Split a flow mapping's inner content ("name: X, type: y,
+    /// proxies: [...]") on top-level commas — commas inside nested
+    /// [] / {} or quotes do not split — then parse each
+    /// "key: value" pair with yamlKeyValue. Used for one-line
+    /// "- { ... }" items. Escaped quotes inside quoted values are
+    /// not handled (same documented limit as flowList); the core
+    /// path stays authoritative while running.
+    private static func flowMappingPairs(_ inner: String) -> [(key: String, value: String)] {
+        var pairs: [(key: String, value: String)] = []
+        var depth = 0
+        var quote: Character? = nil
+        var current = ""
+        for ch in inner {
+            if let q = quote {
+                current.append(ch)
+                if ch == q { quote = nil }
+                continue
+            }
+            switch ch {
+            case "'", "\"":
+                quote = ch
+                current.append(ch)
+            case "[", "{":
+                depth += 1
+                current.append(ch)
+            case "]", "}":
+                depth = max(0, depth - 1)
+                current.append(ch)
+            case "," where depth == 0:
+                if let kv = yamlKeyValue(current.trimmingCharacters(in: .whitespaces)) {
+                    pairs.append(kv)
+                }
+                current = ""
+            default:
+                current.append(ch)
+            }
+        }
+        if let kv = yamlKeyValue(current.trimmingCharacters(in: .whitespaces)) {
+            pairs.append(kv)
+        }
+        return pairs
+    }
+
     private static func unquote(_ value: String) -> String {
         if (value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2) ||
             (value.hasPrefix("'") && value.hasSuffix("'") && value.count >= 2) {
@@ -1433,6 +1590,26 @@ final class ProfileStore: ObservableObject {
             result = CustomSubscriptionStore.reapplyBakedBlocks(from: oldText, into: result)
         }
         return result.data(using: .utf8) ?? data
+    }
+
+    /// The active profile's current built bytes — the exact bytes
+    /// applyProfile writes to the shared config.yaml: the profile
+    /// file on disk with local overrides re-baked (custom proxies,
+    /// filter overrides, custom-subscription blocks). AppCore's
+    /// FIX 2 stale-config heal compares the shared file against
+    /// these bytes. Nil when there is no active profile, no file
+    /// on disk, or the file cannot be applied as-is: an
+    /// age-encrypted file (applyProfile refuses it too) or one
+    /// that fails the local sanity check — the caller then keeps
+    /// the existing shared config and the boot proceeds as before.
+    func builtActiveProfileData() -> (profile: Profile, data: Data)? {
+        guard let profile = activeProfile,
+              let url = fileURL(for: profile),
+              let data = try? Data(contentsOf: url) else { return nil }
+        if Self.looksAgeEncrypted(data) { return nil }
+        let built = reapplyLocalOverrides(to: data, for: profile)
+        guard Self.localSanityCheck(built) == nil else { return nil }
+        return (profile, built)
     }
 
     /// The profile's current on-disk YAML text, if it has a file.

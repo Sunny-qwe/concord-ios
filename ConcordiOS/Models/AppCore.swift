@@ -68,6 +68,18 @@ enum AppCoreError: LocalizedError {
     /// still missing, so config.apply would fail in the core's own
     /// MMDB download. Carries the real download reason (see GeoSeed).
     case geoSeedFailed(String)
+    /// config.apply failed with the core's own error (v0.2.45,
+    /// case (b)): e.g. a RULE-SET provider the config references
+    /// but never defines ("rules[0] [RULE-SET, Apple, …] error:
+    /// rule set [Apple] not found"). That is a HARD error — the
+    /// core refused the WHOLE config, not just the named nodes —
+    /// so no delay test can run at all. Carries the core's exact
+    /// message verbatim; only raised for a genuine apply refusal
+    /// (a timeout / dead session keeps its existing error, see
+    /// ensureStarted). The banner and the boot report both show
+    /// this description, so both surfaces name the missing
+    /// provider/rule AND say the whole config was refused.
+    case configApplyFailed(String)
     /// The CA generated in-app could not be copied into the App
     /// Group container (the tunnel core's home), so the tunnel may
     /// generate a different CA at the next VPN start.
@@ -89,6 +101,8 @@ enum AppCoreError: LocalizedError {
             return "核心还在启动，请稍后再试"
         case .geoSeedFailed(let message):
             return "GeoIP 数据库下载失败：\(message)（测速需要 geoip.metadb，核心自带的下载在当前网络下同样失败；请检查网络后重试）"
+        case .configApplyFailed(let message):
+            return "核心拒绝了当前配置，测速无法进行：\(message)（整个配置未生效——缺失的提供方或规则集会让核心拒绝全部配置，请检查订阅内容）"
         case .caSyncFailed(let message):
             return "CA 同步到隧道失败：\(message)"
         }
@@ -97,6 +111,16 @@ enum AppCoreError: LocalizedError {
 
 final class AppCore {
     static let shared = AppCore()
+
+    /// The profile store, linked by the app at startup
+    /// (ConcordiOSApp, next to proxyStore.profileStore): FIX 2
+    /// reads the active profile's current built bytes through it
+    /// to heal a stale shared config.yaml, and FIX 1a reads the
+    /// applied profile's name for the boot report. Weak, like
+    /// ProxyStore.profileStore — the app owns the store. Nil when
+    /// unlinked (e.g. a non-app caller): both fixes then skip
+    /// silently and the boot proceeds exactly as before.
+    static weak var profileStore: ProfileStore?
 
     /// Ports the app-side core listens on (see the header comment).
     /// Nothing else on the device uses them; the extension's core
@@ -195,7 +219,16 @@ final class AppCore {
     /// core's home dir, for the Logs export. Called on success, on
     /// a GeoSeed failure, and on any other boot failure — so the
     /// file always describes the latest attempt, never a stale one.
-    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String, providerSeed: ProviderCacheSeed.Report? = nil) {
+    /// FIX 1a (v0.2.45): on success the report also records which
+    /// profile was applied, the shared config.yaml's size + mtime,
+    /// and how many groups / nodes the core actually loaded — the
+    /// three facts that distinguish "stale config.yaml" from "the
+    /// core dropped the proxy entries". The extra lines are only
+    /// added when their values are known, so failure reports keep
+    /// their existing shape. `configRefreshNote` (FIX 2) is passed
+    /// on every call, so a heal that precedes a failed boot is
+    /// still visible.
+    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String, providerSeed: ProviderCacheSeed.Report? = nil, appliedProfileName: String? = nil, configSize: Int? = nil, configMtime: Date? = nil, loadedGroupCount: Int? = nil, loadedNodeCount: Int? = nil, configRefreshNote: String? = nil) {
         let stamp = Self.bootReportTimestamp(Date())
         var lines = ["[\(stamp)] 应用内核心启动"]
         for spec in GeoSeed.files {
@@ -230,6 +263,18 @@ final class AppCore {
             }
         } else {
             lines.append("提供方缓存：未尝试")
+        }
+        if let configRefreshNote {
+            lines.append("配置刷新：\(configRefreshNote)")
+        }
+        if let appliedProfileName {
+            lines.append("当前订阅：\(appliedProfileName)")
+        }
+        if let configSize, let configMtime {
+            lines.append("配置文件：config.yaml \(configSize) 字节，修改于 \(Self.bootReportTimestamp(configMtime))")
+        }
+        if let loadedGroupCount, let loadedNodeCount {
+            lines.append("核心已加载：\(loadedGroupCount) 个策略组，\(loadedNodeCount) 个节点")
         }
         lines.append("启动结果：\(outcome)")
         try? lines.joined(separator: "\n").write(
@@ -284,10 +329,47 @@ final class AppCore {
     }
 
     private func configSignature(for url: URL) -> String? {
+        guard let info = configFileInfo(for: url) else { return nil }
+        return "\(info.mtime.timeIntervalSince1970)-\(info.size)"
+    }
+
+    /// The shared config.yaml's size + mtime (FIX 1a, boot report).
+    /// Nil when the file cannot be statted.
+    private func configFileInfo(for url: URL) -> (size: Int, mtime: Date)? {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let mtime = attrs[.modificationDate] as? Date,
               let size = attrs[.size] as? NSNumber else { return nil }
-        return "\(mtime.timeIntervalSince1970)-\(size.intValue)"
+        return (size.intValue, mtime)
+    }
+
+    /// Self-heals a stale shared config.yaml before the boot
+    /// (FIX 2, v0.2.45): the file this core applies is written by
+    /// ProfileStore.applyProfile at profile-switch time, but a
+    /// profile can change afterwards (subscription update, local
+    /// overrides re-baked) without the shared file being rewritten,
+    /// so config.apply can succeed on a file that no longer holds
+    /// the active profile's nodes — and every delay.test then
+    /// returns -2. Compares the file's bytes with the active
+    /// profile's current built bytes (the exact bytes
+    /// applyProfile writes, local overrides re-baked) and, when
+    /// they differ, rewrites the file with the same atomic write
+    /// applyProfile uses. Returns a one-line note for the boot
+    /// report when it rewrote the file, nil otherwise. NEVER fails
+    /// the boot: no active profile, an unbuildable profile, or a
+    /// failed write all return nil and the caller proceeds with
+    /// the existing file. The caller recomputes the config
+    /// signature from the returned value when it is non-nil.
+    private func healStaleSharedConfig(configURL: URL) -> String? {
+        guard let store = Self.profileStore,
+              let built = store.builtActiveProfileData(),
+              let current = try? Data(contentsOf: configURL),
+              current != built.data else { return nil }
+        do {
+            try built.data.write(to: configURL, options: .atomic)
+            return "已从当前订阅「\(built.profile.name)」重新生成 config.yaml（旧文件与当前订阅内容不一致）"
+        } catch {
+            return nil
+        }
     }
 
     /// Starts the app-side core with the active profile's config
@@ -302,8 +384,20 @@ final class AppCore {
         }
         guard let configURL = sharedConfigURL(),
               FileManager.default.fileExists(atPath: configURL.path),
-              let signature = configSignature(for: configURL) else {
+              let initialSignature = configSignature(for: configURL) else {
             throw AppCoreError.noConfig
+        }
+        var signature = initialSignature
+        // FIX 2 (v0.2.45): heal a stale shared config.yaml BEFORE
+        // anything reads it — a rewrite changes the signature, so
+        // the already-running check below sees the mismatch and
+        // restarts the core on the fresh file instead of returning
+        // early on the stale one. A nil note means nothing changed
+        // (or nothing could be built) and the boot proceeds with
+        // the existing file, exactly as before.
+        let configRefreshNote = healStaleSharedConfig(configURL: configURL)
+        if configRefreshNote != nil {
+            signature = configSignature(for: configURL) ?? signature
         }
         let home = try homeDirectory()
         let groupHome = FileManager.default.containerURL(
@@ -365,7 +459,7 @@ final class AppCore {
                 reason = "文件缺失且未能下载"
             }
             let failure = AppCoreError.geoSeedFailed(reason)
-            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(failure.localizedDescription)")
+            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(failure.localizedDescription)", configRefreshNote: configRefreshNote)
             throw failure
         }
         // Seed the proxy/rule provider cache (seedProviderCache)
@@ -448,15 +542,56 @@ final class AppCore {
                 "geo-auto-update": geoAutoUpdate,
                 "geo-update-interval": Int(geoUpdateHours),
             ]
-            _ = try await sendRequest(method: "config.apply", params: [
-                "profile": ["path": configURL.path],
-                "overlay": overlay,
-            ], resultType: EmptyResult.self, timeoutSeconds: 60)
+            // config.apply is the one boot call whose failure means
+            // the core refused the WHOLE config (v0.2.45 case (b)):
+            // a missing RULE-SET / proxy provider is a hard error,
+            // not a per-node problem, and the engine falls back to
+            // a no-proxy default. Re-raise a genuine refusal as
+            // .configApplyFailed with the core's exact message, so
+            // the banner + boot report say the config was refused
+            // instead of the generic "nodes are missing". A timeout
+            // or dead session is NOT a refusal (the apply may or
+            // may not have completed) and keeps its existing error.
+            do {
+                _ = try await sendRequest(method: "config.apply", params: [
+                    "profile": ["path": configURL.path],
+                    "overlay": overlay,
+                ], resultType: EmptyResult.self, timeoutSeconds: 60)
+            } catch let error as AppCoreError {
+                if case .rpcFailed(let message) = error,
+                   !message.hasPrefix("调用超时"),
+                   message != "核心会话已关闭",
+                   message != "会话不存在" {
+                    throw AppCoreError.configApplyFailed(message)
+                }
+                throw error
+            }
             _ = try await sendRequest(method: "engine.start", params: [:], resultType: EmptyResult.self, timeoutSeconds: 60)
-            recordBootReport(home: home, seed: appSeed, outcome: "成功", providerSeed: providerSeed)
+            // FIX 1a (v0.2.45): record what the core actually
+            // loaded, while the session is up — a proxy.groups
+            // read here costs one local call and tells the next
+            // all--2 diagnosis whether apply loaded zero nodes.
+            // A failed read leaves the counts out of the report;
+            // the boot itself already succeeded.
+            var loadedGroupCount: Int?
+            var loadedNodeCount: Int?
+            do {
+                let groups = try await loadedProxyGroups()
+                loadedGroupCount = groups.groups.count
+                loadedNodeCount = groups.nodes.count
+            } catch {
+                loadedGroupCount = nil
+                loadedNodeCount = nil
+            }
+            let configInfo = configFileInfo(for: configURL)
+            recordBootReport(home: home, seed: appSeed, outcome: "成功", providerSeed: providerSeed,
+                             appliedProfileName: Self.profileStore?.activeProfile?.name,
+                             configSize: configInfo?.size, configMtime: configInfo?.mtime,
+                             loadedGroupCount: loadedGroupCount, loadedNodeCount: loadedNodeCount,
+                             configRefreshNote: configRefreshNote)
             loadedConfigSignature = signature
         } catch {
-            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)", providerSeed: providerSeed)
+            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)", providerSeed: providerSeed, configRefreshNote: configRefreshNote)
             // Balance the passRetained above exactly once: if the
             // session was opened, tearDown() closes it and the
             // releaseCallback balances the retain (sync or async);
@@ -713,6 +848,25 @@ final class AppCore {
     /// stands.
     func providerList() async throws -> ConcordProviderList {
         try await sendRequest(method: "provider.list", params: [:], resultType: ConcordProviderList.self, timeoutSeconds: 15)
+    }
+
+    /// Validates the shared config.yaml with this core
+    /// (config.validate, FIX 1b v0.2.45). Same method + params as
+    /// ConcordClient.configValidate, but on the app-side core's
+    /// own session — the extension core is unreachable while the
+    /// VPN is off, which is exactly when the delay test needs it.
+    /// Like the client's version, the core only parses the file,
+    /// so the result is at most one issue: the parse error as a
+    /// plain message. Throws when the core is unreachable or the
+    /// shared config is missing; the caller treats that as "no
+    /// hint" and never breaks the delay-test flow for it.
+    func configValidate() async throws -> [ConcordIssue] {
+        guard let configURL = sharedConfigURL() else {
+            throw AppCoreError.noConfig
+        }
+        return try await sendRequest(method: "config.validate", params: [
+            "profile": ["path": configURL.path],
+        ], resultType: ConcordConfigValidateResult.self, timeoutSeconds: 15).issues
     }
 
     // MARK: MITM CA (v0.2.35 Item C)

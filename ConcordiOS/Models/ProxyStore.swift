@@ -193,6 +193,45 @@ final class ProxyStore: ObservableObject {
         return clauses.joined(separator: "；")
     }
 
+    /// FIX 1b (v0.2.45): the config.validate hint for an all--2
+    /// run. When the core's provider list is empty AND
+    /// config.validate reports an issue against the applied
+    /// config, returns "配置校验：<first issue's message>" for the
+    /// banner + the delay-test report — the direct explanation
+    /// when the applied config itself is broken (e.g. it
+    /// references a RULE-SET provider it never defines, which
+    /// config.apply refuses outright). Returns nil when the
+    /// provider list is non-empty, validate reports no issues, or
+    /// either call fails — the caller then keeps its existing
+    /// wording (e.g. "可能没有 proxy-providers"). Never throws.
+    /// VPN-off validates on the app-side core (AppCore, which is
+    /// the live core here); VPN-on validates on the extension
+    /// core through the client, against the same shared
+    /// config.yaml. Diagnostics only: nothing is repaired.
+    private func validateHintIfProvidersEmpty(useAppCore: Bool) async -> String? {
+        do {
+            let list: ConcordProviderList
+            if useAppCore {
+                list = try await AppCore.shared.providerList()
+            } else {
+                list = try await client.providerList()
+            }
+            guard list.providers.isEmpty else { return nil }
+            let issues: [ConcordIssue]
+            if useAppCore {
+                issues = try await AppCore.shared.configValidate()
+            } else if let path = ConfigStore.sharedFileURL(name: ConfigStore.configFileName)?.path {
+                issues = try await client.configValidate(profilePath: path)
+            } else {
+                return nil
+            }
+            guard let first = issues.first else { return nil }
+            return "配置校验：\(first.message)"
+        } catch {
+            return nil
+        }
+    }
+
     /// Names among `names` that the currently loaded core config
     /// does NOT know. Nil when the check itself is unavailable
     /// (core unreachable / query failed) — the caller then reports
@@ -1261,13 +1300,26 @@ final class ProxyStore: ObservableObject {
             noteTestError(firstTransportError)
             channelNote = "传输层连续失败 \(transportThrowCount) 次，已停止剩余测速：\(firstTransportError.localizedDescription)"
         } else if client.mode == .live, okCount == 0, failedCount == targets.count {
+            // FIX 1b (v0.2.45): all targets -2 AND the core's
+            // provider list empty → config.validate may name the
+            // real fault (e.g. a RULE-SET provider the config
+            // references but never defines). The hint is APPENDED
+            // to the banner + the report; the existing precise
+            // wording about WHICH nodes are missing is kept, and
+            // when validate finds nothing the existing wording
+            // stands unchanged (empty suffix appends nothing).
+            let validateHint = await validateHintIfProvidersEmpty(useAppCore: useAppCore)
+            let validateSuffix = validateHint.map { "（\($0)）" } ?? ""
             if case .stillMissing = preload {
                 // The preload already explained why, with the
                 // provider.update error verbatim — keep that instead
                 // of the generic membership verdict below. (The
-                // banner was set at preload time; only the report
-                // line is recorded here.)
-                channelNote = preloadNote
+                // banner was set at preload time; the validate
+                // hint is appended to it + the report line here.)
+                channelNote = preloadNote.map { $0 + validateSuffix }
+                if !validateSuffix.isEmpty, let banner = testError {
+                    noteTestMessage(banner + validateSuffix)
+                }
             } else {
                 // Channel failure vs dead nodes: -2 is a VALUE, never a
                 // throw, so a run where every node fails -2 never set
@@ -1284,21 +1336,21 @@ final class ProxyStore: ObservableObject {
                     if !missing.isEmpty {
                         let shown = missing.sorted().prefix(3).joined(separator: "、")
                         let shownSuffix = missing.count > 3 ? "…" : ""
-                        noteTestMessage("测速通道异常：核心已加载的配置里没有这 \(missing.count) 个节点（\(shown)\(shownSuffix)），很可能是订阅提供方还没加载。请先启动一次 VPN 再回来测速，仍失败请把日志导出发来定位。")
+                        noteTestMessage("测速通道异常：核心已加载的配置里没有这 \(missing.count) 个节点（\(shown)\(shownSuffix)），很可能是订阅提供方还没加载。请先启动一次 VPN 再回来测速，仍失败请把日志导出发来定位。\(validateSuffix)")
                         let missingShown = missing.sorted().prefix(8).joined(separator: "、")
                         // The report line names what the providers
                         // actually hold, so the exported log shows
                         // the rename/empty-provider mismatch instead
                         // of only the gap.
                         let actual = describeProviderContents(inventory.namesByProvider)
-                        channelNote = "核心缺少节点 \(missingShown)（共 \(missing.count) 个）" + (actual.isEmpty ? "；提供方缓存见启动诊断" : "；\(actual)")
+                        channelNote = "核心缺少节点 \(missingShown)（共 \(missing.count) 个）" + (actual.isEmpty ? "；提供方缓存见启动诊断" : "；\(actual)") + validateSuffix
                     } else {
-                        noteTestMessage("测速通道异常：\(targets.count) 个节点全部测速失败（-2），核心里有这些节点，但拨测全部失败——可能是节点已失效或当前网络不通。请检查订阅是否过期，或把日志导出发来定位。")
-                        channelNote = "核心里有这些节点，但 delay 拨测全部返回 -2"
+                        noteTestMessage("测速通道异常：\(targets.count) 个节点全部测速失败（-2），核心里有这些节点，但拨测全部失败——可能是节点已失效或当前网络不通。请检查订阅是否过期，或把日志导出发来定位。\(validateSuffix)")
+                        channelNote = "核心里有这些节点，但 delay 拨测全部返回 -2" + validateSuffix
                     }
                 } else {
-                    noteTestMessage("测速通道异常：\(targets.count) 个节点全部测速失败（-2），且无法确认核心是否加载了这些节点（查询失败）。请把日志导出发来定位。")
-                    channelNote = "全部 -2；核心节点查询失败，无法区分通道故障与节点故障"
+                    noteTestMessage("测速通道异常：\(targets.count) 个节点全部测速失败（-2），且无法确认核心是否加载了这些节点（查询失败）。请把日志导出发来定位。\(validateSuffix)")
+                    channelNote = "全部 -2；核心节点查询失败，无法区分通道故障与节点故障" + validateSuffix
                 }
             }
         }
@@ -1396,6 +1448,17 @@ final class ProxyStore: ObservableObject {
                    missing.contains(target.proxyName) {
                     noteTestMessage("测速通道异常：核心已加载的配置里没有节点“\(target.proxyName)”（订阅提供方还没加载到核心）。请检查订阅更新后重试，仍失败请把日志导出发来定位。")
                     extra.append("通道诊断：核心缺少该节点（订阅提供方未加载）；提供方缓存见启动诊断")
+                    // FIX 1b (v0.2.45): same validate hint as the
+                    // all-groups path — appended to the banner +
+                    // the single-node report; nothing changes when
+                    // the provider list is non-empty or validate
+                    // finds no issue.
+                    if let hint = await validateHintIfProvidersEmpty(useAppCore: useAppCore) {
+                        if let banner = testError {
+                            noteTestMessage(banner + "（\(hint)）")
+                        }
+                        extra.append(hint)
+                    }
                 }
             }
             writeReport(resultLine: resultText, preloadNote: preloadNote, extra: extra)

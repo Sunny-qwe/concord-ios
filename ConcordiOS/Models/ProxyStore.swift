@@ -46,6 +46,13 @@ final class ProxyStore: ObservableObject {
     /// used to write only lastError, which no view on this page
     /// reads, so every failure was total silence (v0.2.32).
     @Published var testError: String?
+    /// True when testError is a GeoSeed failure (the MMDB could not
+    /// be seeded). The Proxies banner shows a retry button only in
+    /// that case: tapping it re-seeds immediately, bypassing the
+    /// 10-minute cool-down, instead of trapping the user (v0.2.35).
+    @Published var testErrorIsGeoSeed = false
+    /// True while a banner retry re-seed is running (banner spinner).
+    @Published var isRetryingGeoSeed = false
     /// True while any delay test runs.
     var isTesting: Bool { !testingGroups.isEmpty }
     /// True while the group list itself is loading (first load).
@@ -59,6 +66,100 @@ final class ProxyStore: ObservableObject {
     /// the card shows no spinner and no banner — just silence.
     @Published var startError: String?
     @Published var lastUpdated: Date?
+
+    /// The delay test that most recently ran (or failed), so the
+    /// Proxies banner's GeoSeed retry can re-run exactly that test
+    /// once the files are seeded, instead of making the user tap
+    /// the bolt again (v0.2.35).
+    private enum LastTest {
+        case all
+        case group(ProxyGroup, nodeNames: [String]?)
+        case node(ProxyNode, testURL: String?)
+    }
+    private var lastTest: LastTest?
+
+    /// Records a delay-test failure for the banner: lastError and
+    /// testError carry the reason, and testErrorIsGeoSeed marks a
+    /// GeoSeed failure so the banner can offer its retry button.
+    private func noteTestError(_ error: Error) {
+        lastError = error.localizedDescription
+        testError = error.localizedDescription
+        testErrorIsGeoSeed = Self.isGeoSeedError(error)
+    }
+
+    private static func isGeoSeedError(_ error: Error) -> Bool {
+        guard let appError = error as? AppCoreError else { return false }
+        if case .geoSeedFailed = appError { return true }
+        return false
+    }
+
+    /// The two homes GeoSeed writes to: the app core's private home
+    /// (the one AppCore.ensureStarted checks) first, and, when
+    /// available, the App Group container the extension core reads.
+    /// Mirrors AppCore.homeDirectory — that helper is private to
+    /// AppCore, so the path is reproduced here.
+    private func geoSeedHomes() -> (appHome: URL, groupHome: URL?) {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let appHome = base.appendingPathComponent("ConcordAppCore", isDirectory: true)
+        try? FileManager.default.createDirectory(at: appHome, withIntermediateDirectories: true)
+        let groupHome = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)
+        return (appHome, groupHome)
+    }
+
+    /// Re-seeds the geo databases immediately and re-runs the test
+    /// that failed, for the Proxies banner's retry tap. The tap is
+    /// the user explicitly asking to try again NOW, so the
+    /// 10-minute cool-down is cleared in both homes and the seed
+    /// runs with ignoreCooldown (bundle copy first, network
+    /// fallback — GeoSeed). Returns false when there is no GeoSeed
+    /// failure to retry, or the MMDB is still missing afterwards:
+    /// the banner then keeps showing the honest reason.
+    @MainActor
+    func retryGeoSeedAndRetest() async -> Bool {
+        guard testErrorIsGeoSeed else { return false }
+        isRetryingGeoSeed = true
+        defer { isRetryingGeoSeed = false }
+        let (appHome, groupHome) = geoSeedHomes()
+        GeoSeed.clearCooldown(in: appHome)
+        let appReport = await GeoSeed.ensureGeoFiles(in: appHome, perFileTimeout: 30, ignoreCooldown: true)
+        if let groupHome {
+            GeoSeed.clearCooldown(in: groupHome)
+            _ = await GeoSeed.ensureGeoFiles(in: groupHome, perFileTimeout: 30, ignoreCooldown: true)
+        }
+        guard GeoSeed.isPresent(GeoSeed.mmdbFileName, in: appHome) else {
+            // Still missing: keep the honest reason — fresh from
+            // this retry when it produced one, otherwise the
+            // original banner text.
+            if let failure = appReport.failures.first(where: { $0.file == GeoSeed.mmdbFileName }) {
+                noteTestError(AppCoreError.geoSeedFailed(failure.error.localizedDescription))
+            } else if appReport.skippedByCooldown.contains(GeoSeed.mmdbFileName) {
+                noteTestError(AppCoreError.geoSeedFailed("上次下载失败不久（\(Int(GeoSeed.cooldownSeconds / 60)) 分钟内不再重试）"))
+            }
+            return false
+        }
+        // Seeded: clear the stale banner and re-run the test that
+        // failed. If the re-run fails again, noteTestError sets a
+        // fresh testError and the banner shows the new reason.
+        testError = nil
+        testErrorIsGeoSeed = false
+        await rerunLastTest()
+        return true
+    }
+
+    private func rerunLastTest() async {
+        switch lastTest {
+        case .all:
+            await testLatency()
+        case .group(let group, let nodeNames):
+            await testLatency(group: group, nodeNames: nodeNames)
+        case .node(let node, let testURL):
+            await testLatency(node: node, testURL: testURL)
+        case nil:
+            break
+        }
+    }
 
     /// True when the group list on screen comes from the active
     /// profile's LOCAL YAML instead of the core (VPN off — the core
@@ -348,6 +449,7 @@ final class ProxyStore: ObservableObject {
     /// node failed; only a returned value of -2 marks a failure.
     @MainActor
     func testLatency() async {
+        lastTest = .all
         var nodes: [(name: String, url: String?)] = []
         for group in groups {
             for node in group.nodes where node.type != "DIRECT" {
@@ -365,6 +467,7 @@ final class ProxyStore: ObservableObject {
     /// searching — FlClash tests only search matches).
     @MainActor
     func testLatency(group: ProxyGroup, nodeNames: [String]? = nil) async {
+        lastTest = .group(group, nodeNames: nodeNames)
         let names = nodeNames.map { Set($0) }
         let nodes = group.nodes.filter { $0.type != "DIRECT" && (names == nil || names!.contains($0.name)) }
             .map { (name: $0.name, url: group.testUrl) }
@@ -376,6 +479,11 @@ final class ProxyStore: ObservableObject {
         guard !nodes.isEmpty, testingGroups.isDisjoint(with: groupNames) else { return }
         testingGroups.formUnion(groupNames)
         defer { testingGroups.subtract(groupNames) }
+        // A new test supersedes the old failure: clear the banner
+        // now, so a stale GeoIP error does not linger while the new
+        // run is in flight (a fresh failure re-sets it below).
+        testError = nil
+        testErrorIsGeoSeed = false
         // Backend: the extension's core while the VPN runs; the
         // app-side core (AppCore) while it is off; the sample
         // transport in sample mode. When the VPN is off and the
@@ -387,8 +495,7 @@ final class ProxyStore: ObservableObject {
             do {
                 try await AppCore.shared.ensureStarted()
             } catch {
-                lastError = error.localizedDescription
-                testError = error.localizedDescription
+                noteTestError(error)
                 return
             }
         }
@@ -452,8 +559,7 @@ final class ProxyStore: ObservableObject {
                 // as a throw. Leave the node untested and stop —
                 // the backend is down, further calls fail too.
                 // Surface the reason instead of going silent.
-                lastError = error.localizedDescription
-                testError = error.localizedDescription
+                noteTestError(error)
                 break
             }
         }
@@ -474,6 +580,8 @@ final class ProxyStore: ObservableObject {
         guard !testingNodes.contains(node.name) else { return }
         testingNodes.insert(node.name)
         testError = nil
+        testErrorIsGeoSeed = false
+        lastTest = .node(node, testURL: testURL)
         defer { testingNodes.remove(node.name) }
         do {
             let result: ConcordDelayResult
@@ -486,8 +594,7 @@ final class ProxyStore: ObservableObject {
             latencies[node.name] = result.value
             applyLatencies()
         } catch {
-            lastError = error.localizedDescription
-            testError = error.localizedDescription
+            noteTestError(error)
         }
     }
 

@@ -26,24 +26,28 @@ import SwiftUI
 // routing in this build — the page says so in plain text.
 //
 // Wiring: the list is the global .tun "loopback-address" override
-// (OverrideStore specs, kind .stringList, default ["10.7.0.1"]),
-// so it lands in the config.apply tun overlay and takes effect
-// at the next VPN start, like other tun overrides. First visit
-// seeds the default once (seeded flag below); deleting all
-// addresses removes the key and is not re-seeded.
+// (OverrideStore specs, kind .stringList), so it lands in the
+// config.apply tun overlay and takes effect at the next VPN
+// start, like other tun overrides. The list starts empty;
+// deleting all addresses removes the key.
+//
+// Editing: tap a row (or its … menu) to edit the address in a
+// sheet; delete by swiping, by the Edit button's delete circles,
+// or from the row's … menu (with a confirm). The list may become
+// empty — an empty list simply removes the key.
 
 struct LoopbackView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @ObservedObject private var overrideStore = OverrideStore.shared
-    @State private var showAddAlert = false
-    @State private var newAddress = ""
-    @State private var errorMessage: String?
+    @State private var editingAddress: String?
+    @State private var editText = ""
+    @State private var showEditSheet = false
+    @State private var showDeleteConfirm: String?
     @State private var applyMessage: String?
 
     /// The tunnel interface's own address (PacketTunnelProvider):
     /// a loopback address may never be this.
     private static let tunnelAddress = "198.18.0.1"
-    private static let seededFlag = "ConcordiOS.loopbackSeeded.v1"
 
     private var addresses: [String] {
         guard case .array(let items) = overrideStore.state(scope: nil, section: .tun)["loopback-address"] else {
@@ -64,25 +68,51 @@ struct LoopbackView: View {
         List {
             Section {
                 Button {
-                    newAddress = ""
-                    showAddAlert = true
+                    editingAddress = nil
+                    editText = ""
+                    showEditSheet = true
                 } label: {
                     Text("添加地址…")
                         .foregroundStyle(ConcordTheme.accent)
                 }
-                ForEach(addresses, id: \.self) { address in
-                    Text(address)
+                if addresses.isEmpty {
+                    Text("未配置回流地址")
                         .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(addresses, id: \.self) { address in
+                    HStack {
+                        Button {
+                            editingAddress = address
+                            editText = address
+                            showEditSheet = true
+                        } label: {
+                            Text(address)
+                                .foregroundStyle(.primary)
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                        Menu {
+                            Button("编辑") {
+                                editingAddress = address
+                                editText = address
+                                showEditSheet = true
+                            }
+                            Button("删除", role: .destructive) {
+                                showDeleteConfirm = address
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .font(.system(size: 13))
                 }
                 .onDelete { offsets in
                     var list = addresses
                     list.remove(atOffsets: offsets)
                     saveAddresses(list)
-                }
-                if let errorMessage {
-                    Text(errorMessage)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.red)
                 }
             } header: {
                 Text("虚拟接口回流地址")
@@ -111,45 +141,50 @@ struct LoopbackView: View {
         .font(.system(size: 13, weight: .semibold))
         .navigationTitle("虚拟接口回流地址")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            seedDefaultIfNeeded()
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
         }
-        .alert("添加地址", isPresented: $showAddAlert) {
-            TextField("例如 10.7.0.1", text: $newAddress)
-                .keyboardType(.numbersAndPunctuation)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            Button("取消", role: .cancel) {}
-            Button("添加") { addAddress() }
-        } message: {
-            Text("输入一个 IPv4 地址，不能属于 127.0.0.0/8，也不能是虚拟接口自身的地址 198.18.0.1。")
+        .sheet(isPresented: $showEditSheet) {
+            LoopbackEditSheet(
+                title: editingAddress == nil ? "添加地址" : "编辑地址",
+                text: $editText,
+                existing: addresses,
+                current: editingAddress,
+                tunnelAddress: Self.tunnelAddress
+            ) { value in
+                if let editingAddress,
+                   let index = addresses.firstIndex(of: editingAddress) {
+                    var list = addresses
+                    list[index] = value
+                    saveAddresses(list)
+                } else {
+                    saveAddresses(addresses + [value])
+                }
+            }
         }
-    }
-
-    /// Seeds the Egern default (10.7.0.1) exactly once, on first
-    /// visit, when the key has never been set. A user who deletes
-    /// every address is not re-seeded: the flag stays set.
-    private func seedDefaultIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: Self.seededFlag) else { return }
-        UserDefaults.standard.set(true, forKey: Self.seededFlag)
-        if overrideStore.state(scope: nil, section: .tun)["loopback-address"] == nil {
-            overrideStore.setValue(scope: nil, section: .tun, key: "loopback-address", value: .array([.string("10.7.0.1")]))
+        .alert("删除这个地址？", isPresented: Binding(
+            get: { showDeleteConfirm != nil },
+            set: { if !$0 { showDeleteConfirm = nil } }
+        )) {
+            Button("删除", role: .destructive) {
+                if let address = showDeleteConfirm {
+                    saveAddresses(addresses.filter { $0 != address })
+                }
+                showDeleteConfirm = nil
+            }
+            Button("取消", role: .cancel) {
+                showDeleteConfirm = nil
+            }
         }
-    }
-
-    private func addAddress() {
-        let candidate = newAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let problem = validationError(for: candidate) {
-            errorMessage = problem
-            return
-        }
-        errorMessage = nil
-        saveAddresses(addresses + [candidate])
     }
 
     /// Rejects invalid IPv4, 127.0.0.0/8, the tunnel's own address
-    /// and duplicates, with a reason the page shows inline.
-    private func validationError(for text: String) -> String? {
+    /// and duplicates, with a reason the edit sheet shows inline.
+    /// `excluding` is the address currently being edited, so
+    /// saving it unchanged is not flagged as a duplicate.
+    static func validationError(for text: String, excluding: String?, existing: [String]) -> String? {
         guard !text.isEmpty else { return "请输入一个 IPv4 地址" }
         let parts = text.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4,
@@ -163,12 +198,65 @@ struct LoopbackView: View {
         if parts[0] == "127" {
             return "地址不能属于 127.0.0.0/8"
         }
-        if text == Self.tunnelAddress {
-            return "地址不能是虚拟接口自身的地址（\(Self.tunnelAddress)）"
+        if text == tunnelAddress {
+            return "地址不能是虚拟接口自身的地址（\(tunnelAddress)）"
         }
-        if addresses.contains(text) {
+        if text != excluding && existing.contains(text) {
             return "这个地址已在列表里"
         }
         return nil
+    }
+}
+
+/// Add / edit sheet for one loopback address (same pattern as
+/// UserAgentEditSheet): the reason for a rejected value is shown
+/// inline in red and 保存 stays disabled until the value is valid.
+private struct LoopbackEditSheet: View {
+    let title: String
+    @Binding var text: String
+    let existing: [String]
+    let current: String?
+    let tunnelAddress: String
+    let onSave: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var error: String? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return LoopbackView.validationError(for: value, excluding: current, existing: existing)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("例如 10.7.0.1", text: $text)
+                        .keyboardType(.numbersAndPunctuation)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    if let error {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                } footer: {
+                    Text("输入一个 IPv4 地址，不能属于 127.0.0.0/8，也不能是虚拟接口自身的地址 \(tunnelAddress)。")
+                }
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        onSave(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                        dismiss()
+                    }
+                    .disabled(error != nil)
+                }
+            }
+        }
     }
 }

@@ -191,7 +191,7 @@ final class OverrideStore: ObservableObject {
                 OverrideKeySpec(key: "exclude-src-port", label: "排除源端口", kind: .numberList, defaultValue: .array([])),
                 OverrideKeySpec(key: "exclude-dst-port", label: "排除目标端口", kind: .numberList, defaultValue: .array([])),
                 OverrideKeySpec(key: "loopback-address", label: "回流地址", kind: .stringList,
-                                defaultValue: .array([.string("10.7.0.1")]),
+                                defaultValue: .array([]),
                                 description: "发往这些 IPv4 地址的 TCP 连接在虚拟接口上折返回本机；核心接受该配置（tun.loopback-address），但当前版本尚未实现回流路由"),
             ]
         case .sniffer:

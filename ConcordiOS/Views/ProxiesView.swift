@@ -210,6 +210,28 @@ struct ProxiesView: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
                             Spacer()
+                            // GeoIP-failure banner (v0.2.35): the
+                            // seed failed, so the delay test could
+                            // not run at all. Tapping 重试 re-seeds
+                            // immediately — bundle copy first,
+                            // network fallback — bypassing the
+                            // 10-minute cool-down that used to trap
+                            // the user, then re-runs the failed test.
+                            // A retry that still fails keeps the
+                            // honest reason in the banner.
+                            if proxyStore.testErrorIsGeoSeed {
+                                if proxyStore.isRetryingGeoSeed {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Button("重试") {
+                                        Task { await proxyStore.retryGeoSeedAndRetest() }
+                                    }
+                                    .buttonStyle(.plain)
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .accessibilityLabel("重新下载 GeoIP 数据库并重试测速")
+                                }
+                            }
                             Button { self.notice = nil } label: {
                                 Image(systemName: "xmark")
                                     .font(.system(size: 10))
@@ -256,8 +278,10 @@ struct ProxiesView: View {
             .onChange(of: proxyStore.testError) { _, new in
                 // A failed delay test used to be total silence
                 // (lastError is never read on this page): show the
-                // reason in the notice banner instead.
-                if let new { notice = new }
+                // reason in the notice banner instead. A nil error
+                // (a new test started, or a banner retry seeded
+                // the files) dismisses the banner.
+                if let new { notice = new } else { notice = nil }
             }
         }
     }

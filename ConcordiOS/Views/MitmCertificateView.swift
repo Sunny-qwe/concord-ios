@@ -50,7 +50,7 @@ struct MitmCertificateView: View {
                     Task { await settingsStore.refreshMitmStatus() }
                 }
                 Button("生成 CA 证书") {
-                    Task { await settingsStore.generateMitmCertificate() }
+                    Task { _ = await generateCertificate() }
                 }
                 // FlClash mitm.dart:253-340 _regenerate: confirm,
                 // then generate a new CA. The old CA stays installed
@@ -63,8 +63,11 @@ struct MitmCertificateView: View {
                 .alert("重新生成 CA 证书吗？", isPresented: $showRegenerateConfirm) {
                     Button("重新生成", role: .destructive) {
                         Task {
-                            await settingsStore.generateMitmCertificate()
-                            regenerateNote = "已生成新的 CA 证书。旧 CA 还留在 iPhone「设置 → 通用 → VPN 与设备管理」里，请先删掉旧的，再安装并完全信任新的 CA，否则 HTTPS 解密会失败。"
+                            // Only claim a new CA when generation
+                            // actually succeeded (Item C rule 2).
+                            if await generateCertificate() {
+                                regenerateNote = "已生成新的 CA 证书。旧 CA 还留在 iPhone「设置 → 通用 → VPN 与设备管理」里，请先删掉旧的，再安装并完全信任新的 CA，否则 HTTPS 解密会失败。"
+                            }
                         }
                     }
                     Button("取消", role: .cancel) {}
@@ -173,6 +176,79 @@ struct MitmCertificateView: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }.count
         return count == 0 ? "未设置" : "\(count) 个域名"
+    }
+
+    /// Generates the CA. Tunnel running (or sample mode) → the
+    /// tunnel core, exactly as before
+    /// (SettingsStore.generateMitmCertificate). Tunnel off in live
+    /// mode → the in-app core (AppCore, v0.2.35 Item C):
+    /// ensureStarted boots the same core in-process, then
+    /// mitm.generateCertificate runs there — the FlClash behaviour
+    /// ("证书没有开启 VPN 也是可以生成证书"). A boot/generation
+    /// failure writes the REAL AppCore error into
+    /// mitmStatusMessage: never the old "VPN 隧道未运行" message,
+    /// and never a success for a failed generation (the return
+    /// value gates the regenerate note). Returns true only when
+    /// the core actually returned a CA certificate.
+    @MainActor
+    private func generateCertificate() async -> Bool {
+        guard settingsStore.client.mode == .live,
+              !TunnelManager.shared.isRunning else {
+            await settingsStore.generateMitmCertificate()
+            return settingsStore.mitmStatusMessage?.hasPrefix("CA 已生成") == true
+        }
+        do {
+            try await AppCore.shared.ensureStarted()
+            let cert = try await AppCore.shared.mitmGenerateCertificate()
+            settingsStore.mitmCertificate = cert.certificate
+            if let info = cert.certificate {
+                // A successful MITM call proves the in-app core has
+                // the mitm capability, so the regenerate / trust-
+                // check buttons (gated on mitmAvailable) become
+                // usable without a tunnel-core refresh; the next
+                // tunnel-core refresh re-reads the real value.
+                settingsStore.mitmAvailable = true
+                settingsStore.mitmCaFingerprint = info.fingerprint
+                // The CA was generated in the app core's own home;
+                // the tunnel core reads its CA from the App Group
+                // container instead, so sync the files there — or
+                // the next VPN start would generate a DIFFERENT CA
+                // that does not match the one the user installs and
+                // trusts. A failed / skipped sync is reported
+                // honestly in the message; generation still counts
+                // as a success (return true) because the CA itself
+                // exists, but the message must NOT claim the tunnel
+                // will use it.
+                var message = "CA 已生成：\(info.subject)，指纹 \(info.fingerprint)"
+                do {
+                    switch try AppCore.shared.syncGeneratedCAToTunnel() {
+                    case .synced:
+                        message += "，已同步到隧道"
+                    case .tunnelAlreadyHadCA:
+                        message += "。注意：隧道里已有另一份 CA，未覆盖——下次启动 VPN 时隧道仍会使用旧 CA；如需隧道使用新 CA，请在 VPN 开启时重新生成一次"
+                    case .nothingToSync:
+                        message += "。注意：本机找不到刚生成的 CA 文件，未能同步到隧道——下次启动 VPN 时隧道可能会生成另一份 CA，请在 VPN 开启时重新生成一次"
+                    }
+                } catch {
+                    message += "。注意：CA 未能同步到隧道（\(error.localizedDescription)）——下次启动 VPN 时隧道可能会生成另一份 CA，请在 VPN 开启时重新生成一次"
+                }
+                settingsStore.mitmStatusMessage = message
+                settingsStore.save()
+                return true
+            }
+            settingsStore.mitmStatusMessage = "生成后仍无 CA 证书返回"
+            return false
+        } catch {
+            // The tunnel started between the guard above and the
+            // boot: use the tunnel core instead of reporting a
+            // delay-test-worded error.
+            if case AppCoreError.tunnelRunning = error {
+                await settingsStore.generateMitmCertificate()
+                return settingsStore.mitmStatusMessage?.hasPrefix("CA 已生成") == true
+            }
+            settingsStore.mitmStatusMessage = "生成 CA 失败：\(error.localizedDescription)"
+            return false
+        }
     }
 
     /// FlClash IOSMitmTrustStore.check, in-process: the core signs

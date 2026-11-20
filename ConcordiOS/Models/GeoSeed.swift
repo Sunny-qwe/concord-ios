@@ -11,6 +11,16 @@ import Foundation
 // MITM certificate. URLSession uses the iOS system trust store
 // instead, so the same file downloads here where the core's cannot.
 //
+// v0.2.35: the URLSession download ALSO fails on the user's network
+// (campus CA not in the iOS system trust store / github blocked), so
+// the three files now ship inside the IPA (ConcordiOS/Resources/Geo,
+// registered as app-target bundle resources) and the bundle copy is
+// tried FIRST; the network download is only a fallback for a build
+// whose bundle lacks a file. The bundle copy is deliberately NOT
+// gated by the 10-minute cool-down: a stale cool-down written by a
+// v0.2.34 download failure must not block files that are already on
+// the device. Only the network download is cool-down-gated.
+//
 // What the core needs (upstream crates/config/src/keys.rs
 // geox_defaults, crates/rules/src/geo/mod.rs GeoStore):
 //   geoip.metadb  <- https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
@@ -20,6 +30,9 @@ import Foundation
 // core.init; upstream crates/engine/src/engine.rs sets the GeoStore
 // dir to home.root()). GeoStore::path matches the names above
 // case-insensitively, so these exact default names are what to write.
+// The BUNDLE names differ for two files (upstream release file
+// names): geosite.dat -> GeoSite.dat, GeoLite2-ASN.mmdb -> ASN.mmdb.
+// geoip.metadb is spelled the same in both places.
 //
 // When the download happens (upstream crates/engine/src/apply.rs
 // compile_program): ONLY when a rule needs a file that is missing
@@ -46,14 +59,21 @@ import Foundation
 //
 // This file is Foundation-only and is compiled into BOTH targets
 // (ConcordiOS app + PacketTunnel extension); it references no
-// app-only type, so the same file can be registered in both.
+// app-only type, so the same file can be registered in both. In the
+// extension process Bundle.main is the extension bundle, which has
+// no geo files — the bundle lookup returns nil there and the
+// download fallback runs, exactly as before. The app is what seeds
+// the shared container from its bundle.
 
 enum GeoSeed {
 
-    /// One geo database: the file name the core looks for on disk
-    /// and the URL the core itself would download it from.
+    /// One geo database: the file name the core looks for on disk,
+    /// the file name it ships under in the app bundle (v0.2.35 —
+    /// two of the three differ from the core names), and the URL
+    /// the core itself would download it from.
     struct Spec {
         let fileName: String
+        let bundleFileName: String
         let url: URL
     }
 
@@ -62,9 +82,9 @@ enum GeoSeed {
     /// (also fatal when a GEOSITE rule needs it), then ASN
     /// (deferred, never fatal — seeded for completeness).
     static let files: [Spec] = [
-        Spec(fileName: "geoip.metadb", url: URL(string: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb")!),
-        Spec(fileName: "GeoSite.dat", url: URL(string: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat")!),
-        Spec(fileName: "ASN.mmdb", url: URL(string: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb")!),
+        Spec(fileName: "geoip.metadb", bundleFileName: "geoip.metadb", url: URL(string: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb")!),
+        Spec(fileName: "GeoSite.dat", bundleFileName: "geosite.dat", url: URL(string: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat")!),
+        Spec(fileName: "ASN.mmdb", bundleFileName: "GeoLite2-ASN.mmdb", url: URL(string: "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb")!),
     ]
 
     /// The file config.apply cannot live without (GEOIP,CN,DIRECT).
@@ -103,41 +123,135 @@ enum GeoSeed {
         FileManager.default.fileExists(atPath: home.appendingPathComponent(fileName).path)
     }
 
-    /// Downloads every missing geo file into `home` (the core home
-    /// dir). Files already on disk are left alone — including stale
+    /// Seeds every missing geo file into `home` (the core home
+    /// dir), bundle FIRST, network download only as a fallback.
+    /// Files already on disk are left alone — including stale
     /// ones; GeoIP staleness is harmless for routing and the delay
     /// test, and the core's own auto-update (when the profile
     /// enables it) refreshes them later. Best-effort by design: the
     /// caller decides what a missing file means (AppCore throws a
     /// geoSeedFailed with the real reason; the extension proceeds
     /// and lets config.apply report the core's own error).
-    static func ensureGeoFiles(in home: URL, perFileTimeout: TimeInterval = 30) async -> Report {
+    /// `ignoreCooldown` bypasses the cool-down gate on the network
+    /// fallback — used only by the Proxies banner's retry tap, i.e.
+    /// the user explicitly asking to try again now.
+    static func ensureGeoFiles(in home: URL, perFileTimeout: TimeInterval = 30, ignoreCooldown: Bool = false) async -> Report {
         var report = Report()
-        let missing = files.filter { !isPresent($0.fileName, in: home) }
+        var missing = files.filter { !isPresent($0.fileName, in: home) }
         for spec in files where isPresent(spec.fileName, in: home) {
             report.alreadyPresent.append(spec.fileName)
         }
         guard !missing.isEmpty else { return report }
-        if let retryAfter = cooldownRetryAfter(in: home), retryAfter > Date() {
+        // Bundle first (v0.2.35): the IPA ships the three files, so
+        // a network that blocks github / rejects the campus CA no
+        // longer matters. NOT cool-down-gated: a stale cool-down
+        // from an earlier download failure must not block files
+        // that are already on the device.
+        var stillMissing: [Spec] = []
+        for spec in missing {
+            do {
+                if try copyFromBundle(spec, to: home) {
+                    report.seeded.append(spec.fileName)
+                } else {
+                    // No such file in this bundle (e.g. the
+                    // extension process, whose bundle has no geo
+                    // files) — fall through to the download below.
+                    stillMissing.append(spec)
+                }
+            } catch {
+                // The bundle HAS the file but it is unreadable or
+                // fails validation: that is a packaging problem, so
+                // it is reported honestly and NOT masked by a
+                // download — the download is only a fallback for a
+                // bundle copy that is missing.
+                report.failures.append(Failure(file: spec.fileName, error: error))
+            }
+        }
+        missing = stillMissing
+        guard !missing.isEmpty else { return report }
+        // Network fallback, cool-down-gated as before: without it,
+        // every VPN start / delay-test tap on a network where the
+        // download cannot succeed would burn a full set of timeouts
+        // first. The banner retry passes ignoreCooldown.
+        if !ignoreCooldown, let retryAfter = cooldownRetryAfter(in: home), retryAfter > Date() {
             report.skippedByCooldown = missing.map(\.fileName)
             return report
         }
-        var anyFailure = false
+        var anyDownloadFailure = false
         for spec in missing {
             do {
                 try await download(spec, to: home, timeout: perFileTimeout)
                 report.seeded.append(spec.fileName)
             } catch {
-                anyFailure = true
+                anyDownloadFailure = true
                 report.failures.append(Failure(file: spec.fileName, error: error))
             }
         }
-        if anyFailure {
+        if anyDownloadFailure {
             writeCooldown(in: home)
         } else {
             try? FileManager.default.removeItem(at: home.appendingPathComponent(cooldownFileName))
         }
         return report
+    }
+
+    /// Deletes the cool-down marker in `home`, so the next
+    /// ensureGeoFiles call retries the network download at once.
+    /// Used by the Proxies banner's retry tap (ProxyStore).
+    static func clearCooldown(in home: URL) {
+        try? FileManager.default.removeItem(at: home.appendingPathComponent(cooldownFileName))
+    }
+
+    // MARK: - Bundle copy
+
+    /// Copies one geo file from the app bundle into `home`.
+    /// Returns false when this bundle has no such file (the
+    /// extension bundle, or an older build) — the caller then falls
+    /// back to the network download. Throws when the bundle HAS the
+    /// file but it cannot be read or fails the same validation as
+    /// the download path (non-empty, sane size); the caller reports
+    /// that honestly instead of downloading over it.
+    private static func copyFromBundle(_ spec: Spec, to home: URL) throws -> Bool {
+        // forResource takes the full file name (dots included) when
+        // withExtension is nil.
+        guard let url = Bundle.main.url(forResource: spec.bundleFileName, withExtension: nil) else {
+            return false
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw SeedError.bundleInvalid(spec.bundleFileName)
+        }
+        guard data.count >= minimumBytes else {
+            throw SeedError.bundleInvalid(spec.bundleFileName)
+        }
+        try install(data, fileName: spec.fileName, in: home)
+        return true
+    }
+
+    /// Atomic install shared by the bundle copy and the download:
+    /// a partial file must never look like a present file (the core
+    /// mmaps the file read-only on load, so it must be complete
+    /// before it appears at its real name).
+    private static func install(_ data: Data, fileName: String, in home: URL) throws {
+        let temp = home
+            .appendingPathComponent(".geo-seed-\(fileName).tmp-\(UUID().uuidString)")
+        let dest = home.appendingPathComponent(fileName)
+        do {
+            try data.write(to: temp, options: .atomic)
+            do {
+                try FileManager.default.moveItem(at: temp, to: dest)
+            } catch {
+                // Another seeder (app + extension racing the same
+                // App Group home) got there first: its file wins.
+                try? FileManager.default.removeItem(at: temp)
+                if !isPresent(fileName, in: home) { throw error }
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: temp)
+            throw error
+        }
     }
 
     // MARK: - Download
@@ -146,6 +260,10 @@ enum GeoSeed {
         case badStatus(Int)
         case htmlResponse
         case tooSmall(Int)
+        /// The app bundle HAS the file but it cannot be read or is
+        /// smaller than the sanity floor — a packaging problem, not
+        /// a network one, so it is reported as such.
+        case bundleInvalid(String)
 
         var errorDescription: String? {
             switch self {
@@ -155,6 +273,8 @@ enum GeoSeed {
                 return "服务器返回了网页而不是数据库文件"
             case .tooSmall(let bytes):
                 return "下载的文件只有 \(bytes) 字节，不完整"
+            case .bundleInvalid(let file):
+                return "应用自带的数据库文件 \(file) 不完整或已损坏"
             }
         }
     }
@@ -181,26 +301,7 @@ enum GeoSeed {
         guard data.count >= minimumBytes else {
             throw SeedError.tooSmall(data.count)
         }
-        // Atomic write: a partial download must never look like a
-        // present file (the core mmaps the file read-only on load, so
-        // it must be complete before it appears at its real name).
-        let temp = home
-            .appendingPathComponent(".geo-seed-\(spec.fileName).tmp-\(UUID().uuidString)")
-        let dest = home.appendingPathComponent(spec.fileName)
-        do {
-            try data.write(to: temp, options: .atomic)
-            do {
-                try FileManager.default.moveItem(at: temp, to: dest)
-            } catch {
-                // Another seeder (app + extension racing the same
-                // App Group home) got there first: its file wins.
-                try? FileManager.default.removeItem(at: temp)
-                if !isPresent(spec.fileName, in: home) { throw error }
-            }
-        } catch {
-            try? FileManager.default.removeItem(at: temp)
-            throw error
-        }
+        try install(data, fileName: spec.fileName, in: home)
     }
 
     // MARK: - Cool-down marker

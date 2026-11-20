@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - AppCore: the Concord core in the APP process, delay tests only
+// MARK: - AppCore: the Concord core in the APP process, delay tests + MITM CA generation
 //
 // FlClash runs its core in the app process, which is why its delay
 // test works with the VPN off. Ours ran the core only in the
@@ -18,8 +18,11 @@ import Foundation
 //     is running, and TunnelManager.start() stops this core first.
 //   * Its own home directory (Library/Application Support/
 //     ConcordAppCore, app-private — NOT the App Group container),
-//     so it shares no writable state with the extension instance.
-//     It only READS the shared config.yaml.
+//     so it shares no writable state with the extension instance
+//     except the MITM CA: a CA generated here is copied into the
+//     App Group container (and a tunnel-generated CA is healed
+//     back here), so both cores load the SAME CA — see the CA sync
+//     section below. It only READS the shared config.yaml.
 //   * Its listeners are overridden in the config.apply overlay to
 //     ports nothing else uses (mixed 17890, SOCKS 17891, HTTP
 //     17892, external-controller 127.0.0.1:19090, DNS listen
@@ -52,6 +55,10 @@ enum AppCoreError: LocalizedError {
     /// still missing, so config.apply would fail in the core's own
     /// MMDB download. Carries the real download reason (see GeoSeed).
     case geoSeedFailed(String)
+    /// The CA generated in-app could not be copied into the App
+    /// Group container (the tunnel core's home), so the tunnel may
+    /// generate a different CA at the next VPN start.
+    case caSyncFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -67,6 +74,8 @@ enum AppCoreError: LocalizedError {
             return "核心调用失败：\(message)"
         case .geoSeedFailed(let message):
             return "GeoIP 数据库下载失败：\(message)（测速需要 geoip.metadb，核心自带的下载在当前网络下同样失败；请检查网络后重试）"
+        case .caSyncFailed(let message):
+            return "CA 同步到隧道失败：\(message)"
         }
     }
 }
@@ -105,6 +114,59 @@ final class AppCore {
 
     /// True while the app-side core session is open.
     var isRunning: Bool { session != 0 }
+
+    /// The file name the last boot report is persisted under, in
+    /// this core's app-private home dir.
+    private static let bootReportFileName = "last-boot-report.txt"
+
+    /// The last app-core boot attempt, as timestamped plain-text
+    /// lines (GeoSeed outcome per file + boot result), read back
+    /// from the file ensureStarted writes. Persisted so it survives
+    /// an app restart: the Logs page export includes it, so a GeoIP
+    /// download failure (v0.2.33/34) is visible in the file the user
+    /// sends instead of living only in a transient banner.
+    static func lastBootReportText() -> String? {
+        guard let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let url = base.appendingPathComponent("ConcordAppCore", isDirectory: true)
+            .appendingPathComponent(bootReportFileName)
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// Records one boot attempt (GeoSeed outcome + result) to
+    /// `last-boot-report.txt` in this core's home dir, for the Logs
+    /// export. Called on success, on a GeoSeed failure, and on any
+    /// other boot failure — so the file always describes the latest
+    /// attempt, never a stale one.
+    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String) {
+        let stamp = Self.bootReportTimestamp(Date())
+        var lines = ["[\(stamp)] 应用内核心启动"]
+        for spec in GeoSeed.files {
+            if seed.seeded.contains(spec.fileName) {
+                lines.append("GeoSeed \(spec.fileName)：已下载")
+            } else if seed.alreadyPresent.contains(spec.fileName) {
+                lines.append("GeoSeed \(spec.fileName)：已存在")
+            } else if let failure = seed.failures.first(where: { $0.file == spec.fileName }) {
+                lines.append("GeoSeed \(spec.fileName)：下载失败：\(failure.error.localizedDescription)")
+            } else if seed.skippedByCooldown.contains(spec.fileName) {
+                lines.append("GeoSeed \(spec.fileName)：上次失败不久，跳过（\(Int(GeoSeed.cooldownSeconds / 60)) 分钟内不再重试）")
+            } else {
+                lines.append("GeoSeed \(spec.fileName)：未尝试")
+            }
+        }
+        lines.append("启动结果：\(outcome)")
+        try? lines.joined(separator: "\n").write(
+            to: home.appendingPathComponent(Self.bootReportFileName),
+            atomically: true, encoding: .utf8)
+    }
+
+    private static func bootReportTimestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: date)
+    }
 
     private init() {}
 
@@ -168,6 +230,16 @@ final class AppCore {
             await stop()
         }
         let home = try homeDirectory()
+        let groupHome = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)
+        // Heal a one-sided CA before the core boots and reads its CA
+        // from disk: if the tunnel generated a CA, this core loads
+        // that one instead of creating a divergent one on first MITM
+        // use; if this core generated one earlier and the tunnel
+        // never got it, the next VPN start finds it. Never overwrites
+        // an existing CA on either side, and never fails the boot
+        // (best-effort).
+        Self.healCAFiles(appHome: home, groupHome: groupHome)
         // Pre-seed the geo databases (GeoSeed) BEFORE the core boots:
         // config.apply compiles the profile's GEOIP,CN,DIRECT rule,
         // and a missing geoip.metadb makes the core download it over
@@ -182,8 +254,6 @@ final class AppCore {
         // core's own error if files are still missing. The two homes
         // seed concurrently so a slow network does not pay both
         // timeouts in series.
-        let groupHome = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)
         let groupSeedTask = groupHome.map { dir in
             Task { await GeoSeed.ensureGeoFiles(in: dir, perFileTimeout: 30) }
         }
@@ -202,7 +272,9 @@ final class AppCore {
             } else {
                 reason = "文件缺失且未能下载"
             }
-            throw AppCoreError.geoSeedFailed(reason)
+            let failure = AppCoreError.geoSeedFailed(reason)
+            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(failure.localizedDescription)")
+            throw failure
         }
         let context = Unmanaged.passRetained(self).toOpaque()
         do {
@@ -266,8 +338,10 @@ final class AppCore {
                 "overlay": overlay,
             ], resultType: EmptyResult.self, timeoutSeconds: 60)
             _ = try await sendRequest(method: "engine.start", params: [:], resultType: EmptyResult.self, timeoutSeconds: 60)
+            recordBootReport(home: home, seed: appSeed, outcome: "成功")
             loadedConfigSignature = signature
         } catch {
+            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)")
             // Balance the passRetained above exactly once: if the
             // session was opened, tearDown() closes it and the
             // releaseCallback balances the retain (sync or async);
@@ -363,6 +437,159 @@ final class AppCore {
                 continuation.resume(returning: DelayRunSnapshot(runId: run.sub, done: run.done, results: results))
             }
         }
+    }
+
+    // MARK: MITM CA (v0.2.35 Item C)
+
+    /// Generates the MITM CA via the in-app core
+    /// (mitm.generateCertificate). The core must already be started
+    /// (ensureStarted); used by MitmCertificateView when the VPN is
+    /// off, so CA generation no longer needs the tunnel. Returns
+    /// the certificate info the core reports — a nil certificate
+    /// means the core answered without one, and the caller must not
+    /// report success in that case.
+    func mitmGenerateCertificate() async throws -> ConcordMitmCertificate {
+        try await sendRequest(method: "mitm.generateCertificate", params: [:], resultType: ConcordMitmCertificate.self, timeoutSeconds: 60)
+    }
+
+    // MARK: - MITM CA sync (v0.2.35 Item C follow-up)
+    //
+    // The CA lives as files in the core home (<home>/mitm/ca.crt +
+    // ca.key; upstream crates/mitm/src/ca.rs: AUTHORITY_DIR "mitm",
+    // CERT_FILE_NAME "ca.crt", KEY_FILE_NAME "ca.key", key written
+    // 0600). The in-app core's home (Library/Application
+    // Support/ConcordAppCore) and the extension core's home (the App
+    // Group container root) are DIFFERENT homes, so a CA generated
+    // VPN-off by this core is invisible to the tunnel core: at the
+    // next VPN start the tunnel core would find no CA and generate a
+    // DIFFERENT one, which would not match the CA the user installed
+    // and trusted in Settings — MITM would silently break. So after
+    // a VPN-off generation the CA files are copied into the App Group
+    // container (syncGeneratedCAToTunnel, called by
+    // MitmCertificateView), and ensureStarted heals a one-sided CA
+    // the same way. The rule in both directions: fill only MISSING
+    // files, NEVER overwrite an existing CA on either side — if both
+    // sides already have a CA (even if they differ) both are left
+    // alone; there is no safe way to guess which one the user
+    // installed and trusted, so the caller must say so honestly
+    // instead of claiming the tunnel will use the new CA.
+
+    /// The CA file names inside <home>/mitm (see the section
+    /// comment). Copied key first, then cert — upstream
+    /// generate_ca writes in that order too, so a present cert
+    /// implies a present key.
+    private static let caDirectoryName = "mitm"
+    private static let caCertFileName = "ca.crt"
+    private static let caKeyFileName = "ca.key"
+    private static let caFileNames = [caKeyFileName, caCertFileName]
+
+    /// What syncing a freshly generated CA into the tunnel home did.
+    /// `.synced` is the only outcome where the tunnel will use this
+    /// CA; the other two mean the tunnel keeps (or may generate) a
+    /// different CA, and the caller must say so in the status
+    /// message instead of claiming full success.
+    enum GeneratedCASync {
+        /// The tunnel home now holds a complete copy of this CA
+        /// (the listed files were copied).
+        case synced([String])
+        /// The tunnel home already held both CA files, so nothing
+        /// was copied and the tunnel keeps its own CA.
+        case tunnelAlreadyHadCA
+        /// This core's home holds no CA files to copy.
+        case nothingToSync
+    }
+
+    /// Copies this core's freshly generated CA into the App Group
+    /// container (the tunnel core's home), so the next VPN start
+    /// loads the SAME CA the user is about to install and trust
+    /// instead of generating a different one. Throws when the App
+    /// Group container is unavailable or the copy fails / leaves
+    /// the tunnel CA incomplete — the caller must report that
+    /// honestly and must NOT claim full success.
+    func syncGeneratedCAToTunnel() throws -> GeneratedCASync {
+        let appHome = try homeDirectory()
+        guard let groupHome = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID) else {
+            throw AppCoreError.caSyncFailed("App Group 容器不可用")
+        }
+        let copied = try Self.fillMissingCAFiles(from: appHome, to: groupHome)
+        if copied.isEmpty {
+            return Self.caFilesPresent(in: groupHome) ? .tunnelAlreadyHadCA : .nothingToSync
+        }
+        guard Self.caFilesPresent(in: groupHome) else {
+            throw AppCoreError.caSyncFailed("隧道里的 CA 文件仍不完整")
+        }
+        return .synced(copied)
+    }
+
+    /// Best-effort, never throws: fills a missing CA on either side
+    /// from the other side, so a CA generated by one core is visible
+    /// to the other. Called at the top of ensureStarted, before the
+    /// core boots and reads its CA from disk. Never overwrites an
+    /// existing CA on either side (see the section comment); a
+    /// failure here must never fail the boot — the next VPN start /
+    /// generation retries it, and the tunnel reports the core's own
+    /// error if its CA is still missing.
+    static func healCAFiles(appHome: URL, groupHome: URL?) {
+        guard let groupHome else { return }
+        try? fillMissingCAFiles(from: appHome, to: groupHome)
+        try? fillMissingCAFiles(from: groupHome, to: appHome)
+    }
+
+    /// True when both CA files exist in `home`.
+    private static func caFilesPresent(in home: URL) -> Bool {
+        caFileNames.allSatisfy { name in
+            FileManager.default.fileExists(atPath: home
+                .appendingPathComponent(caDirectoryName, isDirectory: true)
+                .appendingPathComponent(name).path)
+        }
+    }
+
+    /// Copies each CA file present in `sourceHome` but missing in
+    /// `destHome`. Per file, never overwriting: an existing file in
+    /// the destination — even a different CA — is left alone.
+    /// Returns the names copied.
+    @discardableResult
+    private static func fillMissingCAFiles(from sourceHome: URL, to destHome: URL) throws -> [String] {
+        var copied: [String] = []
+        for name in caFileNames {
+            let source = sourceHome
+                .appendingPathComponent(caDirectoryName, isDirectory: true)
+                .appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: source.path) else { continue }
+            let destDir = destHome.appendingPathComponent(caDirectoryName, isDirectory: true)
+            let dest = destDir.appendingPathComponent(name)
+            guard !FileManager.default.fileExists(atPath: dest.path) else { continue }
+            try FileManager.default.createDirectory(at: destDir, withIntermediateDirectories: true)
+            // Atomic copy, mirroring GeoSeed.install: a partial file
+            // must never look like a present file (the core reads the
+            // CA on load).
+            let temp = destDir.appendingPathComponent(".\(name).tmp-\(UUID().uuidString)")
+            do {
+                try Data(contentsOf: source).write(to: temp, options: .atomic)
+                do {
+                    try FileManager.default.moveItem(at: temp, to: dest)
+                } catch {
+                    // Another writer (app + extension racing the same
+                    // App Group home) got there first: its file wins.
+                    try? FileManager.default.removeItem(at: temp)
+                    guard FileManager.default.fileExists(atPath: dest.path) else { throw error }
+                    continue
+                }
+            } catch {
+                try? FileManager.default.removeItem(at: temp)
+                throw error
+            }
+            // The core keeps the key owner-only (0600); a copy via
+            // Data would otherwise land 0644. Best-effort: a wrong
+            // mode must not fail the sync.
+            if name == caKeyFileName {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600], ofItemAtPath: dest.path)
+            }
+            copied.append(name)
+        }
+        return copied
     }
 
     // MARK: JSON-RPC plumbing (mirrors PacketTunnelProvider)

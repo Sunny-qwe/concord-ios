@@ -11,6 +11,10 @@ struct LogsView: View {
     @EnvironmentObject private var eventStore: EventStore
     @EnvironmentObject private var client: ConcordClient
     @State private var showShare = false
+    @State private var exportURL: URL?
+    @State private var exportError: String?
+    @State private var showExportError = false
+    @State private var showCopiedAlert = false
     @State private var tab = LogsTab.logs
 
     var body: some View {
@@ -156,7 +160,17 @@ struct LogsView: View {
                             .labelsHidden()
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button { showShare = true } label: {
+                        // Export (v0.2.35): the share icon now offers
+                        // the full bundled export — one .txt file
+                        // (app log + core warnings + app-core boot /
+                        // GeoSeed diagnostic + VPN startup diagnostic)
+                        // via the system share sheet — or a copy of
+                        // the same text to the clipboard, so the user
+                        // can paste it straight into a message.
+                        Menu {
+                            Button("导出日志文件") { exportAndShare() }
+                            Button("复制日志文本") { copyLogs() }
+                        } label: {
                             Image(systemName: "square.and.arrow.up")
                         }
                     }
@@ -177,7 +191,19 @@ struct LogsView: View {
                 }
             }
             .sheet(isPresented: $showShare) {
-                ShareSheet(text: logStore.exportText)
+                if let exportURL {
+                    ShareSheet(items: [exportURL])
+                }
+            }
+            .alert("已复制", isPresented: $showCopiedAlert) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text("日志已复制到剪贴板，可以直接粘贴发送。")
+            }
+            .alert("导出失败", isPresented: $showExportError) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(exportError ?? "未知错误")
             }
             .refreshable {
                 if tab == .logs { await logStore.refresh() } else { await eventStore.refresh() }
@@ -188,6 +214,26 @@ struct LogsView: View {
                     Task { await eventStore.refresh() }
                 }
             }
+    }
+
+    /// Writes the bundled log export to a .txt file and opens the
+    /// system share sheet for it. Sharing is user-initiated only;
+    /// nothing is uploaded anywhere by the app itself.
+    private func exportAndShare() {
+        do {
+            exportURL = try logStore.exportLogFile()
+            showShare = true
+        } catch {
+            exportError = error.localizedDescription
+            showExportError = true
+        }
+    }
+
+    /// Copies the same bundled export text to the clipboard, so the
+    /// user can paste it straight into a chat message.
+    private func copyLogs() {
+        UIPasteboard.general.string = logStore.fullExportText
+        showCopiedAlert = true
     }
 
     private func levelColor(_ level: String) -> Color {
@@ -218,10 +264,10 @@ enum LogsTab: String, CaseIterable {
 
 // Minimal share sheet (UIActivityViewController wrapper).
 struct ShareSheet: UIViewControllerRepresentable {
-    let text: String
+    let items: [Any]
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [text], applicationActivities: nil)
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}

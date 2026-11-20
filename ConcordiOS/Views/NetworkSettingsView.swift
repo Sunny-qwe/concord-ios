@@ -9,8 +9,24 @@ import SwiftUI
 
 struct NetworkSettingsView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
+    @ObservedObject private var overrideStore = OverrideStore.shared
     @State private var newExclude = ""
     @State private var excludeError: String?
+    @State private var newRouteAddress = ""
+    @State private var routeAddressError: String?
+
+    /// The global TUN override's route-address list (FlClash
+    /// network.dart:254-271 RouteAddressItem; tun.route-address).
+    /// It is the same key the TUN 覆盖 page edits — this page
+    /// surfaces it directly, as FlClash's Network page does.
+    private var routeAddresses: [String] {
+        guard case .array(let items) = overrideStore.state(scope: nil, section: .tun)["route-address"] else { return [] }
+        return items.compactMap { if case .string(let s) = $0 { return s } else { return nil } }
+    }
+
+    private func setRouteAddresses(_ addresses: [String]) {
+        overrideStore.setValue(scope: nil, section: .tun, key: "route-address", value: .array(addresses.map(JSONValue.string)))
+    }
 
     var body: some View {
         List {
@@ -60,6 +76,34 @@ struct NetworkSettingsView: View {
                 Text("开启后 10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、169.254.0.0/16 不走隧道。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                Text("路由地址")
+                    .font(.system(size: 13, weight: .semibold))
+                Text("走隧道的地址段（tun.route-address），与「TUN 覆盖」里的路由地址是同一项。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                ForEach(routeAddresses, id: \.self) { cidr in
+                    Text(cidr)
+                        .font(.system(.body, design: .monospaced))
+                }
+                .onDelete { offsets in
+                    var addresses = routeAddresses
+                    addresses.remove(atOffsets: offsets)
+                    setRouteAddresses(addresses)
+                }
+                HStack {
+                    TextField("路由地址，如 0.0.0.0/0", text: $newRouteAddress)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                    Button("添加") {
+                        addRouteAddress()
+                    }
+                    .disabled(newRouteAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if let routeAddressError {
+                    Text(routeAddressError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
                 ForEach(settingsStore.routeExcludeAddress, id: \.self) { cidr in
                     Text(cidr)
                         .font(.system(.body, design: .monospaced))
@@ -94,6 +138,21 @@ struct NetworkSettingsView: View {
         }
         .navigationTitle("网络")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func addRouteAddress() {
+        let cidr = newRouteAddress.trimmingCharacters(in: .whitespaces)
+        guard Self.isValidCIDR(cidr) else {
+            routeAddressError = "格式不对，应为 a.b.c.d/n 或 IPv6 地址/n"
+            return
+        }
+        guard !routeAddresses.contains(cidr) else {
+            routeAddressError = "这条已存在"
+            return
+        }
+        routeAddressError = nil
+        setRouteAddresses(routeAddresses + [cidr])
+        newRouteAddress = ""
     }
 
     private func addExclude() {

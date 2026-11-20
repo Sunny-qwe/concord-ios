@@ -4,9 +4,12 @@ import NetworkExtension
 
 // MARK: - TunnelManager: the app side of the extension IPC
 //
-// The app NEVER loads the Concord core (it runs in the PacketTunnel
-// extension process; see PacketTunnel/PacketTunnelProvider.swift).
-// This manager is the app's only handle on the tunnel:
+// The Concord core runs in the PacketTunnel extension process (see
+// PacketTunnel/PacketTunnelProvider.swift); this manager is the app's
+// handle on the system VPN (NETunnelProviderManager) that boots it.
+// The app ALSO loads the core in-process, but only for delay tests
+// with the VPN off (Models/AppCore.swift) — never while the tunnel
+// runs, and never for the data plane.
 //
 //   * start/stop the system VPN (NETunnelProviderManager), which in
 //     turn boots / tears down the core inside the extension;
@@ -45,6 +48,35 @@ final class TunnelManager: ObservableObject {
     /// Set by stop() so the observer can tell a user-initiated stop
     /// from a system/core failure. Cleared by start().
     private var userInitiatedStop = false
+    /// True while this start attempt ever reached .connected.
+    /// A connecting -> disconnected transition with this false is a
+    /// FAILED START (the extension's startTunnel never completed),
+    /// not a drop: On-Demand must not restart it (v0.2.32).
+    private var reachedConnectedThisStart = false
+    /// The startupID passed to startVPNTunnel(options:) for this
+    /// run; the extension adopts it in vpn-startup.json so the
+    /// diagnostic read can be correlated by ID (FlClash
+    /// TunnelStartupDiagnostic), not just by 180 s freshness.
+    private var currentStartupID: String?
+    // MARK: Crash-loop detection (v0.2.32)
+    //
+    // The extension can die seconds after a successful start
+    // (Jetsam memory kill / core panic) without writing any
+    // diagnostic — vpn-startup.json keeps the stale "running"
+    // stage, so the app cannot tell a crash from a healthy tunnel
+    // except by watching the status. A drop within 20 s of a
+    // successful start counts as a rapid drop; 3 rapid drops in
+    // 5 minutes means the tunnel is crash-looping: suspend the
+    // On-Demand rules (stop the restart loop) and surface a clear
+    // error instead of restarting forever. A drop after 60 s of
+    // healthy uptime resets the count; an explicit stop clears it.
+    private var connectedAt: Date?
+    private var rapidDropCount = 0
+    private var rapidDropWindowStart: Date?
+    /// Set when the crash loop trips; the Dashboard shows a
+    /// "VPN 反复掉线，已暂停自动重连" banner. Cleared on the next
+    /// manual start.
+    @Published private(set) var crashLoopActive = false
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
@@ -67,16 +99,60 @@ final class TunnelManager: ObservableObject {
             let old = self.status
             let new = connection.status
             self.status = new
+            if new == .connected {
+                self.unexpectedDisconnect = false
+                self.reachedConnectedThisStart = true
+                self.connectedAt = Date()
+                return
+            }
             if new == .disconnected,
                old == .connected || old == .connecting || old == .reasserting,
                !self.userInitiatedStop {
                 self.unexpectedDisconnect = true
-            }
-            if new == .connected {
-                self.unexpectedDisconnect = false
+                if old == .connecting, !self.reachedConnectedThisStart {
+                    // FAILED START (never reached .connected): the
+                    // extension's startTunnel failed. Do NOT let
+                    // On-Demand restart it — suspend the rules and
+                    // surface the diagnostic instead of looping.
+                    self.lastError = self.lastStartupDiagnostic()
+                        ?? "VPN 启动失败（扩展未完成启动）"
+                    Task { await OnDemandStore.shared.suspendRules() }
+                } else if old == .connected {
+                    // A drop from a running tunnel: count rapid
+                    // drops for the crash loop (see above).
+                    self.noteRapidDropIfNeeded()
+                }
             }
         }
         Task { try? await self.prepare() }
+    }
+
+    /// Crash-loop bookkeeping, called on a connected -> disconnected
+    /// drop. A drop within 20 s of a successful start is a rapid
+    /// drop; a drop after 60 s of healthy uptime resets the count.
+    /// At 3 rapid drops inside a 5-minute window the tunnel is
+    /// crash-looping: suspend On-Demand (stop the restart loop) and
+    /// flag it for the Dashboard banner.
+    private func noteRapidDropIfNeeded() {
+        let now = Date()
+        if let connectedAt, now.timeIntervalSince(connectedAt) > 60 {
+            rapidDropCount = 0
+            rapidDropWindowStart = nil
+            return
+        }
+        if let windowStart = rapidDropWindowStart,
+           now.timeIntervalSince(windowStart) > 300 {
+            rapidDropCount = 0
+            rapidDropWindowStart = now
+        } else if rapidDropWindowStart == nil {
+            rapidDropWindowStart = now
+        }
+        rapidDropCount += 1
+        if rapidDropCount >= 3, !crashLoopActive {
+            crashLoopActive = true
+            lastError = "VPN 反复掉线（3 次快速掉线），已暂停自动重连：请检查配置后手动重新启动；若持续出现，可能是扩展被系统结束或核心崩溃"
+            Task { await OnDemandStore.shared.suspendRules() }
+        }
     }
 
     deinit {
@@ -145,13 +221,18 @@ final class TunnelManager: ObservableObject {
     ///    throw .configurationDisabled with nothing shown in the UI;
     ///  * on a .configurationInvalid/.configurationStale error, drop
     ///    the cached manager, reload it fresh and retry once.
-    /// Before starting, the On-Demand rules are (re)installed from
-    /// the store (v0.2.26 Batch F): On-Demand is on by default, so
-    /// the system auto-reconnects after a network loss or handover,
-    /// and a watchdog-triggered restart in the extension only
-    /// recovers when these rules exist. A rules-install failure does
-    /// not block the start — On-Demand is a backstop, not a
-    /// precondition. The install is a no-op when nothing changed.
+    /// On-Demand (v0.2.32, FlClash iOS parity): the rules are
+    /// installed ONLY after startVPNTunnel succeeds — never before,
+    /// so a failed start cannot arm an auto-restart loop — and
+    /// only when the user opted in (the store defaults OFF; FlClash
+    /// iOS never installs the rules at all). A synchronous throw
+    /// suspends any installed rules. After the start call, the
+    /// tunnel is confirmed: up to 30 s for .connected; a
+    /// .disconnected arrival throws the diagnostic error, and a
+    /// timeout while still .connecting returns success (the
+    /// observer surfaces any later failure). The in-app core
+    /// (AppCore, delay tests with the VPN off) is stopped first —
+    /// two cores must never run at once.
     @MainActor
     func start() async throws {
         try await prepare()
@@ -160,6 +241,11 @@ final class TunnelManager: ObservableObject {
         }
         userInitiatedStop = false
         unexpectedDisconnect = false
+        crashLoopActive = false
+        reachedConnectedThisStart = false
+        // The app-side core (delay tests) must be down before the
+        // system VPN starts; two cores must never run at once.
+        await AppCore.shared.stop()
         if manager.connection.status == .disconnecting {
             try await waitForStableStatus(manager: manager)
         }
@@ -167,10 +253,16 @@ final class TunnelManager: ObservableObject {
             return
         }
         try await armManagerForStart(manager)
-        _ = await OnDemandStore.shared.installRulesIfNeeded()
+        // A fresh startupID per run, passed to the extension so the
+        // diagnostic record can be correlated by ID (FlClash).
+        let startupID = UUID().uuidString
+        currentStartupID = startupID
         do {
-            try manager.connection.startVPNTunnel()
+            try manager.connection.startVPNTunnel(options: ["startupID": startupID as NSString])
         } catch {
+            // A synchronous throw is a failed start: suspend any
+            // installed rules so the system does not restart it.
+            await OnDemandStore.shared.suspendRules()
             guard isRetryablePreferenceError(error) else {
                 lastError = error.localizedDescription
                 throw error
@@ -185,11 +277,43 @@ final class TunnelManager: ObservableObject {
             }
             try await armManagerForStart(retryManager)
             do {
-                try retryManager.connection.startVPNTunnel()
+                try retryManager.connection.startVPNTunnel(options: ["startupID": startupID as NSString])
             } catch {
+                await OnDemandStore.shared.suspendRules()
                 lastError = error.localizedDescription
                 throw error
             }
+        }
+        // The start call only means the system accepted the start;
+        // confirm the tunnel actually came up (FlClash
+        // waitForTunnelStatus, simplified: 30 s, no generation
+        // machinery). On-Demand rules are installed only now — a
+        // failed start never arms them.
+        try await confirmTunnelUp()
+        _ = await OnDemandStore.shared.installRulesIfNeeded()
+    }
+
+    /// Waits up to 30 s for the tunnel to reach .connected after
+    /// startVPNTunnel succeeded. Throws the startup diagnostic when
+    /// the tunnel lands on .disconnected; returns normally on
+    /// .connected, or on timeout while still .connecting (the status
+    /// observer surfaces any later failure).
+    @MainActor
+    private func confirmTunnelUp() async throws {
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            switch status {
+            case .connected:
+                return
+            case .disconnected:
+                let message = lastStartupDiagnostic()
+                    ?? "VPN 启动失败（扩展未完成启动）"
+                lastError = message
+                throw TunnelError.startFailed(message)
+            default:
+                break
+            }
+            try await Task.sleep(nanoseconds: 200_000_000)
         }
     }
 
@@ -252,9 +376,12 @@ final class TunnelManager: ObservableObject {
     }
 
     /// The extension's startup stages (FlClash TunnelStartupDiagnostic):
-    /// vpn-startup.json in the App Group, fresh within 180 s.
-    /// Returns a one-line "stage: detail" string, or nil when there is
-    /// no recent startup record — used by the Dashboard's
+    /// vpn-startup.json in the App Group, fresh within 180 s AND
+    /// matching this run's startupID (the extension adopts the ID
+    /// passed in startVPNTunnel(options:); FlClash requires
+    /// record.id == id as well as freshness). Returns a one-line
+    /// "stage: detail" string, or nil when there is no recent
+    /// startup record for this run — used by the Dashboard's
     /// unexpected-disconnect banner so an extension-side failure
     /// shows its stage instead of a generic message.
     func lastStartupDiagnostic() -> String? {
@@ -262,7 +389,10 @@ final class TunnelManager: ObservableObject {
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
               let data = try? Data(contentsOf: container.appendingPathComponent("vpn-startup.json")),
               let record = try? JSONDecoder().decode(TunnelStartupDiagnosticRecord.self, from: data),
-              Date().timeIntervalSince(record.date) < 180 else { return nil }
+              Date().timeIntervalSince(record.date) < 180,
+              // Correlate by ID when this run has one; a record from
+              // an older run (different ID) is not this run's error.
+              currentStartupID == nil || record.id == currentStartupID else { return nil }
         if let detail = record.detail, !detail.isEmpty {
             return "VPN \(record.stage)：\(detail)"
         }
@@ -270,13 +400,29 @@ final class TunnelManager: ObservableObject {
     }
 
     /// Stop the system VPN. The extension's stopTunnel tears down the
-    /// core (tun.stop -> engine.stop -> close session).
+    /// core (tun.stop -> engine.stop -> close session). An explicit
+    /// stop MUST win over On-Demand: the installed rules are
+    /// suspended first (v0.2.32 — the v0.2.31 "VPN 关不了" bug was
+    /// that stop() never cleared them, so iOS restarted the tunnel
+    /// immediately). Then wait briefly for a terminal status
+    /// (FlClash reconcileStoppedTunnel, simplified to 5 s).
     @MainActor
     func stop() async {
         try? await prepare()
         userInitiatedStop = true
         unexpectedDisconnect = false
+        crashLoopActive = false
+        rapidDropCount = 0
+        rapidDropWindowStart = nil
+        await OnDemandStore.shared.suspendRules()
         manager?.connection.stopVPNTunnel()
+        // Best-effort wait for a terminal status (5 s); the stop
+        // itself is already issued, so a timeout is not an error.
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if status == .disconnected { return }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
     }
 
     /// Install (or clear) the on-demand rules on the saved VPN
@@ -345,6 +491,7 @@ enum TunnelError: LocalizedError {
     case notRunning
     case noReply
     case transitionTimedOut
+    case startFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -356,6 +503,8 @@ enum TunnelError: LocalizedError {
             return "扩展未回复（隧道可能正在启动或已断开）"
         case .transitionTimedOut:
             return "VPN 状态切换超时，请稍后再试"
+        case .startFailed(let message):
+            return message
         }
     }
 }

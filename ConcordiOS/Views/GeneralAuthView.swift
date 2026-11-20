@@ -30,7 +30,21 @@ struct GeneralAuthView: View {
                     .foregroundStyle(.secondary)
             }
             Section("本地鉴权") {
-                Toggle("启用鉴权", isOn: $settingsStore.authEnabled)
+                // FlClash general.dart AuthenticationItem: enabling
+                // auth with empty fields auto-generates a random
+                // 8-char username + 16-char password.
+                Toggle("启用鉴权", isOn: Binding(
+                    get: { settingsStore.authEnabled },
+                    set: { newValue in
+                        settingsStore.authEnabled = newValue
+                        if newValue, settingsStore.authUsername.isEmpty {
+                            settingsStore.authUsername = Self.randomSecret(length: 8)
+                            settingsStore.authPassword = Self.randomSecret(length: 16)
+                            authMessage = "已自动生成鉴权账号密码，记得保存。"
+                        }
+                        settingsStore.save()
+                    }
+                ))
                 if settingsStore.authEnabled {
                     TextField("账号", text: $settingsStore.authUsername)
                         .textInputAutocapitalization(.never)
@@ -44,7 +58,25 @@ struct GeneralAuthView: View {
                 }
             }
             Section("外部控制器") {
-                Toggle("开启外部控制器", isOn: $settingsStore.externalControllerEnabled)
+                // FlClash PatchClashConfig.ensureControllerSecret
+                // (clash_config.dart:2418): opening the controller
+                // with an empty secret generates a random 32-char
+                // one; closing it clears the secret.
+                Toggle("开启外部控制器", isOn: Binding(
+                    get: { settingsStore.externalControllerEnabled },
+                    set: { newValue in
+                        settingsStore.externalControllerEnabled = newValue
+                        if newValue {
+                            if settingsStore.externalControllerSecret.isEmpty {
+                                settingsStore.externalControllerSecret = Self.randomSecret(length: 32)
+                                authMessage = "已自动生成控制器密钥。"
+                            }
+                        } else {
+                            settingsStore.externalControllerSecret = ""
+                        }
+                        settingsStore.save()
+                    }
+                ))
                 SecureField("控制器密钥", text: $settingsStore.externalControllerSecret)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -72,5 +104,11 @@ struct GeneralAuthView: View {
         }
         .navigationTitle("鉴权与控制器")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// FlClash common/string.dart generateRandomSecret: [a-zA-Z0-9].
+    static func randomSecret(length: Int) -> String {
+        let chars = Array("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        return String((0..<length).map { _ in chars[Int.random(in: 0..<chars.count)] })
     }
 }

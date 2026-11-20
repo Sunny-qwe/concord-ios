@@ -1,10 +1,11 @@
 import SwiftUI
 
 // MARK: - Config editor (Profiles -> 编辑配置)
-// A full-screen YAML editor for the ACTIVE profile — the mobile
-// equivalent of FlClash's desktop config editor. Loads the profile's
-// YAML from the App Group container, edits it as monospace text,
-// and saves it back.
+// A full-screen YAML editor for one profile — the active profile
+// by default, or any profile passed in as targetProfile (FlClash
+// edit.dart _editProfileFile). Loads the profile's YAML from the
+// App Group container, edits it as monospace text, and saves it
+// back.
 //
 // Save flow, in order:
 //   1. Local sanity check (non-empty UTF-8, looks like a Clash /
@@ -26,6 +27,26 @@ struct ConfigEditorView: View {
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var tunnelManager: TunnelManager
 
+    /// The profile being edited. nil = the active profile (the old
+    /// behaviour). FlClash edit.dart:242-290 opens *any* profile's
+    /// file in the editor; a non-active target is saved straight to
+    /// its own file without touching the shared config.
+    let targetProfile: Profile?
+
+    init(targetProfile: Profile? = nil) {
+        self.targetProfile = targetProfile
+    }
+
+    /// The profile actually edited: the target, or the active one.
+    private var editedProfile: Profile? {
+        targetProfile ?? profileStore.activeProfile
+    }
+
+    private var isTargetActive: Bool {
+        guard let editedProfile else { return false }
+        return editedProfile.id == profileStore.activeProfile?.id
+    }
+
     @State private var text = ""
     @State private var originalText = ""
     @State private var isLoaded = false
@@ -45,8 +66,12 @@ struct ConfigEditorView: View {
 
     private var isDirty: Bool { isLoaded && text != originalText }
 
-    private static var draftURL: URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("concord-editor-draft.yaml")
+    /// A draft per edited profile, so drafts for different
+    /// profiles never overwrite each other.
+    private var draftURL: URL {
+        let suffix = editedProfile.map { "-\($0.id.uuidString)" } ?? ""
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent("concord-editor-draft\(suffix).yaml")
     }
 
     var body: some View {
@@ -73,6 +98,20 @@ struct ConfigEditorView: View {
                 Button("保存") { Task { await validateBeforeSave() } }
                     .disabled(!isDirty || isWorking)
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { yamlController.undo() } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .accessibilityLabel("撤销")
+                .disabled(!yamlController.canUndo)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { yamlController.redo() } label: {
+                    Image(systemName: "arrow.uturn.forward")
+                }
+                .accessibilityLabel("重做")
+                .disabled(!yamlController.canRedo)
+            }
             ToolbarItem(placement: .topBarLeading) {
                 if isDirty {
                     Button("放弃修改") { showDiscardConfirm = true }
@@ -93,7 +132,7 @@ struct ConfigEditorView: View {
                 validationIssues = []
                 message = nil
                 errorMessage = nil
-                try? FileManager.default.removeItem(at: Self.draftURL)
+                try? FileManager.default.removeItem(at: draftURL)
             }
             Button("继续编辑", role: .cancel) { }
         } message: {
@@ -101,13 +140,13 @@ struct ConfigEditorView: View {
         }
         .alert("恢复上次未保存的修改吗？", isPresented: $showDraftAlert) {
             Button("恢复草稿") {
-                if let draft = try? String(contentsOf: Self.draftURL, encoding: .utf8) {
+                if let draft = try? String(contentsOf: draftURL, encoding: .utf8) {
                     text = draft
                     message = "已恢复上次未保存的草稿。"
                 }
             }
             Button("丢弃草稿", role: .destructive) {
-                try? FileManager.default.removeItem(at: Self.draftURL)
+                try? FileManager.default.removeItem(at: draftURL)
             }
         } message: {
             Text("上次离开编辑器时还有未保存的修改。")
@@ -117,7 +156,7 @@ struct ConfigEditorView: View {
     private var editorHeader: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(profileStore.activeProfile?.name ?? "当前配置")
+                Text(editedProfile?.name ?? "当前配置")
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
                 if isDirty {
@@ -125,6 +164,11 @@ struct ConfigEditorView: View {
                 } else {
                     PillBadge(text: "已保存", tint: .green)
                 }
+            }
+            if !isTargetActive, targetProfile != nil {
+                Text("正在编辑未激活的订阅：保存只写它自己的文件，不会改动当前已激活的订阅。")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
             }
             Text(client.mode == .live
                  ? (tunnelManager.isRunning
@@ -226,7 +270,23 @@ struct ConfigEditorView: View {
     }
 
     private func load() {
-        guard let yaml = profileStore.activeProfileYAML() else {
+        guard let profile = editedProfile else {
+            loadError = "没有已激活的订阅，或者它的配置文件找不到了"
+            return
+        }
+        let yaml: String?
+        if isTargetActive || targetProfile == nil {
+            yaml = profileStore.activeProfileYAML()
+        } else {
+            // Any profile's file: same <AppGroup>/profiles/<id>.yaml
+            // layout ProfilePreviewView reads.
+            let url = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)?
+                .appendingPathComponent("profiles")
+                .appendingPathComponent("\(profile.id.uuidString).yaml")
+            yaml = url.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+        }
+        guard let yaml else {
             loadError = "没有已激活的订阅，或者它的配置文件找不到了"
             return
         }
@@ -235,7 +295,7 @@ struct ConfigEditorView: View {
         isLoaded = true
         // A draft from a previous interrupted edit session wins a
         // prompt — it is never silently applied or discarded.
-        if let draft = try? String(contentsOf: Self.draftURL, encoding: .utf8),
+        if let draft = try? String(contentsOf: draftURL, encoding: .utf8),
            draft != yaml {
             showDraftAlert = true
         }
@@ -243,7 +303,7 @@ struct ConfigEditorView: View {
 
     private func saveDraft() {
         guard isLoaded else { return }
-        try? text.write(to: Self.draftURL, atomically: true, encoding: .utf8)
+        try? text.write(to: draftURL, atomically: true, encoding: .utf8)
     }
 
     private func validateBeforeSave() async {
@@ -265,7 +325,9 @@ struct ConfigEditorView: View {
                     validationIssues = issues
                     return
                 }
-                pendingSaveNote = "核心校验通过。保存后会立即重新应用到核心（VPN 正在运行）。"
+                pendingSaveNote = (isTargetActive || targetProfile == nil)
+                    ? "核心校验通过。保存后会立即重新应用到核心（VPN 正在运行）。"
+                    : "核心校验通过。保存只写该订阅自己的文件，下次切换到它时生效。"
             } catch {
                 errorMessage = "核心校验失败：\(error.localizedDescription)。未保存——请稍后重试，或先停止 VPN 再用本地检查保存。"
                 return
@@ -281,11 +343,22 @@ struct ConfigEditorView: View {
     private func save() async {
         isWorking = true
         defer { isWorking = false }
-        let result = await profileStore.saveActiveProfileYAML(text)
+        let result: String
+        if isTargetActive || targetProfile == nil {
+            result = await profileStore.saveActiveProfileYAML(text)
+        } else if let profile = editedProfile,
+                  let data = text.data(using: .utf8) {
+            // A non-active profile: write its own file only (no
+            // shared config copy, no live re-apply).
+            await profileStore.updateProfileFile(profile, data: data)
+            result = profileStore.lastError ?? "已保存，下次切换到该订阅时生效"
+        } else {
+            result = "配置不是有效的 UTF-8 文本"
+        }
         message = result
         errorMessage = nil
         originalText = text
-        try? FileManager.default.removeItem(at: Self.draftURL)
+        try? FileManager.default.removeItem(at: draftURL)
     }
 }
 
@@ -390,13 +463,23 @@ enum YamlHighlighter {
 }
 
 /// Lets the SwiftUI completion row insert text at the UITextView's
-/// caret; the coordinator wires the handler in makeUIView.
+/// caret; the coordinator wires the handler in makeUIView. Also
+/// carries undo/redo (FlClash editor.dart:434-440 UndoRedoController)
+/// through the text view's own undoManager.
 final class YamlEditorController: ObservableObject {
     var insertHandler: ((NSRange, String) -> Void)?
+    var undoHandler: (() -> Void)?
+    var redoHandler: (() -> Void)?
+    @Published var canUndo = false
+    @Published var canRedo = false
 
     func insert(_ text: String, replacing range: NSRange) {
         insertHandler?(range, text)
     }
+
+    func undo() { undoHandler?() }
+
+    func redo() { redoHandler?() }
 }
 
 /// Monospace UITextView with YAML highlighting. The plain text is
@@ -429,6 +512,17 @@ struct YamlEditorView: UIViewRepresentable {
             guard let textView else { return }
             context.coordinator.replace(range: range, with: replacement, in: textView)
         }
+        controller.undoHandler = { [weak textView] in
+            guard let textView else { return }
+            textView.undoManager?.undo()
+            context.coordinator.refreshUndoState(textView)
+        }
+        controller.redoHandler = { [weak textView] in
+            guard let textView else { return }
+            textView.undoManager?.redo()
+            context.coordinator.refreshUndoState(textView)
+        }
+        context.coordinator.refreshUndoState(textView)
         return textView
     }
 
@@ -458,11 +552,17 @@ struct YamlEditorView: UIViewRepresentable {
             lastAppliedText = plain
             parent.text = plain
             parent.selectedRange = textView.selectedRange
+            refreshUndoState(textView)
             // Do not re-highlight while an IME is composing (pinyin
             // etc.): replacing the attributed text would drop the
             // marked text. The next committed edit re-highlights.
             guard textView.markedTextRange == nil else { return }
             rehighlight(textView)
+        }
+
+        func refreshUndoState(_ textView: UITextView) {
+            parent.controller.canUndo = textView.undoManager?.canUndo ?? false
+            parent.controller.canRedo = textView.undoManager?.canRedo ?? false
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {

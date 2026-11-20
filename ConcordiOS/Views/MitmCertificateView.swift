@@ -20,9 +20,12 @@ import Security
 
 struct MitmCertificateView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var issueHost = ""
     @State private var trustResult: MitmTrustResult?
     @State private var isCheckingTrust = false
+    @State private var showRegenerateConfirm = false
+    @State private var regenerateNote: String?
 
     var body: some View {
         List {
@@ -49,6 +52,30 @@ struct MitmCertificateView: View {
                 Button("生成 CA 证书") {
                     Task { await settingsStore.generateMitmCertificate() }
                 }
+                // FlClash mitm.dart:253-340 _regenerate: confirm,
+                // then generate a new CA. The old CA stays installed
+                // in iOS Settings until the user removes it — the
+                // note after regenerating says so.
+                Button("重新生成 CA 证书", role: .destructive) {
+                    showRegenerateConfirm = true
+                }
+                .disabled(!settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
+                .alert("重新生成 CA 证书吗？", isPresented: $showRegenerateConfirm) {
+                    Button("重新生成", role: .destructive) {
+                        Task {
+                            await settingsStore.generateMitmCertificate()
+                            regenerateNote = "已生成新的 CA 证书。旧 CA 还留在 iPhone「设置 → 通用 → VPN 与设备管理」里，请先删掉旧的，再安装并完全信任新的 CA，否则 HTTPS 解密会失败。"
+                        }
+                    }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("旧 CA 会失效，所有用旧 CA 解密过的配置都要换新 CA。生成后需要重新安装并信任新 CA。")
+                }
+                if let regenerateNote {
+                    Text(regenerateNote)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
             }
             Section("信任检测") {
                 Text("检测会请核心签发一张 mitm-check.concord.invalid 的叶证书，再用系统信任库验证它（只在本地验证，不联网）。通过 = CA 已安装且已完全信任；不通过 = CA 还没装，或装了但没在「证书信任设置」里打开完全信任——本应用无法区分这两种情况。")
@@ -73,9 +100,17 @@ struct MitmCertificateView: View {
             Section("MITM 配置") {
                 Toggle("启用 MITM", isOn: $settingsStore.mitmEnabled)
                 Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
-                TextField("解密域名，逗号分隔", text: $settingsStore.mitmHostnames)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
+                NavigationLink {
+                    MitmHostnameEditorView()
+                } label: {
+                    HStack {
+                        Text("解密主机名")
+                        Spacer()
+                        Text(mitmHostnameSummary)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
                 Button("校验 MITM 配置") {
                     Task { await settingsStore.validateMitmConfig() }
                 }
@@ -115,6 +150,28 @@ struct MitmCertificateView: View {
         .task {
             await settingsStore.refreshMitmStatus()
         }
+        // FlClash mitm.dart:53-73: re-check trust when the app
+        // comes back from iOS Settings (the user may just have
+        // installed / trusted the CA there). Only re-runs when a CA
+        // is present and the core is live; it never overwrites the
+        // result with a "cannot check" while there is nothing to
+        // check.
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active,
+                  !isCheckingTrust,
+                  settingsStore.mitmAvailable,
+                  settingsStore.mitmCertificate != nil,
+                  settingsStore.client.mode == .live else { return }
+            Task { await checkTrust() }
+        }
+    }
+
+    private var mitmHostnameSummary: String {
+        let count = settingsStore.mitmHostnames
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }.count
+        return count == 0 ? "未设置" : "\(count) 个域名"
     }
 
     /// FlClash IOSMitmTrustStore.check, in-process: the core signs
@@ -204,4 +261,178 @@ private struct MitmTrustResult {
 
     var isReady: Bool
     var message: String
+}
+
+// MARK: - MITM hostname list editor (FlClash: _MitmHostnameView,
+// lib/views/config/mitm.dart:682-760)
+// One hostname per row: in-place edit, swipe delete, drag reorder,
+// per-line validation, plus a bulk quick-edit (one per line).
+// Stored as the comma-joined string in SettingsStore.mitmHostnames,
+// exactly as the MITM section read it before.
+
+struct MitmHostnameEditorView: View {
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @State private var hostnames: [String] = []
+    @State private var newHostname = ""
+    @State private var addError: String?
+    @State private var showBulkEdit = false
+    @State private var bulkText = ""
+
+    private var invalidHostnames: [String] {
+        hostnames.filter { !Self.isValidHostname($0) }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Text("解密这些域名的 HTTPS 流量：支持 *.example.com 这样的通配符。改动后保存，下次启动 VPN 时生效（VPN 运行时在 常规 页点「应用 MITM 设置」立即生效）。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("解密主机名（\(hostnames.count) 个）") {
+                if hostnames.isEmpty {
+                    Text("还没有域名：MITM 开启后只解密这里列出的域名。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(hostnames.indices, id: \.self) { index in
+                    HStack {
+                        TextField("域名，如 *.example.com", text: Binding(
+                            get: { hostnames[index] },
+                            set: { hostnames[index] = $0 }
+                        ))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .foregroundStyle(Self.isValidHostname(hostnames[index]) ? .primary : .red)
+                        if !Self.isValidHostname(hostnames[index]) {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
+                .onDelete { offsets in
+                    hostnames.remove(atOffsets: offsets)
+                    save()
+                }
+                .onMove { from, to in
+                    hostnames.move(fromOffsets: from, toOffset: to)
+                    save()
+                }
+                HStack {
+                    TextField("添加域名", text: $newHostname)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button("添加") {
+                        addHostname()
+                    }
+                    .disabled(newHostname.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                if let addError {
+                    Text(addError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+                if !invalidHostnames.isEmpty {
+                    Text("格式不对的域名（不会生效）：\(invalidHostnames.joined(separator: "、"))")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+            Section {
+                Button("批量编辑（每行一个）") {
+                    bulkText = hostnames.joined(separator: "\n")
+                    showBulkEdit = true
+                }
+            }
+        }
+        .navigationTitle("解密主机名")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+        }
+        .onAppear {
+            hostnames = settingsStore.mitmHostnames
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+        }
+        .onChange(of: hostnames) { _, _ in save() }
+        .sheet(isPresented: $showBulkEdit) {
+            NavigationStack {
+                List {
+                    Section {
+                        TextEditor(text: $bulkText)
+                            .frame(minHeight: 320)
+                            .font(.system(.body, design: .monospaced))
+                            .autocapitalization(.none)
+                            .autocorrectionDisabled()
+                        Text("每行一个域名，空行会被忽略。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Section {
+                        Button("保存") {
+                            hostnames = bulkText
+                                .components(separatedBy: .newlines)
+                                .map { $0.trimmingCharacters(in: .whitespaces) }
+                                .filter { !$0.isEmpty }
+                            save()
+                            showBulkEdit = false
+                        }
+                    }
+                }
+                .navigationTitle("批量编辑主机名")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("取消") { showBulkEdit = false }
+                    }
+                }
+            }
+        }
+    }
+
+    private func addHostname() {
+        let value = newHostname.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return }
+        guard Self.isValidHostname(value) else {
+            addError = "格式不对，应为域名或 *.域名，如 *.example.com"
+            return
+        }
+        guard !hostnames.contains(value) else {
+            addError = "这个域名已存在"
+            return
+        }
+        addError = nil
+        hostnames.append(value)
+        newHostname = ""
+        save()
+    }
+
+    private func save() {
+        settingsStore.mitmHostnames = hostnames.joined(separator: ", ")
+        settingsStore.save()
+    }
+
+    /// A hostname, optionally with a "*." wildcard prefix.
+    static func isValidHostname(_ value: String) -> Bool {
+        var host = value
+        if host.hasPrefix("*.") {
+            host = String(host.dropFirst(2))
+        }
+        guard !host.isEmpty, !host.hasPrefix("."), !host.hasSuffix("."),
+              !host.contains("..") else { return false }
+        let labels = host.split(separator: ".")
+        guard !labels.isEmpty else { return false }
+        for label in labels {
+            guard !label.isEmpty, label.count <= 63,
+                  label.first != "-", label.last != "-",
+                  label.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else {
+                return false
+            }
+        }
+        return true
+    }
 }

@@ -19,8 +19,7 @@ import CoreImage
 // Differences vs FlClash, all honest:
 // - No .custom ProfileKind exists in this app (only url/file), so
 //   every profile takes the non-custom menu path; there is no rename
-//   action (renaming happens via the Edit page's name field) and no
-//   groups-count chip.
+//   action (renaming happens via the Edit page's name field).
 // - No subscriptionInfo (used/total traffic, expiry) is stored on
 //   Profile, so the card subtitle is the FlClash fallback:
 //   远程 (URL) / 本地 (file).
@@ -29,16 +28,15 @@ import CoreImage
 //   "确定删除当前{label}吗？" text, never the provider-in-use variant.
 // - "从手机发送" is TV-only in FlClash and has no iOS equivalent;
 //   it is skipped.
-// - 运行时配置 opens ConfigEditorView (the YAML editor for the
-//   active profile) per the app's existing structure; FlClash's
-//   runtime-config preview is kept as an extra "预览配置" row in the
-//   更多 submenu so the existing ProfilePreviewView stays reachable.
+// - 运行时配置 opens the merged-config preview (FlClash
+//   profiles.dart:532-540); the YAML editor is reached from the
+//   Edit page's file row instead.
 
 enum ProfileNavDestination: Hashable {
     case nodeSources
     case visualConfig
     case customSubscriptions
-    case configEditor
+    case customSubscription(UUID)
     case extend(UUID)
     case edit(UUID)
 }
@@ -53,6 +51,7 @@ struct ProfilesView: View {
     @State private var showReorder = false
     @State private var reorderDraft: [Profile] = []
     @State private var previewProfile: Profile?
+    @State private var previewInitialTab: ProfilePreviewView.PreviewTab = .yaml
     @State private var qrProfile: Profile?
     @State private var exportURL: URL?
     @State private var deleteTarget: Profile?
@@ -60,28 +59,44 @@ struct ProfilesView: View {
     @State private var isUpdatingAll = false
     @State private var copyNotice: String?
     @State private var alertMessage: String?
+    /// Groups count per profile, parsed from local YAML
+    /// (FlClash _GroupsCountChip, profiles.dart:585).
+    @State private var groupCounts: [UUID: Int] = [:]
 
     private var hasProfiles: Bool { !profileStore.profiles.isEmpty }
 
     var body: some View {
         NavigationStack(path: $navPath) {
-            ScrollView {
-                VStack(spacing: 12) {
-                    if let notice = copyNotice {
-                        Text(notice)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(Color.green, in: RoundedRectangle(cornerRadius: 12))
+            // FlClash profiles.dart:230-262 _revealSelected: open
+            // with the current profile visible.
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    VStack(spacing: 12) {
+                        if let notice = copyNotice {
+                            Text(notice)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(Color.green, in: RoundedRectangle(cornerRadius: 12))
+                        }
+                        if profileStore.profiles.isEmpty {
+                            emptyState
+                        } else {
+                            profileGrid
+                        }
                     }
-                    if profileStore.profiles.isEmpty {
-                        emptyState
-                    } else {
-                        profileGrid
+                    .padding(16)
+                }
+                .onAppear {
+                    refreshGroupCounts()
+                    if let active = profileStore.activeProfile {
+                        scrollProxy.scrollTo(active.id, anchor: .center)
                     }
                 }
-                .padding(16)
+                .onChange(of: profileStore.profiles.map(\.id)) { _, _ in
+                    refreshGroupCounts()
+                }
             }
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
@@ -134,8 +149,8 @@ struct ProfilesView: View {
                     VisualConfigView()
                 case .customSubscriptions:
                     CustomSubscriptionListView()
-                case .configEditor:
-                    ConfigEditorView()
+                case .customSubscription(let id):
+                    CustomSubscriptionEditorView(subscriptionID: id)
                 case .extend(let id):
                     if let profile = profileStore.profiles.first(where: { $0.id == id }) {
                         ExtendConfigView(profile: profile)
@@ -163,7 +178,7 @@ struct ProfilesView: View {
                 reorderSheet
             }
             .sheet(item: $previewProfile) { profile in
-                ProfilePreviewView(profile: profile)
+                ProfilePreviewView(profile: profile, initialTab: previewInitialTab)
             }
             .sheet(item: $qrProfile) { profile in
                 ProfileQRCodeView(profile: profile)
@@ -252,7 +267,15 @@ struct ProfilesView: View {
                 .font(.system(size: 15))
         }
         Section {
-            Button { navPath.append(.customSubscriptions) } label: {
+            // FlClash add.dart:137-149: create the custom profile
+            // at once and open its editor (isNew). The editor has
+            // no isNew flag of its own — it opens the fresh,
+            // still-unnamed subscription for editing, which is the
+            // same flow.
+            Button {
+                let sub = CustomSubscriptionStore().create(name: "自定义订阅")
+                navPath.append(.customSubscription(sub.id))
+            } label: {
                 Label("自定义订阅", systemImage: "doc.badge.gearshape")
                     .font(.system(size: 15))
             }
@@ -292,6 +315,7 @@ struct ProfilesView: View {
         ) {
             ForEach(profileStore.profiles) { profile in
                 profileCard(profile)
+                    .id(profile.id)
             }
         }
     }
@@ -310,6 +334,16 @@ struct ProfilesView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    // FlClash _GroupsCountChip (profiles.dart:585):
+                    // the number of proxy groups, parsed locally.
+                    if let count = groupCounts[profile.id], count > 0 {
+                        Text("\(count) 个分组")
+                            .font(.system(size: 11, weight: .semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(ConcordTheme.accent.opacity(0.12), in: Capsule())
+                            .foregroundStyle(ConcordTheme.accent)
+                    }
                     if let note = profile.note {
                         Text(note)
                             .font(.system(size: 13))
@@ -341,48 +375,52 @@ struct ProfilesView: View {
             .shadow(color: ConcordTheme.cardShadow, radius: 6, x: 0, y: 2)
         }
         .buttonStyle(.plain)
+        // FlClash profiles.dart:614: no menu while updating.
         .contextMenu {
-            Button { navPath.append(.edit(profile.id)) } label: {
-                Label("编辑", systemImage: "square.and.pencil")
-                    .font(.system(size: 15))
-            }
-            Button { navPath.append(.extend(profile.id)) } label: {
-                Label("扩展", systemImage: "plus.square.on.square")
-                    .font(.system(size: 15))
-            }
-            if profile.kind == .url {
-                Button { Task { await sync(profile) } } label: {
-                    Label("同步", systemImage: "arrow.clockwise")
+            if !updatingIDs.contains(profile.id) && !isUpdatingAll {
+                Button { navPath.append(.edit(profile.id)) } label: {
+                    Label("编辑", systemImage: "square.and.pencil")
                         .font(.system(size: 15))
                 }
-            }
-            Menu("更多") {
-                Button { navPath.append(.configEditor) } label: {
-                    Label("运行时配置", systemImage: "eye")
-                        .font(.system(size: 15))
-                }
-                Button { previewProfile = profile } label: {
-                    Label("预览配置", systemImage: "doc.text.magnifyingglass")
+                Button { navPath.append(.extend(profile.id)) } label: {
+                    Label("扩展", systemImage: "plus.square.on.square")
                         .font(.system(size: 15))
                 }
                 if profile.kind == .url {
-                    Button { copyLink(profile) } label: {
-                        Label("复制链接", systemImage: "doc.on.doc")
-                            .font(.system(size: 15))
-                    }
-                    Button { qrProfile = profile } label: {
-                        Label("二维码", systemImage: "qrcode")
+                    Button { Task { await sync(profile) } } label: {
+                        Label("同步", systemImage: "arrow.clockwise")
                             .font(.system(size: 15))
                     }
                 }
-                Button { export(profile) } label: {
-                    Label("导出文件", systemImage: "square.and.arrow.up")
+                Menu("更多") {
+                    // FlClash profiles.dart:532-540: 运行时配置 opens
+                    // the merged-config preview (the 生效配置 tab).
+                    Button {
+                        previewInitialTab = .built
+                        previewProfile = profile
+                    } label: {
+                        Label("运行时配置", systemImage: "eye")
+                            .font(.system(size: 15))
+                    }
+                    if profile.kind == .url {
+                        Button { copyLink(profile) } label: {
+                            Label("复制链接", systemImage: "doc.on.doc")
+                                .font(.system(size: 15))
+                        }
+                        Button { qrProfile = profile } label: {
+                            Label("二维码", systemImage: "qrcode")
+                                .font(.system(size: 15))
+                        }
+                    }
+                    Button { export(profile) } label: {
+                        Label("导出文件", systemImage: "square.and.arrow.up")
+                            .font(.system(size: 15))
+                    }
+                }
+                Button(role: .destructive) { deleteTarget = profile } label: {
+                    Label("删除", systemImage: "trash")
                         .font(.system(size: 15))
                 }
-            }
-            Button(role: .destructive) { deleteTarget = profile } label: {
-                Label("删除", systemImage: "trash")
-                    .font(.system(size: 15))
             }
         }
     }
@@ -443,14 +481,36 @@ struct ProfilesView: View {
         guard !isUpdatingAll else { return }
         isUpdatingAll = true
         defer { isUpdatingAll = false }
-        for profile in profileStore.profiles where profile.kind == .url {
+        let urlProfiles = profileStore.profiles.filter { $0.kind == .url }
+        for profile in urlProfiles {
             updatingIDs.insert(profile.id)
         }
         defer { updatingIDs.removeAll() }
-        await profileStore.updateAll()
-        if let error = profileStore.lastError {
-            alertMessage = error
+        // FlClash profiles.dart:52-76: one failure message per
+        // failed profile, shown together — not just the last error.
+        var failures: [(name: String, error: String)] = []
+        for profile in urlProfiles {
+            await profileStore.update(profile)
+            if let error = profileStore.lastError {
+                failures.append((profile.name, error))
+            }
         }
+        if !failures.isEmpty {
+            alertMessage = "更新失败（\(failures.count) 个）：\n"
+                + failures.map { "· \($0.name)：\($0.error)" }.joined(separator: "\n")
+        }
+    }
+
+    /// Groups counts for the cards, from the local YAML parse
+    /// (FlClash _GroupsCountChip).
+    private func refreshGroupCounts() {
+        var counts: [UUID: Int] = [:]
+        for profile in profileStore.profiles {
+            if let groups = profileStore.localProxyGroups(for: profile) {
+                counts[profile.id] = groups.groups.count
+            }
+        }
+        groupCounts = counts
     }
 
     private func copyLink(_ profile: Profile) {
@@ -565,6 +625,20 @@ struct AddProfileView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var urlString = ""
+    @State private var duplicateError: String?
+
+    private var trimmedURL: String {
+        urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// FlClash add.dart:76-79: the link form knows the existing
+    /// URLs and refuses a duplicate.
+    private var isDuplicateURL: Bool {
+        guard !trimmedURL.isEmpty else { return false }
+        return profileStore.profiles.contains {
+            $0.urlString?.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedURL
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -577,14 +651,28 @@ struct AddProfileView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
+                    if isDuplicateURL {
+                        Text("这个订阅链接已经添加过了。")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.red)
+                    }
                     Button("添加订阅") {
                         Task {
+                            if isDuplicateURL {
+                                duplicateError = "这个订阅链接已经添加过了。"
+                                return
+                            }
                             await profileStore.addFromURL(name: name, urlString: urlString)
                             dismiss()
                         }
                     }
                     .font(.system(size: 17, weight: .semibold))
-                    .disabled(urlString.isEmpty)
+                    .disabled(urlString.isEmpty || isDuplicateURL)
+                    if let duplicateError {
+                        Text(duplicateError)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.red)
+                    }
                 }
                 Section("本地文件") {
                     Button("导入本地配置文件（.yaml / .yml）") {
@@ -620,6 +708,8 @@ struct AddProfileView: View {
 // the merged effective config (profile.build).
 struct ProfilePreviewView: View {
     let profile: Profile
+    /// The tab to open on: 运行时配置 opens the merged config.
+    var initialTab: PreviewTab = .yaml
     @EnvironmentObject private var profileStore: ProfileStore
     @Environment(\.dismiss) private var dismiss
     @State private var text = "正在读取…"
@@ -700,6 +790,7 @@ struct ProfilePreviewView: View {
                 }
             }
             .task {
+                tab = initialTab
                 // The sample profile has no file on disk; show a note.
                 if let dir = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)?
                     .appendingPathComponent("profiles")

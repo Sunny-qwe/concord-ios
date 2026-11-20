@@ -1201,7 +1201,14 @@ final class ExtensionConcordTransport: ConcordTransport {
         "connection.watch": ("connections", 10),
         "log.watch": ("logs", nil),
         "dns.watch": ("dns", nil),
-        "proxy.watch": ("proxies", nil),
+        // proxy.watch used to have no max-age, so a stale
+        // proxies.json (written by a previous tunnel run, or an
+        // empty one from a run whose core had not finished
+        // applying) was served as current forever — the v0.2.31
+        // "节点也看不见" report. 10 s, like traffic/connections:
+        // a stale snapshot throws and the caller falls back to
+        // proxy.groups, then to the local YAML.
+        "proxy.watch": ("proxies", 10),
         "delay.run.poll": ("delay", nil),
         "route.watch": ("route", nil),
         "events.watch": ("events", nil),

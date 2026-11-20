@@ -23,12 +23,16 @@ import Combine
 final class OnDemandStore: ObservableObject {
     static let shared = OnDemandStore()
 
-    /// Default on (v0.2.26 Batch F, long-run stability): a fresh
-    /// install gets On-Demand on, so the system auto-reconnects
-    /// after a network loss or handover. A user who explicitly
-    /// turned it off keeps the saved `false` — load() overwrites
-    /// this default whenever saved data exists.
-    @Published var enabled: Bool = true
+    /// Default OFF (v0.2.32, FlClash iOS parity: FlClash never
+    /// installs NEOnDemandRule on iOS — TunnelCoordinator sets
+    /// isOnDemandEnabled = false on every start — and never
+    /// auto-restarts the tunnel). A fresh install gets On-Demand
+    /// off, so the system never auto-reconnects unless the user
+    /// explicitly turns it on in Tools → 按需连接. A user who
+    /// explicitly turned it on keeps the saved `true` — load()
+    /// overwrites this default whenever saved data exists (v2
+    /// migration below resets the old v1 default-on).
+    @Published var enabled: Bool = false
     @Published var excludedSSIDs: [String] = []
     @Published var applyMessage: String?
 
@@ -42,7 +46,8 @@ final class OnDemandStore: ObservableObject {
     private var lastInstalledSSIDs: [String]?
 
     private struct Saved: Codable {
-        var enabled: Bool = true
+        var version: Int = 2
+        var enabled: Bool = false
         var excludedSSIDs: [String] = []
     }
 
@@ -57,7 +62,7 @@ final class OnDemandStore: ObservableObject {
     }
 
     func save() {
-        let saved = Saved(enabled: enabled, excludedSSIDs: excludedSSIDs)
+        let saved = Saved(version: 2, enabled: enabled, excludedSSIDs: excludedSSIDs)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
     }
@@ -65,6 +70,19 @@ final class OnDemandStore: ObservableObject {
     private func load() {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
               let saved = try? JSONDecoder().decode(Saved.self, from: data) else { return }
+        // v1 → v2 migration (v0.2.32): v1 defaulted On-Demand ON, so
+        // every v1 install has enabled=true unless the user turned
+        // it off — and that default is exactly the "VPN 关不了，
+        // 一直自动启动" complaint. A v1 record carries no intent
+        // (the user never chose it), so the migration resets it to
+        // OFF and keeps the SSID exclusions; the user can re-enable
+        // it in Tools → 按需连接 if they want auto-reconnect.
+        if saved.version < 2 {
+            enabled = false
+            excludedSSIDs = saved.excludedSSIDs
+            save()
+            return
+        }
         enabled = saved.enabled
         excludedSSIDs = saved.excludedSSIDs
     }
@@ -87,6 +105,22 @@ final class OnDemandStore: ObservableObject {
             applyMessage = "按需规则保存失败：\(error.localizedDescription)"
             return false
         }
+    }
+
+    /// Clears the installed On-Demand rules WITHOUT touching the
+    /// user's standing preference (`enabled` survives): the next
+    /// manual start re-arms the preference via
+    /// installRulesIfNeeded. Called on an explicit user stop and on
+    /// a failed start, so the system cannot restart the tunnel
+    /// after the user asked it to stay off (v0.2.32: the v0.2.31
+    /// "VPN 关不了" bug — stop() never cleared the rules, so iOS
+    /// restarted the tunnel). A failure is swallowed: clearing the
+    /// rules must never block the stop itself.
+    @MainActor
+    func suspendRules() async {
+        lastInstalledEnabled = nil
+        lastInstalledSSIDs = nil
+        try? await TunnelManager.shared.updateOnDemandRules(enabled: false, excludedSSIDs: [])
     }
 
     /// Installs (or clears) the on-demand rules on the saved VPN

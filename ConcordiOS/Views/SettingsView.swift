@@ -16,6 +16,62 @@ struct SettingsView: View {
     @EnvironmentObject private var client: ConcordClient
     @State private var mitmIssueHost = ""
     @State private var showCrashConfirm = false
+    @State private var showMitmEnableConfirm = false
+    // FlClash general/port_form.dart: HTTP / redir / tproxy ports
+    // (0 = disabled, otherwise 1024–49151, no conflicts) and the
+    // find-process-mode toggle (always/off) + MITM h2 /
+    // decrypt-untrusted. These live in @AppStorage until the
+    // SettingsStore owner wires them into general.json / mitm.json
+    // (see the v0.2.32 handoff: keys port, redir-port,
+    // tproxy-port, find-process-mode, h2, decrypt-tls).
+    @AppStorage("ConcordiOS.httpPort") private var httpPort = 0
+    @AppStorage("ConcordiOS.redirPort") private var redirPort = 0
+    @AppStorage("ConcordiOS.tproxyPort") private var tproxyPort = 0
+    @AppStorage("ConcordiOS.findProcessModeAlways") private var findProcessAlways = false
+    @AppStorage("ConcordiOS.mitmH2") private var mitmH2 = false
+    @AppStorage("ConcordiOS.mitmDecryptUntrusted") private var mitmDecryptUntrusted = false
+
+    /// The app's own version (Info.plist CFBundleShortVersionString),
+    /// never a hardcoded string.
+    static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
+
+    /// Port validation (FlClash port_form.dart:118-152): mixed is
+    /// required 1024–49151; the others allow 0 (disabled); no two
+    /// enabled ports may share a value.
+    private var portIssue: String? {
+        var seen: [Int: String] = [:]
+        let ports: [(String, Int, Bool)] = [
+            ("混合", settingsStore.mixedPort, false),
+            ("SOCKS", settingsStore.socksPort, true),
+            ("HTTP", httpPort, true),
+            ("redir", redirPort, true),
+            ("tproxy", tproxyPort, true),
+        ]
+        for (label, port, allowDisabled) in ports {
+            if port == 0 {
+                if !allowDisabled { return "混合端口必填，不能为 0" }
+                continue
+            }
+            if port < 1024 || port > 49151 {
+                return "\(label)端口应在 1024–49151 之间（0 表示停用）"
+            }
+            if let other = seen[port] {
+                return "\(label)端口与\(other)端口冲突"
+            }
+            seen[port] = label
+        }
+        return nil
+    }
+
+    private var mitmHostnameSummary: String {
+        let count = settingsStore.mitmHostnames
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }.count
+        return count == 0 ? "未设置" : "\(count) 个域名"
+    }
 
     var body: some View {
         // No NavigationStack here on purpose: this page is pushed
@@ -23,24 +79,18 @@ struct SettingsView: View {
         // bar. (The DNS / providers / resources sub-pages below are
         // pushed onto the same stack.)
         Form {
+                // Row order follows FlClash GeneralView
+                // (lib/views/config/general.dart:396-442): 启动与后台 /
+                // 请求与更新 / 入站 / 连接 / 日志与诊断. 出站模式、流量
+                // 嗅探、TCP 并发、统一延迟、IPv6 直连开关是本应用自有
+                // 的行，FlClash 的 常规 里没有，保留并在报告里列出。
                 Section("通用（config.general）") {
                     Picker("出站模式", selection: $settingsStore.mode) {
                         ForEach(OutboundMode.allCases) { mode in
                             Text(mode.label).tag(mode)
                         }
                     }
-                    Picker("日志级别", selection: $settingsStore.logLevel) {
-                        ForEach(LogLevel.allCases) { level in
-                            Text(level.rawValue).tag(level)
-                        }
-                    }
-                    Stepper("混合端口：\(settingsStore.mixedPort)", value: $settingsStore.mixedPort, in: 1...65535)
-                    Stepper("SOCKS 端口：\(settingsStore.socksPort)", value: $settingsStore.socksPort, in: 1...65535)
-                    Toggle("允许局域网连接", isOn: $settingsStore.allowLan)
-                    Toggle("IPv6", isOn: $settingsStore.ipv6)
-                    Toggle("TCP 并发", isOn: $settingsStore.tcpConcurrent)
-                    Toggle("统一延迟测试", isOn: $settingsStore.unifiedDelay)
-                    Toggle("流量嗅探", isOn: $settingsStore.sniffing)
+                    Toggle("启动时自动连接", isOn: $settingsStore.autoRun)
                     NavigationLink {
                         UserAgentsView()
                     } label: {
@@ -52,19 +102,55 @@ struct SettingsView: View {
                                 .lineLimit(1)
                         }
                     }
-                    Stepper("延迟测试超时：\(settingsStore.delayTestTimeout) ms", value: $settingsStore.delayTestTimeout, in: 1000...30000, step: 1000)
-                    Toggle("启动时自动连接", isOn: $settingsStore.autoRun)
-                    Toggle("切换配置后自动关闭连接", isOn: $settingsStore.autoCloseConnections)
                     Toggle("校验订阅证书", isOn: $settingsStore.checkCertificate)
                     Toggle("启动时自动检查更新", isOn: $settingsStore.autoCheckUpdate)
+                    Toggle("隐藏出口 IP", isOn: $settingsStore.hideIp)
+                    Stepper("混合端口：\(settingsStore.mixedPort)", value: $settingsStore.mixedPort, in: 1024...49151)
+                    Stepper("SOCKS 端口：\(settingsStore.socksPort == 0 ? "停用" : "\(settingsStore.socksPort)")", value: $settingsStore.socksPort, in: 0...49151)
+                    Stepper("HTTP 端口：\(httpPort == 0 ? "停用" : "\(httpPort)")", value: $httpPort, in: 0...49151)
+                        .onChange(of: httpPort) { _, _ in settingsStore.save() }
+                    Stepper("redir 端口：\(redirPort == 0 ? "停用" : "\(redirPort)")", value: $redirPort, in: 0...49151)
+                        .onChange(of: redirPort) { _, _ in settingsStore.save() }
+                    Stepper("tproxy 端口：\(tproxyPort == 0 ? "停用" : "\(tproxyPort)")", value: $tproxyPort, in: 0...49151)
+                        .onChange(of: tproxyPort) { _, _ in settingsStore.save() }
+                    if let portIssue {
+                        Text(portIssue)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.red)
+                    }
+                    Button("恢复默认端口（混合 7890、SOCKS 7891，其余停用）") {
+                        settingsStore.mixedPort = 7890
+                        settingsStore.socksPort = 7891
+                        httpPort = 0
+                        redirPort = 0
+                        tproxyPort = 0
+                        settingsStore.save()
+                    }
+                    Text("端口 0 表示停用；启用的端口须在 1024–49151 之间且互不冲突。HTTP / redir / tproxy 在 iOS 上一般用不到，FlClash 仍在 iOS 上提供这三项，这里同样提供。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Toggle("允许局域网连接", isOn: $settingsStore.allowLan)
+                    NavigationLink("鉴权与外部控制器") {
+                        GeneralAuthView()
+                    }
+                    Stepper("延迟测试超时：\(settingsStore.delayTestTimeout) ms", value: $settingsStore.delayTestTimeout, in: 1000...30000, step: 1000)
+                    Toggle("始终查找进程", isOn: $findProcessAlways)
+                        .onChange(of: findProcessAlways) { _, _ in settingsStore.save() }
+                    Text("进程查找方式：打开为 always，关闭为 off；核心默认 strict。核心当前报告：\(settingsStore.findProcessMode ?? "未知")。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Toggle("切换配置后自动关闭连接", isOn: $settingsStore.autoCloseConnections)
+                    Toggle("流量嗅探", isOn: $settingsStore.sniffing)
+                    Toggle("TCP 并发", isOn: $settingsStore.tcpConcurrent)
+                    Toggle("统一延迟测试", isOn: $settingsStore.unifiedDelay)
+                    Toggle("IPv6", isOn: $settingsStore.ipv6)
+                    Picker("日志级别", selection: $settingsStore.logLevel) {
+                        ForEach(LogLevel.allCases) { level in
+                            Text(level.rawValue).tag(level)
+                        }
+                    }
                     Toggle("记录日志（工具页显示「日志」）", isOn: $settingsStore.openLogs)
-                    if let findProcessMode = settingsStore.findProcessMode {
-                        LabeledContent("进程查找方式", value: findProcessMode)
-                    }
-                    NavigationLink("Hosts") {
-                        HostsView()
-                    }
-                    Text("启动时自动连接：打开应用后自动启动 VPN（需已有配置）。校验订阅证书：关闭后订阅下载不再验证服务器证书（自签证书的订阅源可用）。进程查找方式由核心决定，不可修改。")
+                    Text("启动时自动连接：打开应用后自动启动 VPN（需已有配置）。校验订阅证书：关闭后订阅下载不再验证服务器证书（自签证书的订阅源可用）。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                     Button("从核心读取当前配置") {
@@ -78,6 +164,22 @@ struct SettingsView: View {
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                // FlClash GeneralView 的「核心」OverrideSection
+                // (general/overrides.dart:7-13): 测速地址、统一延迟、
+                // TCP 并发、IPv6、地理数据加载方式 5 项内联在 常规 里
+                // （自带「通用」组头），Hosts 也在该区
+                // （general.dart _coreItems）。覆盖只对启用的项生效；
+                // 没启用的项用订阅自己的值。
+                OverrideSectionEditor(section: .general, scope: .constant(nil))
+                Section("核心（覆盖）") {
+                    NavigationLink("Hosts") {
+                        HostsView()
+                    }
+                    Text("上面的 5 项是覆盖：启用后才生效，作用于全部订阅；单个订阅的覆盖（设置 → 配置 → 覆盖）优先于这里。Hosts 在这里改，核心在 DNS 查询前先查这张表。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("TUN（PacketTunnel 扩展参数）") {
@@ -166,26 +268,66 @@ struct SettingsView: View {
                     NavigationLink("嗅探") {
                         SnifferSettingsView()
                     }
-                    NavigationLink("鉴权与外部控制器") {
-                        GeneralAuthView()
-                    }
                     Text("覆盖：对通用、DNS、TUN、嗅探、NTP 的逐项覆盖，分全局和单个订阅两级，带 YAML 预览。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
 
                 Section("MITM") {
-                    Toggle("启用 MITM", isOn: $settingsStore.mitmEnabled)
-                        .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmEnabled) { _, _ in settingsStore.save() }
-                    TextField("解密主机名（逗号分隔，如 *.example.com）", text: $settingsStore.mitmHostnames)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmHostnames) { _, _ in settingsStore.save() }
+                    // FlClash mitm.dart:509-540: 开启要先确认，没有 CA
+                    // 时自动生成一张；关闭直接关。
+                    Toggle("启用 MITM", isOn: Binding(
+                        get: { settingsStore.mitmEnabled },
+                        set: { newValue in
+                            if newValue {
+                                showMitmEnableConfirm = true
+                            } else {
+                                settingsStore.mitmEnabled = false
+                                settingsStore.save()
+                            }
+                        }
+                    ))
+                    .disabled(!settingsStore.mitmAvailable)
+                    .onChange(of: settingsStore.mitmEnabled) { _, _ in settingsStore.save() }
+                    .alert("启用 HTTPS 解密吗？", isPresented: $showMitmEnableConfirm) {
+                        Button("启用") {
+                            settingsStore.mitmEnabled = true
+                            settingsStore.save()
+                            if settingsStore.mitmCertificate == nil {
+                                Task { await settingsStore.generateMitmCertificate() }
+                            }
+                        }
+                        Button("取消", role: .cancel) {}
+                    } message: {
+                        Text("开启后，本应用会用自己的 CA 解密你勾选的域名的 HTTPS 流量，用于模块改写与脚本。还没有 CA 证书时会自动生成一张；生成后还需要在 iPhone「设置」里安装并完全信任它，解密才会真正生效。")
+                    }
+                    NavigationLink {
+                        MitmHostnameEditorView()
+                    } label: {
+                        HStack {
+                            Text("解密主机名")
+                            Spacer()
+                            Text(mitmHostnameSummary)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .disabled(!settingsStore.mitmAvailable)
                     Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
                         .disabled(!settingsStore.mitmAvailable)
                         .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
+                    Toggle("解密不受信任的证书", isOn: $mitmDecryptUntrusted)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: mitmDecryptUntrusted) { _, _ in settingsStore.save() }
+                    Text("上游 decrypt-untrusted：打开后，即使服务器证书不受信任也解密。发给核心的 decrypt-tls = 解密不受信任的证书 || 已填受信任的服务器证书指纹（FlClash clash_config.dart:2322-2323）。改动随 MITM 配置保存，下次启动 VPN 或重载配置后生效。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Toggle("启用 HTTP/2（h2）", isOn: $mitmH2)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: mitmH2) { _, _ in settingsStore.save() }
+                    Text("改动随 MITM 配置保存，下次启动 VPN 或重载配置后生效。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
                     Toggle("跳过服务端证书验证", isOn: $settingsStore.mitmSkipServerCertVerify)
                         .disabled(!settingsStore.mitmAvailable)
                         .onChange(of: settingsStore.mitmSkipServerCertVerify) { _, _ in settingsStore.save() }
@@ -321,7 +463,7 @@ struct SettingsView: View {
                     NavigationLink("外观与主题色") {
                         ThemePickerView()
                     }
-                    Text("浅色 / 深色 / 跟随系统，外加 5 种主题色。")
+                    Text("浅色 / 深色 / 跟随系统，外加 8 种主题色。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
@@ -409,7 +551,7 @@ struct SettingsView: View {
                 }
 
                 Section("关于") {
-                    LabeledContent("版本", value: "Concord iOS 0.2.25（FlClash 风格界面）")
+                    LabeledContent("版本", value: "Concord iOS \(Self.appVersion)（FlClash 风格界面）")
                     LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
                     LabeledContent("界面来源", value: "chen08209/FlClash（GPL-3.0）")
                     Text("本 App 是 FlClash 界面的 SwiftUI 复刻，核心经 PacketTunnel 扩展链接（packet-channel 数据面），但静态库构建与真机数据面尚未验证，见 README 的「已上线与待办」一节。")
@@ -477,10 +619,19 @@ struct DnsQueriesView: View {
     @State private var queryType = "A"
     @State private var selectedEntry: ConcordDnsEntry?
     @State private var recordFilter: DnsRecordFilter = .all
+    /// Record-type facet (FlClash dns_queries.dart: the type facet
+    /// of dnsQueryFacets): the types present in the current list.
+    @State private var selectedType: String?
 
-    /// Search text first (DnsStore.filtered), then the group filter.
+    /// Search text first (DnsStore.filtered), then the group filter,
+    /// then the record-type facet.
     private var visibleEntries: [ConcordDnsEntry] {
         dnsStore.filtered.filter { recordFilter.matches($0) }
+            .filter { selectedType == nil || $0.type == selectedType }
+    }
+
+    private var availableTypes: [String] {
+        Array(NSOrderedSet(array: dnsStore.filtered.map { $0.type })) as? [String] ?? []
     }
 
     var body: some View {
@@ -551,6 +702,18 @@ struct DnsQueriesView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+                HStack {
+                    Text("记录类型")
+                    Spacer()
+                    Picker("记录类型", selection: $selectedType) {
+                        Text("全部").tag(nil as String?)
+                        ForEach(availableTypes, id: \.self) { type in
+                            Text(type).tag(type as String?)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
                 .listRowBackground(Color.clear)
                 if visibleEntries.isEmpty {
                     Text(dnsStore.filtered.isEmpty ? "暂无 DNS 查询记录" : "没有符合筛选的记录")
@@ -907,6 +1070,15 @@ struct ResourcesView: View {
     @State private var updateAllMessage: String?
     @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = false
     @AppStorage("ConcordiOS.geoAutoUpdateHours") private var geoAutoUpdateHours = 24.0
+    // Custom Geo download URLs (FlClash resources.dart:661
+    // UpdateGeoUrlFormDialog, with its reset-to-default). Stored per
+    // kind; the core's geo.update takes no URL parameter yet, so the
+    // saved URL is recorded here and honoured once the core /
+    // extension download path accepts one — the form says so rather
+    // than pretending the URL is already used.
+    @AppStorage("ConcordiOS.geoURL.MMDB") private var geoURLMMDB = ""
+    @AppStorage("ConcordiOS.geoURL.ASN") private var geoURLASN = ""
+    @AppStorage("ConcordiOS.geoURL.GEOSITE") private var geoURLGeosite = ""
 
     /// One Geo file found in the App Group container.
     struct GeoFileInfo: Identifiable {
@@ -1065,6 +1237,12 @@ struct ResourcesView: View {
                 Text("concord 的 geo.update 只支持 MMDB、ASN、GEOSITE 三种，没有 GEOIP。更新在后台进行，完成后文件会出现在容器里。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+                Text("自定义下载地址：核心 geo.update 目前不接受自定义地址参数，下面填的地址会先保存在本机，待核心 / 扩展的下载路径支持自定义地址后使用；留空为默认地址。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                GeoURLRow(title: "GeoIP（MMDB）", url: $geoURLMMDB)
+                GeoURLRow(title: "ASN", url: $geoURLASN)
+                GeoURLRow(title: "GeoSite", url: $geoURLGeosite)
                 if let message = ruleStore.providerActionMessage {
                     Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
@@ -1091,6 +1269,48 @@ struct ResourcesView: View {
             scanGeoFiles()
         }
     }
+
+/// One custom Geo download URL (FlClash UpdateGeoUrlFormDialog):
+/// an http(s) URL field with validation and a reset-to-default
+/// button. Empty means the core's default address.
+private struct GeoURLRow: View {
+    let title: String
+    @Binding var url: String
+
+    private var urlIssue: String? {
+        let value = url.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return nil }
+        guard let parsed = URL(string: value),
+              parsed.scheme?.hasPrefix("http") == true,
+              parsed.host != nil else {
+            return "地址无效，应为 http(s) 链接"
+        }
+        return nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(title)下载地址")
+                .font(.system(size: 13))
+            HStack {
+                TextField("留空为默认地址", text: $url)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                if !url.isEmpty {
+                    Button("恢复默认") { url = "" }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+            if let urlIssue {
+                Text(urlIssue)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+}
 
     /// One updatable resource row (FlClash ResourcesView): name,
     /// detail, last-update time, and its own update button.

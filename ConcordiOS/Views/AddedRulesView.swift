@@ -13,6 +13,14 @@ struct AddedRulesView: View {
     @State private var newRule = ""
     @State private var errorMessage: String?
     @State private var applyMessage: String?
+    @State private var searchText = ""
+
+    /// Search filters the shown rows (FlClash rules.dart search);
+    /// drag reorder only applies to the unfiltered list.
+    private var visibleRules: [String] {
+        guard !searchText.isEmpty else { return rulesStore.rules }
+        return rulesStore.rules.filter { $0.localizedCaseInsensitiveContains(searchText) }
+    }
 
     var body: some View {
         List {
@@ -42,13 +50,36 @@ struct AddedRulesView: View {
                     .foregroundStyle(.secondary)
             }
             Section("附加规则（\(rulesStore.rules.count) 条）") {
-                ForEach(rulesStore.rules, id: \.self) { rule in
-                    Text(rule)
-                        .font(.system(.body, design: .monospaced))
-                }
-                .onDelete { offsets in
-                    rulesStore.rules.remove(atOffsets: offsets)
-                    rulesStore.save()
+                if searchText.isEmpty {
+                    ForEach(rulesStore.rules, id: \.self) { rule in
+                        Text(rule)
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    .onDelete { offsets in
+                        rulesStore.rules.remove(atOffsets: offsets)
+                        rulesStore.save()
+                    }
+                    .onMove { from, to in
+                        rulesStore.rules.move(fromOffsets: from, toOffset: to)
+                        rulesStore.save()
+                    }
+                } else {
+                    if visibleRules.isEmpty {
+                        Text("没有匹配的规则")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(visibleRules, id: \.self) { rule in
+                        Text(rule)
+                            .font(.system(.body, design: .monospaced))
+                    }
+                    .onDelete { offsets in
+                        for index in offsets {
+                            let rule = visibleRules[index]
+                            rulesStore.rules.removeAll { $0 == rule }
+                        }
+                        rulesStore.save()
+                    }
                 }
                 HStack {
                     TextField("DOMAIN-SUFFIX,example.com,PROXY", text: $newRule)
@@ -83,6 +114,12 @@ struct AddedRulesView: View {
         }
         .navigationTitle("附加规则")
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "搜索规则")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+        }
     }
 
     private func addRule() {

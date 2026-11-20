@@ -14,6 +14,8 @@ struct DiagnosticsView: View {
     @EnvironmentObject private var mitmModuleStore: MitmModuleStore
     @EnvironmentObject private var logStore: LogStore
     let navigate: (ToolsDestination) -> Void
+    @State private var exportURL: URL?
+    @State private var exportMessage: String?
 
     var body: some View {
         List {
@@ -32,6 +34,21 @@ struct DiagnosticsView: View {
                 Text("无诊断记录：扩展没有写入 VPN 诊断文件（峰值内存、上次采样、上次阶段均不可用）。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            // FlClash diagnostics.dart:66: export the logs from
+            // this page (the Logs page itself already has share).
+            Section("日志") {
+                Button("导出日志") {
+                    exportLogs()
+                }
+                if let exportURL {
+                    ShareLink("分享导出的日志文件", item: exportURL)
+                }
+                if let exportMessage {
+                    Text(exportMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("最近问题（最近 8 条错误/警告日志）") {
                 let issues = logStore.entries.filter {
@@ -65,6 +82,23 @@ struct DiagnosticsView: View {
             Spacer()
             Text(value)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Writes the current log entries to a .log file in tmp and
+    /// offers it through a ShareLink.
+    private func exportLogs() {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("concord-logs-\(stamp).log")
+        do {
+            try logStore.exportText.write(to: url, atomically: true, encoding: .utf8)
+            exportURL = url
+            exportMessage = "已导出 \(logStore.entries.count) 条日志。"
+        } catch {
+            exportURL = nil
+            exportMessage = "导出失败：\(error.localizedDescription)"
         }
     }
 

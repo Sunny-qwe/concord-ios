@@ -7,8 +7,10 @@ import Foundation
 // The 代理 page's display options, persisted in UserDefaults:
 // style (tab / list), sort, layout (grid columns), card size, icon
 // style (group headers in list style) and hide-timeout. Defaults
-// match the page as it was: tab style, standard layout and card
-// size, filled icons, show every node.
+// match FlClash (ProxiesStyleProps, models/config.dart:423): list
+// style, standard layout and card size, filled icons, show every node.
+// A stored value always wins over the default, so a user who picked
+// 标签页 keeps it; only never-set installs change to 列表.
 
 enum ProxySort: String, CaseIterable, Identifiable {
     case `default` = "默认"
@@ -24,18 +26,21 @@ final class ProxyStyleStore: ObservableObject {
         var label: String { self == .tab ? "标签页" : "列表" }
     }
     /// 列数（FlClash getProxiesColumns）：手机宽度下紧凑 3 列、
-    /// 标准 2 列、宽松 1 列。
+    /// 标准 2 列、宽松 1 列。Case 顺序即 ⋯ 子菜单里的顺序
+    /// （FlClash enum.dart:213：loose, standard, tight）。
     enum Layout: String, CaseIterable {
-        case tight = "紧凑"
-        case standard = "标准"
         case loose = "宽松"
+        case standard = "标准"
+        case tight = "紧凑"
     }
     /// 卡片内容：紧凑只显示一行名称；标准两行名称；宽松再加一行
-    /// 描述（类型，组节点显示它当前选中的节点）。
+    /// 描述（类型，组节点显示它当前选中的节点）。Case 顺序即
+    /// ⋯ 子菜单里的顺序（FlClash enum.dart:215：
+    /// loose, standard, compact）。
     enum CardType: String, CaseIterable {
-        case compact = "紧凑"
-        case standard = "标准"
         case loose = "宽松"
+        case standard = "标准"
+        case compact = "紧凑"
     }
     /// 列表样式里组头的图标：色块（圆角底 + 首字）、纯图标
     /// （只有首字）、隐藏。
@@ -55,7 +60,7 @@ final class ProxyStyleStore: ObservableObject {
     private static let defaults = UserDefaults.standard
 
     init() {
-        style = Style(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.style") ?? "") ?? .tab
+        style = Style(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.style") ?? "") ?? .list
         sort = ProxySort(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.sort") ?? "") ?? .default
         layout = Layout(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.layout") ?? "") ?? .standard
         cardType = CardType(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.cardType") ?? "") ?? .standard

@@ -54,7 +54,8 @@ final class ProxyStore: ObservableObject {
     /// profile's LOCAL YAML instead of the core (VPN off — the core
     /// has no config loaded, so proxy.watch/proxy.groups are empty).
     /// The Proxies page shows a small "本地配置" note while this is
-    /// set; latency/delay tests stay unavailable until the VPN runs.
+    /// set. Delay tests still work while off: they run on the
+    /// app-side core (AppCore, v0.2.32).
     @Published var isLocalFallback = false
 
     /// The profile store, linked by the app at startup (ConcordiOSApp):
@@ -161,7 +162,13 @@ final class ProxyStore: ObservableObject {
     }
 
     /// One core read (proxy.watch snapshot, fallback proxy.groups),
-    /// shared by refresh() and the post-apply re-fetch.
+    /// shared by refresh() and the post-apply re-fetch. An empty
+    /// result (no groups at all) is treated as a failure, not as a
+    /// real answer: a core that loaded the profile always has its
+    /// groups, so zero groups means the snapshot was stale/empty or
+    /// the core has not finished applying — the caller then falls
+    /// back to the local YAML instead of showing an empty page
+    /// (v0.2.32: the v0.2.31 "节点也看不见" report).
     private func fetchCoreGroups() async throws {
         // proxy.watch is the live table: the extension subscribes
         // once at startup and rewrites snapshots/proxies.json on
@@ -173,6 +180,9 @@ final class ProxyStore: ObservableObject {
             result = try await client.proxyWatchSnapshot()
         } catch {
             result = try await client.proxyGroups()
+        }
+        guard !result.groups.isEmpty else {
+            throw ConcordClientError.transport("核心未返回策略组（快照为空）")
         }
         let nodeTypes = Dictionary(uniqueKeysWithValues: result.nodes.map { ($0.name, $0) })
         groups = result.groups.filter { !$0.hidden }.map { g in
@@ -320,6 +330,12 @@ final class ProxyStore: ObservableObject {
     /// polled here until the run reports `done` (up to ~60 s). If the
     /// run cannot start, or the poll never completes, it falls back to
     /// sequential delay.test calls — the same results, just slower.
+    /// With the VPN OFF (live mode) the test runs on the app-side
+    /// core (AppCore, FlClash parity) instead of failing: the
+    /// extension's core is down, so the batch/sequential calls below
+    /// go to AppCore. A transport failure (no core at all) never
+    /// records -2 — a throw means the test never ran, not that the
+    /// node failed; only a returned value of -2 marks a failure.
     @MainActor
     func testLatency() async {
         var nodes: [(name: String, url: String?)] = []
@@ -334,9 +350,15 @@ final class ProxyStore: ObservableObject {
     /// Batch latency test for one group only (the bolt on a group
     /// header, or the top bolt in tab style, which tests the current
     /// group). Same batch/sequential logic as the all-groups test.
+    /// `nodeNames`, when given, restricts the test to those nodes
+    /// (the Proxies page passes the search-matching names while
+    /// searching — FlClash tests only search matches).
     @MainActor
-    func testLatency(group: ProxyGroup) async {
-        await runLatencyTest(nodes: group.nodes.filter { $0.type != "DIRECT" }.map { (name: $0.name, url: group.testUrl) }, groupNames: [group.name], batchURL: group.testUrl.isEmpty ? nil : group.testUrl)
+    func testLatency(group: ProxyGroup, nodeNames: [String]? = nil) async {
+        let names = nodeNames.map { Set($0) }
+        let nodes = group.nodes.filter { $0.type != "DIRECT" && (names == nil || names!.contains($0.name)) }
+            .map { (name: $0.name, url: group.testUrl) }
+        await runLatencyTest(nodes: nodes, groupNames: [group.name], batchURL: group.testUrl.isEmpty ? nil : group.testUrl)
     }
 
     @MainActor
@@ -344,16 +366,41 @@ final class ProxyStore: ObservableObject {
         guard !nodes.isEmpty, testingGroups.isDisjoint(with: groupNames) else { return }
         testingGroups.formUnion(groupNames)
         defer { testingGroups.subtract(groupNames) }
+        // Backend: the extension's core while the VPN runs; the
+        // app-side core (AppCore) while it is off; the sample
+        // transport in sample mode. When the VPN is off and the
+        // app-side core cannot start (no profile, engine failure),
+        // the test cannot run at all — leave the nodes untested
+        // (no -2) and say why.
+        let useAppCore = client.mode == .live && !TunnelManager.shared.isRunning
+        if useAppCore {
+            do {
+                try await AppCore.shared.ensureStarted()
+            } catch {
+                lastError = error.localizedDescription
+                return
+            }
+        }
         if client.mode == .live {
             let names = nodes.map { $0.name }
             do {
-                _ = try await client.delayRunStart(proxies: names, url: batchURL)
+                if useAppCore {
+                    _ = try await AppCore.shared.delayRunStart(proxies: names, url: batchURL)
+                } else {
+                    _ = try await client.delayRunStart(proxies: names, url: batchURL)
+                }
                 var polls = 0
                 while polls < 120, !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 500_000_000)
                     polls += 1
                     do {
-                        let snapshot = try await client.delayRunPoll()
+                        let snapshot: DelayRunSnapshot
+                        if useAppCore {
+                            guard let polled = await AppCore.shared.delayRunPoll() else { continue }
+                            snapshot = polled
+                        } else {
+                            snapshot = try await client.delayRunPoll()
+                        }
                         for result in snapshot.results {
                             latencies[result.name] = result.value
                         }
@@ -380,20 +427,40 @@ final class ProxyStore: ObservableObject {
         }
         for node in nodes {
             do {
-                let result = try await client.delayTest(proxy: node.name, url: node.url)
+                let result: ConcordDelayResult
+                if useAppCore {
+                    result = try await AppCore.shared.delayTest(proxy: node.name, url: node.url)
+                } else {
+                    result = try await client.delayTest(proxy: node.name, url: node.url)
+                }
                 latencies[node.name] = result.value
             } catch {
-                latencies[node.name] = -2
+                // A throw means the CALL failed (transport / core
+                // down), not that the node failed: the core reports
+                // a node failure as a returned value of -2, never
+                // as a throw. Leave the node untested and stop —
+                // the backend is down, further calls fail too.
+                break
             }
         }
         applyLatencies()
         lastError = nil
     }
 
+    /// One node's delay (the per-node chip tap). Passes the group's
+    /// test URL (FlClash _handleTestCurrentDelay). Uses the app-side
+    /// core when the VPN is off; a transport failure only sets
+    /// lastError and leaves the chip unchanged.
     @MainActor
-    func testLatency(node: ProxyNode) async {
+    func testLatency(node: ProxyNode, testURL: String? = nil) async {
         do {
-            let result = try await client.delayTest(proxy: node.name)
+            let result: ConcordDelayResult
+            if client.mode == .live && !TunnelManager.shared.isRunning {
+                try await AppCore.shared.ensureStarted()
+                result = try await AppCore.shared.delayTest(proxy: node.name, url: testURL)
+            } else {
+                result = try await client.delayTest(proxy: node.name, url: testURL)
+            }
             latencies[node.name] = result.value
             applyLatencies()
         } catch {

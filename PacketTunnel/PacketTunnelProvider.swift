@@ -6,8 +6,10 @@ import os
 // PacketTunnelProvider — Network Extension entry point.
 //
 // The Concord core runs IN THIS PROCESS (in-process staticlib; iOS
-// forbids spawning a helper process). The app process NEVER loads the
-// core: it talks to this extension through NEProviderManager /
+// forbids spawning a helper process). The app process loads the core
+// too, but only for delay tests with the VPN off
+// (ConcordiOS/Models/AppCore.swift) — never while the tunnel runs.
+// This extension talks to the app through NEProviderManager /
 // sendProviderMessage (JSON-RPC) and reads live snapshots from the App
 // Group container (see "Extension <-> app IPC" below).
 //
@@ -43,7 +45,8 @@ import os
 //   triggered by an inbound packet (timers, retransmits) still flows.
 //   Packets are bare IP packets (no utun header) on both sides.
 //
-// Extension <-> app IPC (the app never loads the core):
+// Extension <-> app IPC (the app loads the core only for delay
+// tests with the VPN off; see AppCore.swift):
 //   * App -> extension (commands): NETunnelProviderManager /
 //     NETunnelProviderSession.sendProviderMessage, carrying ONE JSON-RPC
 //     2.0 request per message (the same envelope ConcordClient builds).
@@ -320,6 +323,33 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // is enforced on the reader side (TunnelManager).
 
     private var startupID = UUID().uuidString
+    /// When this run's tunnel came up (for the diagnostics file).
+    private var tunnelStartedAt: Date?
+
+    /// VPN evidence for the app's Diagnostics page (FlClash
+    /// diagnostics shows peak memory / last sample / last stage /
+    /// startup record from the tunnel diagnostics file; ours had
+    /// none). Written at "running", refreshed on the watchdog tick
+    /// (30 s) and at "stopped": stage, pid, start time, packet
+    /// counters and the last core-message time, so a crash loop is
+    /// diagnosable after the fact instead of invisible.
+    private func writeVPNDiagnostics(stage: String) {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) else { return }
+        let record: [String: Any] = [
+            "stage": stage,
+            "startupId": startupID,
+            "pid": ProcessInfo.processInfo.processIdentifier,
+            "startedAt": tunnelStartedAt.map { Int64($0.timeIntervalSince1970 * 1000) } as Any,
+            "updatedAt": Int64(Date().timeIntervalSince1970 * 1000),
+            "packetsIn": packetsIn,
+            "packetsOut": packetsOut,
+            "packetsDroppedFull": packetsDroppedFull,
+            "lastCoreMessageAt": lastCoreMessageAt.map { Int64($0.timeIntervalSince1970 * 1000) } as Any,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: record) else { return }
+        try? data.write(to: container.appendingPathComponent("vpn-diagnostics.json"), options: .atomic)
+    }
 
     private func recordStartup(_ stage: String, error: Error? = nil) {
         guard let container = FileManager.default.containerURL(
@@ -356,7 +386,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     override func startTunnel(options: [String: NSObject]?, completionHandler: @escaping (Error?) -> Void) {
         // The extension retains itself for the core session's lifetime
         // (released by releaseCallback when the session ends).
-        startupID = UUID().uuidString
+        // Adopt the app's startupID when it passed one in
+        // startVPNTunnel(options:) (FlClash TunnelStartupDiagnostic:
+        // the diagnostic record is correlated by ID, not just by
+        // freshness); mint one when it did not.
+        if let id = options?["startupID"] as? String, !id.isEmpty {
+            startupID = id
+        } else {
+            startupID = UUID().uuidString
+        }
+        // A reused extension process keeps the previous run's tables
+        // in memory (FlClash clears its runtime at the top of
+        // startTunnel): reset them so a stale proxy table or a dead
+        // delay-run accumulator cannot leak into this run.
+        resetRunState()
         recordStartup("extension-entered")
         let context = Unmanaged.passRetained(self).toOpaque()
         Task {
@@ -381,6 +424,28 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 completionHandler(error)
             }
         }
+    }
+
+    /// Clears the per-run in-memory tables before a (re)start, so a
+    /// reused extension process never serves the previous run's
+    /// proxy table, connections, buffers or delay-run state.
+    /// Called at the top of startTunnel (FlClash clears its runtime
+    /// there too); tearDownCore already closes the channel/session.
+    private func resetRunState() {
+        proxyOrder = []
+        proxyGroups = []
+        proxyNodes = []
+        connectionTable.removeAll()
+        logBuffer.removeAll()
+        dnsBuffer.removeAll()
+        eventBuffer.removeAll()
+        delayRun = nil
+        lastCoreMessageAt = nil
+        watchdogFailures = 0
+        packetsIn = 0
+        packetsOut = 0
+        packetsDroppedFull = 0
+        ringFullStreak = 0
     }
 
     private func bootCore(context: UnsafeMutableRawPointer) async throws {
@@ -409,10 +474,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         _ = try await sendCoreRequest(method: "core.hello", params: [
             "protocol": ["min": 1, "max": 1],
             "client": ["name": "concord-ios", "version": "0.2.0"],
-        ])
+        ], timeoutSeconds: 60)
         _ = try await sendCoreRequest(method: "core.init", params: [
             "home": container.path,
-        ])
+        ], timeoutSeconds: 60)
 
         // config.apply: the profile path is absolute (home is the App
         // Group container); the MITM + DNS overlays come from mitm.json
@@ -472,8 +537,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
            let capture = mitmJSON["capture"] as? Bool {
             applyParams["options"] = ["mitmCapture": capture]
         }
-        _ = try await sendCoreRequest(method: "config.apply", params: applyParams)
-        _ = try await sendCoreRequest(method: "engine.start", params: [:])
+        _ = try await sendCoreRequest(method: "config.apply", params: applyParams, timeoutSeconds: 60)
+        _ = try await sendCoreRequest(method: "engine.start", params: [:], timeoutSeconds: 60)
         recordStartup("core-configured")
 
         // General settings saved in the app (general.json) are patched
@@ -494,7 +559,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         }
                     }
                 }
-                _ = try await sendCoreRequest(method: "config.patch", params: patch)
+                _ = try await sendCoreRequest(method: "config.patch", params: patch, timeoutSeconds: 60)
             } catch {
                 Self.log.error("startup config.patch failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -513,7 +578,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         channelHandle = handle
 
-        var addresses = ["\(tunnelAddress)/32"]
+        // FlClash PacketTunnelNetworkConfiguration: the tun address
+        // is 198.18.0.1/30 (not /32) — the core gets the same /30
+        // prefix the NE interface uses.
+        var addresses = ["\(tunnelAddress)/30"]
         if tun.ipv6 {
             // The core parses each address as a CIDR prefix and sorts
             // IPv4 into inet4_address, IPv6 into inet6_address
@@ -532,8 +600,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             tunParams["congestionController"] = congestionController
         }
         recordStartup("tun-start")
-        _ = try await sendCoreRequest(method: "tun.start", params: tunParams)
-
+        _ = try await sendCoreRequest(method: "tun.start", params: tunParams, timeoutSeconds: 60)
         // Tunnel interface: the system owns routing; the core must not
         // install routes (upstream: Os::Other -> NullBackend on iOS).
         // IPv6 is configured from tunnel.json when the user enabled it
@@ -600,12 +667,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         try await subscribeToStreams()
         startPump()
         startStabilityGuards()
+        tunnelStartedAt = Date()
+        writeVPNDiagnostics(stage: "running")
         Self.log.info("tunnel up: channel \(handle), stack \(tun.stack, privacy: .public), mtu \(tun.mtu)")
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         isStopping = true
         recordStartup("stopped")
+        writeVPNDiagnostics(stage: "stopped")
         pumpRunning = false
         drainTimer?.cancel()
         drainTimer = nil
@@ -788,7 +858,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     /// Sends one JSON-RPC request object and awaits its response bytes
     /// (with the app's original id restored when `appID` is set).
-    private func sendRawJSONRPC(_ request: [String: Any], appID: Int? = nil) async throws -> Data {
+    private func sendRawJSONRPC(_ request: [String: Any], appID: Int? = nil, timeoutSeconds: TimeInterval = 15) async throws -> Data {
         let extID = locked { () -> Int in
             let id = nextRequestID
             nextRequestID += 1
@@ -814,10 +884,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     continuation.resume(throwing: TunnelSetupError.rpcFailed("会话不存在"))
                     return
                 }
-                self.coreQueue.asyncAfter(deadline: .now() + 15) {
+                self.coreQueue.asyncAfter(deadline: .now() + timeoutSeconds) {
                     if let request = self.pending.removeValue(forKey: extID) {
                         request.continuation.resume(
-                            throwing: TunnelSetupError.rpcFailed("调用超时（15s）"))
+                            throwing: TunnelSetupError.rpcFailed("调用超时（\(Int(timeoutSeconds))s）"))
                     }
                 }
             }
@@ -826,8 +896,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     /// Sends one request and returns its `result` value (throws on an
     /// error object). Used for the extension's own startup calls.
-    private func sendCoreRequest(method: String, params: [String: Any]) async throws -> Any {
-        let data = try await sendRawJSONRPC(["method": method, "params": params])
+    /// The boot sequence uses a 60 s timeout (v0.2.32): a healthy
+    /// but slow boot — config.apply loading GeoIP data, the core
+    /// warming up — must not be aborted at 15 s and reported as a
+    /// failure that feeds the On-Demand restart loop.
+    private func sendCoreRequest(method: String, params: [String: Any], timeoutSeconds: TimeInterval = 15) async throws -> Any {
+        let data = try await sendRawJSONRPC(["method": method, "params": params], timeoutSeconds: timeoutSeconds)
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw TunnelSetupError.rpcFailed("核心返回了无法解析的响应（\(method)）")
         }
@@ -887,32 +961,32 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // arrive as events, so the extension accumulates them.
         let traffic = try await sendCoreRequest(method: "traffic.watch", params: [
             "interval_ms": 1000, "credit": 8,
-        ])
+        ], timeoutSeconds: 60)
         registerStream(result: traffic, kind: .traffic)
         let connection = try await sendCoreRequest(method: "connection.watch", params: [
             "counters": true, "credit": 8,
-        ])
+        ], timeoutSeconds: 60)
         registerStream(result: connection, kind: .connection)
-        let log = try await sendCoreRequest(method: "log.watch", params: ["credit": 8])
+        let log = try await sendCoreRequest(method: "log.watch", params: ["credit": 8], timeoutSeconds: 60)
         registerStream(result: log, kind: .log)
-        let dns = try await sendCoreRequest(method: "dns.watch", params: ["credit": 8])
+        let dns = try await sendCoreRequest(method: "dns.watch", params: ["credit": 8], timeoutSeconds: 60)
         registerStream(result: dns, kind: .dns)
         // proxy.watch snapshot is the current ProxyGroups; its events
         // are ProxyDelta {order?, groups, nodes, removed}.
-        let proxy = try await sendCoreRequest(method: "proxy.watch", params: ["credit": 8])
+        let proxy = try await sendCoreRequest(method: "proxy.watch", params: ["credit": 8], timeoutSeconds: 60)
         registerStream(result: proxy, kind: .proxy)
         // route.watch snapshot is the current RouteStamp; its events
         // are RouteStamp values (latest policy).
-        let route = try await sendCoreRequest(method: "route.watch", params: ["credit": 8])
+        let route = try await sendCoreRequest(method: "route.watch", params: ["credit": 8], timeoutSeconds: 60)
         registerStream(result: route, kind: .route)
         // events.watch has NO snapshot — its CoreEvent items only
         // arrive as events, so the extension accumulates them like
         // log/dns.watch.
-        let events = try await sendCoreRequest(method: "events.watch", params: ["credit": 8])
+        let events = try await sendCoreRequest(method: "events.watch", params: ["credit": 8], timeoutSeconds: 60)
         registerStream(result: events, kind: .events)
         // engine.state snapshot is the current EngineStatus; its
         // events are EngineStatus values (latest policy).
-        let engine = try await sendCoreRequest(method: "engine.state", params: ["credit": 8])
+        let engine = try await sendCoreRequest(method: "engine.state", params: ["credit": 8], timeoutSeconds: 60)
         registerStream(result: engine, kind: .engine)
     }
 
@@ -950,7 +1024,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 case .events: params = ["credit": 8]
                 case .engine: params = ["credit": 8]
                 }
-                let result = try await self.sendCoreRequest(method: kind.methodName, params: params)
+                let result = try await self.sendCoreRequest(method: kind.methodName, params: params, timeoutSeconds: 60)
                 self.coreQueue.async { self.registerStream(result: result, kind: kind) }
             } catch {
                 Self.log.error("resubscribe \(kind.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -1301,6 +1375,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             guard self.session != 0, !self.isStopping, self.pumpRunning else { return }
             guard let last = self.lastCoreMessageAt else { return }
             let silent = Date().timeIntervalSince(last)
+            // Refresh the diagnostics file on every tick so the
+            // packet counters stay current for the app's
+            // Diagnostics page even when the tunnel is healthy.
+            self.writeVPNDiagnostics(stage: "running")
             if silent > 75 {
                 self.watchdogFailures += 1
                 Self.log.error("watchdog: no core message for \(Int(silent))s (failure \(self.watchdogFailures)/2)")
@@ -1434,8 +1512,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let enabled = json["enabled"] as? Bool ?? true
             let stack = json["stack"] as? String ?? "gvisor"
             let tunOverrides = effectiveOverrides(section: "tun")
-            let mtu = (tunOverrides?["mtu"] as? NSNumber)?.intValue
-                ?? (json["mtu"] as? NSNumber)?.intValue ?? 1500
+            // FlClash PacketTunnelSharedStateStore
+            // (PacketTunnelVPNOptions.tunMTU): clamp into
+            // 1280...65535 — below 1280 the system drops the IPv6
+            // address.
+            let mtu = max(1280, min(65535,
+                (tunOverrides?["mtu"] as? NSNumber)?.intValue
+                    ?? (json["mtu"] as? NSNumber)?.intValue ?? 1500))
             let dns = json["dns"] as? [String] ?? ["223.5.5.5", "8.8.8.8"]
             let ipv6 = json["ipv6"] as? Bool ?? false
             let ipv6Address = json["ipv6-address"] as? String ?? "fdfe:dcba:9876::1/126"

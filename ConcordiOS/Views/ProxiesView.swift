@@ -8,8 +8,10 @@ import SwiftUI
 //   menu (FlClash PopupMenu): 风格/排序/布局/尺寸/图标样式, each
 //   opening a submenu with a checkmark on the current value, plus
 //   隐藏超时代理. No test-all and no refresh in the menu (FlClash
-//   has neither there); no locate button in the bar — re-tapping the
-//   active group pill scrolls to the selected node.
+//   has neither there). The locate button (tab style only, a
+//   separate bar item after the pill — FlClash proxies.dart:164-172)
+//   scrolls to the selected node; re-tapping the active group pill
+//   does the same.
 // - Style 标签页： group pills on top, one group's nodes as cards in
 //   a grid. Style 列表： every group stacked with a collapsible
 //   header (icon, name, selected node, per-group delay test +
@@ -36,18 +38,56 @@ struct ProxiesView: View {
     @State private var showMoreMenu = false
     @State private var menuLevel: MenuLevel = .root
     @State private var selectedGroupName: String?
-    @State private var collapsedGroups: Set<String> = []
+    /// Groups the user expanded in list style. FlClash's unfoldSet
+    /// (models/profile.dart:78) defaults to {} — groups start
+    /// collapsed — so this set starts empty too.
+    @State private var expandedGroups: Set<String> = []
     @State private var detailNode: ProxyNode?
+    @State private var detailTestURL: String?
     @State private var notice: String?
     @State private var scrollTargetName: String?
     @State private var scrollNonce = 0
 
     private static let groupTypes: Set<String> = ["select", "url-test", "fallback", "load-balance", "relay"]
-    private static let unprobeableTypes: Set<String> = ["DIRECT", "REJECT", "REJECT-DROP", "COMPATIBLE", "PASS"]
-    private static let reservedNames: Set<String> = ["DIRECT", "REJECT", "REJECT-DROP", "COMPATIBLE", "PASS", "GLOBAL"]
+    /// Built-in adapters whose delay probe always fails, so a timeout
+    /// says nothing (FlClash _unprobeableProxyTypes,
+    /// common/compute.dart:60-64). DIRECT is deliberately absent:
+    /// FlClash does not keep it. Spelling is FlClash's; the
+    /// comparison below is case- and hyphen-insensitive because the
+    /// Rust core spells these "REJECT-DROP"/"DIRECT" style.
+    private static let unprobeableTypes: Set<String> = ["Reject", "RejectDrop", "Pass", "PassRule", "Rematch", "Compatible", "Dns"]
+    private static let unprobeableTypesNormalized: Set<String> = Set(unprobeableTypes.map { $0.lowercased().replacingOccurrences(of: "-", with: "") })
+    /// Names the core registers before any proxy is parsed, so
+    /// neither a proxy nor a group can take one (FlClash
+    /// reservedCustomProxyNames, providers/state/custom.dart:110-121).
+    private static let reservedNames: Set<String> = ["DIRECT", "REJECT", "REJECT-DROP", "COMPATIBLE", "PASS", "PASS-RULE", "GLOBAL"]
 
     private var searching: Bool {
         !searchText.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Search terms (FlClash SearchQuery, common/search.dart:3-30):
+    /// the query splits on whitespace and EVERY term must match.
+    private var searchTerms: [String] {
+        searchText.lowercased().split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    /// A node matches when every search term appears in its name or
+    /// type (FlClash SearchQuery.matches over [name, type]).
+    private func matchesSearch(_ node: ProxyNode) -> Bool {
+        guard !searchTerms.isEmpty else { return true }
+        let text = (node.name + "\n" + node.type).lowercased()
+        return searchTerms.allSatisfy { text.contains($0) }
+    }
+
+    /// Search-matching node names of one group, from the RAW group
+    /// (FlClash delayTestPageGroup matches against group.all, not
+    /// the hide-timeout-filtered list). Nil while not searching, so
+    /// the group test covers the whole group.
+    private func searchMatchedNodeNames(forGroupNamed name: String) -> [String]? {
+        guard searching else { return nil }
+        guard let raw = proxyStore.groups.first(where: { $0.name == name }) else { return [] }
+        return raw.nodes.filter(matchesSearch).map(\.name)
     }
 
     private var selectedGroup: ProxyGroup? {
@@ -58,9 +98,10 @@ struct ProxiesView: View {
     }
 
     /// Groups after search + hide-timeout + sort (FlClash:
-    /// filterGroupsState + computeHideTimeout). Searching bypasses
-    /// hide-timeout, so a group whose matches all timed out keeps
-    /// them; a group left with no visible node keeps all its nodes.
+    /// filterGroupsState + computeHideTimeout). Search runs FIRST,
+    /// then hide-timeout applies to the filtered groups (providers/
+    /// state/proxies.dart:100-117), so a timed-out match is still
+    /// hidden; a group left with no visible node keeps all its nodes.
     /// Group identity is preserved (copies keep the same id), so the
     /// expanded/collapsed state and scroll ids survive a refresh.
     private var visibleGroups: [ProxyGroup] {
@@ -68,12 +109,10 @@ struct ProxiesView: View {
         for group in proxyStore.groups {
             var nodes = group.nodes
             if searching {
-                nodes = nodes.filter { node in
-                    node.name.localizedCaseInsensitiveContains(searchText)
-                        || node.type.localizedCaseInsensitiveContains(searchText)
-                }
+                nodes = nodes.filter(matchesSearch)
                 guard !nodes.isEmpty else { continue }
-            } else if styleStore.hideTimeout {
+            }
+            if styleStore.hideTimeout {
                 let kept = nodes.filter { keepWhenHidingTimeout($0, in: group) }
                 if !kept.isEmpty { nodes = kept }
             }
@@ -90,15 +129,41 @@ struct ProxiesView: View {
         // to choose that group.
         if node.name == group.selectedNodeName { return true }
         if proxyStore.groups.contains(where: { $0.name == node.name }) { return true }
-        if Self.unprobeableTypes.contains(node.type) { return true }
+        if Self.isUnprobeableType(node.type) { return true }
         guard let ms = node.latencyMs else { return true }
         return ms > 0
+    }
+
+    /// Case- and hyphen-insensitive match against the FlClash
+    /// unprobeable set, so "REJECT-DROP" and "RejectDrop" both match.
+    private static func isUnprobeableType(_ type: String) -> Bool {
+        Self.unprobeableTypesNormalized.contains(type.lowercased().replacingOccurrences(of: "-", with: ""))
+    }
+
+    /// Delay-sort priority (FlClash DelayState, models/common.dart:
+    /// 1046-1064): valid latency → untested (nil, FlClash delay ?? 0)
+    /// → timeout (-1) → other failures.
+    private static func delayPriority(_ node: ProxyNode) -> Int {
+        guard let ms = node.latencyMs else { return 1 }
+        if ms > 0 { return 0 }
+        if ms == -1 { return 2 }
+        return 3
     }
 
     private func sortNodes(_ nodes: [ProxyNode]) -> [ProxyNode] {
         switch styleStore.sort {
         case .default: return nodes
-        case .delay: return nodes.sorted { ($0.latencyMs ?? Int32.max) < ($1.latencyMs ?? Int32.max) }
+        case .delay: return nodes.sorted { a, b in
+            let pa = Self.delayPriority(a), pb = Self.delayPriority(b)
+            if pa != pb { return pa < pb }
+            let da = a.latencyMs ?? 0, db = b.latencyMs ?? 0
+            if da != db { return da < db }
+            // Ties: nested groups first (FlClash DelayState.compareTo).
+            let aIsGroup = proxyStore.groups.contains { $0.name == a.name }
+            let bIsGroup = proxyStore.groups.contains { $0.name == b.name }
+            if aIsGroup != bIsGroup { return aIsGroup }
+            return false
+        }
         case .name: return nodes.sorted { $0.name < $1.name }
         }
     }
@@ -172,12 +237,17 @@ struct ProxiesView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     topBarPill
                 }
+                if styleStore.style == .tab {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        locateButton
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     moreButton
                 }
             }
             .sheet(item: $detailNode) { node in
-                NodeDetailView(node: node)
+                NodeDetailView(node: node, testURL: detailTestURL)
             }
             .task { if proxyStore.groups.isEmpty { await proxyStore.refresh(activeProfile: profileStore.activeProfile) } }
             .onChange(of: profileStore.activeProfile?.id) { _, _ in
@@ -201,9 +271,10 @@ struct ProxiesView: View {
     /// page and renders invisible. No dividers between the grouped
     /// buttons. The bolt only shows in tab style, where it tests the
     /// current group; the search is a magnifier button that presents
-    /// the search field. There is no separate locate button in the
-    /// bar (FlClash folds it into the ⋯ menu) — re-tapping the
-    /// active group pill scrolls to the selected node.
+    /// the search field. The locate button is a separate bar item
+    /// (tab style only, FlClash proxies.dart:164-172) — it is NOT
+    /// folded into the ⋯ menu; re-tapping the active group pill
+    /// scrolls to the selected node too.
     /// The pill and the ⋯ are TWO toolbar items, not one HStack:
     /// with a single item SwiftUI anchors the ⋯ popover to the whole
     /// 140pt bar, so its arrow pointed at the bolt (v0.2.28). The
@@ -229,6 +300,22 @@ struct ProxiesView: View {
         .background(ConcordTheme.cardBackground, in: Capsule())
     }
 
+    /// The locate button: tab style only, a separate bar item after
+    /// the pill (FlClash proxies.dart:164-172, `if (_isTab &&
+    /// !picker)`). Scrolls to the current group's selected node;
+    /// a no-op when nothing is selected, as in FlClash.
+    private var locateButton: some View {
+        Button { scrollToSelected(in: selectedGroup) } label: {
+            Image(systemName: "location.fill")
+                .font(.system(size: 19, weight: .semibold))
+                .imageScale(.medium)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("滚动到已选")
+        .background(ConcordTheme.cardBackground, in: Circle())
+    }
+
     private var moreButton: some View {
         Button { showMoreMenu = true } label: {
             Image(systemName: "ellipsis")
@@ -246,12 +333,15 @@ struct ProxiesView: View {
     }
 
     /// The bolt: in tab style it tests the current group (FlClash
-    /// delayTestCurrentGroup). There is no test-all in the ⋯ menu —
-    /// the bolt is the delay test, as in FlClash.
+    /// delayTestCurrentGroup → delayTestPageGroup). There is no
+    /// test-all in the ⋯ menu — the bolt is the delay test, as in
+    /// FlClash. While searching only the search-matching nodes are
+    /// tested (FlClash delayTestPageGroup(matchSearch: true),
+    /// providers/actions/proxies.dart:353-375).
     private func topBarBoltButton(for group: ProxyGroup?) -> some View {
         let testing = group.map { proxyStore.testingGroups.contains($0.name) } ?? false
         return Button {
-            if let group { Task { await proxyStore.testLatency(group: group) } }
+            if let group { Task { await proxyStore.testLatency(group: group, nodeNames: searchMatchedNodeNames(forGroupNamed: group.name)) } }
         } label: {
             if testing {
                 ProgressView()
@@ -522,7 +612,10 @@ struct ProxiesView: View {
                     }
                     .onChange(of: scrollNonce) { _, _ in
                         if let target = scrollTargetName {
-                            withAnimation { reader.scrollTo(target, anchor: .center) }
+                            // Group headers scroll to the top of the
+                            // viewport; nodes scroll to the centre.
+                            let anchor: UnitPoint = target.hasPrefix("groupHeader:") ? .top : .center
+                            withAnimation { reader.scrollTo(target, anchor: anchor) }
                         }
                     }
                     .refreshable { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
@@ -557,7 +650,7 @@ struct ProxiesView: View {
     }
 
     private func groupSection(_ group: ProxyGroup, width: CGFloat) -> some View {
-        let expanded = !collapsedGroups.contains(group.name)
+        let expanded = expandedGroups.contains(group.name)
         return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 groupIcon(group)
@@ -578,7 +671,7 @@ struct ProxiesView: View {
                     }
                     let testing = proxyStore.testingGroups.contains(group.name)
                     Button {
-                        Task { await proxyStore.testLatency(group: group) }
+                        Task { await proxyStore.testLatency(group: group, nodeNames: searchMatchedNodeNames(forGroupNamed: group.name)) }
                     } label: {
                         if testing {
                             ProgressView()
@@ -604,8 +697,20 @@ struct ProxiesView: View {
             .padding(12)
             .contentShape(Rectangle())
             .onTapGesture {
-                if expanded { collapsedGroups.insert(group.name) }
-                else { collapsedGroups.remove(group.name) }
+                if expanded {
+                    expandedGroups.remove(group.name)
+                } else {
+                    expandedGroups.insert(group.name)
+                    // FlClash _handleChange (list.dart:45-60) scrolls
+                    // the group into view on every toggle; collapsing
+                    // needs none (the header stays put), but an
+                    // expanding group does — once its rows are laid out.
+                    Task {
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                        scrollTargetName = groupHeaderID(group.name)
+                        scrollNonce += 1
+                    }
+                }
             }
             if expanded {
                 LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
@@ -618,7 +723,12 @@ struct ProxiesView: View {
                 .padding(.bottom, 12)
             }
         }
+        .id(groupHeaderID(group.name))
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    private func groupHeaderID(_ groupName: String) -> String {
+        "groupHeader:\(groupName)"
     }
 
     /// Group icon (FlClash _GroupIcon): the profile's icon when it
@@ -706,8 +816,8 @@ struct ProxiesView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                Button { Task { await proxyStore.testLatency(node: node) } } label: {
-                    LatencyChip(latencyMs: node.latencyMs)
+                Button { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } } label: {
+                    DelayText(latencyMs: node.latencyMs)
                 }
                 .buttonStyle(.plain)
             } else {
@@ -718,8 +828,8 @@ struct ProxiesView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer()
-                    Button { Task { await proxyStore.testLatency(node: node) } } label: {
-                        LatencyChip(latencyMs: node.latencyMs)
+                    Button { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } } label: {
+                        DelayText(latencyMs: node.latencyMs)
                     }
                     .buttonStyle(.plain)
                 }
@@ -739,13 +849,24 @@ struct ProxiesView: View {
         Group {
             let pinned = group.fixed == node.name
             let selected = group.selectedNodeName == node.name
+            // FlClash card.dart:120-145: a constant label ("选择" for
+            // Selector, "首选" for url-test/fallback) with a checkmark
+            // on the current state — the label never toggles.
             if group.type == "select" {
                 Button { Task { await selectNode(node, in: group) } } label: {
-                    Label("选择", systemImage: selected ? "checkmark" : "circle")
+                    HStack {
+                        Text("选择")
+                        Spacer()
+                        if selected { Image(systemName: "checkmark") }
+                    }
                 }
             } else if group.type == "url-test" || group.type == "fallback" {
                 Button { Task { await selectNode(node, in: group) } } label: {
-                    Label(pinned ? "取消首选" : "设为首选", systemImage: pinned ? "pin.fill" : "pin")
+                    HStack {
+                        Text("首选")
+                        Spacer()
+                        if pinned { Image(systemName: "checkmark") }
+                    }
                 }
             }
             if isAddable(node) {
@@ -753,17 +874,35 @@ struct ProxiesView: View {
                     Label("添加到本地节点", systemImage: "plus.square.on.square")
                 }
             }
-            Button { Task { await proxyStore.testLatency(node: node) } } label: {
+            Button { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } } label: {
                 Label("测速", systemImage: "bolt")
             }
-            Button { detailNode = node } label: {
+            Button {
+                detailTestURL = nodeTestURL(group)
+                detailNode = node
+            } label: {
                 Label("节点详情", systemImage: "info.circle")
             }
         }
     }
 
+    /// The group's test URL for a single-node delay test (FlClash
+    /// _handleTestCurrentDelay, card.dart:273-283); nil when the
+    /// group has none, so the core falls back to its default.
+    private func nodeTestURL(_ group: ProxyGroup) -> String? {
+        group.testUrl.isEmpty ? nil : group.testUrl
+    }
+
     private func isAddable(_ node: ProxyNode) -> Bool {
-        !Self.groupTypes.contains(node.type) && !Self.reservedNames.contains(node.name)
+        // FlClash _isAddableToLocal (card.dart:37-41): addable when
+        // the node came from a provider or the profile is not
+        // custom, and the name is not reserved and the node is not
+        // itself a group. Our "本地文件" profile is the
+        // custom-profile analogue: its own proxies are already local.
+        let fromProviderOrNotCustom = node.provider != nil || profileStore.activeProfile?.kind != .file
+        return fromProviderOrNotCustom
+            && !Self.groupTypes.contains(node.type)
+            && !Self.reservedNames.contains(node.name)
     }
 
     // MARK: - Actions
@@ -795,8 +934,8 @@ struct ProxiesView: View {
     /// List style: expand a collapsed group first, then scroll once
     /// its cards are laid out.
     private func scrollToSelectedInList(_ group: ProxyGroup) {
-        if collapsedGroups.contains(group.name) {
-            collapsedGroups.remove(group.name)
+        if !expandedGroups.contains(group.name) {
+            expandedGroups.insert(group.name)
             Task {
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 scrollToSelected(in: group)
@@ -842,6 +981,34 @@ struct ProxiesView: View {
     }
 }
 
+/// Delay text, FlClash _DelayText (card.dart:258-400): plain text,
+/// no capsule. <600ms success green, >=600ms warning orange, <0
+/// error red; -1 is 超时, other negatives 测速失败
+/// (ui/delay_color.dart:5-10, common/app_localizations.dart:130-134).
+/// Untested shows the bolt glyph, as in FlClash.
+private struct DelayText: View {
+    let latencyMs: Int32?
+
+    var body: some View {
+        Group {
+            if let ms = latencyMs {
+                if ms > 0 {
+                    Text("\(ms) ms")
+                        .foregroundStyle(ms < 600 ? Color.green : Color.orange)
+                } else {
+                    Text(ms == -1 ? "超时" : "测速失败")
+                        .foregroundStyle(Color.red)
+                }
+            } else {
+                Image(systemName: "bolt")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.system(size: 10))
+        .fontWeight(.semibold)
+    }
+}
+
 /// A top bar button as FlClash draws it: a rounded rect, not a bare
 /// glyph (used for the bolt, the locate button and the ⋯ menu's
 /// label via its own frame).
@@ -867,6 +1034,10 @@ private struct RoundedBarButton: View {
 // (proxy.states) from the core when it opens.
 struct NodeDetailView: View {
     let node: ProxyNode
+    /// The owning group's test URL, so the 测速 button here probes
+    /// the same URL as the card's delay chip (FlClash
+    /// _handleTestCurrentDelay).
+    let testURL: String?
     @EnvironmentObject private var proxyStore: ProxyStore
     @Environment(\.dismiss) private var dismiss
     @State private var detail: ProxyStore.NodeDetail?
@@ -889,7 +1060,7 @@ struct NodeDetailView: View {
                 }
                 Section {
                     Button("测速") {
-                        Task { await proxyStore.testLatency(node: node) }
+                        Task { await proxyStore.testLatency(node: node, testURL: testURL) }
                     }
                 }
                 if let definition = detail?.definition {

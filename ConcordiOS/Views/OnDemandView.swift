@@ -11,6 +11,8 @@ struct OnDemandView: View {
     @ObservedObject private var store = OnDemandStore.shared
     @State private var newSSID = ""
     @State private var ssidError: String?
+    @State private var editingSSID: String?
+    @State private var editingSSIDText = ""
 
     var body: some View {
         List {
@@ -29,10 +31,26 @@ struct OnDemandView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(store.excludedSSIDs, id: \.self) { ssid in
-                    Text(ssid)
+                    Button {
+                        editingSSID = ssid
+                        editingSSIDText = ssid
+                    } label: {
+                        HStack {
+                            Text(ssid)
+                                .foregroundStyle(Color(.label))
+                            Spacer()
+                            Image(systemName: "square.and.pencil")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
                 .onDelete { offsets in
                     store.excludedSSIDs.remove(atOffsets: offsets)
+                }
+                .onMove { from, to in
+                    store.excludedSSIDs.move(fromOffsets: from, toOffset: to)
                 }
                 HStack {
                     TextField("Wi-Fi 名称（SSID）", text: $newSSID)
@@ -73,5 +91,50 @@ struct OnDemandView: View {
         }
         .navigationTitle("按需连接")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+        }
+        .alert("编辑 SSID", isPresented: Binding(
+            get: { editingSSID != nil },
+            set: { if !$0 { editingSSID = nil } }
+        )) {
+            TextField("Wi-Fi 名称（SSID）", text: $editingSSIDText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("保存") {
+                saveEditedSSID()
+            }
+            .disabled(!isEditedSSIDValid)
+            Button("取消", role: .cancel) { editingSSID = nil }
+        } message: {
+            Text("点按列表里的 SSID 可以改名；拖动可以排序。空名字或已有的名字不能保存。")
+        }
+    }
+
+    /// The edited name is valid when non-empty and not a duplicate
+    /// of another SSID (FlClash on_demand.dart _handleAddOrUpdate).
+    private var isEditedSSIDValid: Bool {
+        guard let old = editingSSID else { return false }
+        let value = editingSSIDText.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return false }
+        return value == old || !store.excludedSSIDs.contains(value)
+    }
+
+    /// FlClash on_demand.dart _handleAddOrUpdate: rename in place,
+    /// rejecting empty and duplicate names.
+    private func saveEditedSSID() {
+        guard let old = editingSSID else { return }
+        let value = editingSSIDText.trimmingCharacters(in: .whitespaces)
+        guard isEditedSSIDValid else { return }
+        guard value != old else {
+            editingSSID = nil
+            return
+        }
+        if let index = store.excludedSSIDs.firstIndex(of: old) {
+            store.excludedSSIDs[index] = value
+        }
+        editingSSID = nil
     }
 }

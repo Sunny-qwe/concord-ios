@@ -16,6 +16,17 @@ struct ThemePickerView: View {
     @State private var previewVpnOn = true
     @State private var newCustomColor = Color.blue
     @State private var customColorMessage: String?
+    @State private var showResetConfirm = false
+
+    /// FlClash defaultPrimaryColors (common/constant.dart:196-205)
+    /// not covered by the 5 ThemeAccent presets: pink, red, yellow.
+    /// They are applied as a custom hex (ThemeStore's accent enum
+    /// is owned by the store file), bringing the preset total to 8.
+    private static let extraPresets: [(label: String, hex: String)] = [
+        ("粉色", "#FF2D55"),
+        ("红色", "#FF383C"),
+        ("黄色", "#FFCC00"),
+    ]
 
     var body: some View {
         List {
@@ -71,6 +82,33 @@ struct ThemePickerView: View {
                                 Text(accent.label)
                                     .font(.system(size: 10))
                                     .foregroundStyle(themeStore.customAccentHex == nil && themeStore.accent == accent ? Color(.label) : .secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 4)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
+                    ForEach(Self.extraPresets, id: \.hex) { preset in
+                        Button {
+                            themeStore.customAccentHex = preset.hex
+                            themeStore.save()
+                        } label: {
+                            VStack(spacing: 6) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color(hex: preset.hex) ?? .gray)
+                                        .frame(width: 44, height: 44)
+                                    if themeStore.customAccentHex == preset.hex {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 16, weight: .semibold))
+                                            .fontWeight(.bold)
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                                Text(preset.label)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(themeStore.customAccentHex == preset.hex ? Color(.label) : .secondary)
                             }
                         }
                         .buttonStyle(.plain)
@@ -137,6 +175,25 @@ struct ThemePickerView: View {
                 Text("主题色会用在按钮、开关、选中状态和进度条上。长按自定义颜色可删除。")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+                // FlClash theme.dart:109-135 _PrimaryColorItem reset:
+                // confirm, then back to the default blue + vivid
+                // style (and the preset list back to the defaults,
+                // which here means clearing user-added swatches).
+                Button("恢复默认颜色", role: .destructive) {
+                    showResetConfirm = true
+                }
+                .alert("恢复默认颜色吗？", isPresented: $showResetConfirm) {
+                    Button("恢复默认", role: .destructive) {
+                        themeStore.accent = .blue
+                        themeStore.customAccentHex = nil
+                        themeStore.customColors = []
+                        themeStore.colorStyle = .vivid
+                        themeStore.save()
+                    }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("主题色会回到默认蓝色，颜色风格回到生动，自己添加的颜色也会清空。")
+                }
             }
 
             Section("颜色风格") {

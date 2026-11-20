@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Dashboard (reference screenshots IMG_1082 / IMG_1083)
 // Layout, top to bottom: big title + edit button; status card (big
@@ -61,6 +62,19 @@ struct DashboardView: View {
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
     @State private var ipFetchFailed = false
+    /// The ip-api.com `as` field ("AS15169 Google LLC"), parsed to
+    /// the bare "AS<n>" token for the org fallback (FlClash
+    /// current_outbound.dart: organization ?? "AS{asn}").
+    /// IPQualityInfo maps no `as` key, so it is decoded separately.
+    @State private var ipAsn: String?
+    /// Intranet card (FlClash intranet_ip.dart): whether the first
+    /// local-IP read has finished — nil before that is "not read
+    /// yet", nil after it is "无网络".
+    @State private var intranetLoaded = false
+    @State private var intranetCopied = false
+    /// Profile sync spinner (FlClash profiles.dart _SyncButton shows
+    /// an activity indicator while the profile is updating).
+    @State private var isSyncingProfile = false
     /// Memory card state (FlClash memory_info.dart): the app's own
     /// resident size (task_info) plus the core RSS (core.stats).
     @State private var appMemoryBytes: UInt64 = 0
@@ -161,18 +175,32 @@ struct DashboardView: View {
         trafficStore.services.first { $0.name.lowercased() == name }
     }
 
-    private var serviceBadge: (text: String, tint: Color) {
-        guard !trafficStore.services.isEmpty else { return ("未检测", .gray) }
-        let available = trafficStore.services.filter { $0.status == "available" }.count
-        if available == trafficStore.services.count { return ("全部可用", .green) }
-        return ("\(available)/\(trafficStore.services.count) 可用", .orange)
+    /// Service-status verdict (FlClash service_status.dart: problems
+    /// = services where abnormal, i.e. status != available; chip is
+    /// "N 项异常" warn / "全部可用" ok, hidden while nothing has been
+    /// checked — FlClash has no grey "未检测" state).
+    private var serviceBadge: (text: String, tint: Color)? {
+        guard !trafficStore.services.isEmpty else { return nil }
+        let abnormal = trafficStore.services.filter { $0.status != "available" }.count
+        if abnormal == 0 { return ("全部可用", .green) }
+        return ("\(abnormal) 项异常", .orange)
     }
 
-    /// Nodes whose last latency test failed (delay.test / delay.run
-    /// report a negative value). Shown as the orange "N 超时" badge;
-    /// hidden until at least one test has run.
+    /// Groups whose delay test failed (FlClash proxy_groups.dart
+    /// _TimeoutChip: per group, delay < 0). Our client runs
+    /// delay.test per node, never per group name, so a group's delay
+    /// is derived from its nodes: a select group times out when its
+    /// selected node's latency is negative; a group with no selected
+    /// node (url-test/fallback) only when every tested node failed.
     private var timeoutCount: Int {
-        proxyStore.latencies.values.filter { $0 < 0 }.count
+        proxyStore.groups.filter { group in
+            if let selected = group.selectedNodeName,
+               let delay = proxyStore.latencies[selected] {
+                return delay < 0
+            }
+            let tested = group.nodes.compactMap { proxyStore.latencies[$0.name] }
+            return !tested.isEmpty && tested.allSatisfy { $0 < 0 }
+        }.count
     }
 
     private var groupInitials: [String] {
@@ -257,7 +285,8 @@ struct DashboardView: View {
 
     private var usedPercentText: String {
         guard subscription != nil else { return "—" }
-        return "\(Int(usedFraction * 100))%"
+        // FlClash profiles.dart _percentOf rounds the percent.
+        return "\(Int((usedFraction * 100).rounded()))%"
     }
 
     private var trafficText: String {
@@ -265,9 +294,33 @@ struct DashboardView: View {
         return "\(ConcordFormat.bytes(info.upload + info.download)) / \(ConcordFormat.bytes(info.total))"
     }
 
-    private var remainingText: String {
-        guard let info = subscription, info.expire > 0 else { return "剩余 — 天" }
-        return "剩余 \(ConcordRelativeTime.daysUntil(epochSeconds: info.expire)) 天"
+    /// Profile-card end text (FlClash profiles.dart: expiry →
+    /// "剩余 N 天", warn-coloured at ≤7 days with a tooltip giving
+    /// the full date; no expiry → the source label 远程/本地/自定义).
+    /// Our ProfileKind has only url/file, so 自定义 never occurs.
+    private var profileEndText: String {
+        guard let profile = profileStore.activeProfile else { return "—" }
+        if let info = subscription, info.expire > 0 {
+            return "剩余 \(ConcordRelativeTime.daysUntil(epochSeconds: info.expire)) 天"
+        }
+        return profile.kind == .url ? "远程" : "本地"
+    }
+
+    private var profileEndIsWarn: Bool {
+        guard let info = subscription, info.expire > 0 else { return false }
+        return ConcordRelativeTime.daysUntil(epochSeconds: info.expire) <= 7
+    }
+
+    /// Full expiry date for the tooltip (FlClash profileExpiresIn:
+    /// "{date} 到期，剩余 N 天").
+    private var profileEndTooltip: String? {
+        guard let info = subscription, info.expire > 0 else { return nil }
+        let days = ConcordRelativeTime.daysUntil(epochSeconds: info.expire)
+        let date = Date(timeIntervalSince1970: TimeInterval(info.expire))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日"
+        return "\(formatter.string(from: date)) 到期，剩余 \(days) 天"
     }
 
     private var updatedText: String {
@@ -319,6 +372,7 @@ struct DashboardView: View {
             guard decoded.status == "success" else { ipFetchFailed = true; return }
             ipLatencyMs = Int(Date().timeIntervalSince(started) * 1000)
             ipInfo = decoded
+            ipAsn = (try? JSONDecoder().decode(IPApiAsField.self, from: data))?.asNumber
             ipFetchFailed = false
         } catch {
             // No network or API error: keep the previous (or empty)
@@ -383,6 +437,7 @@ struct DashboardView: View {
                 tunnelStartedAt = Date()
             }
             intranetIp = DeviceNetwork.localIPv4Address()
+            intranetLoaded = true
             await fetchIPInfo()
             await trafficStore.refreshEngineStatus()
             await refreshSubscription()
@@ -406,6 +461,7 @@ struct DashboardView: View {
             if running {
                 ipInfo = nil
                 ipLatencyMs = nil
+                ipAsn = nil
                 ipFetchFailed = false
             }
             Task { await fetchIPInfo() }
@@ -460,24 +516,25 @@ struct DashboardView: View {
     private func cardView(for id: DashboardCardID) -> some View {
         switch id {
         case .status:
-            if showStatus {
-                VStack(alignment: .leading, spacing: 8) {
-                    statusCard
-                    // Start failure (v0.2.31): start() can throw in
-                    // prepare()/startVPNTunnel() before the status
-                    // ever leaves .disconnected, so without this the
-                    // play button shows no spinner and no banner —
-                    // just silence. Show the reason under the card.
-                    if let startError = proxyStore.startError, !proxyStore.isRunning {
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundStyle(.red)
-                            Text("启动失败：\(startError)")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.red)
-                        }
-                        .padding(.horizontal, 4)
+            // FlClash widget_registry.dart: the status card is
+            // non-removable ("含启动键，不可移除") — it always renders,
+            // even if an older install saved showStatus = false.
+            VStack(alignment: .leading, spacing: 8) {
+                statusCard
+                // Start failure (v0.2.31): start() can throw in
+                // prepare()/startVPNTunnel() before the status
+                // ever leaves .disconnected, so without this the
+                // play button shows no spinner and no banner —
+                // just silence. Show the reason under the card.
+                if let startError = proxyStore.startError, !proxyStore.isRunning {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundStyle(.red)
+                        Text("启动失败：\(startError)")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.red)
                     }
+                    .padding(.horizontal, 4)
                 }
             }
         case .speed: if showSpeed { speedCard }
@@ -555,7 +612,9 @@ struct DashboardView: View {
             if !proxyStore.isRunning {
                 SkeletonBar(width: 140, height: 18)
             } else if let ip = ipInfo?.query {
-                Text(ip)
+                // FlClash _IpText: hideIp masks the IP as "*****
+                // (current_outbound.dart _ipMask).
+                Text(settingsStore.hideIp ? "*****" : ip)
                     .font(.system(size: 18, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
@@ -587,10 +646,14 @@ struct DashboardView: View {
                     PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
                     if let quality = ipQuality {
                         qualityPill(text: quality.text, level: quality.level)
+                    } else {
+                        // FlClash _IpChips: quality null and not
+                        // loading shows a "类型未知" chip.
+                        PillBadge(text: "类型未知", tint: .gray)
                     }
                 }
             } else if ipFetchFailed {
-                Text("点按图标重试")
+                Text("点击图标重试")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             } else {
@@ -605,14 +668,15 @@ struct DashboardView: View {
 
     /// Org cell (FlClash _Cells): a static grey bar (full-opacity
     /// #ECE9EB) while not running, a pulsing skeleton while running
-    /// and loading, the real org once probed, "—" if the probe
-    /// answered without an org or failed.
+    /// and loading, the real org once probed (falling back to the
+    /// "AS<n>" token, FlClash: organization ?? "AS{asn}"), "—" if
+    /// the probe answered without an org or failed.
     private var orgValue: some View {
         Group {
             if !proxyStore.isRunning {
                 SkeletonBar(width: 96, height: 12)
                     .padding(.top, 2)
-            } else if let org = ipInfo?.org ?? ipInfo?.isp {
+            } else if let org = ipInfo?.org ?? ipInfo?.isp ?? ipAsn {
                 Text(org)
                     .font(.system(size: 14))
                     .fontWeight(.semibold)
@@ -696,6 +760,14 @@ struct DashboardView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 34))
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 34))
+        // FlClash current_outbound.dart: a primary-coloured border +
+        // "状态 root" label while MITM root access is on; iOS has no
+        // root concept, so the border follows the MITM switch.
+        .overlay(
+            RoundedRectangle(cornerRadius: 34)
+                .stroke(ConcordTheme.accent, lineWidth: settingsStore.mitmEnabled ? 1.5 : 0)
+        )
+        .accessibilityLabel(settingsStore.mitmEnabled ? "状态 root" : "状态")
         .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
     }
 
@@ -791,25 +863,32 @@ struct DashboardView: View {
     private var modeCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             CardTitleRow(icon: "arrow.triangle.branch", title: "出站模式")
-            HStack(spacing: 12) {
-                ForEach(OutboundMode.allCases) { mode in
+            // FlClash outbound_mode.dart DashboardConnectedGroup: one
+            // connected pill — outer radius 26, height 52, icon 18,
+            // selected segment primary-filled, inner radius 12.
+            HStack(spacing: 0) {
+                ForEach(Array(OutboundMode.allCases.enumerated()), id: \.element) { index, mode in
+                    let selected = settingsStore.mode == mode
                     Button { settingsStore.mode = mode } label: {
-                        VStack(spacing: 6) {
+                        VStack(spacing: 2) {
                             Image(systemName: modeIcon(mode))
-                                .font(.system(size: 17, weight: .semibold))
+                                .font(.system(size: 18, weight: .semibold))
                             Text(modeShortLabel(mode))
                                 .font(.system(size: 10))
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(settingsStore.mode == mode ? ConcordTheme.accent : ConcordTheme.softFill,
-                                    in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-                        .foregroundStyle(settingsStore.mode == mode ? .white : Color(.label))
+                        .frame(height: 52)
+                        .background(
+                            selected ? ConcordTheme.accent : Color.clear,
+                            in: connectedSegmentShape(index: index, count: OutboundMode.allCases.count)
+                        )
+                        .foregroundStyle(selected ? .white : Color(.label))
                     }
                     .buttonStyle(.plain)
                 }
             }
+            .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 26))
             if let message = settingsStore.generalApplyMessage, !densityCompact {
                 Text(message)
                     .font(.system(size: 10))
@@ -819,29 +898,34 @@ struct DashboardView: View {
         .concordCard()
     }
 
-    // MARK: - VPN card (reference IMG_1110)
+    /// Corner radii for one segment of the connected mode pill:
+    /// outer 26 on the card's outer ends, inner 12 where segments meet.
+    private func connectedSegmentShape(index: Int, count: Int) -> UnevenRoundedRectangle {
+        let outer: CGFloat = 26
+        let inner: CGFloat = 12
+        if count == 1 {
+            return UnevenRoundedRectangle(topLeadingRadius: outer, bottomLeadingRadius: outer, bottomTrailingRadius: outer, topTrailingRadius: outer)
+        }
+        if index == 0 {
+            return UnevenRoundedRectangle(topLeadingRadius: outer, bottomLeadingRadius: outer, bottomTrailingRadius: inner, topTrailingRadius: inner)
+        }
+        if index == count - 1 {
+            return UnevenRoundedRectangle(topLeadingRadius: inner, bottomLeadingRadius: inner, bottomTrailingRadius: outer, topTrailingRadius: outer)
+        }
+        return UnevenRoundedRectangle(topLeadingRadius: inner, bottomLeadingRadius: inner, bottomTrailingRadius: inner, topTrailingRadius: inner)
+    }
+
+    // MARK: - VPN card (FlClash network_takeover.dart VpnCard)
     //
-    // Off state: a GREY circle with a dark-grey shield OUTLINE and
-    // the text "已断开" (not "已关闭"). On state: the blue circle
-    // with a white filled shield, text "已连接" (no on-state
-    // reference exists — this wording is an inference).
+    // Badge: AppGlyphs.vpn — a shield outline with a keyhole — drawn
+    // 22pt inside a 48pt badge (cookie6/blob when enabled, circle
+    // when disabled). Whole-card tap toggles (FlClash onTap); the
+    // switch keeps working (see V3 in the audit: ours actually
+    // toggles the tunnel, FlClash's iOS switch is a no-op).
 
     private var vpnCard: some View {
         HStack(spacing: 12) {
-            if proxyStore.isRunning {
-                BlobIcon(systemName: "shield.fill", iconColor: .white,
-                         blobColor: ConcordTheme.accent, size: 52)
-            } else {
-                ZStack {
-                    Circle()
-                        .fill(Color(red: 0.93, green: 0.93, blue: 0.95))
-                        .frame(width: 52, height: 52)
-                    Image(systemName: "shield")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.38, green: 0.38, blue: 0.42))
-                }
-                .frame(width: 52, height: 52)
-            }
+            VpnBadge(enabled: proxyStore.isRunning)
             VStack(alignment: .leading, spacing: 2) {
                 Text("VPN")
                     .font(.system(size: 14, weight: .semibold))
@@ -858,6 +942,32 @@ struct DashboardView: View {
             .tint(ConcordTheme.accent)
         }
         .concordCard(padding: 12)
+        // The Toggle keeps its own tap (the inner control wins the
+        // gesture), so tapping the switch toggles once.
+        .contentShape(Rectangle())
+        .onTapGesture { Task { await proxyStore.toggle() } }
+    }
+
+    /// Intranet address (FlClash intranet_ip.dart: `IP:port` when
+    /// allowLan, bare IP otherwise; nil while unread / no network).
+    private var intranetAddress: String? {
+        guard let ip = intranetIp, !ip.isEmpty else { return nil }
+        return settingsStore.allowLan ? "\(ip):\(settingsStore.mixedPort)" : ip
+    }
+
+    private var intranetFigureText: String {
+        if !intranetLoaded { return "—" }
+        return intranetAddress ?? "无网络"
+    }
+
+    private func copyIntranetAddress() {
+        guard let address = intranetAddress else { return }
+        UIPasteboard.general.string = address
+        intranetCopied = true
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            intranetCopied = false
+        }
     }
 
     // MARK: - Intranet IP card
@@ -872,8 +982,20 @@ struct DashboardView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                 Spacer()
+                // FlClash intranet_ip.dart: header copy icon copies
+                // the address (IP:port when LAN is on); disabled
+                // with no address. The checkmark is the success
+                // feedback (FlClash shows a "复制成功" banner).
+                Button { copyIntranetAddress() } label: {
+                    Image(systemName: intranetCopied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 13))
+                        .foregroundStyle(intranetCopied ? .green : Color(.label))
+                }
+                .buttonStyle(.plain)
+                .disabled(intranetAddress == nil)
+                .accessibilityLabel("复制内网地址")
             }
-            Text(intranetIp ?? "—")
+            Text(intranetFigureText)
                 .font(.system(size: bigNumberSize, weight: .bold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -887,7 +1009,9 @@ struct DashboardView: View {
                     Text("局域网代理")
                         .font(.system(size: 13))
                         .fontWeight(.semibold)
-                    Text(settingsStore.allowLan ? "已开启" : "已关闭")
+                    // FlClash intranet_ip.dart: "端口 {port}" when on,
+                    // "已禁用" when off.
+                    Text(settingsStore.allowLan ? "端口 \(settingsStore.mixedPort)" : "已禁用")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
@@ -900,6 +1024,15 @@ struct DashboardView: View {
             .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
         }
         .concordCard()
+        // FlClash localIpProvider is live: re-read every 2s like the
+        // memory poll so a network change shows without reopening.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                intranetIp = DeviceNetwork.localIPv4Address()
+                intranetLoaded = true
+            }
+        }
     }
 
     // MARK: - Service status card
@@ -913,7 +1046,9 @@ struct DashboardView: View {
                     Text("服务状态")
                         .font(.system(size: 12, weight: .semibold))
                     Spacer()
-                    PillBadge(text: serviceBadge.text, tint: serviceBadge.tint)
+                    if let badge = serviceBadge {
+                        PillBadge(text: badge.text, tint: badge.tint)
+                    }
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.tertiary)
@@ -1077,20 +1212,31 @@ struct DashboardView: View {
                 Text("配置")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                Button {
-                    Task {
-                        if let profile = profileStore.activeProfile {
-                            await profileStore.update(profile)
+                // FlClash profiles.dart _SyncButton: only for URL
+                // profiles, replaced by a spinner while updating.
+                if profileStore.activeProfile?.kind == .url {
+                    if isSyncingProfile {
+                        ProgressView()
+                            .frame(width: 32, height: 32)
+                    } else {
+                        Button {
+                            isSyncingProfile = true
+                            Task {
+                                defer { isSyncingProfile = false }
+                                if let profile = profileStore.activeProfile {
+                                    await profileStore.update(profile)
+                                }
+                                await refreshSubscription()
+                            }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 13))
+                                .foregroundStyle(Color(.label))
                         }
-                        await refreshSubscription()
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("更新订阅")
                     }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color(.label))
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("更新订阅")
                 Button { onSelectTab(.profiles) } label: {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
@@ -1103,22 +1249,31 @@ struct DashboardView: View {
                     .font(.system(size: 18))
                     .fontWeight(.semibold)
                     .lineLimit(1)
-                Button { onSelectTab(.profiles) } label: {
-                    Image(systemName: "arrow.left.arrow.right")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color(.label))
+                // FlClash profiles.dart: the swap button shows only
+                // when more than one profile exists.
+                if profileStore.profiles.count > 1 {
+                    Button { onSelectTab(.profiles) } label: {
+                        Image(systemName: "arrow.left.arrow.right")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color(.label))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("切换订阅")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("切换订阅")
             }
             HStack {
                 Text("更新于 \(updatedText)")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text(remainingText)
+                Text(profileEndText)
                     .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(profileEndIsWarn ? .orange : .secondary)
+                    // FlClash tooltip: the full expiry date. .help
+                    // has no visible effect on iOS; the date is also
+                    // the accessibility label for VoiceOver.
+                    .help(profileEndTooltip ?? "")
+                    .accessibilityLabel(profileEndTooltip ?? profileEndText)
             }
             HStack(alignment: .firstTextBaseline) {
                 Text(usedPercentText)
@@ -1132,7 +1287,9 @@ struct DashboardView: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
             }
-            CapsuleProgressBar(fraction: usedFraction)
+            // FlClash profiles.dart _UsageMeter: warn colour at ≥90%
+            // used (the M3 wavy painter is skipped as too costly).
+            UsageMeterBar(fraction: usedFraction, warn: usedFraction >= 0.9)
             if subscription == nil {
                 Text("订阅流量信息：核心未提供（需订阅支持 subscription-userinfo，或先启动 VPN）。")
                     .font(.system(size: 10))
@@ -1163,7 +1320,10 @@ struct DashboardView: View {
                 .foregroundStyle(Color(.label))
             }
             .buttonStyle(.plain)
-            HStack {
+            if proxyStore.groups.isEmpty {
+                groupsEmptyView
+            } else {
+                HStack {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                     Text("\(proxyStore.groups.count)")
                         .font(.system(size: bigNumberSize, weight: .bold))
@@ -1195,20 +1355,75 @@ struct DashboardView: View {
                             .overlay(Circle().stroke(Color.white, lineWidth: 2))
                     }
                 }
+                }
             }
         }
         .concordCard()
     }
 
+    /// Empty proxy-groups state (FlClash proxy_groups.dart
+    /// _GroupsEmpty: cookie9 illustration + "暂无策略组" when the
+    /// core is connected, "内核未运行" + "启动后显示策略组" when not;
+    /// connected here means the VPN is running).
+    private var groupsEmptyView: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                Circle()
+                    .fill(ConcordTheme.softFill)
+                    .frame(width: 64, height: 64)
+                Image(systemName: "square.stack.3d.up")
+                    .font(.system(size: 26))
+                    .foregroundStyle(.secondary)
+            }
+            Text(proxyStore.isRunning ? "暂无策略组" : "内核未运行")
+                .font(.system(size: 15, weight: .semibold))
+            if !proxyStore.isRunning {
+                Text("启动后显示策略组")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+    }
+
     // MARK: - Stats card
 
+    /// FlClash connection_stats.dart: card label "连接统计", counts
+    /// formatted with dashboardCount (grouped digits, compact ≥100k).
     private var statsCard: some View {
-        HStack(spacing: 0) {
-            statCell(value: "\(connectionStore.connections.count)", label: "实时连接")
-            statCell(value: "\(eventStore.entries.count)", label: "最近请求")
-            statCell(value: "\(dnsStore.entries.count)", label: "DNS查询")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("连接统计")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+            }
+            HStack(spacing: 0) {
+                statCell(value: dashboardCount(connectionStore.connections.count), label: "实时连接")
+                statCell(value: dashboardCount(eventStore.entries.count), label: "最近请求")
+                statCell(value: dashboardCount(dnsStore.entries.count), label: "DNS查询")
+            }
         }
         .concordCard()
+    }
+
+    /// FlClash style.dart dashboardCount: grouped digits below
+    /// 100k, compact form at/above (123K, 1.5M).
+    private func dashboardCount(_ count: Int) -> String {
+        if count < 100_000 {
+            let formatter = NumberFormatter()
+            formatter.numberStyle = .decimal
+            formatter.locale = Locale(identifier: "en_US")
+            return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+        }
+        if count < 1_000_000 {
+            return "\(Int((Double(count) / 1_000).rounded()))K"
+        }
+        let millions = Double(count) / 1_000_000
+        if millions.truncatingRemainder(dividingBy: 1) == 0 {
+            return "\(Int(millions))M"
+        }
+        return "\(String(format: "%.1f", millions))M"
     }
 
     private func statCell(value: String, label: String) -> some View {
@@ -1238,7 +1453,7 @@ struct DashboardView: View {
         Button { showMemoryDetail = true } label: {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
-                    CardTitleRow(icon: "memorychip", title: "内存")
+                    CardTitleRow(icon: "memorychip", title: "内存信息")
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.system(size: 13, weight: .semibold))
@@ -1248,14 +1463,11 @@ struct DashboardView: View {
                     Text(ConcordFormat.bytes(Int64(memoryTotalBytes)))
                         .font(.system(size: bigNumberSize, weight: .bold))
                         .foregroundStyle(Color(.label))
-                    Text("总计")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
                 }
                 MemoryBar(appBytes: appMemoryBytes, coreBytes: trafficStore.coreMemoryBytes ?? 0)
                 HStack(spacing: 16) {
                     memoryLegend(dot: ConcordTheme.accent, label: "应用", bytes: appMemoryBytes)
-                    memoryLegend(dot: .green, label: "核心", bytes: trafficStore.coreMemoryBytes ?? 0)
+                    memoryLegend(dot: memoryCoreColor, label: "核心", bytes: trafficStore.coreMemoryBytes ?? 0)
                 }
                 if !proxyStore.isRunning {
                     Text("核心未运行：仅应用内存为实测值，核心为 0。")
@@ -1271,10 +1483,18 @@ struct DashboardView: View {
             await refreshMemorySnapshot()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
-                await refreshMemorySnapshot()
+                // FlClash memory_info.dart pauses card polling while
+                // the detail sheet is open (the sheet reads on its own).
+                if !showMemoryDetail {
+                    await refreshMemorySnapshot()
+                }
             }
         }
     }
+
+    /// Core segment colour (FlClash style.dart series2: primary
+    /// blended 45% over the card — a blue tone, not green).
+    private var memoryCoreColor: Color { ConcordTheme.accent.opacity(0.45) }
 
     private func memoryLegend(dot: Color, label: String, bytes: UInt64) -> some View {
         HStack(spacing: 6) {
@@ -1352,6 +1572,108 @@ struct DashboardView: View {
             }
         }
         .concordCard()
+    }
+}
+
+/// FlClash AppGlyphs.vpn (app_glyphs.dart:1427-1444): a shield outline
+/// (polyline) with a keyhole — solid dot + stem — drawn on a 24pt
+/// grid and scaled to 22pt. No SF Symbol matches.
+private struct VpnGlyphIcon: View {
+    let color: Color
+
+    var body: some View {
+        let scale: CGFloat = 22.0 / 24.0
+        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: x * scale, y: y * scale)
+        }
+        return ZStack {
+            Path { p in
+                p.move(to: pt(12, 2.9))
+                p.addLine(to: pt(19.6, 5.5))
+                p.addLine(to: pt(19.6, 12.5))
+                p.addLine(to: pt(12, 21.1))
+                p.addLine(to: pt(4.4, 12.5))
+                p.addLine(to: pt(4.4, 5.5))
+                p.closeSubpath()
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+            Circle()
+                .fill(color)
+                .frame(width: 1.6 * 2 * scale, height: 1.6 * 2 * scale)
+                .position(x: 12 * scale, y: 10.2 * scale)
+            Path { p in
+                p.move(to: pt(12, 11))
+                p.addLine(to: pt(12, 14.6))
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+        }
+        .frame(width: 22, height: 22)
+    }
+}
+
+/// The VPN badge (FlClash network_takeover.dart VpnCard): 48pt,
+/// blob (cookie6-like) + accent when enabled, circle + tone when
+/// disabled, glyph 22pt centred.
+private struct VpnBadge: View {
+    let enabled: Bool
+
+    var body: some View {
+        ZStack {
+            if enabled {
+                BlobShape()
+                    .fill(ConcordTheme.accent)
+                    .frame(width: 48, height: 48)
+                VpnGlyphIcon(color: .white)
+            } else {
+                Circle()
+                    .fill(Color(red: 0.93, green: 0.93, blue: 0.95))
+                    .frame(width: 48, height: 48)
+                VpnGlyphIcon(color: Color(red: 0.38, green: 0.38, blue: 0.42))
+            }
+        }
+        .frame(width: 48, height: 48)
+    }
+}
+
+/// Subscription usage meter (FlClash profiles.dart _UsageMeter):
+/// same capsule geometry as CapsuleProgressBar, but the fill turns
+/// warn-orange at ≥90% used. The M3 wavy painter is skipped.
+private struct UsageMeterBar: View {
+    let fraction: Double
+    let warn: Bool
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color(red: 0.898, green: 0.898, blue: 0.925))
+                Capsule()
+                    .fill(warn ? Color.orange : ConcordTheme.accent)
+                    .frame(width: max(geometry.size.width * CGFloat(min(max(fraction, 0), 1)), 8))
+                Circle()
+                    .fill(warn ? Color.orange : ConcordTheme.accent)
+                    .frame(width: 10, height: 10)
+                    .offset(x: geometry.size.width - 5)
+            }
+        }
+        .frame(height: 8)
+    }
+}
+
+/// The ip-api.com `as` field ("AS15169 Google LLC") — decoded
+/// separately because IPQualityInfo maps no `as` key.
+private struct IPApiAsField: Decodable {
+    let asNumber: String?
+
+    enum CodingKeys: String, CodingKey {
+        case asNumber = "as"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try c.decodeIfPresent(String.self, forKey: .asNumber)
+        // Keep the bare "AS<n>" token: "AS15169 Google LLC" -> "AS15169".
+        asNumber = raw?.split(separator: " ").first.map(String.init)
     }
 }
 
@@ -1458,15 +1780,16 @@ private enum DashboardCardID: String, CaseIterable {
         case .services: return "服务状态"
         case .profile: return "配置"
         case .groups: return "策略组"
-        case .stats: return "统计"
-        case .memory: return "内存"
+        case .stats: return "连接统计"
+        case .memory: return "内存信息"
         case .update: return "更新状态"
         }
     }
 }
 
 /// Two-segment memory bar (FlClash _MemoryBar): app share in accent
-/// blue, core share in green, on a soft track.
+/// blue, core share in the series2 blue tone (accent 45% over the
+/// card), on a soft track.
 private struct MemoryBar: View {
     let appBytes: UInt64
     let coreBytes: UInt64
@@ -1479,7 +1802,7 @@ private struct MemoryBar: View {
                 Capsule().fill(ConcordTheme.softFill)
                 HStack(spacing: 2) {
                     Capsule().fill(ConcordTheme.accent).frame(width: max(0, appWidth - 1))
-                    Capsule().fill(Color.green).frame(width: max(0, geo.size.width - appWidth - 1))
+                    Capsule().fill(ConcordTheme.accent.opacity(0.45)).frame(width: max(0, geo.size.width - appWidth - 1))
                 }
             }
         }
@@ -1573,7 +1896,11 @@ private struct DashboardEditSheet: View {
         NavigationStack {
             List {
                 Section("显示的卡片") {
-                    Toggle("状态", isOn: $showStatus)
+                    // FlClash widget_registry.dart: the status card is
+                    // non-removable ("含启动键，不可移除") — no toggle.
+                    Text("状态卡片含启动键，不可移除。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                     Toggle("网络速度", isOn: $showSpeed)
                     Toggle("出站模式", isOn: $showMode)
                     Toggle("VPN", isOn: $showVpn)

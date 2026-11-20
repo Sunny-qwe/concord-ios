@@ -12,9 +12,14 @@ import SwiftUI
 struct ExtendConfigView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @StateObject private var extendStore = ExtendConfigStore()
+    @StateObject private var scriptStore = MitmScriptStore()
     @State private var draft: ExtendSettings?
     @State private var message: String?
     @State private var isApplying = false
+    /// The library script picked for script mode (FlClash
+    /// extend/script.dart picks from the stored script library;
+    /// picking one loads its text into the inline editor).
+    @State private var selectedScriptID: String?
 
     /// The profile this page edits. nil = the active profile (the
     /// old call sites). Passed by the Profiles page's context menu
@@ -36,6 +41,21 @@ struct ExtendConfigView: View {
 
     private var settings: ExtendSettings {
         draft ?? (profile.map { extendStore.settings(for: $0.id) } ?? ExtendSettings())
+    }
+
+    /// FlClash extend.dart:96-116: 立即应用 only shows when the
+    /// current inputs differ from the applied snapshot.
+    private var hasUnappliedChanges: Bool {
+        guard let profile, let draft else { return false }
+        return draft != extendStore.settings(for: profile.id)
+    }
+
+    /// FlClash standard.dart: invalid when the target is neither a
+    /// built-in, nor a group, nor a proxy of the profile.
+    private var isMatchTargetInvalid: Bool {
+        let target = settings.matchTarget
+        guard !target.isEmpty else { return false }
+        return !matchTargetCandidates.contains(target)
     }
 
     private func setDraft(_ mutate: (inout ExtendSettings) -> Void) {
@@ -93,6 +113,12 @@ struct ExtendConfigView: View {
                             Text(target).tag(target)
                         }
                     }
+                    .foregroundStyle(isMatchTargetInvalid ? .red : .primary)
+                    if isMatchTargetInvalid {
+                        Text("该匹配目标在当前配置里不存在（不是分组也不是节点），保存后会回落到配置自身的最后一条规则。")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.red)
+                    }
                     Text("匹配目标会作为最后一条 MATCH 规则写进当前配置；留空则跟随配置自身的最后一条规则。")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
@@ -103,6 +129,32 @@ struct ExtendConfigView: View {
                         get: { settings.scriptEnabled },
                         set: { newValue in setDraft { $0.scriptEnabled = newValue } }
                     ))
+                    // FlClash extend/script.dart: pick one script
+                    // from the stored library, or keep the inline
+                    // editor. Picking loads the library script's
+                    // text into the editor below.
+                    Picker("从脚本库选择", selection: $selectedScriptID) {
+                        Text("不使用脚本库").tag(nil as String?)
+                        ForEach(scriptStore.scripts) { script in
+                            Text(script.label).tag(script.id as String?)
+                        }
+                    }
+                    .onChange(of: selectedScriptID) { _, id in
+                        guard let id,
+                              let script = scriptStore.scripts.first(where: { $0.id == id }),
+                              let content = scriptStore.content(of: script) else { return }
+                        setDraft { $0.scriptText = content }
+                    }
+                    NavigationLink {
+                        MitmScriptsView()
+                    } label: {
+                        HStack {
+                            Text("管理 MITM 脚本")
+                            Spacer()
+                            Text("\(scriptStore.scripts.count) 个")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                     Text("脚本定义 function main(config)，返回改写后的配置对象。config 是核心解析后的当前配置。运行需要核心可达（启动 VPN，或示例模式）。")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
@@ -123,33 +175,37 @@ struct ExtendConfigView: View {
                 }
             }
 
-            Section {
-                Button {
-                    Task { await applyNow() }
-                } label: {
-                    HStack {
-                        if isApplying { ProgressView() }
-                        Text(settings.mode == .script ? "运行脚本并应用" : "立即应用")
+            if hasUnappliedChanges {
+                Section {
+                    Button {
+                        Task { await applyNow() }
+                    } label: {
+                        HStack {
+                            if isApplying { ProgressView() }
+                            Text(settings.mode == .script ? "运行脚本并应用" : "立即应用")
+                        }
                     }
+                    .disabled(isApplying || profile == nil)
+                    if let profile, !isTargetActive {
+                        Text("正在编辑「\(profile.name)」的扩展配置；立即应用只对当前已激活的订阅生效，切换到该订阅后才能立即应用。设置已保存。")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                    if profile == nil {
+                        Text("没有已激活的订阅：先导入并切换一个订阅。")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                } footer: {
+                    Text("应用后立即生效（VPN 运行时）或下次启动 VPN 时生效；标准模式的附加规则由扩展合并，不用改订阅文件。")
                 }
-                .disabled(isApplying || profile == nil)
-                if let message {
+            }
+            if let message {
+                Section {
                     Text(message)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                if let profile, !isTargetActive {
-                    Text("正在编辑「\(profile.name)」的扩展配置；立即应用只对当前已激活的订阅生效，切换到该订阅后才能立即应用。设置已保存。")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-                if profile == nil {
-                    Text("没有已激活的订阅：先导入并切换一个订阅。")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
-            } footer: {
-                Text("应用后立即生效（VPN 运行时）或下次启动 VPN 时生效；标准模式的附加规则由扩展合并，不用改订阅文件。")
             }
         }
         .navigationTitle("扩展配置")
@@ -165,15 +221,27 @@ struct ExtendConfigView: View {
             }
         }
         .onDisappear {
+            // FlClash extend.dart:132-135: auto-apply on dispose.
+            // (Also fires when a sub-page is pushed; applying then
+            // is harmless — the draft is saved and applied live.)
+            let dirty = hasUnappliedChanges
             saveDraft()
+            if dirty, isTargetActive {
+                Task { await applyNow() }
+            }
         }
     }
 
     /// Targets the match-target picker offers: built-ins, the
-    /// active profile's groups, and its proxies.
+    /// profile's groups, and its proxies (FlClash standard.dart
+    /// match-target sheet: basic strategies + group names + proxy
+    /// names).
     private var matchTargetCandidates: [String] {
         var targets = ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATIBLE"]
         if let profile {
+            if let groups = profileStore.localProxyGroups(for: profile) {
+                targets.append(contentsOf: groups.groups.map { $0.name })
+            }
             targets.append(contentsOf: profileStore.localNodeNames(for: profile))
         }
         return Array(NSOrderedSet(array: targets)) as? [String] ?? []

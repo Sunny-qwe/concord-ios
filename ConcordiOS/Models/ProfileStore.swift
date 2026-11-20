@@ -271,6 +271,16 @@ final class ProfileStore: ObservableObject {
 
     @MainActor
     func addFromURL(name: String, urlString: String) async {
+        // Duplicate-URL guard (FlClash add.dart:76-79): the same
+        // subscription URL must not create a second profile. This
+        // is the single funnel — both the Profiles "+" menu and the
+        // unified import page (UnifiedImporter.importSubscriptionURL)
+        // come through here.
+        let normalized = urlString.trimmingCharacters(in: .whitespaces)
+        if profiles.contains(where: { $0.kind == .url && $0.urlString?.trimmingCharacters(in: .whitespaces) == normalized }) {
+            lastError = "该订阅链接已存在"
+            return
+        }
         guard let url = URL(string: urlString) else {
             lastError = "订阅链接无效"
             return

@@ -1,10 +1,9 @@
 import SwiftUI
 
 // MARK: - Advanced config hub (FlClash: Tools -> 进阶配置)
-// A hub of the advanced pages. 脚本 and 图标集 are NOT here:
-// concord has no script-loading API (only MITM scripts, which
-// live under MITM 模块） and no icon-set API, so there is nothing
-// real to put behind those rows.
+// A hub of the advanced pages. 脚本 is NOT here: concord has no
+// script-loading API (only MITM scripts, which live under MITM
+// 模块）, so there is nothing real to put behind that row.
 
 struct AdvancedConfigView: View {
     /// Navigate through the Tools page's single NavigationStack —
@@ -20,10 +19,11 @@ struct AdvancedConfigView: View {
                 advancedRow(icon: "server.rack", title: "代理", subtitle: "自定义节点", destination: .advancedProxies)
                 advancedRow(icon: "square.stack.3d.up", title: "规则提供方", subtitle: "远程规则集与本地规则", destination: .advancedProviders)
                 advancedRow(icon: "line.3.horizontal.decrease.circle", title: "过滤器", subtitle: "代理组节点过滤", destination: .advancedFilters)
+                advancedRow(icon: "photo.on.rectangle.angled", title: "图标集", subtitle: "代理组与节点的图标", destination: .iconSets)
                 advancedRow(icon: "doc.text", title: "编辑配置 (YAML)", subtitle: "直接编辑当前配置文本", destination: .configEditor)
             }
             Section {
-                Text("脚本与图标集：上游 FlClash 有这两个入口，但 concord 核心没有加载 Clash 脚本或图标集的接口，无法实现——不在此列出。")
+                Text("脚本：上游 FlClash 有这个入口，但 concord 核心没有加载 Clash 脚本的接口，无法实现——不在此列出。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

@@ -20,18 +20,38 @@ struct HostsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Hosts") {
+                // FlClash MapEditView: values edit in place. Each
+                // row is two text fields; leaving a field (submit)
+                // or tapping 保存 writes hosts.json.
                 ForEach(hosts.indices, id: \.self) { index in
                     HStack {
-                        Text(hosts[index].host)
-                        Spacer()
-                        Text(hosts[index].ip)
-                            .foregroundStyle(.secondary)
-                            .font(.system(.body, design: .monospaced))
+                        TextField("域名", text: Binding(
+                            get: { hosts[index].host },
+                            set: { hosts[index].host = $0 }
+                        ))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit { save() }
+                        TextField("IP", text: Binding(
+                            get: { hosts[index].ip },
+                            set: { hosts[index].ip = $0 }
+                        ))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .frame(width: 120)
+                        .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(Self.isValidIP(hosts[index].ip) ? .primary : .red)
+                        .onSubmit { save() }
                     }
                 }
                 .onDelete { offsets in
                     hosts.remove(atOffsets: offsets)
                     save()
+                }
+                if hosts.contains(where: { !Self.isValidIP($0.ip) }) {
+                    Text("标红的 IP 格式不对：应为 IPv4（如 1.2.3.4）或 IPv6 地址。")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
                 }
                 HStack {
                     TextField("域名，如 example.com", text: $newHost)
@@ -47,6 +67,12 @@ struct HostsView: View {
                     .disabled(newHost.trimmingCharacters(in: .whitespaces).isEmpty || newIp.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            Section {
+                Button("保存") {
+                    save()
+                }
+                .disabled(hosts.contains(where: { $0.host.trimmingCharacters(in: .whitespaces).isEmpty || !Self.isValidIP($0.ip) }))
+            }
             if let message {
                 Section {
                     Text(message)
@@ -58,6 +84,17 @@ struct HostsView: View {
         .navigationTitle("Hosts")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { load() }
+    }
+
+    static func isValidIP(_ value: String) -> Bool {
+        let ip = value.trimmingCharacters(in: .whitespaces)
+        if ip.contains(":") { return ip.count >= 2 && !ip.hasPrefix(":") && !ip.hasSuffix(":") }
+        let octets = ip.split(separator: ".")
+        guard octets.count == 4 else { return false }
+        return octets.allSatisfy { octet in
+            !octet.isEmpty && octet.count <= 3 && octet.allSatisfy(\.isNumber)
+                && (Int(octet).map { (0...255).contains($0) } ?? false)
+        }
     }
 
     private var fileURL: URL? {
@@ -76,7 +113,14 @@ struct HostsView: View {
 
     private func save() {
         guard let url = fileURL else { return }
-        let dict = Dictionary(uniqueKeysWithValues: hosts.map { ($0.host, $0.ip) })
+        // In-place editing can leave two rows with the same host;
+        // the last one wins instead of trapping on a duplicate key.
+        var dict: [String: String] = [:]
+        for entry in hosts {
+            let host = entry.host.trimmingCharacters(in: .whitespaces)
+            guard !host.isEmpty else { continue }
+            dict[host] = entry.ip.trimmingCharacters(in: .whitespaces)
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: dict) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)

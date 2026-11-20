@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - MITM modules (FlClash: MITM modules page)
 // Surge .sgmodule / Loon .plugin / Quantumult X / Stash override
@@ -18,6 +19,7 @@ struct MitmModulesView: View {
     @State private var urlText = ""
     @State private var showPasteImport = false
     @State private var showBlankEditor = false
+    @State private var showFileImporter = false
     @State private var consentModule: MitmModule?
     @State private var showConsentAlert = false
     @State private var deleteModule: MitmModule?
@@ -41,18 +43,33 @@ struct MitmModulesView: View {
             }
 
             Section("导入模块") {
+                // FlClash mitm_modules.dart:174-205: multiple URLs
+                // (plus install links) in one import, skipping
+                // already-installed ones.
+                TextEditor(text: $urlText)
+                    .frame(minHeight: 56)
+                    .font(.system(.caption, design: .monospaced))
+                    .autocapitalization(.none)
+                    .autocorrectionDisabled()
+                    .overlay(alignment: .topLeading) {
+                        if urlText.isEmpty {
+                            Text("模块链接，每行一个；也支持 surge:// / loon:// 安装链接")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
+                    }
                 HStack {
-                    TextField("模块链接，或 surge:// / loon:// 安装链接", text: $urlText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
                     Button("导入") {
-                        let text = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !text.isEmpty else { return }
-                        urlText = ""
-                        Task { await moduleStore.addFromURL(text) }
+                        Task { await importURLs() }
                     }
                     .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || moduleStore.isBusy)
+                    Spacer()
+                    Button("从文件导入") { showFileImporter = true }
+                        .disabled(moduleStore.isBusy)
                 }
                 Button("粘贴模块文本导入") { showPasteImport = true }
                 Button("新建空白模块") { showBlankEditor = true }
@@ -85,6 +102,20 @@ struct MitmModulesView: View {
         .navigationTitle("MITM 模块")
         .sheet(isPresented: $showPasteImport) {
             MitmModulePasteImportView()
+        }
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.plainText]) { result in
+            switch result {
+            case .success(let url):
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                    moduleStore.lastError = "读取模块文件失败：不是 UTF-8 文本"
+                    return
+                }
+                Task { await importFile(text: text, fileName: url.lastPathComponent) }
+            case .failure(let error):
+                moduleStore.lastError = "选择文件失败：\(error.localizedDescription)"
+            }
         }
         .sheet(isPresented: $showBlankEditor) {
             MitmModuleTextEditorView(module: nil, initialText: MitmModuleStore.blankTemplate(name: "新模块"))
@@ -126,6 +157,50 @@ struct MitmModulesView: View {
             }
         }
         Task { await moduleStore.setEnabled(module, on: on) }
+    }
+
+    /// Imports every URL on its own line, skipping ones already
+    /// installed (FlClash mitm_modules.dart:174-205), then offers
+    /// script consent for any newly imported script-bearing module
+    /// (FlClash :206 — consent right after import, not only when
+    /// the module is later enabled).
+    private func importURLs() async {
+        let lines = urlText
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return }
+        urlText = ""
+        let beforeIDs = Set(moduleStore.modules.map(\.id))
+        let existingURLs = Set(moduleStore.modules.compactMap(\.url))
+        var imported = 0
+        for line in lines {
+            guard !existingURLs.contains(line) else { continue }
+            await moduleStore.addFromURL(line)
+            if moduleStore.lastError == nil { imported += 1 }
+        }
+        if imported == 0 && moduleStore.lastError == nil {
+            moduleStore.lastError = "这些链接都已导入过了"
+        }
+        offerConsentForNewModules(beforeIDs: beforeIDs)
+    }
+
+    private func importFile(text: String, fileName: String) async {
+        let beforeIDs = Set(moduleStore.modules.map(\.id))
+        await moduleStore.addFromText(text, fileName: fileName)
+        offerConsentForNewModules(beforeIDs: beforeIDs)
+    }
+
+    /// FlClash offerMitmScripts: a freshly imported module that
+    /// declares scripts asks for consent immediately.
+    private func offerConsentForNewModules(beforeIDs: Set<String>) {
+        let fresh = moduleStore.modules.filter { !beforeIDs.contains($0.id) }
+        if let scripted = fresh.first(where: {
+            (moduleStore.parsedContent(for: $0)?.declaredScripts ?? $0.scripts) > 0
+        }) {
+            consentModule = scripted
+            showConsentAlert = true
+        }
     }
 }
 
@@ -228,6 +303,9 @@ struct MitmModuleDetailView: View {
     @State private var showEditor = false
     @State private var showDeleteConfirm = false
     @State private var showConsent = false
+    @State private var runMessage: String?
+    @State private var runResult: JSONValue?
+    @State private var runningScript: String?
     @State private var validateMessage: String?
     @State private var validateIssues: [String: [ConcordMitmIssue]]?
     @State private var isValidating = false
@@ -251,6 +329,12 @@ struct MitmModuleDetailView: View {
         List {
             if let module {
                 Section {
+                    // FlClash mitm_modules.dart detail build: the
+                    // enabled toggle is the first section.
+                    Toggle("启用模块", isOn: Binding(
+                        get: { module.enabled },
+                        set: { on in toggleDetail(module, on: on) }
+                    ))
                     Text(module.description.isEmpty ? "（无描述）" : module.description)
                         .font(.system(size: 13))
                     LabeledContent("来源", value: module.url ?? "本地")
@@ -289,6 +373,50 @@ struct MitmModuleDetailView: View {
                     if !content.arguments.isEmpty {
                         MitmModuleArgumentsSection(module: module, arguments: content.arguments)
                     }
+
+                    // FlClash mitm_modules.dart:55-76: run one script
+                    // line when the module is enabled and MITM is on.
+                    if !content.script.isEmpty {
+                        Section("脚本（mitm.runScript）") {
+                            ForEach(content.script, id: \.self) { line in
+                                let name = Self.scriptName(of: line)
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(name.isEmpty ? line : name)
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .lineLimit(1)
+                                        Text(line)
+                                            .font(.system(.caption, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                    Spacer()
+                                    Button(runningScript == name ? "运行中…" : "运行") {
+                                        Task { await runScriptLine(line) }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .disabled(runningScript != nil
+                                              || !module.enabled
+                                              || !settingsStore.mitmEnabled)
+                                }
+                            }
+                            if !module.enabled || !settingsStore.mitmEnabled {
+                                Text("先启用模块并打开 MITM，才能运行脚本。")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let runMessage {
+                                Text(runMessage)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let runResult {
+                                JSONValueView(value: runResult)
+                                    .frame(minHeight: 60)
+                            }
+                        }
+                    }
                 } else {
                     Section {
                         Text("模块文本丢失，请重新导入。")
@@ -300,7 +428,17 @@ struct MitmModuleDetailView: View {
                 Section("操作") {
                     if module.url != nil {
                         Button("更新（重新下载）") {
-                            Task { await moduleStore.update(module) }
+                            Task {
+                                await moduleStore.update(module)
+                                // FlClash mitm_modules.dart:224:
+                                // consent right after an update that
+                                // brings new scripts.
+                                if let updated = moduleStore.modules.first(where: { $0.id == module.id }),
+                                   !updated.enabled,
+                                   (moduleStore.parsedContent(for: updated)?.declaredScripts ?? updated.scripts) > updated.scripts {
+                                    showConsent = true
+                                }
+                            }
                         }
                         .disabled(moduleStore.isBusy)
                     }
@@ -356,6 +494,56 @@ struct MitmModuleDetailView: View {
             }
         } message: {
             Text("删除“\(module?.name ?? "")”？它的文本和已下载的脚本都会删掉。")
+        }
+        .alert("模块包含脚本", isPresented: $showConsent) {
+            Button("取消", role: .cancel) {}
+            Button("启用") {
+                if let module {
+                    Task { await moduleStore.setEnabled(module, on: true) }
+                }
+            }
+        } message: {
+            let count = module
+                .flatMap { moduleStore.parsedContent(for: $0)?.declaredScripts }
+                ?? module?.scripts ?? 0
+            Text("“\(module?.name ?? "")”声明了 \(count) 个脚本。脚本会在核心里运行，能改请求、跑定时任务。确认是自己信任的模块再启用。")
+        }
+    }
+
+    /// The detail page's own enable toggle, with the same script
+    /// consent gate as the list row.
+    private func toggleDetail(_ module: MitmModule, on: Bool) {
+        if on {
+            let declared = moduleStore.parsedContent(for: module)?.declaredScripts ?? module.scripts
+            if module.needsScriptConsent(declaredScripts: declared) {
+                showConsent = true
+                return
+            }
+        }
+        Task { await moduleStore.setEnabled(module, on: on) }
+    }
+
+    /// A script line's label: the name before the first "=".
+    static func scriptName(of line: String) -> String {
+        line.split(separator: "=", maxSplits: 1).first?
+            .trimmingCharacters(in: .whitespaces) ?? line
+    }
+
+    /// Runs one module script line by name (mitm.runScript).
+    private func runScriptLine(_ line: String) async {
+        let name = Self.scriptName(of: line)
+        guard !name.isEmpty else {
+            runMessage = "这行没有脚本名，无法运行"
+            return
+        }
+        runningScript = name
+        defer { runningScript = nil }
+        do {
+            runResult = try await client.mitmRunScript(name: name).result
+            runMessage = "脚本 \(name) 已运行"
+        } catch {
+            runResult = nil
+            runMessage = "运行失败：\(error.localizedDescription)"
         }
     }
 
@@ -415,6 +603,7 @@ private struct MitmModuleArgumentsSection: View {
 
     @EnvironmentObject private var moduleStore: MitmModuleStore
     @State private var values: [String: String] = [:]
+    @State private var suppressNextSave = false
     @State private var savedMessage: String?
 
     var body: some View {
@@ -432,6 +621,7 @@ private struct MitmModuleArgumentsSection: View {
                         TextField("默认：\(argument.defaultValue)", text: binding(for: argument))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                            .onSubmit { saveArguments() }
                     case .select:
                         Picker(argument.title, selection: binding(for: argument)) {
                             ForEach(argument.options, id: \.self) { option in
@@ -447,12 +637,10 @@ private struct MitmModuleArgumentsSection: View {
                     }
                 }
             }
-            Button("保存参数") {
-                Task {
-                    await moduleStore.setArguments(module, values: values)
-                    savedMessage = "参数已保存"
-                }
-            }
+            // FlClash mitm_modules.dart:570-595: arguments save on
+            // each change — no Save button. Discrete controls
+            // (toggle / select) save immediately; text input saves
+            // on submit, so typing does not re-parse per keystroke.
             if let savedMessage {
                 Text(savedMessage).font(.system(size: 10)).foregroundStyle(.green)
             }
@@ -465,7 +653,22 @@ private struct MitmModuleArgumentsSection: View {
             for argument in arguments {
                 initial[argument.name] = module.arguments[argument.name] ?? argument.defaultValue
             }
+            suppressNextSave = true
             values = initial
+        }
+        .onChange(of: values) { _, _ in
+            if suppressNextSave {
+                suppressNextSave = false
+                return
+            }
+            saveArguments()
+        }
+    }
+
+    private func saveArguments() {
+        Task {
+            await moduleStore.setArguments(module, values: values)
+            savedMessage = "参数已保存"
         }
     }
 

@@ -16,9 +16,8 @@ import UniformTypeIdentifiers
 // - The age key is stored per profile and never logged; verified in
 //   code, it is never read back anywhere (no download or decrypt
 //   path consumes it yet).
-// - ConfigEditorView edits the ACTIVE profile's file, so the file
-//   row's editor opens the active profile; a note says so when this
-//   profile is not active.
+// - ConfigEditorView now edits THIS profile's file (v0.2.32),
+//   active or not, so the file row's editor opens the right file.
 // - An uploaded file is staged until save (FlClash stages its
 //   _fileData the same way); backing out discards it.
 
@@ -40,6 +39,8 @@ struct EditProfileView: View {
     @State private var showEditor = false
     @State private var uploadError: String?
     @State private var isSaving = false
+    @State private var showAutoUpdatePrompt = false
+    @State private var showDiscardAlert = false
 
     init(profile: Profile) {
         self.profile = profile
@@ -51,6 +52,35 @@ struct EditProfileView: View {
     }
 
     private var isURLProfile: Bool { profile.kind == .url }
+
+    /// Unsaved changes (FlClash edit.dart PopGuard): edited fields
+    /// or a staged file.
+    private var isDirty: Bool {
+        name != profile.name
+            || urlString != (profile.urlString ?? "")
+            || ageSecretKey != (profile.ageSecretKey ?? "")
+            || autoUpdate != profile.autoUpdate
+            || (autoUpdate && intervalText != (profile.autoUpdateIntervalMinutes.map(String.init) ?? "1440"))
+            || pendingFileData != nil
+    }
+
+    // MARK: Field-level validity (FlClash edit.dart:420-424:
+    // ErrorBanner + per-field invalid flags)
+    private var isNameInvalid: Bool {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var isURLInvalid: Bool {
+        guard isURLProfile else { return false }
+        let url = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        return url.isEmpty || URL(string: url)?.scheme?.hasPrefix("http") != true
+    }
+
+    private var isIntervalInvalid: Bool {
+        guard isURLProfile, autoUpdate else { return false }
+        guard let minutes = Int(intervalText), minutes > 0 else { return true }
+        return false
+    }
 
     private var displayedFileSize: Int {
         pendingFileSize ?? fileInfo?.size ?? 0
@@ -90,14 +120,14 @@ struct EditProfileView: View {
                 }
             }
             Section {
-                fieldRow(label: "名称") {
+                fieldRow(label: "名称", invalid: isNameInvalid, error: isNameInvalid ? "请填写名称" : nil) {
                     TextField("必填", text: $name)
                         .font(.system(size: 17))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 }
                 if isURLProfile {
-                    fieldRow(label: "链接") {
+                    fieldRow(label: "链接", invalid: isURLInvalid, error: isURLInvalid ? "订阅链接无效，应为 http(s) 链接" : nil) {
                         TextField("必填", text: $urlString)
                             .font(.system(size: 17))
                             .textInputAutocapitalization(.never)
@@ -123,15 +153,22 @@ struct EditProfileView: View {
                         HStack(spacing: 8) {
                             Text("更新间隔")
                                 .font(.system(size: 17))
+                                .foregroundStyle(isIntervalInvalid ? .red : .primary)
                             Spacer()
                             TextField("必填", text: $intervalText)
                                 .font(.system(size: 17))
                                 .keyboardType(.numberPad)
                                 .multilineTextAlignment(.trailing)
                                 .frame(width: 100)
+                                .foregroundStyle(isIntervalInvalid ? .red : .primary)
                             Text("分钟")
                                 .font(.system(size: 15))
                                 .foregroundStyle(.secondary)
+                        }
+                        if isIntervalInvalid {
+                            Text("请填写有效的自动更新间隔（分钟）")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.red)
                         }
                     }
                     Text("自动更新尚未接入定时器：打开后只会保存设置，仍需手动点「更新」同步订阅。")
@@ -176,16 +213,23 @@ struct EditProfileView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(ConcordTheme.accent)
                 }
-                if !profile.isActive {
-                    Text("文件编辑器打开的是当前已激活的订阅；要编辑此订阅的文件，请先在配置页点它切换为当前订阅。")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                }
             }
         }
         .navigationTitle("编辑")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    if isDirty {
+                        showDiscardAlert = true
+                    } else {
+                        dismiss()
+                    }
+                } label: {
+                    Label("返回", systemImage: "chevron.left")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     Task { await save() }
@@ -197,7 +241,7 @@ struct EditProfileView: View {
             }
         }
         .navigationDestination(isPresented: $showEditor) {
-            ConfigEditorView()
+            ConfigEditorView(targetProfile: profile)
         }
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.yaml, UTType.plainText]) { result in
             handlePickedFile(result)
@@ -209,6 +253,32 @@ struct EditProfileView: View {
             Button("common.ok".l10n, role: .cancel) {}
         } message: {
             Text(uploadError ?? "")
+        }
+        // FlClash edit.dart:290-300: replacing the file while
+        // auto-update is on asks whether to turn auto-update off.
+        .alert("手动替换了配置文件", isPresented: $showAutoUpdatePrompt) {
+            Button("关闭自动更新并保存") {
+                Task { await saveConfirmed(turnOffAutoUpdate: true) }
+            }
+            Button("保持自动更新并保存") {
+                Task { await saveConfirmed(turnOffAutoUpdate: false) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这个订阅开了自动更新，下次自动更新会把你手动换的文件覆盖掉。是否关闭自动更新？")
+        }
+        // FlClash edit.dart:336-352 PopGuard: backing out with a
+        // staged file asks first.
+        .alert("有未保存的修改", isPresented: $showDiscardAlert) {
+            Button("保存并返回") {
+                Task { await save() }
+            }
+            Button("放弃修改", role: .destructive) {
+                dismiss()
+            }
+            Button("继续编辑", role: .cancel) {}
+        } message: {
+            Text("返回会丢弃还没保存的修改和已选择的文件。")
         }
         .task {
             fileInfo = profileStore.profileFileInfo(profile)
@@ -227,12 +297,17 @@ struct EditProfileView: View {
     }
 
     @ViewBuilder
-    private func fieldRow<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
+    private func fieldRow<Content: View>(label: String, invalid: Bool = false, error: String? = nil, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(invalid ? .red : .secondary)
             content()
+            if let error {
+                Text(error)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.red)
+            }
         }
         .padding(.vertical, 4)
     }
@@ -263,19 +338,30 @@ struct EditProfileView: View {
             validationError = issue
             return
         }
+        // C6: a manual file replacement while auto-update is on
+        // asks whether to turn auto-update off first.
+        if pendingFileData != nil, autoUpdate {
+            showAutoUpdatePrompt = true
+            return
+        }
+        await saveConfirmed(turnOffAutoUpdate: false)
+    }
+
+    private func saveConfirmed(turnOffAutoUpdate: Bool) async {
         isSaving = true
         defer { isSaving = false }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedURL = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedKey = ageSecretKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let interval = Int(intervalText)
+        let effectiveAutoUpdate = turnOffAutoUpdate ? false : autoUpdate
         let urlChanged = profileStore.updateProfileMeta(
             profile,
             name: trimmedName,
             urlString: isURLProfile ? trimmedURL : profile.urlString,
             ageSecretKey: trimmedKey.isEmpty ? nil : trimmedKey,
-            autoUpdate: autoUpdate,
-            autoUpdateIntervalMinutes: autoUpdate ? interval : profile.autoUpdateIntervalMinutes
+            autoUpdate: effectiveAutoUpdate,
+            autoUpdateIntervalMinutes: effectiveAutoUpdate ? interval : profile.autoUpdateIntervalMinutes
         )
         if let data = pendingFileData {
             await profileStore.updateProfileFile(profile, data: data)

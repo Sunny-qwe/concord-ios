@@ -11,6 +11,15 @@
 	<array>
 		<string>packet-tunnel-provider</string>
 	</array>
+	<!-- SSID 直连覆盖 (v0.2.43 C1): the app reads the current Wi-Fi
+	     SSID (NEHotspotNetwork) on the On-Demand page. Same key the
+	     fork carries in both Runner.entitlements and
+	     NECore.entitlements. Safe to declare: tools/adhoc-sign.sh
+	     copies the whole entitlements dict into the ad-hoc signature
+	     (no whitelist), and the JUMJJ8 profile verified 2026-11-20
+	     contains wifi-info, so the re-signer preserves it. -->
+	<key>com.apple.developer.networking.wifi-info</key>
+	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.434fff4c253add77.1</string>

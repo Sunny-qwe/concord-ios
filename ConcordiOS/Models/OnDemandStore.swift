@@ -2,26 +2,39 @@ import Foundation
 import Combine
 
 // MARK: - On-demand store (FlClash: lib/views/config/on_demand.dart)
-// FlClash's on-demand page is one thing: the SSIDs the VPN must
-// NOT connect on. On iOS that maps exactly onto NetworkExtension:
-// one NEOnDemandRuleDisconnect per excluded SSID (ssidMatch), plus
-// a trailing NEOnDemandRuleConnect for every other network. The
-// rules are installed on the saved NETunnelProviderManager by
+// FlClash's on-demand page is the SSIDs the VPN must NOT connect on,
+// each with an action: direct (the tunnel stays up and the core
+// switches to direct mode) or disconnect (the system does not
+// auto-connect the VPN on that SSID). On iOS that maps onto
+// NetworkExtension: one NEOnDemandRuleDisconnect per disconnect SSID
+// (ssidMatch) — a direct SSID must NOT get one, or the tunnel would
+// be gone before the extension could switch it to direct — plus a
+// trailing NEOnDemandRuleConnect for every other network. The rules
+// are installed on the saved NETunnelProviderManager by
 // TunnelManager.updateOnDemandRules and take effect without
-// restarting the tunnel; the system evaluates them when the
-// network changes.
+// restarting the tunnel; the system evaluates them when the network
+// changes. The direct SSIDs are also written to the App Group
+// (ssid-direct.json) on every save, so the extension's
+// SsidDirectController can enforce them without the app running.
 //
-// iOS notes: the SSID match is evaluated by the system, not the
-// app, so no location permission is needed to use it. On-demand
-// only auto-connects the VPN; starting it by hand from the
-// dashboard still connects on any network, and a disconnect rule
-// only stops the auto-connect, it does not tear down a running
-// tunnel when you join the SSID. Android-only prerequisites from
-// FlClash (battery optimization, location permission) do not exist
-// on iOS and are not shown.
+// iOS notes: the SSID match is evaluated by the system, not the app,
+// so no location permission is needed to USE the rules. Reading the
+// current SSID (to show it on the page, or for the extension to know
+// which network it is on) DOES need the wifi-info entitlement plus
+// location permission — that flow lives in SsidDirectStore, not here.
+// On-demand only auto-connects the VPN; starting it by hand from the
+// dashboard still connects on any network, and a disconnect rule only
+// stops the auto-connect, it does not tear down a running tunnel
+// when you join the SSID. Android-only prerequisites from FlClash
+// (battery optimization) do not exist on iOS and are not shown.
 
 final class OnDemandStore: ObservableObject {
     static let shared = OnDemandStore()
+
+    /// File in the App Group container the extension reads:
+    /// {"directSSIDs": [...], "excludeSSIDs": [...]}. Must match
+    /// PacketTunnel/SsidDirectController.swift.
+    static let sharedFileName = "ssid-direct.json"
 
     /// Default OFF (v0.2.32, FlClash iOS parity: FlClash never
     /// installs NEOnDemandRule on iOS — TunnelCoordinator sets
@@ -34,6 +47,11 @@ final class OnDemandStore: ObservableObject {
     /// migration below resets the old v1 default-on).
     @Published var enabled: Bool = false
     @Published var excludedSSIDs: [String] = []
+    /// Excluded SSIDs whose action is direct (the tunnel stays up and
+    /// the core switches to direct). Excluded SSIDs NOT in this list
+    /// are disconnect SSIDs. Fork (on_demand.dart): a newly added
+    /// SSID defaults to direct; renaming keeps the action.
+    @Published var directSSIDs: [String] = []
     @Published var applyMessage: String?
 
     private let storageKey = "ConcordiOS.ondemand.v1"
@@ -44,6 +62,7 @@ final class OnDemandStore: ObservableObject {
     /// otherwise setting the message would reinstall forever.
     private var lastInstalledEnabled: Bool?
     private var lastInstalledSSIDs: [String]?
+    private var lastInstalledDirectSSIDs: [String]?
     /// Generation bumped by every suspendRules() (O2): an install
     /// whose awaited manager save was in flight while a suspend
     /// landed must not stand — the install re-checks this after
@@ -53,13 +72,19 @@ final class OnDemandStore: ObservableObject {
     private var suspendEpoch = 0
 
     private struct Saved: Codable {
-        var version: Int = 2
+        var version: Int = 3
         var enabled: Bool = false
         var excludedSSIDs: [String] = []
+        var directSSIDs: [String] = []
     }
 
     init() {
         load()
+        // The extension reads the SSID lists from the App Group file,
+        // not from this store: write it once after load so a user who
+        // never edits the list after updating still gets their direct
+        // SSIDs enforced at the next VPN start.
+        syncSharedFile()
         autosaveCancellable = objectWillChange.sink { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.save()
@@ -69,9 +94,25 @@ final class OnDemandStore: ObservableObject {
     }
 
     func save() {
-        let saved = Saved(version: 2, enabled: enabled, excludedSSIDs: excludedSSIDs)
+        let saved = Saved(version: 3, enabled: enabled, excludedSSIDs: excludedSSIDs, directSSIDs: directSSIDs)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
+        syncSharedFile()
+    }
+
+    /// Writes the SSID lists to the App Group container for the
+    /// extension's SsidDirectController (direct SSIDs) and for the
+    /// record (exclude list). Best-effort: a failure leaves the
+    /// on-demand rules (installed on the manager) working, and the
+    /// next save retries.
+    private func syncSharedFile() {
+        guard let url = ConfigStore.sharedFileURL(name: Self.sharedFileName) else { return }
+        let json: [String: Any] = [
+            "directSSIDs": directSSIDs,
+            "excludeSSIDs": excludedSSIDs,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: json) else { return }
+        try? data.write(to: url, options: .atomic)
     }
 
     private func load() {
@@ -87,11 +128,18 @@ final class OnDemandStore: ObservableObject {
         if saved.version < 2 {
             enabled = false
             excludedSSIDs = saved.excludedSSIDs
+            directSSIDs = []
             save()
             return
         }
         enabled = saved.enabled
         excludedSSIDs = saved.excludedSSIDs
+        // v2 -> v3: the direct action is new. Existing exclusions
+        // keep their old meaning (disconnect) — silently flipping
+        // them to direct would change what the user's VPN does on
+        // those networks. New SSIDs added after the update default
+        // to direct (fork on_demand.dart).
+        directSSIDs = saved.version < 3 ? [] : saved.directSSIDs
     }
 
     /// Installs the rules when they changed since the last install.
@@ -114,7 +162,8 @@ final class OnDemandStore: ObservableObject {
     @MainActor
     @discardableResult
     func installRulesIfNeeded() async -> Bool {
-        guard enabled != lastInstalledEnabled || excludedSSIDs != lastInstalledSSIDs else {
+        guard enabled != lastInstalledEnabled || excludedSSIDs != lastInstalledSSIDs
+                || directSSIDs != lastInstalledDirectSSIDs else {
             return true
         }
         guard TunnelManager.shared.isRunning else {
@@ -122,12 +171,15 @@ final class OnDemandStore: ObservableObject {
         }
         let installingEnabled = enabled
         let installingSSIDs = excludedSSIDs
+        let installingDirectSSIDs = directSSIDs
         let epoch = suspendEpoch
         lastInstalledEnabled = installingEnabled
         lastInstalledSSIDs = installingSSIDs
+        lastInstalledDirectSSIDs = installingDirectSSIDs
         do {
             try await TunnelManager.shared.updateOnDemandRules(
-                enabled: installingEnabled, excludedSSIDs: installingSSIDs)
+                enabled: installingEnabled, excludedSSIDs: installingSSIDs,
+                directSSIDs: installingDirectSSIDs)
         } catch {
             applyMessage = "按需规则保存失败：\(error.localizedDescription)"
             return false
@@ -139,13 +191,15 @@ final class OnDemandStore: ObservableObject {
         if suspendEpoch != epoch {
             lastInstalledEnabled = nil
             lastInstalledSSIDs = nil
+            lastInstalledDirectSSIDs = nil
             await suspendRules()
             return false
         }
         // A newer edit landed while the save was in flight: the
         // installed rules are already stale — install the current
         // values instead of leaving the old ones in place.
-        if enabled != installingEnabled || excludedSSIDs != installingSSIDs {
+        if enabled != installingEnabled || excludedSSIDs != installingSSIDs
+            || directSSIDs != installingDirectSSIDs {
             return await installRulesIfNeeded()
         }
         return true
@@ -168,6 +222,7 @@ final class OnDemandStore: ObservableObject {
         suspendEpoch += 1
         lastInstalledEnabled = nil
         lastInstalledSSIDs = nil
+        lastInstalledDirectSSIDs = nil
         try? await TunnelManager.shared.updateOnDemandRules(enabled: false, excludedSSIDs: [])
     }
 
@@ -187,10 +242,73 @@ final class OnDemandStore: ObservableObject {
         }
         lastInstalledEnabled = nil
         guard await installRulesIfNeeded() else { return }
-        applyMessage = enabled
-            ? (excludedSSIDs.isEmpty
-               ? "按需连接已开启：所有网络都会自动连接 VPN"
-               : "按需连接已开启：\(excludedSSIDs.count) 个 Wi-Fi 下不自动连接")
-            : "按需连接已关闭"
+        if !enabled {
+            applyMessage = "按需连接已关闭"
+            return
+        }
+        // Fork disconnectSSIDs: excluded but not direct.
+        let directCount = directSSIDs.filter { excludedSSIDs.contains($0) }.count
+        let disconnectCount = excludedSSIDs.count - directCount
+        if excludedSSIDs.isEmpty {
+            applyMessage = "按需连接已开启：所有网络都会自动连接 VPN"
+        } else if disconnectCount == 0 {
+            applyMessage = "按需连接已开启：\(directCount) 个 Wi-Fi 下切换直连，其它网络自动连接 VPN"
+        } else if directCount == 0 {
+            applyMessage = "按需连接已开启：\(disconnectCount) 个 Wi-Fi 下不自动连接"
+        } else {
+            applyMessage = "按需连接已开启：\(directCount) 个 Wi-Fi 直连，\(disconnectCount) 个 Wi-Fi 不自动连接"
+        }
+    }
+
+    // MARK: - Per-SSID actions (fork on_demand.dart _setSsidAction /
+    // _handleAddOrUpdate / _handleDelete)
+
+    /// True when the SSID's action is direct; false means disconnect.
+    func isDirect(ssid: String) -> Bool {
+        directSSIDs.contains(ssid)
+    }
+
+    /// Sets one SSID's action. Only meaningful for an excluded SSID;
+    /// the view only offers it for listed ones.
+    func setAction(ssid: String, direct: Bool) {
+        if direct {
+            guard !directSSIDs.contains(ssid) else { return }
+            directSSIDs.append(ssid)
+        } else {
+            directSSIDs.removeAll { $0 == ssid }
+        }
+    }
+
+    /// Adds an SSID to the list. A newly added SSID defaults to
+    /// direct (fork on_demand.dart); renaming keeps the action (see
+    /// renameSSID below). Returns false when the SSID is already listed.
+    @discardableResult
+    func addSSID(_ ssid: String) -> Bool {
+        let value = ssid.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty, !excludedSSIDs.contains(value) else { return false }
+        excludedSSIDs.append(value)
+        directSSIDs.append(value)
+        return true
+    }
+
+    /// Removes an SSID from the list (back to the default action:
+    /// auto-connect like any other network) and drops its direct flag.
+    func removeSSID(_ ssid: String) {
+        excludedSSIDs.removeAll { $0 == ssid }
+        directSSIDs.removeAll { $0 == ssid }
+    }
+
+    /// Renames an SSID in place, keeping its action (fork
+    /// _handleAddOrUpdate). Returns false for an empty or duplicate name.
+    @discardableResult
+    func renameSSID(from old: String, to newValue: String) -> Bool {
+        let value = newValue.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty, value != old, !excludedSSIDs.contains(value),
+              let index = excludedSSIDs.firstIndex(of: old) else { return false }
+        excludedSSIDs[index] = value
+        if let directIndex = directSSIDs.firstIndex(of: old) {
+            directSSIDs[directIndex] = value
+        }
+        return true
     }
 }

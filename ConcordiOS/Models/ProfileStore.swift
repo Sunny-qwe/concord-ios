@@ -171,6 +171,16 @@ final class ProfileStore: ObservableObject {
     @Published var decodeMessage: String?
 
     let client: ConcordClient
+    /// Called after applyProfile writes the new shared config.yaml
+    /// (before the live apply). The app wires it to
+    /// MitmModuleStore.refreshMergedFileOnly, so module-mitm.json
+    /// (profileDigest + merged profile providers) is recomputed
+    /// against the NEW profile instead of staying stale — otherwise
+    /// the extension falls back to module-only providers after a
+    /// profile switch and the profile's own RULE-SET rules lose
+    /// their providers. Same callback pattern as
+    /// MitmModuleStore.onModulesChanged.
+    var onProfileApplied: (() async -> Void)?
     private let storageKey = "ConcordiOS.profiles.v1"
     private var cancellables = Set<AnyCancellable>()
 
@@ -1340,6 +1350,12 @@ final class ProfileStore: ObservableObject {
             lastError = "切换失败：\(error.localizedDescription)"
             return
         }
+        // 2b. Recompute the merged module files against the new
+        // shared config.yaml (profileDigest + merged profile
+        // providers). This hook only rewrites the file — it does NOT
+        // apply live, so the step-3 apply below is still the single
+        // live apply (no double config.apply).
+        await onProfileApplied?()
         // 3. Apply live when the tunnel is running, so the switch takes
         // effect without a VPN restart.
         if client.mode == .live, tunnelRunning {

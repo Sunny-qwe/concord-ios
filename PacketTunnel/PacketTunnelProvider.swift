@@ -103,7 +103,21 @@ import os
 // travel as the overlay's top-level "rules" — the core prepends
 // overlay rules before the profile's own (upstream
 // crates/config/src/merge.rs: rules_after), exactly like FlClash's
-// rawConfig['rules'] = [...mitm.rules, ...rules]. Module scripts and
+// rawConfig['rules'] = [...mitm.rules, ...rules]. The same file also
+// carries what the lists alone cannot: "h2" (a module asking for
+// HTTP/2 turns mitm.h2 on), "rule-providers" (the profile's providers
+// merged with the modules' — the overlay replaces the profile's
+// wholesale, so a rule must never name a provider the overlay does
+// not carry, or config.apply fails with `rule set […] not found`),
+// "module-rule-providers" (the module-only map, used when
+// "profileDigest" no longer matches config.yaml, i.e. the profile
+// changed since the file was written), and "network" (the modules'
+// DNS / hosts / TUN-route edits, applied here onto dns.json /
+// hosts.json / the tun overrides — the profile's own sections never
+// reach the core, so those files ARE the lists the edits run over).
+// A module's proxy-bypass ask (bypass-domain) is not applied: the
+// core calls it "the host's proxy bypass list" and this host is a
+// packet tunnel with no such list. Module scripts and
 // map-local files live in <home>/mitm/resources/ (the core's resources
 // directory, home being this container), so the core reads them by the
 // content-hash names the module-mitm.json lines name. The DNS choices
@@ -275,6 +289,41 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var lastPathSignature: String?
     private var pathReapplyWorkItem: DispatchWorkItem?
     private var lastAppliedNetworkSettings: NEPacketTunnelNetworkSettings?
+
+    // SSID direct override (v0.2.43 C1): watches the Wi-Fi SSID while
+    // the tunnel is up and switches the in-process core to direct on a
+    // direct SSID, restoring the previous mode on leaving. Port of the
+    // fork's SsidDirectController; the fork talks to its core over the
+    // 9090 HTTP controller, ours is in-process, so the mode read/write
+    // are closures over this provider's own sendCoreRequest
+    // (config.general / config.patch). Started at the end of bootCore
+    // (core + TUN up) and stopped in stopTunnel.
+    private lazy var ssidDirectController = SsidDirectController(
+        appGroupID: appGroupID,
+        fetchMode: { [weak self] completion in
+            Task { [weak self] in
+                guard let self else { completion(nil); return }
+                do {
+                    let result = try await self.sendCoreRequest(
+                        method: "config.general", params: [:], timeoutSeconds: 15)
+                    completion((result as? [String: Any])?["mode"] as? String)
+                } catch {
+                    completion(nil)
+                }
+            }
+        },
+        setMode: { [weak self] mode, completion in
+            Task { [weak self] in
+                guard let self else { completion(false); return }
+                do {
+                    _ = try await self.sendCoreRequest(
+                        method: "config.patch", params: ["mode": mode], timeoutSeconds: 15)
+                    completion(true)
+                } catch {
+                    completion(false)
+                }
+            }
+        })
 
     private struct PendingRequest {
         /// The app's original request id, if this request came from
@@ -630,6 +679,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         settings.mtu = NSNumber(value: tun.mtu)
         let ipv4 = NEIPv4Settings(addresses: [tunnelAddress], subnetMasks: ["255.255.255.252"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
+        // E6: Loopback 10.7.0.1 switch — adds 10.7.0.2 + a 10.7.0.1/32
+        // route when on (no-op when off). Needs a VPN restart.
+        LoopbackNetworkSettings.apply(to: ipv4, enabled: tun.loopbackDevice)
         // Local network settings (FlClash: 本地网络设置）: excluded
         // routes bypass the tunnel — the standard private ranges when
         // bypass-private-route is on, plus the user's list.
@@ -682,6 +734,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         tunnelStartedAt = Date()
         writeVPNDiagnostics(stage: "running")
         Self.log.info("tunnel up: channel \(handle), stack \(tun.stack, privacy: .public), mtu \(tun.mtu)")
+        // The core (and its TUN) is up, so the SSID watcher can switch
+        // the mode to direct on a direct SSID and restore it on
+        // leaving, without the main app running (fork
+        // PacketTunnelProvider.startTunnel).
+        ssidDirectController.start()
     }
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
@@ -706,6 +763,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         pathMonitor = nil
         pathReapplyWorkItem?.cancel()
         pathReapplyWorkItem = nil
+        // The SSID watcher stops with the tunnel: its stop() clears
+        // the override state (restoreMode = nil), so the app never
+        // sees a stale "direct override active" flag from this run.
+        ssidDirectController.stop()
         coreQueue.async {
             // Best effort: ask the core to stop the tunnel and engine,
             // then give it a moment before closing the session. The
@@ -1761,6 +1822,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let routeExcludeAddress: [String]
         let bypassPrivateRoute: Bool
         let dnsHijack: Bool
+        // Loopback 10.7.0.1 switch (E6, fork 89aa066 NE side):
+        // when on, bootCore adds 10.7.0.2 + a 10.7.0.1/32 route.
+        // Deliberately NOT part of the tunTripleFingerprint — the
+        // NE interface is built once at startup, so a live change
+        // needs a VPN restart and must not trigger a channel TUN
+        // restart by itself.
+        let loopbackDevice: Bool
         // TUN override (FlClash tun.dart, via overrides.json): the
         // congestion controller for tun.start. mtu is overridden the
         // same way below; the other tun override keys travel in the
@@ -1791,9 +1859,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let dnsHijack = json["dns-hijack"] as? Bool ?? true
             let congestionController = tunOverrides?["congestion-controller"] as? String
                 ?? json["congestion-controller"] as? String
-            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, congestionController: congestionController)
+            let loopbackDevice = LoopbackNetworkSettings.isEnabled(in: json)
+            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, congestionController: congestionController, loopbackDevice: loopbackDevice)
         }
-        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true, congestionController: nil)
+        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true, congestionController: nil, loopbackDevice: false)
     }
 
     /// Parse a CIDR ("10.0.0.0/8" or "::1/128") into an excluded
@@ -1826,7 +1895,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if let rules = overlayRules() {
             overlay["rules"] = rules
         }
-        if let dns = effectiveSection(file: dnsFileName, section: "dns") {
+        if let dns = effectiveDnsWithModules() {
             overlay["dns"] = dns
         }
         if let ntp = effectiveSection(file: ntpFileName, section: "ntp") {
@@ -1835,11 +1904,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if let sniffer = effectiveSection(file: snifferFileName, section: "sniffer") {
             overlay["sniffer"] = sniffer
         }
-        if let tun = effectiveSection(file: nil, section: "tun") {
+        if let tun = effectiveTunWithModules() {
             overlay["tun"] = tun
         }
-        if let hosts = readSharedJSON(name: hostsFileName) {
+        if let hosts = effectiveHostsWithModules() {
             overlay["hosts"] = hosts
+        }
+        // Module rule providers: the overlay replaces the profile's
+        // rule-providers wholesale (upstream merge.rs), so the
+        // merged map (profile ∪ module) travels here; see
+        // moduleRuleProviders() for the stale-profile fallback.
+        if let providers = moduleRuleProviders() {
+            overlay["rule-providers"] = providers
         }
         if let generalOverlay = readSharedJSON(name: generalOverlayFileName) {
             for (key, value) in generalOverlay {
@@ -1879,6 +1955,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 mitm[key] = merged
             }
         }
+        // h2: a module asking for HTTP/2 turns it on (OR with the
+        // user's own switch — the module's ask wins, like its lists).
+        if (user?["h2"] as? Bool) == true || (modules?["h2"] as? Bool) == true {
+            mitm["h2"] = true
+        }
         return mitm
     }
 
@@ -1906,6 +1987,147 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             rules.append(contentsOf: added)
         }
         return rules.isEmpty ? nil : rules
+    }
+
+    // MARK: - Module network + rule providers (module-mitm.json)
+    //
+    // The store writes the enabled modules' merged network edits
+    // ("network") and rule providers ("rule-providers" +
+    // "module-rule-providers" + "profileDigest") into
+    // module-mitm.json; this section applies them to the overlay
+    // at every config.apply. The edits run over the overlay's OWN
+    // effective sections (dns.json / hosts.json / the tun
+    // overrides) — those ARE the profile's lists as the core sees
+    // them, because the overlay replaces the profile's dns / hosts
+    // / tun wholesale (upstream merge.rs: the merged document
+    // keeps only the overlay's keys plus the profile's proxies,
+    // proxy-groups, sub-rules and rules). The module's
+    // bypass-domain has no such section: the core names it "the
+    // host's proxy bypass list" (config/src/mitm/module/
+    // network.rs), and this host is a packet tunnel with no proxy
+    // bypass list, so it is carried for consent only and never
+    // written here.
+
+    /// The merged module network edits from module-mitm.json, if any.
+    private func moduleNetwork() -> [String: Any]? {
+        guard let modules = readSharedJSON(name: moduleMitmFileName),
+              let network = modules["network"] as? [String: Any], !network.isEmpty else { return nil }
+        return network
+    }
+
+    /// MitmListEdit.applyTo, over the overlay's own list: `before`
+    /// ahead, `after` behind, `replace` dropping the current list;
+    /// duplicates removed, order kept.
+    private func applyModuleListEdit(_ edit: [String: Any], to current: [String]) -> [String] {
+        let replace = edit["replace"] as? Bool ?? false
+        let before = edit["before"] as? [String] ?? []
+        let after = edit["after"] as? [String] ?? []
+        var out: [String] = []
+        for value in before + (replace ? [] : current) + after where !out.contains(value) {
+            out.append(value)
+        }
+        return out
+    }
+
+    /// The effective dns section with the modules' network edits
+    /// applied: the edits run over dns.json, then the dns overrides
+    /// merge over the result, so a user's explicit override still
+    /// wins on a key it sets. Nil when the section stays empty.
+    private func effectiveDnsWithModules() -> [String: Any]? {
+        var base = readSharedJSON(name: dnsFileName) ?? [:]
+        if let network = moduleNetwork() {
+            for key in ["nameserver", "default-nameserver", "fake-ip-filter"] {
+                if let edit = network[key] as? [String: Any] {
+                    base[key] = applyModuleListEdit(edit, to: base[key] as? [String] ?? [])
+                }
+            }
+            if let policy = network["nameserver-policy"] as? [[String: Any]] {
+                var map = base["nameserver-policy"] as? [String: Any] ?? [:]
+                for entry in policy {
+                    guard let domain = entry["domain"] as? String,
+                          let values = entry["values"] as? [String], !values.isEmpty else { continue }
+                    map[domain] = values.count == 1 ? values[0] : values
+                }
+                base["nameserver-policy"] = map
+            }
+        }
+        if let overrides = effectiveOverrides(section: "dns") {
+            deepMerge(into: &base, overrides)
+        }
+        return base.isEmpty ? nil : base
+    }
+
+    /// The effective hosts map with the modules' host entries
+    /// applied: a module entry replaces the same-domain entry
+    /// (the fork applies module hosts over the profile's, and
+    /// hosts.json stands in for the profile's hosts here). One
+    /// value writes as a string, several as a list — the core
+    /// reads both (hosts.rs value_to_strings). Nil when empty.
+    private func effectiveHostsWithModules() -> [String: Any]? {
+        var base = readSharedJSON(name: hostsFileName) ?? [:]
+        if let network = moduleNetwork(),
+           let entries = network["hosts"] as? [[String: Any]] {
+            for entry in entries {
+                guard let domain = entry["domain"] as? String,
+                      let values = entry["values"] as? [String], !values.isEmpty else { continue }
+                base[domain] = values.count == 1 ? values[0] : values
+            }
+        }
+        return base.isEmpty ? nil : base
+    }
+
+    /// The effective tun fragment with the modules' routes
+    /// applied: included routes union with the fragment's
+    /// (an override's routes are kept, the module's add to them),
+    /// and the exclude edit runs over the fragment's list. Nil
+    /// when the fragment stays empty, so a profile with no tun
+    /// overrides and no module routes still sends no "tun" key.
+    private func effectiveTunWithModules() -> [String: Any]? {
+        var base = effectiveSection(file: nil, section: "tun") ?? [:]
+        if let network = moduleNetwork() {
+            if let routes = network["route-address"] as? [String], !routes.isEmpty {
+                var current = base["route-address"] as? [String] ?? []
+                for route in routes where !current.contains(route) { current.append(route) }
+                base["route-address"] = current
+            }
+            if let edit = network["route-exclude-address"] as? [String: Any] {
+                base["route-exclude-address"] = applyModuleListEdit(edit, to: base["route-exclude-address"] as? [String] ?? [])
+            }
+        }
+        return base.isEmpty ? nil : base
+    }
+
+    /// The rule providers for the overlay: the merged map
+    /// (profile ∪ module) from module-mitm.json when it was
+    /// computed against the config.yaml in force, else the
+    /// module-only map. The overlay REPLACES the profile's
+    /// rule-providers wholesale (upstream merge.rs), so emitting
+    /// only the module providers would drop the profile's own and
+    /// break its RULE-SET rules — and emitting a rule without its
+    /// provider fails config.apply outright (UnknownRuleSet). A
+    /// stale merged map is never emitted: after a profile switch
+    /// the module-only map keeps the module rules working while
+    /// the profile's own providers wait for the next module
+    /// refresh (nothing re-reads the new profile's providers on a
+    /// switch — see the report). Nil when the file carries no
+    /// providers at all.
+    private func moduleRuleProviders() -> [String: Any]? {
+        guard let modules = readSharedJSON(name: moduleMitmFileName),
+              let merged = modules["rule-providers"] as? [String: Any], !merged.isEmpty else { return nil }
+        if let digest = modules["profileDigest"] as? String,
+           digest == profileDigestNow() {
+            return merged
+        }
+        return modules["module-rule-providers"] as? [String: Any]
+    }
+
+    /// FNV-1a of the config.yaml bytes the next apply will use
+    /// (nil when unreadable — treated as a digest mismatch).
+    private func profileDigestNow() -> String? {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID),
+              let data = try? Data(contentsOf: container.appendingPathComponent(configFileName)) else { return nil }
+        return fnv1aHex(data)
     }
 
     private func readSharedJSONArray(name: String) -> [String]? {

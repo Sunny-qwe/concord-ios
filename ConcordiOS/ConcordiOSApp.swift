@@ -60,6 +60,11 @@ struct ConcordiOSApp: App {
         let mitmModuleStore = MitmModuleStore()
         mitmModuleStore.client = client
         mitmModuleStore.onModulesChanged = { await profileStore.reapplyActive() }
+        // A profile switch rewrites the shared config.yaml; the
+        // merged module files (profileDigest + merged profile
+        // providers) must be recomputed against it, or the extension
+        // falls back to module-only providers after the switch.
+        profileStore.onProfileApplied = { await mitmModuleStore.refreshMergedFileOnly() }
         _mitmModuleStore = StateObject(wrappedValue: mitmModuleStore)
         // The theme store is a singleton (DesignSystem reads the
         // accent from it); the app owns the same instance so a theme

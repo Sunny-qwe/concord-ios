@@ -27,6 +27,10 @@ struct DashboardView: View {
     @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var tunnelManager: TunnelManager
     @EnvironmentObject private var client: ConcordClient
+    /// MITM modules awaiting consent (fork 2d31f10): the dashboard
+    /// surfaces them in a card and asks about each in turn (fork
+    /// 0a55a31) instead of only showing them in the modules list.
+    @EnvironmentObject private var mitmModuleStore: MitmModuleStore
     /// On-Demand state (Batch F): the VPN card shows whether
     /// auto-reconnect is on, and the unexpected-disconnect banner
     /// reads tunnelManager.unexpectedDisconnect.
@@ -96,6 +100,10 @@ struct DashboardView: View {
     @AppStorage("ConcordiOS.update.lastChecked") private var lastUpdateChecked = false
     /// The last probe fetch failed (no data): while running, the
     /// card shows "服务失败" instead of the loading skeletons.
+    /// The module the dashboard is asking about (fork 0a55a31
+    /// `reviewModules`), and whether its consent prompt is up.
+    @State private var reviewModule: MitmModule?
+    @State private var showReviewAlert = false
 
     // MARK: - Derived data
 
@@ -445,6 +453,7 @@ struct DashboardView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                pendingModulesCard
                 ForEach(orderedCards, id: \.self) { cardView(for: $0) }
                 if let error = proxyStore.lastError {
                     Text(error).font(.system(size: 10)).foregroundStyle(.red)
@@ -564,6 +573,74 @@ struct DashboardView: View {
                     }
                 }
             )
+        }
+        // The dashboard's consent prompt (fork 0a55a31): the same
+        // prompt the modules page uses, asked over the dashboard
+        // for each module that awaits an answer in turn; an answer
+        // either way takes the module off the card.
+        .alert(reviewAlertTitle, isPresented: $showReviewAlert, presenting: reviewModule) { module in
+            Button("取消", role: .cancel) {
+                Task { await answerReview(module, agreed: false) }
+            }
+            Button("启用") {
+                Task { await answerReview(module, agreed: true) }
+            }
+        } message: { module in
+            Text(mitmModuleStore.consentPrompt(for: module)?.message ?? "")
+        }
+    }
+
+    // MARK: - Modules awaiting consent (fork 2d31f10 + 0a55a31)
+
+    /// The pending-modules card (fork live_status_deck
+    /// `MitmConsentStatus`): shown only while a module awaits
+    /// consent. It is a status card, not a user-ordered dashboard
+    /// card, so it sits above the ordered cards and cannot be
+    /// hidden in the edit sheet.
+    @ViewBuilder
+    private var pendingModulesCard: some View {
+        let pending = mitmModuleStore.modulesAwaitingConsent
+        if !pending.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    CardTitleRow(icon: "puzzlepiece.extension", title: "模块已关闭")
+                    Spacer()
+                    PillBadge(text: "\(pending.count) 个待确认", tint: .orange)
+                }
+                Text(pending.count == 1
+                     ? "\(pending[0].name) 的更新带来了你未同意过的脚本或网络改动"
+                     : "\(pending.count) 个模块的更新带来了你未同意过的脚本或网络改动")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(.label))
+                Button("查看") { reviewNext() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .controlSize(.small)
+            }
+            .concordCard()
+        }
+    }
+
+    /// The prompt title for the module the dashboard is asking about.
+    private var reviewAlertTitle: String {
+        reviewModule.flatMap { mitmModuleStore.consentPrompt(for: $0)?.title } ?? "启用此模块？"
+    }
+
+    /// Starts the review: the first module awaiting consent.
+    private func reviewNext() {
+        reviewModule = mitmModuleStore.firstAwaitingConsent()
+        showReviewAlert = reviewModule != nil
+    }
+
+    /// Records the answer and moves on to the next module awaiting
+    /// consent, or closes the prompt when none is left.
+    private func answerReview(_ module: MitmModule, agreed: Bool) async {
+        await mitmModuleStore.answerConsent(module, agreed: agreed)
+        if let next = mitmModuleStore.firstAwaitingConsent() {
+            reviewModule = next
+            showReviewAlert = true
+        } else {
+            reviewModule = nil
         }
     }
 

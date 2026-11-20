@@ -658,6 +658,14 @@ final class SettingsStore: ObservableObject {
     /// which is the correct default.
     func ensureSharedFilesExist() {
         saveSharedFiles(onlyIfMissing: true)
+        // C3: backfill the geo keys into a general-overlay.json
+        // written before v0.2.43 (without them). Only ADDS a key
+        // when it is missing — never touches other keys, and an
+        // explicitly saved false stays off. Runs on every launch
+        // and every VPN start, so an upgraded install picks up the
+        // new upstream default without waiting for an unrelated
+        // settings save.
+        backfillGeoOverlayKeys()
         if let url = ConfigStore.sharedFileURL(name: ConfigStore.snifferFileName),
            !FileManager.default.fileExists(atPath: url.path) {
             SnifferStore.shared.save()
@@ -678,6 +686,30 @@ final class SettingsStore: ObservableObject {
         try? data.write(to: url, options: .atomic)
     }
 
+    /// C3: adds the geo auto-update keys to an existing
+    /// general-overlay.json that lacks them (written before
+    /// v0.2.43). Each key is filled independently; a present key —
+    /// including an explicitly saved false — is never changed.
+    /// Silently skipped when the container or file is unavailable
+    /// or the file is not a JSON object.
+    private func backfillGeoOverlayKeys() {
+        guard let url = ConfigStore.sharedFileURL(name: ConfigStore.generalOverlayFileName),
+              let data = try? Data(contentsOf: url),
+              var dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        let defaults = UserDefaults.standard
+        var changed = false
+        if dict["geo-auto-update"] == nil {
+            dict["geo-auto-update"] = defaults.object(forKey: "ConcordiOS.geoAutoUpdate") as? Bool ?? true
+            changed = true
+        }
+        if dict["geo-update-interval"] == nil {
+            dict["geo-update-interval"] = Int(defaults.object(forKey: "ConcordiOS.geoAutoUpdateHours") as? Double ?? 24.0)
+            changed = true
+        }
+        guard changed, let out = try? JSONSerialization.data(withJSONObject: dict) else { return }
+        try? out.write(to: url, options: .atomic)
+    }
+
     /// Writes the files the PacketTunnel extension reads:
     /// tunnel.json (tun.start + interface settings), mitm.json
     /// (merged into config.apply's overlay), dns.json (ditto) and
@@ -689,7 +721,7 @@ final class SettingsStore: ObservableObject {
         let dnsServers = tunDns.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        let tunnel: [String: Any] = [
+        var tunnel: [String: Any] = [
             "enabled": tunEnabled,
             "stack": tunStack,
             "mtu": tunMtu,
@@ -710,6 +742,18 @@ final class SettingsStore: ObservableObject {
             "enforce-routes": enforceRoutes,
             "exclude-device-communication": excludeDeviceCommunication,
         ]
+        // E6: preserve the Loopback 10.7.0.1 switch ("loopback-device",
+        // written by LoopbackView's own read-modify-write). This dict
+        // is built fresh from this store's fields and has no such
+        // field, so without this a Settings save would drop the
+        // switch. Missing file/key means OFF (the extension treats
+        // a missing key as OFF).
+        if let url = ConfigStore.sharedFileURL(name: ConfigStore.tunnelSettingsFileName),
+           let data = try? Data(contentsOf: url),
+           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let loopbackDevice = existing["loopback-device"] as? Bool {
+            tunnel["loopback-device"] = loopbackDevice
+        }
         writeSharedJSON(tunnel, name: ConfigStore.tunnelSettingsFileName, onlyIfMissing: onlyIfMissing)
         // mitm.json uses the core's RawConfig keys verbatim, so the
         // extension can pass it as the "mitm" overlay value unchanged.
@@ -887,6 +931,20 @@ final class SettingsStore: ObservableObject {
         overlay["keep-alive-idle"] = keepAliveIdle
         overlay["keep-alive-interval"] = keepAliveInterval
         overlay["disable-keep-alive"] = disableKeepAlive
+        // C3: geo auto-update (upstream FlClash 1b2ea11 flipped the
+        // client default false -> true, 24 h interval; an
+        // explicitly saved false stays off). RawConfig kebab-case
+        // keys (core crates/config/src/keys.rs), so they travel
+        // here like socks-port / find-process-mode / keep-alive —
+        // the extension merges this file into config.apply's
+        // overlay at tunnel start AND on every live re-apply, and
+        // the core's GeoUpdater runs the periodic refresh from
+        // them (crates/engine/src/resources.rs sync_auto /
+        // auto_loop). Absent key = true: bool(forKey:) returns
+        // false for a missing key, so the default must be read
+        // via object(forKey:).
+        overlay["geo-auto-update"] = defaults.object(forKey: "ConcordiOS.geoAutoUpdate") as? Bool ?? true
+        overlay["geo-update-interval"] = Int(defaults.object(forKey: "ConcordiOS.geoAutoUpdateHours") as? Double ?? 24.0)
         let ua = globalUa.trimmingCharacters(in: .whitespaces)
         if !ua.isEmpty {
             overlay["global-ua"] = ua

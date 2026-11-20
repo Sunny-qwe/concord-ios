@@ -301,7 +301,13 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Section("MITM") {
+                // MITM 选项按上游 FlClash mitm.dart 一页式布局重排
+                // (v0.2.43 E1; fork ac90aeb 改前即真上游): 启用/捕获
+                // 置顶，证书组第二，模块与主机名随后，四个选项开关
+                // 在"选项"组按上游顺序。只移动行，不改任何 wiring；
+                // ours-only 行（解密 TLS、验证、签发叶证书、拦截记录
+                // 入口等）原地保留在就近的组里。
+                Section {
                     // FlClash mitm.dart:509-540: 开启要先确认，没有 CA
                     // 时自动生成一张；关闭直接关。
                     Toggle("启用 MITM", isOn: Binding(
@@ -329,53 +335,6 @@ struct SettingsView: View {
                     } message: {
                         Text("开启后，本应用会用自己的 CA 解密你勾选的域名的 HTTPS 流量，用于模块改写与脚本。还没有 CA 证书时会自动生成一张；生成后还需要在 iPhone「设置」里安装并完全信任它，解密才会真正生效。")
                     }
-                    NavigationLink {
-                        MitmHostnameEditorView()
-                    } label: {
-                        HStack {
-                            Text("解密主机名")
-                            Spacer()
-                            Text(mitmHostnameSummary)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                    .disabled(!settingsStore.mitmAvailable)
-                    Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
-                        .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
-                    Toggle("解密不受信任的证书", isOn: $mitmDecryptUntrusted)
-                        .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: mitmDecryptUntrusted) { _, _ in settingsStore.save() }
-                    Text("上游 decrypt-untrusted：打开后，即使服务器证书不受信任也解密。发给核心的 decrypt-tls = 解密不受信任的证书 || 已填受信任的服务器证书指纹（FlClash clash_config.dart:2322-2323）。改动随 MITM 配置保存，下次启动 VPN 或重载配置后生效。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    Toggle("启用 HTTP/2（h2）", isOn: $mitmH2)
-                        .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: mitmH2) { _, _ in settingsStore.save() }
-                    Text("改动随 MITM 配置保存，下次启动 VPN 或重载配置后生效。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    Toggle("跳过服务端证书验证", isOn: $settingsStore.mitmSkipServerCertVerify)
-                        .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmSkipServerCertVerify) { _, _ in settingsStore.save() }
-                    Text("只跳过上游服务器证书的验证（测试自签服务时用）；开启后中间人可伪造服务器证书，不要长期开。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    Toggle("阻止 QUIC", isOn: $settingsStore.mitmAutoQuicBlock)
-                        .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmAutoQuicBlock) { _, _ in settingsStore.save() }
-                    Text("默认开启：QUIC 把 TLS 握手藏在 UDP 里，解密不了；阻止后客户端回落到 TCP + TLS 才能解密。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    TextField("受信任的服务器证书指纹（可选）", text: $settingsStore.mitmTrustedFingerprint)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save() }
-                    Text("填入某个服务器证书的 SHA-256 指纹后，只信任该指纹的证书（解密 TLS 随之开启）；留空则用本应用 CA 的指纹。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
                     Toggle("捕获拦截记录", isOn: $settingsStore.mitmCapture)
                         .disabled(!settingsStore.mitmAvailable)
                         .onChange(of: settingsStore.mitmCapture) { _, _ in settingsStore.save() }
@@ -390,6 +349,17 @@ struct SettingsView: View {
                     Text("开启后拦截记录才会保存；iOS 上限 64 条（1 MB）。改动下次启动 VPN 后生效。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
+                    Button("验证 MITM 配置（mitm.validate）") {
+                        Task { await settingsStore.validateMitmConfig() }
+                    }
+                    .disabled(!settingsStore.mitmAvailable)
+                    Button("应用 MITM 设置（重新应用配置）") {
+                        Task { await settingsStore.applyMitmSettings() }
+                    }
+                    .disabled(!settingsStore.mitmAvailable)
+                }
+
+                Section {
                     if let info = settingsStore.mitmCertificate {
                         LabeledContent("CA 主题", value: info.subject)
                         LabeledContent("CA 指纹", value: info.fingerprint)
@@ -404,14 +374,6 @@ struct SettingsView: View {
                         Task { await settingsStore.generateMitmCertificate() }
                     }
                     .disabled(!settingsStore.mitmAvailable)
-                    Button("验证 MITM 配置（mitm.validate）") {
-                        Task { await settingsStore.validateMitmConfig() }
-                    }
-                    .disabled(!settingsStore.mitmAvailable)
-                    Button("应用 MITM 设置（重新应用配置）") {
-                        Task { await settingsStore.applyMitmSettings() }
-                    }
-                    .disabled(!settingsStore.mitmAvailable)
                     TextField("签发叶证书的主机名", text: $mitmIssueHost)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -423,6 +385,82 @@ struct SettingsView: View {
                     if let pem = settingsStore.mitmIssuedPem {
                         ShareLink("分享叶证书（PEM）", item: pem)
                     }
+                } footer: {
+                    Text("安装 CA 到系统信任（必须手动完成）：App 无法以编程方式安装受信任 CA。分享上面的 CA 证书，在 iPhone「设置 → 通用 → VPN 与设备管理」里安装，再到「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任。未安装时 HTTPS 只做透传，仅明文 HTTP 可改写。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("MITM 模块") {
+                    NavigationLink {
+                        MitmModulesView()
+                    } label: {
+                        HStack {
+                            Text("MITM 模块")
+                            Spacer()
+                            Text("Surge / Loon / QX")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section {
+                    NavigationLink {
+                        MitmHostnameEditorView()
+                    } label: {
+                        HStack {
+                            Text("解密主机名")
+                            Spacer()
+                            Text(mitmHostnameSummary)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .disabled(!settingsStore.mitmAvailable)
+                }
+
+                Section {
+                    Toggle("跳过服务端证书验证", isOn: $settingsStore.mitmSkipServerCertVerify)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmSkipServerCertVerify) { _, _ in settingsStore.save() }
+                    Text("只跳过上游服务器证书的验证（测试自签服务时用）；开启后中间人可伪造服务器证书，不要长期开。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Toggle("阻止 QUIC", isOn: $settingsStore.mitmAutoQuicBlock)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmAutoQuicBlock) { _, _ in settingsStore.save() }
+                    Text("默认开启：QUIC 把 TLS 握手藏在 UDP 里，解密不了；阻止后客户端回落到 TCP + TLS 才能解密。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Toggle("启用 HTTP/2（h2）", isOn: $mitmH2)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: mitmH2) { _, _ in settingsStore.save() }
+                    Text("改动随 MITM 配置保存，下次启动 VPN 或重载配置后生效。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
+                    Toggle("解密不受信任的证书", isOn: $mitmDecryptUntrusted)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: mitmDecryptUntrusted) { _, _ in settingsStore.save() }
+                    Text("上游 decrypt-untrusted：打开后，即使服务器证书不受信任也解密。发给核心的 decrypt-tls = 解密不受信任的证书 || 已填受信任的服务器证书指纹（FlClash clash_config.dart:2322-2323）。改动随 MITM 配置保存，下次启动 VPN 或重载配置后生效。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    TextField("受信任的服务器证书指纹（可选）", text: $settingsStore.mitmTrustedFingerprint)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save() }
+                    Text("填入某个服务器证书的 SHA-256 指纹后，只信任该指纹的证书（解密 TLS 随之开启）；留空则用本应用 CA 的指纹。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("选项")
+                }
+
+                Section {
                     if !settingsStore.mitmIssues.isEmpty {
                         ForEach(settingsStore.mitmIssues, id: \.self) { issue in
                             Text(issue).font(.system(size: 10)).foregroundStyle(.orange)
@@ -433,9 +471,6 @@ struct SettingsView: View {
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
-                    Text("安装 CA 到系统信任（必须手动完成）：App 无法以编程方式安装受信任 CA。分享上面的 CA 证书，在 iPhone「设置 → 通用 → VPN 与设备管理」里安装，再到「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任。未安装时 HTTPS 只做透传，仅明文 HTTP 可改写。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
                     NavigationLink("MITM 拦截记录") {
                         MitmView()
                     }
@@ -1158,6 +1193,7 @@ struct ResourcesView: View {
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var mitmModuleStore: MitmModuleStore
     @EnvironmentObject private var client: ConcordClient
+    @EnvironmentObject private var settingsStore: SettingsStore
     @State private var releaseMessage: String?
     @State private var geoFiles: [GeoFileInfo] = []
     /// Per-item update state (FlClash ResourcesView): the names of
@@ -1165,7 +1201,14 @@ struct ResourcesView: View {
     @State private var updatingItems: Set<String> = []
     @State private var isUpdatingAll = false
     @State private var updateAllMessage: String?
-    @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = false
+    // C3: default on, 24 h — upstream FlClash 1b2ea11 flipped the
+    // geo auto-update default false -> true; an explicitly saved
+    // false stays off (@AppStorage only supplies the default when
+    // the key is absent). ContentView.swift:57 still declares
+    // false for the same key — see the C3 report; it only gates
+    // the redundant app-side manual loop, not the core's own
+    // auto-update.
+    @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = true
     @AppStorage("ConcordiOS.geoAutoUpdateHours") private var geoAutoUpdateHours = 24.0
     // Custom Geo download URLs (FlClash resources.dart:661
     // UpdateGeoUrlFormDialog, with its reset-to-default). Stored per
@@ -1294,6 +1337,13 @@ struct ResourcesView: View {
             }
             Section("Geo 资源") {
                 Toggle("自动更新", isOn: $geoAutoUpdate)
+                    // C3: the toggle writes general-overlay.json
+                    // (via settingsStore.save) so the tunnel core
+                    // picks the change up at the next VPN start /
+                    // live re-apply — the same pattern as the port
+                    // steppers. Without this the file would keep
+                    // the old value until an unrelated settings save.
+                    .onChange(of: geoAutoUpdate) { _, _ in settingsStore.save() }
                 if geoAutoUpdate {
                     HStack {
                         Text("更新间隔")
@@ -1306,6 +1356,7 @@ struct ResourcesView: View {
                         }
                         .pickerStyle(.menu)
                     }
+                    .onChange(of: geoAutoUpdateHours) { _, _ in settingsStore.save() }
                 }
                 if geoFiles.isEmpty {
                     Text("容器里没有找到 Geo 文件（MMDB / ASN / GeoSite）。点下面按钮更新，核心会在后台下载。")

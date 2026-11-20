@@ -54,7 +54,7 @@ struct ContentView: View {
     /// Combine cancellable held in @State so it lives as long as
     /// the root view and is cancelled with it.
     @State private var profileUpdateTimer: AnyCancellable?
-    @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = false
+    @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = true
     @AppStorage("ConcordiOS.geoAutoUpdateHours") private var geoAutoUpdateHours = 24.0
 
     var body: some View {

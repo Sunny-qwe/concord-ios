@@ -1486,6 +1486,19 @@ final class ConcordClient: ObservableObject {
         _ = try await call(method: "config.patch", params: params, resultType: EmptyResult.self)
     }
 
+    /// Patches only the core's mode (config.patch with just `mode`).
+    /// Added for the SSID direct override mirror (SsidDirectStore):
+    /// ConcordConfigPatchParams has no per-field defaults, so a
+    /// mode-only patch needs the full memberwise init spelled out;
+    /// this helper keeps that in one place.
+    func configPatchMode(_ mode: String) async throws {
+        try await configPatch(ConcordConfigPatchParams(
+            mode: mode, logLevel: nil, mixedPort: nil, allowLan: nil,
+            ipv6: nil, tcpConcurrent: nil, unifiedDelay: nil,
+            findProcessMode: nil, secret: nil, authentication: nil,
+            externalController: nil))
+    }
+
     func engineStart() async throws {
         _ = try await call(method: "engine.start", resultType: EmptyResult.self)
     }

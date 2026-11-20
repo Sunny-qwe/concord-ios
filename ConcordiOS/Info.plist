@@ -86,7 +86,7 @@
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.2.42</string>
+	<string>0.2.43</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -119,6 +119,8 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>扫码导入订阅需要使用相机扫描二维码。</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>按需连接需要读取当前 Wi-Fi 名称（SSID），以便在指定 Wi-Fi 下切换直连或断开 VPN；仅用于识别 Wi-Fi，不会上传位置信息。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

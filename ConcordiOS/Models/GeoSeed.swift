@@ -43,10 +43,12 @@ import Foundation
 // once is enough. IP-ASN rules are different: a missing ASN.mmdb is
 // deferred (fetched in the background after apply answers), so ASN
 // is never what fails a boot — it is seeded here anyway so the
-// background fetch never has to run. Auto-update is off by default
-// (upstream General.geo_auto_update = false) and only re-downloads
-// files already in use, so seeded files are not replaced behind
-// our back.
+// background fetch never has to run. Auto-update is ON by default
+// (v0.2.43 C3: upstream FlClash flipped the default, fork 1b2ea11;
+// pinned core General.geo_auto_update itself is still false and only
+// follows the client's overlay) and only re-downloads files already
+// in use, so a failed update never replaces the seeded files —
+// GeoUpdater::update logs the error and keeps the old file.
 //
 // Both cores are seeded: the app core's home (AppCore.ensureStarted,
 // app-private) and the extension core's home (the App Group

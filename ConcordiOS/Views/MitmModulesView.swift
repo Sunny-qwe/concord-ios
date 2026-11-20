@@ -91,6 +91,13 @@ struct MitmModulesView: View {
                         onDelete: {
                             deleteModule = module
                             showDeleteConfirm = true
+                        },
+                        onAwaitingConsent: {
+                            consentModule = module
+                            showConsentAlert = true
+                        },
+                        onDismissAwaiting: {
+                            Task { await moduleStore.answerConsent(module, agreed: false) }
                         }
                     )
                 }
@@ -102,7 +109,9 @@ struct MitmModulesView: View {
         .listStyle(.insetGrouped)
         .navigationTitle("MITM 模块")
         .sheet(isPresented: $showPasteImport) {
-            MitmModulePasteImportView()
+            MitmModulePasteImportView(onImported: { saved in
+                offerConsent(saved)
+            })
         }
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.plainText]) { result in
             switch result {
@@ -119,21 +128,33 @@ struct MitmModulesView: View {
             }
         }
         .sheet(isPresented: $showBlankEditor) {
-            MitmModuleTextEditorView(module: nil, initialText: MitmModuleStore.blankTemplate(name: "新模块"))
+            MitmModuleTextEditorView(
+                module: nil,
+                initialText: MitmModuleStore.blankTemplate(name: "新模块"),
+                onSaved: { saved in offerConsent(saved) }
+            )
         }
-        .alert("模块包含脚本", isPresented: $showConsentAlert) {
-            Button("取消", role: .cancel) { consentModule = nil }
+        // The consent prompt (fork `answerMitmModule`): what turning
+        // the module on asks about — unreadable file, scripts,
+        // skipped verification, limited clients. Cancelling records
+        // the decline, so the module stops awaiting consent; the
+        // "待确认" badge in its row is the same prompt, and the
+        // row's × dismisses it without asking.
+        .alert(listConsentTitle, isPresented: $showConsentAlert) {
+            Button("取消", role: .cancel) {
+                if let module = consentModule {
+                    consentModule = nil
+                    Task { await moduleStore.answerConsent(module, agreed: false) }
+                }
+            }
             Button("启用") {
                 if let module = consentModule {
                     consentModule = nil
-                    Task { await moduleStore.setEnabled(module, on: true) }
+                    Task { await moduleStore.answerConsent(module, agreed: true) }
                 }
             }
         } message: {
-            let count = consentModule
-                .flatMap { moduleStore.parsedContent(for: $0)?.declaredScripts }
-                ?? consentModule?.scripts ?? 0
-            Text("“\(consentModule?.name ?? "")”声明了 \(count) 个脚本。脚本会在核心里运行，能改请求、跑定时任务。确认是自己信任的模块再启用。")
+            Text(listConsentMessage)
         }
         .alert("删除模块", isPresented: $showDeleteConfirm) {
             Button("取消", role: .cancel) { deleteModule = nil }
@@ -148,21 +169,41 @@ struct MitmModulesView: View {
         }
     }
 
+    /// The prompt for the module the consent alert is asking about.
+    private var listConsentTitle: String {
+        consentModule.flatMap { moduleStore.consentPrompt(for: $0)?.title } ?? "启用此模块？"
+    }
+
+    private var listConsentMessage: String {
+        consentModule.flatMap { moduleStore.consentPrompt(for: $0)?.message } ?? ""
+    }
+
+    /// Offers the consent prompt for a module that awaits it (fork
+    /// `offerMitmModule`): fresh imports, editor saves and updates
+    /// land here; anything else stays on the persistent "待确认"
+    /// badge in the row and the dashboard card.
+    private func offerConsent(_ module: MitmModule?) {
+        guard let module, moduleStore.awaitsConsent(module) else { return }
+        consentModule = module
+        showConsentAlert = true
+    }
+
     private func toggle(_ module: MitmModule, on: Bool) {
-        if on {
-            let declared = moduleStore.parsedContent(for: module)?.declaredScripts ?? module.scripts
-            if module.needsScriptConsent(declaredScripts: declared) {
-                consentModule = module
-                showConsentAlert = true
-                return
-            }
+        if on, moduleStore.consentPrompt(for: module) != nil {
+            // Asks about something — a script it declares, skipped
+            // verification, limited clients, or a file that cannot
+            // be read (7140e37): ask first instead of enabling
+            // blindly.
+            consentModule = module
+            showConsentAlert = true
+            return
         }
         Task { await moduleStore.setEnabled(module, on: on) }
     }
 
     /// Imports every URL on its own line, skipping ones already
     /// installed (FlClash mitm_modules.dart:174-205), then offers
-    /// script consent for any newly imported script-bearing module
+    /// script consent for any newly imported module that awaits it
     /// (FlClash :206 — consent right after import, not only when
     /// the module is later enabled).
     private func importURLs() async {
@@ -193,13 +234,11 @@ struct MitmModulesView: View {
     }
 
     /// FlClash offerMitmScripts: a freshly imported module that
-    /// declares scripts asks for consent immediately.
+    /// awaits consent asks for it immediately.
     private func offerConsentForNewModules(beforeIDs: Set<String>) {
         let fresh = moduleStore.modules.filter { !beforeIDs.contains($0.id) }
-        if let scripted = fresh.first(where: {
-            (moduleStore.parsedContent(for: $0)?.declaredScripts ?? $0.scripts) > 0
-        }) {
-            consentModule = scripted
+        if let awaiting = fresh.first(where: { moduleStore.awaitsConsent($0) }) {
+            consentModule = awaiting
             showConsentAlert = true
         }
     }
@@ -213,6 +252,10 @@ private struct MitmModuleRow: View {
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onDelete: () -> Void
+    /// Tapping the "待确认" badge opens the consent prompt for
+    /// this module; the × next to it declines without asking.
+    let onAwaitingConsent: () -> Void
+    let onDismissAwaiting: () -> Void
 
     @EnvironmentObject private var moduleStore: MitmModuleStore
 
@@ -250,6 +293,27 @@ private struct MitmModuleRow: View {
                                 .padding(.vertical, 1)
                                 .background(Color.orange.opacity(0.14), in: Capsule())
                                 .foregroundStyle(.orange)
+                        }
+                        // Fork 2d31f10: the module awaits consent —
+                        // off, never answered, asking about something.
+                        // The state lives in the row, so the badge
+                        // survives app restart. Tapping it opens the
+                        // consent prompt; the × declines it.
+                        if moduleStore.awaitsConsent(module) {
+                            Button("待确认", action: onAwaitingConsent)
+                                .font(.system(size: 10))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Color.orange.opacity(0.14), in: Capsule())
+                                .foregroundStyle(.orange)
+                                .buttonStyle(.plain)
+                            Button(action: onDismissAwaiting) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 9, weight: .bold))
+                            }
+                            .foregroundStyle(.secondary)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("不再询问此模块")
                         }
                         if let content, !content.skipped.isEmpty {
                             Text("\(content.skipped.count) 跳过")
@@ -372,7 +436,11 @@ struct MitmModuleDetailView: View {
                     }
 
                     if !content.arguments.isEmpty {
-                        MitmModuleArgumentsSection(module: module, arguments: content.arguments)
+                        MitmModuleArgumentsSection(
+                            module: module,
+                            arguments: content.arguments,
+                            onAwaitingConsent: { showConsent = true }
+                        )
                     }
 
                     // FlClash mitm_modules.dart:55-76: run one script
@@ -430,13 +498,13 @@ struct MitmModuleDetailView: View {
                     if module.url != nil {
                         Button("更新（重新下载）") {
                             Task {
-                                await moduleStore.update(module)
                                 // FlClash mitm_modules.dart:224:
                                 // consent right after an update that
-                                // brings new scripts.
-                                if let updated = moduleStore.modules.first(where: { $0.id == module.id }),
-                                   !updated.enabled,
-                                   (moduleStore.parsedContent(for: updated)?.declaredScripts ?? updated.scripts) > updated.scripts {
+                                // brings new scripts — the module now
+                                // awaits consent persistently, so the
+                                // prompt is offered when it does.
+                                if let updated = await moduleStore.update(module),
+                                   moduleStore.awaitsConsent(updated) {
                                     showConsent = true
                                 }
                             }
@@ -484,7 +552,15 @@ struct MitmModuleDetailView: View {
         }
         .sheet(isPresented: $showEditor) {
             if let module, let text = moduleStore.text(of: module) {
-                MitmModuleTextEditorView(module: module, initialText: text)
+                MitmModuleTextEditorView(
+                    module: module,
+                    initialText: text,
+                    onSaved: { saved in
+                        if let saved, moduleStore.awaitsConsent(saved) {
+                            showConsent = true
+                        }
+                    }
+                )
             }
         }
         .alert("删除模块", isPresented: $showDeleteConfirm) {
@@ -497,30 +573,40 @@ struct MitmModuleDetailView: View {
         } message: {
             Text("删除“\(module?.name ?? "")”？它的文本和已下载的脚本都会删掉。")
         }
-        .alert("模块包含脚本", isPresented: $showConsent) {
-            Button("取消", role: .cancel) {}
+        // Same consent prompt as the list (fork `answerMitmModule`).
+        // Cancelling records the decline, so the module stops
+        // awaiting consent.
+        .alert(detailConsentTitle, isPresented: $showConsent) {
+            Button("取消", role: .cancel) {
+                if let module {
+                    Task { await moduleStore.answerConsent(module, agreed: false) }
+                }
+            }
             Button("启用") {
                 if let module {
-                    Task { await moduleStore.setEnabled(module, on: true) }
+                    Task { await moduleStore.answerConsent(module, agreed: true) }
                 }
             }
         } message: {
-            let count = module
-                .flatMap { moduleStore.parsedContent(for: $0)?.declaredScripts }
-                ?? module?.scripts ?? 0
-            Text("“\(module?.name ?? "")”声明了 \(count) 个脚本。脚本会在核心里运行，能改请求、跑定时任务。确认是自己信任的模块再启用。")
+            Text(detailConsentMessage)
         }
     }
 
-    /// The detail page's own enable toggle, with the same script
-    /// consent gate as the list row.
+    /// The prompt for this module (title / message), like the list's.
+    private var detailConsentTitle: String {
+        module.flatMap { moduleStore.consentPrompt(for: $0)?.title } ?? "启用此模块？"
+    }
+
+    private var detailConsentMessage: String {
+        module.flatMap { moduleStore.consentPrompt(for: $0)?.message } ?? ""
+    }
+
+    /// The detail page's own enable toggle, with the same consent
+    /// gate as the list row.
     private func toggleDetail(_ module: MitmModule, on: Bool) {
-        if on {
-            let declared = moduleStore.parsedContent(for: module)?.declaredScripts ?? module.scripts
-            if module.needsScriptConsent(declaredScripts: declared) {
-                showConsent = true
-                return
-            }
+        if on, moduleStore.consentPrompt(for: module) != nil {
+            showConsent = true
+            return
         }
         Task { await moduleStore.setEnabled(module, on: on) }
     }
@@ -602,6 +688,10 @@ struct MitmModuleDetailView: View {
 private struct MitmModuleArgumentsSection: View {
     let module: MitmModule
     let arguments: [MitmModuleArgument]
+    /// Called when saving the values turned the module off for
+    /// something it never agreed to (fork `setArguments` offers
+    /// the consent prompt right after); the detail view shows it.
+    var onAwaitingConsent: () -> Void = {}
 
     @EnvironmentObject private var moduleStore: MitmModuleStore
     @State private var values: [String: String] = [:]
@@ -670,6 +760,14 @@ private struct MitmModuleArgumentsSection: View {
     private func saveArguments() {
         Task {
             await moduleStore.setArguments(module, values: values)
+            if let error = moduleStore.lastError {
+                savedMessage = error
+                return
+            }
+            if let fresh = moduleStore.modules.first(where: { $0.id == module.id }),
+               moduleStore.awaitsConsent(fresh) {
+                onAwaitingConsent()
+            }
             savedMessage = "参数已保存"
         }
     }
@@ -716,6 +814,10 @@ struct MitmModuleSkippedView: View {
 // MARK: - Paste import
 
 private struct MitmModulePasteImportView: View {
+    /// Called with the saved module after a successful import, so
+    /// the list can offer the consent prompt when it awaits it.
+    var onImported: ((MitmModule?) -> Void)? = nil
+
     @EnvironmentObject private var moduleStore: MitmModuleStore
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
@@ -739,8 +841,11 @@ private struct MitmModulePasteImportView: View {
                 Section {
                     Button("导入") {
                         Task {
-                            await moduleStore.addFromText(text, fileName: fileName.isEmpty ? nil : fileName)
-                            if moduleStore.lastError == nil { dismiss() }
+                            let imported = await moduleStore.addFromText(text, fileName: fileName.isEmpty ? nil : fileName)
+                            if moduleStore.lastError == nil {
+                                dismiss()
+                                onImported?(imported)
+                            }
                         }
                     }
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -769,14 +874,18 @@ private struct MitmModulePasteImportView: View {
 private struct MitmModuleTextEditorView: View {
     let module: MitmModule?
     let initialText: String
+    /// Called with the saved module after a successful save, so the
+    /// caller can offer the consent prompt when it awaits it.
+    var onSaved: ((MitmModule?) -> Void)? = nil
 
     @EnvironmentObject private var moduleStore: MitmModuleStore
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
 
-    init(module: MitmModule?, initialText: String) {
+    init(module: MitmModule?, initialText: String, onSaved: ((MitmModule?) -> Void)? = nil) {
         self.module = module
         self.initialText = initialText
+        self.onSaved = onSaved
         _text = State(initialValue: initialText)
     }
 
@@ -796,12 +905,16 @@ private struct MitmModuleTextEditorView: View {
                 Section {
                     Button("保存") {
                         Task {
+                            let saved: MitmModule?
                             if let module {
-                                await moduleStore.edit(module, text: text)
+                                saved = await moduleStore.edit(module, text: text)
                             } else {
-                                await moduleStore.addFromText(text, fileName: nil)
+                                saved = await moduleStore.addFromText(text, fileName: nil)
                             }
-                            if moduleStore.lastError == nil { dismiss() }
+                            if moduleStore.lastError == nil {
+                                dismiss()
+                                onSaved?(saved)
+                            }
                         }
                     }
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

@@ -11,6 +11,16 @@
 	<array>
 		<string>packet-tunnel-provider</string>
 	</array>
+	<!-- SSID 直连覆盖 (v0.2.43 C1): the extension reads the current
+	     Wi-Fi SSID (NEHotspotNetwork) in SsidDirectController to
+	     enforce direct SSIDs without the app running. Same key the
+	     fork carries in NECore.entitlements. Safe to declare:
+	     tools/adhoc-sign.sh copies the whole entitlements dict into
+	     the ad-hoc signature (no whitelist), and the JUMJJ8 profile
+	     verified 2026-11-20 contains wifi-info, so the re-signer
+	     preserves it. -->
+	<key>com.apple.developer.networking.wifi-info</key>
+	<true/>
 	<!-- TODO: replace with your real App Group. -->
 	<key>com.apple.security.application-groups</key>
 	<array>

@@ -383,8 +383,8 @@ final class TunnelManager: ObservableObject {
         proto.excludeAPNs = settings.excludeAPNs
         proto.excludeCellularServices = settings.excludeCellularServices
         proto.enforceRoutes = settings.enforceRoutes
-        // excludeDeviceCommunication needs iOS 17.4+; the app targets
-        // iOS 17.0, so on 17.0-17.3 it stays at the system default.
+        // excludeDeviceCommunication is iOS 17.4+ only; on 17.0–17.3
+        // it stays at the system default (the app targets 17.0).
         if #available(iOS 17.4, *) {
             proto.excludeDeviceCommunication = settings.excludeDeviceCommunication
         }
@@ -542,20 +542,25 @@ final class TunnelManager: ObservableObject {
 
     /// Install (or clear) the on-demand rules on the saved VPN
     /// manager (FlClash: On-Demand, exclude SSIDs). One disconnect
-    /// rule per excluded SSID, then a connect rule for every other
-    /// network; rule order matters, disconnect first. With no
-    /// excluded SSIDs the single connect rule means "always connect
-    /// on demand". Disabled clears the rules and turns on-demand
-    /// off. The manager must be saved for the rules to take effect;
-    /// a failure surfaces to the caller instead of being swallowed.
+    /// rule per DISCONNECT SSID — excluded but not direct (fork
+    /// SharedStateStore.disconnectSSIDs) — then a connect rule for
+    /// every other network; rule order matters, disconnect first. A
+    /// direct SSID must NOT get a disconnect rule: the tunnel has to
+    /// stay up on it so the extension's SsidDirectController can
+    /// switch the core to direct mode. With no excluded SSIDs the
+    /// single connect rule means "always connect on demand". Disabled
+    /// clears the rules and turns on-demand off. The manager must be
+    /// saved for the rules to take effect; a failure surfaces to the
+    /// caller instead of being swallowed.
     @MainActor
-    func updateOnDemandRules(enabled: Bool, excludedSSIDs: [String]) async throws {
+    func updateOnDemandRules(enabled: Bool, excludedSSIDs: [String], directSSIDs: [String] = []) async throws {
         try await prepare()
         guard let manager else {
             throw TunnelError.noManager
         }
         if enabled {
-            var rules: [NEOnDemandRule] = excludedSSIDs.map { ssid in
+            let direct = Set(directSSIDs)
+            var rules: [NEOnDemandRule] = excludedSSIDs.filter { !direct.contains($0) }.map { ssid in
                 let rule = NEOnDemandRuleDisconnect()
                 rule.ssidMatch = [ssid]
                 return rule

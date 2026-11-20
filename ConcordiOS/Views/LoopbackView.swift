@@ -31,6 +31,24 @@ import SwiftUI
 // start, like other tun overrides. The list starts empty;
 // deleting all addresses removes the key.
 //
+// SEPARATE MECHANISM on this page — the "Loopback 10.7.0.1"
+// switch below is NOT this list: it is an NE interface setting
+// (FlClash fork commit 89aa066), persisted as
+// "loopback-device" in the shared tunnel.json, which the
+// extension reads at VPN start. When on, the extension adds
+// 10.7.0.2 as a second tunnel IPv4 address and a 10.7.0.1/32
+// route into the tunnel (PacketTunnel/LoopbackNetworkSettings).
+// Honest limit, stated in the UI next to the switch: the pinned
+// core (165154c) has no sing-tun-side backflow — TunConfig
+// never reads "loopback-address" and LoopbackGuard takes no
+// configurable addresses — so packets for 10.7.0.1 enter the
+// tunnel but nothing sends them back to the device, and the
+// switch may not work. It is mainly for SideStore /
+// SideInstaller setups (the user installs via SideKite).
+// The switch needs a VPN restart; the "重新应用" button below
+// only re-applies the config and cannot rebuild the tunnel
+// interface, so it does not apply this switch.
+//
 // Editing: tap a row (or its … menu) to edit the address in a
 // sheet; delete by swiping, by the Edit button's delete circles,
 // or from the row's … menu (with a confirm). The list may become
@@ -44,10 +62,47 @@ struct LoopbackView: View {
     @State private var showEditSheet = false
     @State private var showDeleteConfirm: String?
     @State private var applyMessage: String?
+    /// Loopback 10.7.0.1 switch (NE side, tunnel.json
+    /// "loopback-device", default OFF). Initialised from the
+    /// shared file so the toggle shows the persisted value.
+    @State private var loopbackDeviceEnabled = LoopbackView.readLoopbackDeviceEnabled()
 
     /// The tunnel interface's own address (PacketTunnelProvider):
     /// a loopback address may never be this.
     private static let tunnelAddress = "198.18.0.1"
+
+    /// Reads the Loopback 10.7.0.1 switch from the shared
+    /// tunnel.json — the same file the extension's
+    /// readTunnelSettings reads at VPN start. Missing file or
+    /// missing key means OFF.
+    private static func readLoopbackDeviceEnabled() -> Bool {
+        guard let url = ConfigStore.sharedFileURL(name: ConfigStore.tunnelSettingsFileName),
+              let data = try? Data(contentsOf: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return json["loopback-device"] as? Bool ?? false
+    }
+
+    /// Writes only the "loopback-device" key into the shared
+    /// tunnel.json, preserving every other key (read-modify-write).
+    /// Takes effect at the next VPN start — the extension builds
+    /// the tunnel interface settings once in bootCore.
+    /// NOTE: SettingsStore.saveSharedFiles preserves this key when it
+    /// rewrites tunnel.json wholesale (it carries over an existing
+    /// "loopback-device" value), so a later Settings save no longer
+    /// drops the switch.
+    private static func writeLoopbackDeviceEnabled(_ enabled: Bool) {
+        guard let url = ConfigStore.sharedFileURL(name: ConfigStore.tunnelSettingsFileName) else { return }
+        var json: [String: Any] = [:]
+        if let data = try? Data(contentsOf: url),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            json = object
+        }
+        json["loopback-device"] = enabled
+        guard let data = try? JSONSerialization.data(withJSONObject: json) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
 
     private var addresses: [String] {
         guard case .array(let items) = overrideStore.state(scope: nil, section: .tun)["loopback-address"] else {
@@ -124,6 +179,17 @@ struct LoopbackView: View {
                 Text("当前版本说明：核心接受 tun.loopback-address 这个配置项，但尚未实现回流路由——地址会保存并随配置发给核心，在本版本中还不会改变实际路由。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            Section {
+                Toggle("Loopback 10.7.0.1", isOn: $loopbackDeviceEnabled)
+                    .onChange(of: loopbackDeviceEnabled) { _, newValue in
+                        Self.writeLoopbackDeviceEnabled(newValue)
+                    }
+            } header: {
+                Text("Loopback 10.7.0.1（SideStore / SideInstaller）")
+            } footer: {
+                Text("打开后，下次启动 VPN 时隧道接口会多一个地址 10.7.0.2，并把 10.7.0.1/32 的流量引进隧道，让安装器在 VPN 开启时也能连上本机。注意：核心没有实现 sing-tun 一侧的回流，10.7.0.1 的包进隧道后核心不会把它送回本机，所以这个开关可能不起作用；主要是给 SideStore / SideInstaller 这类安装器准备的（本机安装用的是 SideKite）。改动需重启 VPN 生效，下面的「重新应用」不会让它生效。")
+                    .font(.system(size: 13))
             }
             Section {
                 Button("重新应用（VPN 运行时立即生效）") {

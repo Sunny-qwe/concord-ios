@@ -38,8 +38,10 @@ import Foundation
 //     client, which the campus network rejects (v0.2.33). The
 //     files are fetched with URLSession (system trust store) into
 //     this home dir — and into the App Group container too, so the
-//     next VPN start finds them — and the overlay forces
-//     geo-auto-update off for this instance only.
+//     next VPN start finds them — and the overlay follows the
+//     user's Resources geo setting (default on, 24 h — upstream
+//     FlClash 1b2ea11 flipped the default false -> true), so the
+//     core's own periodic refresh runs for this instance too.
 //
 // If the in-app core cannot start (staticlib missing, engine
 // failure), ensureStarted throws and the caller leaves nodes
@@ -418,23 +420,33 @@ final class AppCore {
             // overlay carries everything else — here the listener
             // ports, so this instance can never clash with the
             // extension's core or with anything else on the device.
-            // geo-auto-update is forced off for this instance: the
-            // delay test needs no geo refresh, and a periodic
-            // re-download would run through the core's own TLS
+            // geo-auto-update follows the user's Resources setting
+            // (default on, 24 h — upstream FlClash 1b2ea11 flipped
+            // the default false -> true; an explicitly saved false
+            // stays off). Absent UserDefaults key = true:
+            // bool(forKey:) returns false for a missing key. The
+            // periodic refresh then runs through the core's own TLS
             // client — the same one the campus network rejects
-            // (v0.2.33 MMDB failure). The seeded files stay until
-            // the user re-imports. This overlay is app-core-only:
-            // the extension core keeps the profile's own setting.
+            // (v0.2.33 MMDB failure) — but a failed refresh is
+            // log-only in the core (resources.rs GeoUpdater::update
+            // logs the error and keeps the old file), so the delay
+            // test keeps working on the seeded files. This overlay
+            // is app-core-only: the extension core gets the same
+            // values from general-overlay.json instead.
             // (There is no overlay key that skips the compile-time
             // MMDB need itself — a GEOIP rule must have the file.
             // GeoSeed above is what removes that need.)
+            let geoDefaults = UserDefaults.standard
+            let geoAutoUpdate = geoDefaults.object(forKey: "ConcordiOS.geoAutoUpdate") as? Bool ?? true
+            let geoUpdateHours = geoDefaults.object(forKey: "ConcordiOS.geoAutoUpdateHours") as? Double ?? 24.0
             let overlay: [String: Any] = [
                 "mixed-port": Self.appMixedPort,
                 "socks-port": Self.appSocksPort,
                 "port": Self.appHTTPPort,
                 "external-controller": Self.appController,
                 "dns": ["listen": Self.appDNSListen],
-                "geo-auto-update": false,
+                "geo-auto-update": geoAutoUpdate,
+                "geo-update-interval": Int(geoUpdateHours),
             ]
             _ = try await sendRequest(method: "config.apply", params: [
                 "profile": ["path": configURL.path],

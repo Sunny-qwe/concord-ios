@@ -31,22 +31,33 @@ import Darwin
 //     still applies (FlClash only warns too).
 //   - dns / rule scripts are not supported by the core itself
 //     (parse_script answers "dns scripts are not supported"), and
-//     JSON-body rewrites have no core line form (BodyActionDef is
-//     Replace or Jq only), so those still skip. Loon
-//     `request if … then reject(…)` / `response if …` conditionals
-//     ARE read (condition.rs: the condition folds into one URL
-//     regex and one lookahead per head; a reject answers with a
-//     map-local, or with a url-rewrite reject line for a bare 200);
-//     `then script(…)` calls and any other `then` action still skip,
-//     as do conditions the core itself refuses. QX
+//     Loon `request if … then reject(…)` / `response if …`
+//     conditionals ARE read (condition.rs: the condition folds into
+//     one URL regex and one lookahead per head; a reject answers
+//     with a map-local, or with a url-rewrite reject line for a
+//     bare 200); `then script(…)` calls and any other `then` action
+//     still skip, as do conditions the core itself refuses. QX
 //     `url-and-header` and whole-head `request-header` /
 //     `response-header` rewrites do have one (parse_url_rewrite's
 //     `head`, `header-text-replace`) and are emitted.
 //   - Loon's legacy `pattern replacement 302` (action last) reads
 //     like the core's (legacy.rs: three tokens, last one named).
 //   - `[General]` reads `force-http-engine-hosts` into
-//     forceHttpHostname (core `force_http_hostname`); other keys
-//     still skip as settings.
+//     forceHttpHostname (core `force_http_hostname`); the other
+//     keys go to the module network (DNS, hosts, routes, bypass).
+//     The network, the rule providers, the named exits and `h2`
+//     are carried on the merged content, but the store and the
+//     extension do not apply them to the profile yet — see
+//     MitmModuleStore.applyMerged / PacketTunnelProvider
+//     mergedMitmOverlay.
+//   - A module's `REQUIREMENT` lines are not evaluated: that needs
+//     the core's requirement expression evaluator and the runtime
+//     environment (system, language, core version). The core
+//     covers the VPN-on path (parseWithCore -> coreOffReason).
+//   - Rule providers name their set `mitm-<sha1[0:12]>`; a Stash
+//     provider's name hashes its JSON with sorted keys, where
+//     FlClash hashes the YAML order — the names are internal, so
+//     they only have to be stable inside this app.
 
 // MARK: - Arguments
 
@@ -72,6 +83,8 @@ enum MitmModuleSkipReason: String, Codable, CaseIterable {
     case section, setting, scriptType, event, disabled, rule, policy
     case jq, jsonBody, rawHeader, conditional, relativeData
     case notDownloaded, unreadable
+    case finalRule, deviceRule, managedCa, skipVerifyAll
+    case reflect, appOnly, proxies, nestedRuleSet
 
     /// Chinese label shown in the module detail view.
     var label: String {
@@ -90,6 +103,14 @@ enum MitmModuleSkipReason: String, Codable, CaseIterable {
         case .relativeData: return "本地数据文件未附加"
         case .notDownloaded: return "资源尚未下载"
         case .unreadable: return "无法解析的行"
+        case .finalRule: return "FINAL 规则不生效"
+        case .deviceRule: return "仅设备自身规则"
+        case .managedCa: return "CA 由系统管理"
+        case .skipVerifyAll: return "跳过全部验证"
+        case .reflect: return "不支持 reflect"
+        case .appOnly: return "仅原 App 支持"
+        case .proxies: return "模块不能改代理"
+        case .nestedRuleSet: return "嵌套规则集"
         }
     }
 }
@@ -143,6 +164,25 @@ struct MitmModuleContent {
     /// module view reports — so it is carried here for display and
     /// deliberately NOT put into mitmJSON.
     var forceHttpHostname: [String] = []
+    /// The rule sets the module's rules name, in the profile's
+    /// rule-provider form (`type` http/inline/file, `behavior`,
+    /// `format`, `url` / `interval` / `payload` / `path`). The
+    /// store applies these to the profile's `rule-providers`; the
+    /// `RULE-SET,<name>,…` rules in `rules` name them.
+    var ruleProviders: [String: [String: JSONValue]] = [:]
+    /// The policy names the module's rules name that no built-in
+    /// covers, for the store to map to the profile's outbounds.
+    var exits: Set<String> = []
+    /// Surge's `h2 = true` in [MITM]: HTTP/2 over the tunnel.
+    var h2: Bool = false
+    /// The DNS, hosts, TUN routes and proxy bypass the module asks
+    /// for ([General] / [Host] / Stash `dns` / `hosts`). The store
+    /// applies these to the profile; the parser only records them.
+    var network: MitmModuleNetwork = MitmModuleNetwork()
+    /// Scripts and files the module carries in its own text, under
+    /// `inline:` keys; the store materialises them into the
+    /// resources directory for the core to read.
+    var inlineResources: [String: String] = [:]
     var resourceUrls: Set<String> = []
     var skipped: [MitmModuleSkip] = []
 
@@ -173,7 +213,8 @@ struct MitmModuleContent {
             && bodyRewrite.isEmpty && mapLocal.isEmpty && script.isEmpty
             && rules.isEmpty && skipVerifyHostname.isEmpty
             && clientSourceAddress.isEmpty && requestBodyMock.isEmpty
-            && forceHttpHostname.isEmpty
+            && forceHttpHostname.isEmpty && ruleProviders.isEmpty
+            && network.isEmpty && inlineResources.isEmpty
             && resourceUrls.isEmpty && skipped.isEmpty
     }
 
@@ -191,7 +232,11 @@ struct MitmModuleContent {
             skipVerifyHostname: skipVerifyHostname,
             clientSourceAddress: clientSourceAddress,
             requestBodyMock: requestBodyMock,
-            forceHttpHostname: forceHttpHostname
+            forceHttpHostname: forceHttpHostname,
+            ruleProviders: ruleProviders,
+            exits: exits,
+            h2: h2,
+            network: network
         )
     }
 }
@@ -212,13 +257,18 @@ struct MitmModuleMerged {
     /// Surge's `force-http-engine-hosts`, carried for display (see
     /// MitmModuleContent); the core has no mitm wire key for it.
     var forceHttpHostname: [String] = []
+    var ruleProviders: [String: [String: JSONValue]] = [:]
+    var exits: Set<String> = []
+    var h2: Bool = false
+    var network: MitmModuleNetwork = MitmModuleNetwork()
 
     var isEmpty: Bool {
         hostname.isEmpty && urlRewrite.isEmpty && headerRewrite.isEmpty
             && bodyRewrite.isEmpty && mapLocal.isEmpty && script.isEmpty
             && rules.isEmpty && skipVerifyHostname.isEmpty
             && clientSourceAddress.isEmpty && requestBodyMock.isEmpty
-            && forceHttpHostname.isEmpty
+            && forceHttpHostname.isEmpty && ruleProviders.isEmpty
+            && network.isEmpty
     }
 
     /// RawConfig wire keys (kebab-case), for module-mitm.json and
@@ -236,6 +286,115 @@ struct MitmModuleMerged {
         if !clientSourceAddress.isEmpty { out["client-source-address"] = clientSourceAddress }
         if !requestBodyMock.isEmpty { out["request-body-mock"] = requestBodyMock }
         return out
+    }
+}
+
+// MARK: - Module network edits (FlClash: lib/common/mitm_network.dart)
+//
+// The DNS, hosts, TUN routes and proxy bypass a module asks for.
+// A list edit goes over the profile's own list: `before` ahead of
+// it, `after` behind it, and with `replace` the profile's entries
+// are dropped.
+
+struct MitmListEdit: Codable, Equatable {
+    var replace: Bool = false
+    var before: [String] = []
+    var after: [String] = []
+
+    var values: [String] { before + after }
+
+    func applyTo(_ current: [String]) -> [String] {
+        var out: [String] = []
+        for value in before + (replace ? [] : current) + after where !out.contains(value) {
+            out.append(value)
+        }
+        return out
+    }
+
+    /// This edit, then `next` over its result.
+    func then(_ next: MitmListEdit) -> MitmListEdit {
+        if next.replace { return next }
+        return MitmListEdit(
+            replace: replace,
+            before: next.before + before,
+            after: after + next.after
+        )
+    }
+}
+
+/// A domain and what it maps to: DNS servers, or addresses and
+/// aliases. A later line for the same domain replaces an earlier one.
+struct MitmDomainEntry: Codable, Equatable {
+    var domain: String
+    var values: [String]
+}
+
+struct MitmModuleNetwork: Codable, Equatable {
+    var nameserver: MitmListEdit?
+    var defaultNameserver: MitmListEdit?
+    var fakeIpFilter: MitmListEdit?
+    var nameserverPolicy: [MitmDomainEntry] = []
+    var hosts: [MitmDomainEntry] = []
+    var routeAddress: [String] = []
+    var routeExcludeAddress: MitmListEdit?
+    var bypassDomain: MitmListEdit?
+
+    var isEmpty: Bool {
+        nameserver == nil && defaultNameserver == nil && fakeIpFilter == nil
+            && nameserverPolicy.isEmpty && hosts.isEmpty && routeAddress.isEmpty
+            && routeExcludeAddress == nil && bypassDomain == nil
+    }
+
+    func editOf(_ key: String) -> MitmListEdit? {
+        switch key {
+        case "dns-server": return nameserver
+        case "default-nameserver": return defaultNameserver
+        case "fake-ip-filter": return fakeIpFilter
+        case "route-exclude-address": return routeExcludeAddress
+        case "bypass-domain": return bypassDomain
+        default: return nil
+        }
+    }
+
+    /// The merged network of several modules, in order: list edits
+    /// fold with `then`, domains replace by name, included routes
+    /// add up.
+    static func merge(_ modules: [MitmModuleNetwork]) -> MitmModuleNetwork {
+        func fold(_ of: (MitmModuleNetwork) -> MitmListEdit?) -> MitmListEdit? {
+            modules.reduce(nil as MitmListEdit?) { merged, module in
+                guard let next = of(module) else { return merged }
+                return merged?.then(next) ?? next
+            }
+        }
+        func foldDomains(_ of: (MitmModuleNetwork) -> [MitmDomainEntry]) -> [MitmDomainEntry] {
+            var out: [MitmDomainEntry] = []
+            for module in modules {
+                for entry in of(module) {
+                    if let index = out.firstIndex(where: { $0.domain == entry.domain }) {
+                        out[index] = entry
+                    } else {
+                        out.append(entry)
+                    }
+                }
+            }
+            return out
+        }
+        var routeAddress: [String] = []
+        for module in modules {
+            for route in module.routeAddress where !routeAddress.contains(route) {
+                routeAddress.append(route)
+            }
+        }
+        return MitmModuleNetwork(
+            nameserver: fold { $0.nameserver },
+            defaultNameserver: fold { $0.defaultNameserver },
+            fakeIpFilter: fold { $0.fakeIpFilter },
+            nameserverPolicy: foldDomains { $0.nameserverPolicy },
+            hosts: foldDomains { $0.hosts },
+            routeAddress: routeAddress,
+            routeExcludeAddress: fold { $0.routeExcludeAddress },
+            bypassDomain: fold { $0.bypassDomain }
+        )
     }
 }
 
@@ -590,8 +749,142 @@ private func validPorts(_ text: String) -> Bool {
         .allSatisfy { part in (Int(part) ?? 65_536) <= 65_535 }
 }
 
-/// A Quantumult X task line: a cron expression of five or six fields,
-/// then the script.
+/// `>=443` and the like as the range of ports they cover.
+private func portRange(_ value: String) -> String? {
+    let text = value.trimmingCharacters(in: .whitespaces)
+    guard let digit = text.firstIndex(where: { $0.isNumber }) else { return nil }
+    let op = String(text[..<digit]).trimmingCharacters(in: .whitespaces)
+    let portText = String(text[digit...]).trimmingCharacters(in: .whitespaces)
+    guard let port = Int(portText), port <= 65_535 else { return nil }
+    let low: Int
+    let high: Int
+    switch op {
+    case ">=", "=>": (low, high) = (port, 65_535)
+    case ">": (low, high) = (port + 1, 65_535)
+    case "<=", "=<": (low, high) = (0, port)
+    case "<": (low, high) = (0, port - 1)
+    default: return nil
+    }
+    guard low <= high else { return nil }
+    return "\(low)-\(high)"
+}
+
+private func isIPAddress(_ text: String) -> Bool {
+    var buffer = [UInt8](repeating: 0, count: 16)
+    let family: Int32 = text.contains(":") ? AF_INET6 : AF_INET
+    return text.withCString { inet_pton(family, $0, &buffer) } == 1
+}
+
+private func isCidr(_ text: String) -> Bool { cidr(text) != nil }
+
+/// A DNS server as mihomo writes one: Surge's `system` and Loon's
+/// `h3://` read as `system://` and DoH over HTTP/3.
+private func mitmDnsServer(_ server: String) -> String? {
+    let value = server.trimmingCharacters(in: .whitespaces)
+    if value == "system" || value == "syslib" { return "system://" }
+    if value.hasPrefix("h3://") {
+        let rest = String(value.dropFirst("h3://".count))
+        let url = "https://" + rest
+        return url.contains("#") ? url + "&h3=true" : url + "#h3=true"
+    }
+    if RX.matches(#"^(?:udp|tcp|tls|https|http|quic|system|dhcp|rcode)://\S+$"#, value) {
+        return value
+    }
+    return mitmPlainAddress(value) ? value : nil
+}
+
+/// An IP address, optionally bracketed (v6) with a port.
+private func mitmPlainAddress(_ value: String) -> Bool {
+    func isPort(_ text: String) -> Bool {
+        !text.isEmpty && text.count <= 5 && text.allSatisfy({ $0.isNumber })
+    }
+    if value.hasPrefix("[") {
+        guard let close = value.firstIndex(of: "]") else { return false }
+        let address = String(value[value.index(after: value.startIndex)..<close])
+        guard isIPAddress(address) else { return false }
+        let rest = String(value[value.index(after: close)...])
+        if rest.isEmpty { return true }
+        guard rest.hasPrefix(":") else { return false }
+        return isPort(String(rest.dropFirst()))
+    }
+    if isIPAddress(value) { return true }
+    guard let colon = value.lastIndex(of: ":") else { return false }
+    let port = String(value[value.index(after: colon)...])
+    guard isPort(port) else { return false }
+    let address = String(value[..<colon])
+    return !address.contains(":") && isIPAddress(address)
+}
+
+private func isMitmPlainDnsServer(_ server: String) -> Bool {
+    server == "system://" || mitmPlainAddress(server)
+}
+
+/// A route Surge, Loon or Stash writes as an address alone reads as a host.
+private func mitmRoute(_ route: String) -> String? {
+    let value = route.trimmingCharacters(in: .whitespaces)
+    if value.contains("/") {
+        return isCidr(value) ? value : nil
+    }
+    guard isIPAddress(value) else { return nil }
+    return "\(value)/\(value.contains(":") ? 128 : 32)"
+}
+
+/// A rule set's provider name: `mitm-` and the first 12 hex digits
+/// of the SHA-1 of where the set comes from, so one set shared by
+/// modules is one provider.
+private func ruleSetName(_ key: String) -> String {
+    let digest = Insecure.SHA1.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+    return "mitm-" + digest.prefix(12)
+}
+
+private func inlineRuleSetName(_ name: String) -> String { ruleSetName("ruleset:\(name)") }
+
+/// A list a module writes without a mark takes its format's default.
+private enum ListMark {
+    case plain, replace, insert, append
+}
+
+/// Surge's internal rule sets, as `rules/ruleset.md` lists them.
+private let builtinRuleSets: [String: [String]] = [
+    "LAN": [
+        "DOMAIN-SUFFIX,local",
+        "IP-CIDR,0.0.0.0/8",
+        "IP-CIDR,10.0.0.0/8",
+        "IP-CIDR,100.64.0.0/10",
+        "IP-CIDR,127.0.0.0/8",
+        "IP-CIDR,169.254.0.0/16",
+        "IP-CIDR,172.16.0.0/12",
+        "IP-CIDR,192.0.0.0/24",
+        "IP-CIDR,192.0.2.0/24",
+        "IP-CIDR,192.168.0.0/16",
+        "IP-CIDR,224.0.0.0/4",
+        "IP-CIDR6,::1/128",
+        "IP-CIDR6,fc00::/7",
+        "IP-CIDR6,fe80::/10",
+    ],
+    "SYSTEM": [
+        "DOMAIN,api.smoot.apple.com",
+        "DOMAIN,captive.apple.com",
+        "DOMAIN,xp.apple.com",
+        "DOMAIN,configuration.apple.com",
+        "DOMAIN,guzzoni.apple.com",
+        "DOMAIN,smp-device-content.apple.com",
+        "DOMAIN,aod.itunes.apple.com",
+        "DOMAIN,mesu.apple.com",
+        "DOMAIN,api.smoot.apple.cn",
+        "DOMAIN,gs-loc.apple.com",
+        "DOMAIN,mvod.itunes.apple.com",
+        "DOMAIN,streamingaudio.itunes.apple.com",
+        "DOMAIN-SUFFIX,ess.apple.com",
+        "DOMAIN-SUFFIX,push-apple.com.akadns.net",
+        "DOMAIN-SUFFIX,push.apple.com",
+        "DOMAIN-SUFFIX,lcdn-locator.apple.com",
+        "DOMAIN-SUFFIX,lcdn-registration.apple.com",
+        "DOMAIN-SUFFIX,ls.apple.com",
+        "PROCESS-NAME,trustd",
+        "PROCESS-NAME,netbiosd",
+    ],
+]
 private func qxCron(_ line: String) -> (expression: String, rest: String)? {
     let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
     for count in [5, 6] {
@@ -670,9 +963,168 @@ func mitmScriptScope(text: String, values: [String: String] = [:], resources: [S
     return Set(content.declaredScriptLines + content.script)
 }
 
+/// A value as JSON, for a jq expression.
+private func jsonEncodeAny(_ value: Any) -> String? {
+    if let string = value as? String { return jsonEncodeString(string) }
+    if let number = value as? NSNumber {
+        if CFGetTypeID(number) == CFBooleanGetTypeID() {
+            return number.boolValue ? "true" : "false"
+        }
+        return number.stringValue
+    }
+    if value is NSNull { return "null" }
+    if let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+       let out = String(data: data, encoding: .utf8) { return out }
+    return nil
+}
+
+private func jsonEncodeString(_ text: String) -> String {
+    if let data = try? JSONEncoder().encode(text),
+       let out = String(data: data, encoding: .utf8) { return out }
+    return quoted(text)
+}
+
+/// Splits JSON-edit arguments on spaces outside quotes and brackets, keeping both.
+private func jsonEditArgs(_ text: String) -> [String]? {
+    var args: [String] = []
+    var current = ""
+    var depth = 0
+    var quoted = false
+    let chars = Array(text)
+    var i = 0
+    while i < chars.count {
+        let c = chars[i]
+        if quoted {
+            current.append(c)
+            if c == "\\" && i + 1 < chars.count {
+                i += 1
+                current.append(chars[i])
+            } else if c == "\"" {
+                quoted = false
+            }
+            i += 1
+            continue
+        }
+        if (c == " " || c == "\t") && depth == 0 {
+            if !current.isEmpty { args.append(current); current = "" }
+            i += 1
+            continue
+        }
+        current.append(c)
+        switch c {
+        case "\"": quoted = true
+        case "{", "[": depth += 1
+        case "}", "]": depth -= 1
+        default: break
+        }
+        i += 1
+    }
+    if quoted || depth != 0 { return nil }
+    if !current.isEmpty { args.append(current) }
+    return args
+}
+
+/// Loon/Stash JSON edits as one jq expression, or nil when the
+/// arguments do not read. `stash` is Stash's form, whose `add`
+/// writes over null and whose `replace`/`del` leave null and false be.
+private func jsonEditJq(_ edit: String, args: [String], stash: Bool) -> String? {
+    let delete = edit == "del"
+    if args.isEmpty || (!delete && args.count % 2 != 0) { return nil }
+    if delete && !stash {
+        var paths: [String] = []
+        for arg in args {
+            guard let path = jqPath(arg) else { return nil }
+            paths.append(path)
+        }
+        return "del(\(paths.joined(separator: ", ")))"
+    }
+    var edits: [String] = []
+    var i = 0
+    while i < args.count {
+        guard let path = jqPath(args[i]) else { return nil }
+        let value = delete ? nil : jsonLiteral(args[i + 1])
+        edits.append(jsonEdit(edit, path: path, value: value, stash: stash))
+        i += delete ? 1 : 2
+    }
+    return edits.joined(separator: " | ")
+}
+
+private func jsonEdit(_ edit: String, path: String, value: String?, stash: Bool) -> String {
+    let present = ". != null and . != false"
+    switch (edit, stash) {
+    case ("add", false): return "\(path) = \(value ?? "")"
+    case ("add", true): return "if \(path) == null then \(path) = \(value ?? "") else . end"
+    case ("replace", false): return "if \(path) != null then \(path) = \(value ?? "") else . end"
+    case ("replace", true): return "if (\(path) | \(present)) then \(path) = \(value ?? "") else . end"
+    case ("del", false): return "del(\(path))"
+    case ("del", true): return "if (\(path) | \(present)) then del(\(path)) else . end"
+    default: return "\(path) = \(value ?? "")"
+    }
+}
+
+/// A value as written when it is JSON, else as a string. Loon
+/// writes a space in a quoted value as `\x20`, which JSON lacks.
+private func jsonLiteral(_ text: String) -> String {
+    if let data = text.data(using: .utf8),
+       let value = try? JSONSerialization.jsonObject(with: data, options: [.allowFragments]),
+       let encoded = jsonEncodeAny(value) {
+        return encoded
+    }
+    guard text.count > 1,
+          let mark = text.first, mark == "\"" || mark == "'",
+          text.hasSuffix(String(mark)) else {
+        return jsonEncodeString(text)
+    }
+    let inner = String(text.dropFirst().dropLast())
+    let unescaped = RX.replaceMapped(#"\\x([0-9A-Fa-f]{2})"#, inner) { groups in
+        guard let hex = groups[1], let code = UInt32(hex, radix: 16),
+              let scalar = Unicode.Scalar(code) else { return groups[0] ?? "" }
+        return String(Character(scalar))
+    }.replacingOccurrences(of: "\\" + String(mark), with: String(mark))
+    return jsonEncodeString(unescaped)
+}
+
+/// A Loon JSON path, dotted with `[n]` for array items, as jq's.
+/// A leading `$` (Stash writes `$.debug`) names the body itself.
+private func jqPath(_ path: String) -> String? {
+    var path = path
+    if path.hasPrefix("$") {
+        let rest = String(path.dropFirst())
+        if rest.isEmpty || rest.hasPrefix(".") || rest.hasPrefix("[") {
+            path = rest.hasPrefix(".") ? String(rest.dropFirst()) : rest
+        }
+    }
+    var out = ""
+    for segment in path.split(separator: ".", omittingEmptySubsequences: false) {
+        let segment = String(segment)
+        guard let m = RX.match(#"^([^\[\]]*)((?:\[\d+\])*)$"#, segment),
+              let key = m[1], let indexes = m[2] else { return nil }
+        if !key.isEmpty {
+            if RX.matches(#"^[A-Za-z_]\w*$"#, key) {
+                out += ".\(key)"
+            } else {
+                out += "." + jsonEncodeString(key)
+            }
+        }
+        out += indexes
+    }
+    if out.isEmpty { return "." }
+    return out.hasPrefix(".") ? out : "." + out
+}
+
 // MARK: - Parser engine (mirrors Dart's _ModuleParser)
 
+/// Sections that only list proxies, which a module cannot change.
+private let proxySections: Set<String> = ["proxy", "proxy group", "proxy-groups", "proxies"]
+
+/// Sections for features of the app the module was written for
+/// that this app has nothing like.
+private let appOnlySectionPattern = #"^(panel|ponte|dhcp|ssid setting|mtproto|snell server|replica|tiles|(wireguard|tailscale) .+)$"#
+
 private let sectionPattern = #"^\[([^\]]+)\]$"#
+/// Loon's `cron|network-changed|generic then script(path[, argument]) [with options]`.
+private let loonTriggeredScriptPattern = #"^(?:cron\s+("[^"]*"|.+?)|(network-changed|generic))\s+then\s+script\(\s*("[^"]*"|[^,\s)]+)\s*(?:,\s*(\{.*\}|"(?:[^"\\]|\\.)*"|[^)]*?))?\s*\)\s*(?:with\s+(.*))?$"#
+
 private let conditionalPattern = #"^(request|response)\s+if\s"#
 private let loonScriptCallPattern = #"\bthen\s+script\s*\("#
 private let domainPattern = #"^[^\s,()]+$"#
@@ -681,9 +1133,18 @@ private let rejectActions: [String: String] = [
     "REJECT": "reject", "REJECT-DROP": "reject", "REJECT-NO-DROP": "reject",
     "REJECT-TINYGIF": "reject-img", "REJECT-IMG": "reject-img",
     "REJECT-DICT": "reject-dict", "REJECT-ARRAY": "reject-array",
-    "REJECT-200": "reject-200",
+    "REJECT-200": "reject-200", "REJECT-VIDEO": "reject-200",
 ]
 private let rejectRewrites: Set<String> = ["reject", "reject-img", "reject-dict", "reject-array", "reject-200"]
+
+/// A rule's third field when it is an option, not a policy.
+private let ruleOptions: Set<String> = ["no-resolve", "extended-matching", "pre-matching"]
+
+/// Rules on what only an Apple device knows of its network or itself.
+private let deviceRuleTypes: Set<String> = [
+    "CELLULAR-RADIO", "CELLULAR-CARRIER", "SUBNET",
+    "DEVICE-NAME", "MAC-ADDRESS", "HOSTNAME-TYPE",
+]
 
 private let ruleTypes: [String: String] = [
     "DOMAIN": "DOMAIN", "DOMAIN-SUFFIX": "DOMAIN-SUFFIX",
@@ -692,7 +1153,9 @@ private let ruleTypes: [String: String] = [
     "SRC-IP": "SRC-IP-CIDR", "SRC-IP-CIDR": "SRC-IP-CIDR",
     "DEST-PORT": "DST-PORT", "DST-PORT": "DST-PORT",
     "SRC-PORT": "SRC-PORT", "IN-PORT": "IN-PORT",
-    "PROCESS-NAME": "PROCESS-NAME",
+    "PROCESS-NAME": "PROCESS-NAME", "PROCESS-PATH": "PROCESS-PATH",
+    "GEOIP": "GEOIP", "IP-ASN": "IP-ASN", "GEOSITE": "GEOSITE",
+    "DOMAIN-REGEX": "DOMAIN-REGEX", "NETWORK": "NETWORK",
     // Upstream 165154c: URL-REGEX (a regex over the request URL)
     // and USER-AGENT (a *? glob, case-sensitive, over the
     // User-Agent header). Both are undecided before the request is
@@ -716,9 +1179,13 @@ private let qxFilterTypes: [String: String] = [
     "host": "DOMAIN", "host-suffix": "DOMAIN-SUFFIX",
     "host-keyword": "DOMAIN-KEYWORD", "host-wildcard": "DOMAIN-WILDCARD",
     "ip-cidr": "IP-CIDR", "ip6-cidr": "IP-CIDR6",
+    "geoip": "GEOIP", "ip-asn": "IP-ASN",
     // Upstream 165154c: QX user-agent filters are USER-AGENT rules.
     "user-agent": "USER-AGENT",
 ]
+private let qxMitmPattern = #"^(skip_dst_ip|skip_src_ip|skip_validating_cert|passphrase|p12)\s*="#
+private let qxRewritePattern = #"^\S+\s+url\s+\S|\surl-and-header\s"#
+
 private let qxFilterPattern = #"^(host|host-suffix|host-keyword|host-wildcard|ip-cidr|ip6-cidr|user-agent|geoip|ip-asn|final)\s*,"#
 private let qxRewritePattern = #"^\S+\s+url\s+\S|\surl-and-header\s"#
 private let qxScripts: [String: (phase: String, body: Bool)] = [
@@ -752,8 +1219,28 @@ private final class MitmModuleParserEngine {
     var clientSourceAddress: [String] = []
     var requestBodyMock: [String] = []
     var forceHttpHostname: [String] = []
+    var ruleProviders: [String: [String: JSONValue]] = [:]
+    var exits: Set<String> = []
+    var h2: Bool = false
+    var inlineResources: [String: String] = [:]
     var resourceUrls: Set<String> = []
     var skipped: [MitmModuleSkip] = []
+    /// Sections seen, lowercased, and the [General] keys seen — a
+    /// Loon plugin adds to the profile's lists, a Surge module
+    /// replaces them unless marked.
+    var sections: Set<String> = []
+    var generalKeys: Set<String> = []
+    /// The `[Ruleset <name>]` sections, in their own case.
+    var rulesetNames: Set<String> = []
+    var rulesets: [String: [String]] = [:]
+    var stashProviderNames: [String: String] = [:]
+    /// The `[MITM]` line that turns verifying off, if any: its
+    /// hosts are read off the hostname lists at the end.
+    var skipVerify: (section: String, line: String)?
+    var listEdits: [String: [(mark: ListMark, values: [String])]] = [:]
+    var hosts: [MitmDomainEntry] = []
+    var nameserverPolicy: [MitmDomainEntry] = []
+    var routeAddress: [String] = []
 
     init(values: [String: String], resources: [String: String]) {
         self.values = values
@@ -768,6 +1255,7 @@ private final class MitmModuleParserEngine {
             let trimmed = raw.trimmingCharacters(in: .whitespaces)
             if let header = RX.match(sectionPattern, trimmed) {
                 section = header[1]?.trimmingCharacters(in: .whitespaces)
+                if let section { sections.insert(section.lowercased()) }
                 continue
             }
             if trimmed.isEmpty || isCommentLine(trimmed) { continue }
@@ -795,6 +1283,29 @@ private final class MitmModuleParserEngine {
                 .trimmingCharacters(in: .whitespaces), !value.isEmpty else { return nil }
             return value
         }
+        // A line that turns verifying off names hosts on the hostname
+        // lists at the end; a `*` covers everything, which a module
+        // may not turn off, so it is skipped and the other hosts stand.
+        if let skipVerify {
+            var coversAll = false
+            for entry in insertedHostname + hostname {
+                if entry.hasPrefix("-") { continue }
+                if RX.matches(#"^\*+(:[\d*]+)?$"#, entry) {
+                    coversAll = true
+                } else {
+                    skipVerifyHostname.append(entry)
+                }
+            }
+            if coversAll { skip(skipVerify.section, skipVerify.line, .skipVerifyAll) }
+        }
+        // [Ruleset <name>] sections become providers of their own rules.
+        for name in rulesetNames {
+            guard let payload = rulesets[name] else { continue }
+            ruleProviders[inlineRuleSetName(name)] = [
+                "type": .string("inline"), "behavior": .string("classical"),
+                "payload": .array(payload.map { .string($0) }),
+            ]
+        }
         return MitmModuleContent(
             name: metaValue("name"),
             description: metaValue("desc"),
@@ -814,9 +1325,77 @@ private final class MitmModuleParserEngine {
             clientSourceAddress: clientSourceAddress,
             requestBodyMock: requestBodyMock,
             forceHttpHostname: forceHttpHostname,
+            ruleProviders: ruleProviders,
+            exits: exits,
+            h2: h2,
+            network: buildNetwork(),
+            inlineResources: inlineResources,
             resourceUrls: resourceUrls,
             skipped: skipped
         )
+    }
+
+    /// The module's network edits, folded in line order.
+    func buildNetwork() -> MitmModuleNetwork {
+        let plain = networkEdit("dns-server")
+        let encrypted = networkEdit("encrypted-dns-server")
+        let nameserver: MitmListEdit?
+        if let encrypted {
+            nameserver = isLoon ? plain?.then(encrypted) ?? encrypted : encrypted
+        } else {
+            nameserver = plain
+        }
+        return MitmModuleNetwork(
+            nameserver: nameserver,
+            defaultNameserver: networkEdit("default-nameserver") ?? networkBootstrap,
+            fakeIpFilter: networkEdit("fake-ip-filter"),
+            nameserverPolicy: nameserverPolicy,
+            hosts: hosts,
+            routeAddress: routeAddress,
+            routeExcludeAddress: networkEdit("route-exclude-address"),
+            bypassDomain: networkEdit("bypass-domain")
+        )
+    }
+
+    /// The merged list edit for one network key, in line order.
+    func networkEdit(_ key: String) -> MitmListEdit? {
+        guard let edits = listEdits[key] else { return nil }
+        var merged: MitmListEdit?
+        for (mark, values) in edits {
+            let next: MitmListEdit
+            switch mark {
+            case .insert: next = MitmListEdit(before: values)
+            case .append: next = MitmListEdit(after: values)
+            case .plain where isLoon: next = MitmListEdit(after: values)
+            case .plain, .replace: next = MitmListEdit(replace: true, before: values)
+            }
+            merged = merged?.then(next) ?? next
+        }
+        return merged
+    }
+
+    /// Whether the module reads as Loon's: a Loon section, or a key only Loon writes.
+    var isLoon: Bool {
+        !sections.isDisjoint(with: ["rewrite", "argument", "remote rule", "plugin"])
+            || !generalKeys.isDisjoint(with: ["doh-server", "doh3-server", "doq-server", "bypass-tun", "include-tun", "real-ip"])
+    }
+
+    /// Surge reads its plain servers only for the encrypted ones'
+    /// domains once any encrypted one is set, which is mihomo's
+    /// default-nameserver.
+    var networkBootstrap: MitmListEdit? {
+        guard let plain = networkEdit("dns-server"),
+              networkEdit("encrypted-dns-server") != nil, !isLoon else { return nil }
+        return MitmListEdit(
+            replace: plain.replace,
+            before: plain.before.filter(isMitmPlainDnsServer),
+            after: plain.after.filter(isMitmPlainDnsServer)
+        )
+    }
+
+    /// Records a list edit under one network key.
+    func editList(_ key: String, mark: ListMark, values: [String]) {
+        listEdits[key, default: []].append((mark: mark, values: values))
     }
 
     func readDeclarations(_ lines: [String]) {
@@ -824,7 +1403,11 @@ private final class MitmModuleParserEngine {
         for raw in lines {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if let header = RX.match(sectionPattern, line) {
-                section = header[1]?.trimmingCharacters(in: .whitespaces).lowercased()
+                let name = header[1]?.trimmingCharacters(in: .whitespaces) ?? ""
+                section = name.lowercased()
+                if section?.hasPrefix("ruleset ") == true {
+                    rulesetNames.insert(String(name.dropFirst("ruleset ".count)).trimmingCharacters(in: .whitespaces))
+                }
                 continue
             }
             if line.hasPrefix("#!") {
@@ -936,6 +1519,10 @@ private final class MitmModuleParserEngine {
         switch section.lowercased() {
         case "argument":
             break
+        case "general":
+            readGeneral(section, line: line)
+        case "host":
+            readHost(section, line: line)
         case "rule":
             readRule(section, line: line)
         case "url rewrite":
@@ -956,48 +1543,153 @@ private final class MitmModuleParserEngine {
             readMapLocal(section, line: line, intoRequestMock: true)
         case "rewrite":
             readLoonRewrite(section, line: line, raw: raw)
-        case "general":
-            readGeneral(section, line: line)
         case "mitm":
             readMitm(section, line: line)
         case "script":
             readScript(section, line: line, raw: raw)
         case "rewrite_local", "filter_local", "task_local":
             if !readQuantumultX(line) { skip(section, line, .unreadable) }
+        case "ip rewrite":
+            readIpRewrite(section, line: line)
+        case "remote rule":
+            readLoonRemoteRule(section, line: line)
         default:
-            skip(section, line, .section)
+            let name = section.lowercased()
+            if name.hasPrefix("ruleset ") {
+                if RX.matches(#"^(RULE|DOMAIN)-SET\s*,"#, line) {
+                    skip(section, line, .rule)
+                } else {
+                    let key = String(section.dropFirst("ruleset ".count)).trimmingCharacters(in: .whitespaces)
+                    rulesets[key, default: []].append(line)
+                }
+            } else if proxySections.contains(name) {
+                skip(section, line, .proxies)
+            } else if RX.matches(appOnlySectionPattern, name) {
+                skip(section, line, .appOnly)
+            } else {
+                skip(section, line, .section)
+            }
         }
     }
 
-    /// Reads a `[General]` line. The core reads only
-    /// `force-http-engine-hosts` from this section (surge.rs
-    /// read_general: `%APPEND%`/`%INSERT%` stripped, comma-separated
-    /// host items into `force_http_hostname`); every other key goes
-    /// to the network settings, which this parser does not carry, so
-    /// it skips as a setting — the core's reason for it.
+    /// Reads a `[General]` line. Most keys go to the network
+    /// settings (DNS, hosts, routes, bypass); only
+    /// `force-http-engine-hosts` is carried on the content, for
+    /// display — the core reads it into `force_http_hostname`,
+    /// not into the MITM hostnames, and FlClash's add to the
+    /// hostname list would change what is intercepted.
     func readGeneral(_ section: String, line: String) {
         guard let equals = line.firstIndex(of: "=") else {
             skip(section, line, .unreadable)
             return
         }
         let key = String(line[..<equals]).trimmingCharacters(in: .whitespaces).lowercased()
-        let value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
-        guard key == "force-http-engine-hosts" else {
+        var value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
+        var mark = ListMark.plain
+        for (prefix, marked) in [("%INSERT%", ListMark.insert), ("%APPEND%", ListMark.append)] {
+            if value.hasPrefix(prefix) {
+                value = String(value.dropFirst(prefix.count))
+                mark = marked
+            }
+        }
+        generalKeys.insert(key)
+        let items = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        func read(_ parse: (String) -> String?) -> [String]? {
+            let parsed = items.map(parse)
+            if parsed.contains(nil) {
+                skip(section, line, .unreadable)
+                return nil
+            }
+            return parsed.compactMap { $0 }
+        }
+        switch key {
+        case "dns-server":
+            if let servers = read(mitmDnsServer) { editList("dns-server", mark: mark, values: servers) }
+        case "encrypted-dns-server", "doh-server", "doh3-server", "doq-server":
+            if let servers = read(mitmDnsServer) { editList("encrypted-dns-server", mark: mark, values: servers) }
+        case "skip-proxy":
+            editList("bypass-domain", mark: mark, values: items)
+        case "tun-excluded-routes", "bypass-tun":
+            if let routes = read(mitmRoute) { editList("route-exclude-address", mark: mark, values: routes) }
+        case "tun-included-routes", "include-tun":
+            if let routes = read(mitmRoute) { routeAddress.append(contentsOf: routes) }
+        case "always-real-ip", "real-ip":
+            editList("fake-ip-filter", mark: mark, values: items)
+        case "force-http-engine-hosts":
+            forceHttpHostname.append(contentsOf: items)
+        default:
             skip(section, line, .setting)
+        }
+    }
+
+    /// `domain = address[, address]`, `domain = alias` or
+    /// `domain = server:dns-server`, as Surge and Loon write `[Host]`.
+    func readHost(_ section: String, line: String) {
+        guard let equals = line.firstIndex(of: "=") else {
+            skip(section, line, .unreadable)
             return
         }
-        var hosts = value
-        if hosts.hasPrefix("%APPEND%") {
-            hosts = String(hosts.dropFirst("%APPEND%".count))
-        } else if hosts.hasPrefix("%INSERT%") {
-            hosts = String(hosts.dropFirst("%INSERT%".count))
+        let host = String(line[..<equals]).trimmingCharacters(in: .whitespaces)
+        let value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
+        guard RX.matches(#"^[A-Za-z0-9*+._-]+$"#, host), !value.isEmpty else {
+            skip(section, line, .unreadable)
+            return
         }
-        forceHttpHostname.append(contentsOf: hosts.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+        if value.lowercased().hasPrefix("server:") {
+            guard let server = mitmDnsServer(String(value.dropFirst("server:".count))) else {
+                skip(section, line, .unreadable)
+                return
+            }
+            setDomainEntry(&nameserverPolicy, domain: host, values: [server])
+            return
+        }
+        let targets = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard targets.allSatisfy({ isIPAddress($0) || RX.matches(#"^[A-Za-z0-9*+._-]+$"#, $0) }) else {
+            skip(section, line, .unreadable)
+            return
+        }
+        setDomainEntry(&hosts, domain: host, values: targets)
+    }
+
+    /// A later line for the same domain replaces an earlier one.
+    func setDomainEntry(_ entries: inout [MitmDomainEntry], domain: String, values: [String]) {
+        if let index = entries.firstIndex(where: { $0.domain == domain }) {
+            entries[index] = MitmDomainEntry(domain: domain, values: values)
+        } else {
+            entries.append(MitmDomainEntry(domain: domain, values: values))
+        }
+    }
+
+    /// `[IP Rewrite]`: an address block that is rejected, dropped,
+    /// or reflected back; only the first two reach the rules.
+    func readIpRewrite(_ section: String, line: String) {
+        guard let equals = line.firstIndex(of: "="),
+              let cidr = cidr(String(line[..<equals]).trimmingCharacters(in: .whitespaces)) else {
+            skip(section, line, .unreadable)
+            return
+        }
+        let policy = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces).lowercased()
+        switch policy {
+        case "reject":
+            rules.append("\(cidr.contains(":") ? "IP-CIDR6" : "IP-CIDR"),\(cidr),REJECT,no-resolve")
+        case "drop":
+            rules.append("\(cidr.contains(":") ? "IP-CIDR6" : "IP-CIDR"),\(cidr),REJECT-DROP,no-resolve")
+        case "reflect":
+            skip(section, line, .reflect)
+        default:
+            skip(section, line, .unreadable)
+        }
     }
 
     /// Reads Surge's `name = type=...,...` and the legacy `type pattern ...`
-    /// Loon writes, into the form the core's script list takes.
+    /// Loon writes, into the form the core's script list takes. A
+    /// triggered script (`cron … then script(…)`) is read first, as
+    /// FlClash does; a conditional still skips, as before.
     func readScript(_ section: String, line: String, raw: String) {
+        if let match = RX.match(loonTriggeredScriptPattern, line) {
+            readLoonTriggeredScript(section, line: line, match: match, raw: raw)
+            return
+        }
         if RX.matches(conditionalPattern, line) || RX.matches(loonScriptCallPattern, line) {
             skip(section, line, .conditional)
             return
@@ -1038,10 +1730,73 @@ private final class MitmModuleParserEngine {
         addScript(section, line: line, name: name, path: params["script-path"] ?? "", fields: fields, after: after)
     }
 
+    /// Loon's `cron "<expr>" | network-changed | generic` then
+    /// `script(path[, argument]) [with options]`: a cron script, a
+    /// generic one, or a network-changed event, timed out after 300
+    /// seconds unless the options say otherwise. The argument is
+    /// read off the raw line, before substitution, so an object of
+    /// argument names still names its arguments.
+    func readLoonTriggeredScript(_ section: String, line: String, match: [String?], raw: String) {
+        var options: [String: String] = [:]
+        for option in splitArguments(match[5] ?? "") {
+            guard let equals = option.firstIndex(of: "="), equals != option.startIndex else {
+                skip(section, line, .unreadable)
+                return
+            }
+            options[String(option[..<equals]).trimmingCharacters(in: .whitespaces)] =
+                unquote(String(option[option.index(after: equals)...]).trimmingCharacters(in: .whitespaces))
+        }
+        if options["enable"]?.lowercased() == "false" {
+            skip(section, line, .disabled)
+            return
+        }
+        let argument = match[4]?.trimmingCharacters(in: .whitespaces)
+        var object: [String: Any]?
+        if let rawMatch = RX.match(loonTriggeredScriptPattern, raw),
+           let rawArg = rawMatch[4]?.trimmingCharacters(in: .whitespaces),
+           let names = RX.match(#"^\{(.*)\}$"#, rawArg) {
+            let inner = names[1] ?? ""
+            let built = "[" + inner.split(separator: ",").map {
+                $0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "$", with: "")
+            }.joined(separator: ",") + "]"
+            object = objectArgument(built)
+        }
+        var fields: [(String, String)]
+        if let cron = match[1] {
+            fields = [("type", "cron"), ("cronexp", unquote(cron))]
+        } else if match[2] == "generic" {
+            fields = [("type", "generic")]
+        } else {
+            fields = [("type", "event"), ("event-name", "network-changed")]
+        }
+        var after: [(String, String)] = [("timeout", options["timeout"] ?? "300")]
+        if let object {
+            if let data = try? JSONSerialization.data(withJSONObject: object),
+               let json = String(data: data, encoding: .utf8) {
+                after.append(("argument-json", json))
+            }
+        } else if let argument, !argument.isEmpty {
+            after.append(("argument", unquote(argument)))
+        }
+        addScript(section, line: line, name: options["tag"] ?? "", path: unquote(match[3] ?? ""), fields: fields, after: after)
+    }
+
     func declareScript(_ type: String?, line: String) {
         if let type, runnableScriptTypes.contains(type) || type.contains("{") {
             declaredScriptLines.append(line)
         }
+    }
+
+    /// A script or file the module carries in its own text, under a key that
+    /// changes with it. The store writes the text to the resources
+    /// directory under this key and maps the key to the file, so a
+    /// later parse resolves it; until then the line skips as
+    /// not downloaded.
+    func inlineResource(_ text: String) -> String {
+        let digest = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+        let key = "inline:\(digest.prefix(16)).js"
+        inlineResources[key] = text
+        return key
     }
 
     /// The resources directory's file for [url], or nil once the line is
@@ -1053,6 +1808,13 @@ private final class MitmModuleParserEngine {
     /// else still skips as .relativeData: the core can only read a
     /// file that is in its resources directory.
     func resource(_ section: String, line: String, url: String) -> String? {
+        if url.hasPrefix("inline:") {
+            guard let file = resources[url] else {
+                skip(section, line, .notDownloaded)
+                return nil
+            }
+            return file
+        }
         if !isMitmResourceUrl(url) {
             if let attachment = resources[url] { return attachment }
             let base = URL(fileURLWithPath: url).lastPathComponent
@@ -1125,6 +1887,12 @@ private final class MitmModuleParserEngine {
         let key = String(line[..<equals]).trimmingCharacters(in: .whitespaces).lowercased()
         let value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
         switch key {
+        case "hostname":
+            readMitmHostname(section, line: line, value: value)
+        case "h2":
+            h2 = h2 || value.lowercased() == "true"
+        case "skip-server-cert-verify":
+            if value.lowercased() == "true" { skipVerify = (section, line) }
         case "skip-server-cert-verify-hostname":
             // Hosts whose servers' certificates go unchecked while
             // the global skip switch is off; the core reads each
@@ -1134,9 +1902,43 @@ private final class MitmModuleParserEngine {
             // The clients decrypted for, in Surge's syntax
             // (IP/CIDR items, `-` excludes); the core judges each
             // item, so they pass through verbatim.
-            clientSourceAddress.append(contentsOf: value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
-        case "hostname":
-            readMitmHostname(section, line: line, value: value)
+            var address = value
+            if address.hasPrefix("%APPEND%") || address.hasPrefix("%INSERT%") {
+                address = String(address.dropFirst("%INSERT%".count)).trimmingCharacters(in: .whitespaces)
+            }
+            clientSourceAddress.append(contentsOf: address.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+        case "ca-p12", "ca-passphrase", "keystore":
+            skip(section, line, .managedCa)
+        default:
+            if RX.matches(qxMitmPattern, "\(key)=") {
+                readQxMitm(line)
+            } else {
+                skip(section, line, .setting)
+            }
+        }
+    }
+
+    /// Quantumult X's MITM keys, which also appear in a `[MITM]`
+    /// section: the hosts it skips go on the inserted hostnames
+    /// with a `-`, the clients it skips on the source addresses.
+    func readQxMitm(_ line: String) {
+        let section = "mitm"
+        guard let equals = line.firstIndex(of: "=") else {
+            skip(section, line, .setting)
+            return
+        }
+        let key = String(line[..<equals]).trimmingCharacters(in: .whitespaces).lowercased()
+        let value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
+        switch key {
+        case "skip_dst_ip":
+            insertedHostname.append(contentsOf: value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.map { "-\($0)" })
+        case "skip_src_ip":
+            let skipped = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.map { "-\($0)" }
+            if !skipped.isEmpty { clientSourceAddress.append(skipped.joined(separator: ", ")) }
+        case "skip_validating_cert":
+            if value.lowercased() == "true" { skipVerify = (section, line) }
+        case "p12", "passphrase":
+            skip(section, line, .managedCa)
         default:
             skip(section, line, .setting)
         }
@@ -1161,33 +1963,147 @@ private final class MitmModuleParserEngine {
 
     func readRule(_ section: String, line: String, shown: String? = nil) {
         let parts = ruleParts(line)
-        guard parts.first != nil else { return }
-        let policy = parts.count > 2 ? parts[2].uppercased() : nil
-        // NOTE (upstream 165154c): URL-REGEX used to map to a
-        // url-rewrite reject here (FlClash-era, from before the core
-        // had URL-REGEX rules). The core now keeps it as a profile
-        // rule with any policy, so this parser does the same — the
-        // two parsers agree line for line. A URL-REGEX rule only
-        // matches inside a decrypted session (or plain HTTP), which
-        // is where the module's MITM hostnames put the traffic.
-        let target: String?
-        switch policy {
-        case "DIRECT": target = "DIRECT"
-        case "REJECT-DROP": target = "REJECT-DROP"
-        case let policy? where rejectActions[policy] != nil: target = "REJECT"
-        default: target = nil
-        }
-        guard let target else {
-            skip(section, shown ?? line, .policy)
+        guard let first = parts.first else { return }
+        let type = first.uppercased()
+        if type == "FINAL" || type == "MATCH" {
+            skip(section, shown ?? line, .finalRule)
             return
         }
-        guard let rule = translateRule(parts.first ?? "", payload: parts.count > 1 ? parts[1] : "", options: Array(parts.dropFirst(3))) else {
+        if deviceRuleTypes.contains(type) {
+            skip(section, shown ?? line, .deviceRule)
+            return
+        }
+        let named = parts.count > 2 && !parts[2].isEmpty && !ruleOptions.contains(parts[2].lowercased())
+        let policy = named ? unquote(parts[2]) : "DIRECT"
+        let options = Array(parts.dropFirst(named ? 3 : 2))
+        if RX.matches(#"^https?://"#, first) {
+            readRuleSet(
+                section, shown: shown ?? line, value: first,
+                policy: parts.count > 1 ? unquote(parts[1]) : "DIRECT",
+                options: Array(parts.dropFirst(2))
+            )
+            return
+        }
+        if type == "RULE-SET", parts.count > 1 {
+            readRuleSet(section, shown: shown ?? line, value: unquote(parts[1]), policy: policy, options: options)
+            return
+        }
+        if type == "DOMAIN-SET", parts.count > 1 {
+            readRuleSet(section, shown: shown ?? line, value: unquote(parts[1]), policy: policy, options: options, domainSet: true)
+            return
+        }
+        // URL-REGEX / USER-AGENT do NOT take FlClash's url-rewrite
+        // branch here: the core keeps them as profile rules with
+        // any policy (translateRule carries the NOTE), so they fall
+        // through to the rule below.
+        guard let rule = translateRule(first, payload: parts.count > 1 ? parts[1] : "", options: options) else {
+            skip(section, shown ?? line, .rule)
+            return
+        }
+        guard let target = ruleTarget(policy) else {
             skip(section, shown ?? line, .rule)
             return
         }
         var out = "\(rule.body),\(target)"
         if rule.noResolve { out += ",no-resolve" }
         rules.append(out)
+    }
+
+    /// A built-in policy, or an exit of the policy's name; Loon's
+    /// `PROXY` is what Quantumult X writes as `proxy`. An argument
+    /// left unexpanded names nothing. The reject kinds stay distinct
+    /// — the core reads them as distinct policies, where FlClash
+    /// collapsed them all to REJECT.
+    func ruleTarget(_ policy: String) -> String? {
+        switch policy.uppercased() {
+        case "DIRECT": return "DIRECT"
+        case "REJECT": return "REJECT"
+        case "REJECT-DROP": return "REJECT-DROP"
+        case "REJECT-NO-DROP": return "REJECT-NO-DROP"
+        case "REJECT-TINYGIF", "REJECT-IMG": return "REJECT-TINYGIF"
+        case "REJECT-DICT": return "REJECT-DICT"
+        case "REJECT-ARRAY": return "REJECT-ARRAY"
+        case "REJECT-200", "REJECT-VIDEO": return "REJECT-200"
+        default: break
+        }
+        if policy.contains("${") { return nil }
+        let exit = policy == "proxy" ? "PROXY" : policy
+        exits.insert(exit)
+        return exit
+    }
+
+    /// A RULE-SET of a URL, of Surge's internal sets, of a
+    /// `[Ruleset]` section of the module, or of a rule provider a
+    /// Stash override brings.
+    func readRuleSet(_ section: String, shown: String, value: String, policy: String, options: [String], domainSet: Bool = false) {
+        guard let target = ruleTarget(policy) else {
+            skip(section, shown, .rule)
+            return
+        }
+        let name: String
+        if RX.matches(#"^https?://"#, value) {
+            let interval = options.compactMap { option -> Int? in
+                guard let m = RX.match(#"^update-interval\s*=\s*(-?\d+)$"#, option.trimmingCharacters(in: .whitespaces)),
+                      let digits = m[1] else { return nil }
+                return Int(digits)
+            }.first
+            name = ruleSetName(domainSet ? "domain-set:\(value)" : value)
+            ruleProviders[name] = [
+                "type": .string("http"),
+                "behavior": .string(domainSet ? "domain" : "classical"),
+                "format": .string(domainSet ? "domain-set" : "text"),
+                "url": .string(value),
+                "interval": .int(Int64(max(interval ?? 86_400, 0))),
+            ]
+        } else if let payload = builtinRuleSets[value.uppercased()] {
+            name = ruleSetName("surge:\(value.uppercased())")
+            ruleProviders[name] = [
+                "type": .string("inline"),
+                "behavior": .string("classical"),
+                "payload": .array(payload.map { .string($0) }),
+            ]
+        } else if rulesetNames.contains(value) {
+            name = inlineRuleSetName(value)
+        } else if let mapped = stashProviderNames[value] {
+            name = mapped
+        } else if section == "rules" {
+            skip(section, shown, .rule)
+            return
+        } else if let file = resource(section, line: shown, url: value) {
+            name = ruleSetName("file:\(domainSet ? "domain-set:" : "")\(file)")
+            ruleProviders[name] = [
+                "type": .string("file"),
+                "behavior": .string(domainSet ? "domain" : "classical"),
+                "format": .string(domainSet ? "domain-set" : "text"),
+                "path": .string("mitm/resources/\(file)"),
+            ]
+        } else {
+            return
+        }
+        let noResolve = options.contains { $0.trimmingCharacters(in: .whitespaces).lowercased() == "no-resolve" }
+        var rule = "RULE-SET,\(name),\(target)"
+        if noResolve { rule += ",no-resolve" }
+        rules.append(rule)
+    }
+
+    /// Loon's `url, policy=..., tag=..., enabled=...`.
+    func readLoonRemoteRule(_ section: String, line: String) {
+        let parts = splitArguments(line)
+        var params: [String: String] = [:]
+        for part in parts.dropFirst() {
+            guard let equals = part.firstIndex(of: "="), equals != part.startIndex else { continue }
+            params[String(part[..<equals]).trimmingCharacters(in: .whitespaces).lowercased()] =
+                unquote(String(part[part.index(after: equals)...]).trimmingCharacters(in: .whitespaces))
+        }
+        if params["enabled"]?.lowercased() == "false" {
+            skip(section, line, .disabled)
+            return
+        }
+        guard let first = parts.first, RX.matches(#"^https?://"#, first) else {
+            skip(section, line, .unreadable)
+            return
+        }
+        readRuleSet(section, shown: line, value: first, policy: params["policy"] ?? "DIRECT", options: [])
     }
 
     func translateRule(_ rawType: String, payload: String, options: [String], nested: Bool = false) -> (body: String, noResolve: Bool)? {
@@ -1203,11 +2119,12 @@ private final class MitmModuleParserEngine {
                 translated.append("(\(rule.body))")
             }
             return (body: "\(type),(\(translated.joined(separator: ",")))", noResolve: false)
-        case "PROTOCOL" where nested:
+        case "PROTOCOL":
             let network: String?
             switch payload.trimmingCharacters(in: .whitespaces).uppercased() {
             case "TCP": network = "TCP"
-            case "UDP", "QUIC": network = "UDP"
+            case "UDP": network = "UDP"
+            case "QUIC" where nested: network = "UDP"
             default: network = nil
             }
             guard let network else { return nil }
@@ -1224,7 +2141,13 @@ private final class MitmModuleParserEngine {
             guard let parsed = cidr(value) else { return nil }
             value = parsed
         case "DST-PORT", "SRC-PORT", "IN-PORT":
+            value = portRange(value) ?? value
             guard validPorts(value) else { return nil }
+        case "IP-ASN":
+            guard Int(value) != nil else { return nil }
+        case "NETWORK":
+            value = value.uppercased()
+            guard value == "TCP" || value == "UDP" else { return nil }
         case "URL-REGEX", "USER-AGENT":
             // Upstream 165154c: the payload passes through as-is
             // when non-empty (quotes already off — a regex or glob
@@ -1236,7 +2159,7 @@ private final class MitmModuleParserEngine {
         }
         return (
             body: "\(target),\(value)",
-            noResolve: target.hasPrefix("IP-CIDR")
+            noResolve: ["IP-CIDR", "IP-CIDR6", "GEOIP", "IP-ASN"].contains(target)
                 && options.contains { $0.lowercased() == "no-resolve" }
         )
     }
@@ -1274,6 +2197,24 @@ private final class MitmModuleParserEngine {
 
     func addMapLocal(_ section: String, line: String, pattern: String, params: [(String, String)], intoRequestMock: Bool = false, requestHead: String? = nil) {
         var params = params
+        // The core reads the params as a map, so a repeated key
+        // keeps its last value; the order is the first sighting.
+        var seen: [String] = []
+        var deduped: [(String, String)] = []
+        for param in params {
+            if let index = seen.firstIndex(of: param.0) {
+                deduped[index] = param
+            } else {
+                seen.append(param.0)
+                deduped.append(param)
+            }
+        }
+        params = deduped
+        // A request mock carries no status: the core refuses a
+        // request body mock that names one.
+        if intoRequestMock {
+            params.removeAll { $0.0 == "status-code" }
+        }
         let dataType = params.first { $0.0 == "data-type" }?.1 ?? "file"
         if dataType == "file" {
             let data = params.first { $0.0 == "data" }?.1 ?? ""
@@ -1353,6 +2294,29 @@ private final class MitmModuleParserEngine {
         }
         if let header = RX.match(#"^(request-|response-)?(header-(add|del|replace|replace-regex))$"#, action) {
             let phase = header[1] == "response-" ? "http-response" : "http-request"
+            let kind = header[3] ?? ""
+            let width: Int
+            switch kind {
+            case "add", "replace": width = 2
+            case "del": width = 1
+            case "replace-regex": width = 3
+            default: width = 0
+            }
+            // A line may carry several pairs, which the core reads
+            // one per line (legacy.rs header_edits splits by width);
+            // passing them through verbatim would read as one pair
+            // whose value is the rest of the line.
+            if let pairs = lineTokens(rest), width > 0, pairs.count > width {
+                guard pairs.count % width == 0 else {
+                    skip(section, line, .unreadable)
+                    return
+                }
+                for start in stride(from: 0, to: pairs.count, by: width) {
+                    let chunk = pairs[start..<(start + width)].map { field($0.text) }.joined(separator: " ")
+                    headerRewrite.append("\(phase) \(pattern) \(header[2] ?? "") \(chunk)")
+                }
+                return
+            }
             headerRewrite.append("\(phase) \(pattern) \(header[2] ?? "") \(rest)".trimmingCharacters(in: .whitespaces))
             return
         }
@@ -1361,15 +2325,26 @@ private final class MitmModuleParserEngine {
             bodyRewrite.append("http-request \(pattern) \(rest)")
         case "response-body-replace-regex":
             bodyRewrite.append("http-response \(pattern) \(rest)")
+        case "request-body-json-jq":
+            bodyRewrite.append("http-request-jq \(pattern) \(rest)")
+        case "response-body-json-jq":
+            bodyRewrite.append("http-response-jq \(pattern) \(rest)")
         case "mock-response-body":
             readLoonMock(section, line: line, pattern: tokens[0].text, tokens: Array(tokens.dropFirst(2)))
+        case "mock-request-body":
+            readLoonMock(section, line: line, pattern: tokens[0].text, tokens: Array(tokens.dropFirst(2)), request: true)
         default:
-            skip(section, line,
-                 RX.matches(#"^(request|response)-body-json-"#, action) ? .jsonBody : .unreadable)
+            if let json = RX.match(#"^(request|response)-body-json-(add|replace|del)$"#, action),
+               let args = jsonEditArgs(rest),
+               let jq = jsonEditJq(json[2] ?? "", args: args, stash: false) {
+                bodyRewrite.append("http-\(json[1] ?? "")-jq \(pattern) \(jq)")
+            } else {
+                skip(section, line, .unreadable)
+            }
         }
     }
 
-    func readLoonMock(_ section: String, line: String, pattern: String, tokens: [LineToken]) {
+    func readLoonMock(_ section: String, line: String, pattern: String, tokens: [LineToken], request: Bool = false) {
         var params: [String: String] = [:]
         for token in tokens {
             if let equals = token.text.firstIndex(of: "="), equals != token.text.startIndex {
@@ -1392,7 +2367,7 @@ private final class MitmModuleParserEngine {
         if dataType != "tiny-gif", let contentType = loonContentTypes[dataType] {
             mapped.append(("header", "Content-Type:\(contentType)"))
         }
-        addMapLocal(section, line: line, pattern: pattern, params: mapped)
+        addMapLocal(section, line: line, pattern: pattern, params: mapped, intoRequestMock: request)
     }
 
     // MARK: - Loon conditionals (`request if … then …`, core condition.rs + action.rs)
@@ -2155,6 +3130,8 @@ private final class MitmModuleParserEngine {
         let lower = line.lowercased()
         if RX.matches(#"^hostname\s*="#, lower) {
             readMitm("mitm", line: line)
+        } else if RX.matches(qxMitmPattern, lower) {
+            readQxMitm(line)
         } else if RX.matches(qxFilterPattern, lower) {
             readQxFilter(line)
         } else if lower.hasPrefix("event-") || qxCron(line) != nil {
@@ -2170,6 +3147,10 @@ private final class MitmModuleParserEngine {
     func readQxFilter(_ line: String) {
         let section = "filter_local"
         let parts = ruleParts(line)
+        if parts.first?.lowercased() == "final" {
+            skip(section, line, .finalRule)
+            return
+        }
         guard let type = qxFilterTypes[parts.first?.lowercased() ?? ""], parts.count >= 3 else {
             skip(section, line, .rule)
             return
@@ -2177,42 +3158,50 @@ private final class MitmModuleParserEngine {
         readRule(section, line: ([type] + Array(parts.dropFirst())).joined(separator: ","), shown: line)
     }
 
-    /// Reads `pattern url type ...`, where a body or echo rewrite
-    /// repeats its type between the two values it takes.
+    /// Reads `pattern url type ...`, and `pattern head url-and-header
+    /// type ...`, whose head pattern is the core's `request-head`.
+    /// A body or echo rewrite repeats its type between the two
+    /// values it takes.
     func readQxRewrite(_ line: String) {
         let section = "rewrite_local"
-        if RX.matches(#"\surl-and-header\s"#, line) {
-            // A URL rewrite conditioned on the request head: the
-            // core reads it verbatim (`pattern head url-and-header
-            // action`, parse_url_rewrite), so it is emitted as-is
-            // rather than skipped as a conditional.
-            urlRewrite.append(line)
-            return
-        }
-        guard let m = RX.match(#"^(\S+)\s+url\s+(\S+)\s*(.*)$"#, line),
-              let pattern = m[1], let rawType = m[2] else {
+        let plain = RX.match(#"^(\S+)\s+url\s+(\S+)\s*(.*)$"#, line)
+        let conditioned = plain == nil ? RX.match(#"^(\S+)\s+(.+?)\s+url-and-header\s+(\S+)\s*(.*)$"#, line) : nil
+        guard let m = plain ?? conditioned else {
             skip(section, line, .unreadable)
             return
         }
-        let type = rawType.lowercased()
-        let rest = (m[3] ?? "").trimmingCharacters(in: .whitespaces)
+        let isConditioned = conditioned != nil
+        let pattern = m[1] ?? ""
+        let head = isConditioned ? m[2]?.trimmingCharacters(in: .whitespaces) : nil
+        let type = (isConditioned ? m[3] : m[2])?.lowercased() ?? ""
+        let restRaw: String? = isConditioned ? m[4] : m[3]
+        let rest = (restRaw ?? "").trimmingCharacters(in: .whitespaces)
         let repeated = rest.range(of: type).map { rest.distance(from: rest.startIndex, to: $0.lowerBound) } ?? -1
+        var url = field(pattern)
+        if let head { url += " \(field(head)) url-and-header" }
+        func rule(_ phase: String, _ after: [String]) -> String {
+            var out = [phase, field(pattern)]
+            if let head { out += ["request-head", field(head)] }
+            out += after
+            return out.joined(separator: " ")
+        }
         if let (phase, body) = qxScripts[type] {
             declareScript(phase, line: line)
             var fields: [(String, String)] = [("type", phase), ("pattern", pattern)]
+            if let head { fields.append(("request-head", head)) }
             if body { fields.append(("requires-body", "true")) }
             addScript(section, line: line, name: "", path: rest, fields: fields)
             return
         }
         if rejectRewrites.contains(type) {
-            urlRewrite.append("\(field(pattern)) \(type)")
+            urlRewrite.append("\(url) \(type)")
         } else if (type == "302" || type == "307") && !rest.isEmpty && !rest.contains(" ") {
-            urlRewrite.append("\(field(pattern)) \(field(rest)) \(type)")
+            urlRewrite.append(head == nil ? "\(url) \(field(rest)) \(type)" : "\(url) \(type) \(field(rest))")
         } else if (type == "request-body" || type == "response-body") && repeated > 0 {
             let phase = type == "request-body" ? "http-request" : "http-response"
             let first = String(rest.prefix(repeated)).trimmingCharacters(in: .whitespaces)
             let second = String(rest.dropFirst(repeated + type.count)).trimmingCharacters(in: .whitespaces)
-            bodyRewrite.append([phase, field(pattern), field(first), field(second)].joined(separator: " "))
+            bodyRewrite.append(rule(phase, [field(first), field(second)]))
         } else if (type == "request-header" || type == "response-header") && repeated > 0 {
             // A replacement over the whole head, its first line
             // included: the core reads it as `header-text-replace`
@@ -2222,14 +3211,14 @@ private final class MitmModuleParserEngine {
             let phase = type == "request-header" ? "http-request" : "http-response"
             let first = String(rest.prefix(repeated)).trimmingCharacters(in: .whitespaces)
             let second = String(rest.dropFirst(repeated + type.count)).trimmingCharacters(in: .whitespaces)
-            headerRewrite.append([phase, field(pattern), "header-text-replace", field(first), field(second)].joined(separator: " "))
+            headerRewrite.append(rule(phase, ["header-text-replace", field(first), field(second)]))
         } else if type == "request-header" || type == "response-header" {
             skip(section, line, .rawHeader)
-        } else if type == "jsonjq-request-body" || type == "jsonjq-response-body" {
+        } else if (type == "jsonjq-request-body" || type == "jsonjq-response-body") && !rest.isEmpty {
             // The core reads jq rewrites (parse_body_rewrite);
             // FlClash emits the same form.
             let phase = type == "jsonjq-request-body" ? "http-request" : "http-response"
-            bodyRewrite.append("\(phase)-jq \(field(pattern)) \(rest)")
+            bodyRewrite.append(rule("\(phase)-jq", [rest]))
         } else if type == "echo-response" && repeated > 0 {
             let headers = String(rest.prefix(repeated)).trimmingCharacters(in: .whitespaces)
                 .components(separatedBy: "\\r\\n")
@@ -2243,7 +3232,7 @@ private final class MitmModuleParserEngine {
                 ("data-type", "file"),
                 ("data", String(rest.dropFirst(repeated + type.count)).trimmingCharacters(in: .whitespaces)),
                 ("header", headerValue),
-            ])
+            ], requestHead: head)
         } else {
             skip(section, line, .unreadable)
         }
@@ -2254,15 +3243,18 @@ private final class MitmModuleParserEngine {
         let lower = line.lowercased()
         let cron = qxCron(line)
         let rest: String
+        let interaction = lower.hasPrefix("event-interaction")
         if lower.hasPrefix("event-network") {
             rest = String(line.dropFirst("event-network".count)).trimmingCharacters(in: .whitespaces)
+        } else if interaction {
+            rest = String(line.dropFirst("event-interaction".count)).trimmingCharacters(in: .whitespaces)
         } else if let cron {
             rest = cron.rest
         } else {
             skip(section, line, lower.hasPrefix("event-") ? .scriptType : .unreadable)
             return
         }
-        declareScript(cron != nil ? "cron" : "event", line: line)
+        declareScript(cron != nil ? "cron" : interaction ? "generic" : "event", line: line)
         let comma = rest.firstIndex(of: ",")
         let params: [String: String]
         if let comma {
@@ -2277,6 +3269,8 @@ private final class MitmModuleParserEngine {
         var fields: [(String, String)]
         if let cron {
             fields = [("type", "cron"), ("cronexp", cron.expression)]
+        } else if interaction {
+            fields = [("type", "generic")]
         } else {
             fields = [("type", "event"), ("event-name", "network-changed")]
         }
@@ -2662,13 +3656,14 @@ private enum MiniYAML {
 
 // MARK: - Stash overrides
 
-private let stashKeys: Set<String> = ["http", "script-providers", "cron", "rules", "tiles"]
+private let stashKeys: Set<String> = ["http", "script-providers", "cron", "rules", "tiles", "dns", "hosts"]
 private let stashMetaKeys: Set<String> = [
     "name", "desc", "icon", "category", "author", "homepage", "openUrl",
     "manual", "date", "version", "arguments", "arguments-version", "script-providers",
 ]
 private let stashHttpLists: Set<String> = [
     "mitm", "url-rewrite", "rewrite", "header-rewrite", "body-rewrite", "mock", "request-body-mock", "script",
+    "force-http-engine",
 ]
 private let stashScriptTypes: [String: String] = [
     "request": "http-request", "response": "http-response",
@@ -2684,6 +3679,7 @@ extension MitmModuleParserEngine {
         }
         readDeclarations(splitLines(text))
         readStashArguments(override["arguments"])
+        readStashRuleProviders(override["rule-providers"])
         let providers = override["script-providers"]?.map ?? [:]
         for (key, value) in override {
             if key == "http", let http = value.map {
@@ -2696,10 +3692,28 @@ extension MitmModuleParserEngine {
                         skip("cron", name, .setting)
                     }
                 }
+            } else if key == "rule-providers" {
+                // Already read above, before the loop.
+            } else if key == "dns", let dns = value.map {
+                readStashDns(dns, text: text)
+            } else if key == "hosts", let hosts = value.map {
+                for (host, entry) in hosts {
+                    let text: String
+                    if let list = entry.list {
+                        text = list.map { stashText($0) }.joined(separator: ", ")
+                    } else {
+                        text = stashText(entry)
+                    }
+                    readHost(key, line: "\(host) = \(text)")
+                }
             } else if key == "rules", let list = value.list {
                 for rule in list {
                     readRule("rules", line: stashText(rule), shown: stashLine(rule))
                 }
+            } else if proxySections.contains(key) || key == "proxy-providers" {
+                skip(key, key, .proxies)
+            } else if RX.matches(appOnlySectionPattern, key) {
+                skip(key, key, .appOnly)
             } else if !stashMetaKeys.contains(key) {
                 skip(key, key, .section)
             }
@@ -2709,6 +3723,10 @@ extension MitmModuleParserEngine {
 
     func readStashHttp(_ http: [String: MiniYAMLValue], providers: [String: MiniYAMLValue]) {
         for (key, value) in http {
+            if key == "ca" || key == "ca-passphrase" {
+                skip("http", key, .managedCa)
+                continue
+            }
             guard let list = value.list, stashHttpLists.contains(key) else {
                 skip("http", key, .setting)
                 continue
@@ -2716,6 +3734,12 @@ extension MitmModuleParserEngine {
             for item in list {
                 let line = stashText(item)
                 switch key {
+                case "force-http-engine":
+                    // The core reads these into `force_http_hostname`,
+                    // not into the MITM hostnames.
+                    if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                        forceHttpHostname.append(line.trimmingCharacters(in: .whitespaces))
+                    }
                 case "mitm":
                     var host = line
                     if host.hasSuffix(":*") { host = String(host.dropLast(2)) }
@@ -2751,7 +3775,7 @@ extension MitmModuleParserEngine {
         }
         if rejectRewrites.contains(type) {
             urlRewrite.append("\(field(tokens[0].text)) \(type)")
-        } else if tokens.count == 3 && ["302", "307", "transparent"].contains(type) {
+        } else if tokens.count == 3 && ["302", "307", "transparent", "header"].contains(type) {
             urlRewrite.append("\(field(tokens[0].text)) \(field(tokens[1].text)) \(type == "transparent" ? "header" : type)")
         } else {
             skip(section, line, .unreadable)
@@ -2777,11 +3801,16 @@ extension MitmModuleParserEngine {
         case "replace-regex":
             bodyRewrite.append("http-\(phase) \(field(pattern)) \(rest)")
         case "jq":
-            // The core reads jq rewrites (parse_body_rewrite);
-            // FlClash emits the same form.
-            bodyRewrite.append("http-\(phase)-jq \(field(pattern)) \(field(unquote(rest)))")
+            bodyRewrite.append("http-\(phase)-jq \(field(pattern)) \(rest)")
+        case "json-add", "json-replace", "json-del":
+            if let args = jsonEditArgs(rest),
+               let jq = jsonEditJq(String(action.dropFirst("json-".count)), args: args, stash: true) {
+                bodyRewrite.append("http-\(phase)-jq \(field(pattern)) \(jq)")
+            } else {
+                skip(section, line, .unreadable)
+            }
         default:
-            skip(section, line, action.hasPrefix("json-") ? .jsonBody : .unreadable)
+            skip(section, line, .unreadable)
         }
     }
 
@@ -2851,18 +3880,111 @@ extension MitmModuleParserEngine {
             fields.append(("pattern", pattern))
         }
         var after: [(String, String)] = []
-        for key in ["require-body", "binary-mode", "max-size", "timeout"] {
-            if let value = field(key) { after.append((key, value)) }
+        for (key, renamed) in [("require-body", "requires-body"), ("binary-mode", "binary-body-mode"), ("max-size", "max-size"), ("timeout", "timeout")] {
+            if let value = field(key) { after.append((renamed, value)) }
         }
         if let argument, !argument.isEmpty { after.append(("argument", argument)) }
         let providerURL: String
-        if let providerMap = provider?.map, let url = providerMap["url"] {
-            providerURL = stashText(url)
+        if let providerMap = provider?.map {
+            let url = stashText(providerMap["url"])
+            if url.isEmpty, providerMap["payload"]?.string != nil {
+                providerURL = inlineResource(stashText(providerMap["payload"]))
+            } else {
+                providerURL = url
+            }
         } else {
             providerURL = ""
         }
         addScript(section, line: shown, name: name, path: providerURL,
                   fields: fields, after: after)
+    }
+
+    /// A rule provider a Stash override brings: http or inline only.
+    /// A file provider names a file the module does not download.
+    /// The provider's mapped name is the SHA-1 of its own text, so
+    /// one provider shared by modules is one provider.
+    func readStashRuleProviders(_ providers: MiniYAMLValue?) {
+        guard let map = providers?.map else { return }
+        for (name, value) in map {
+            guard let providerMap = value.map,
+                  let type = providerMap["type"]?.string,
+                  type == "http" || type == "inline" else {
+                skip("rule-providers", name,
+                     value.map?["type"]?.string == "file" ? .relativeData : .unreadable)
+                continue
+            }
+            var provider: [String: JSONValue] = [:]
+            for (key, entry) in providerMap where key != "path" {
+                provider[key] = stashJSON(entry)
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            guard let data = try? encoder.encode(provider),
+                  let json = String(data: data, encoding: .utf8) else { continue }
+            let mapped = ruleSetName("stash:\(name):\(json)")
+            stashProviderNames[name] = mapped
+            ruleProviders[mapped] = provider
+        }
+    }
+
+    /// A value of the override as JSON, with its `${args.name}`
+    /// references filled in. The reader stores every scalar as a
+    /// string, so a number here stays a string — the store coerces
+    /// the keys the profile reads as numbers (interval) when it
+    /// writes the provider out.
+    func stashJSON(_ value: MiniYAMLValue) -> JSONValue {
+        switch value {
+        case .string: return .string(stashText(value))
+        case .list(let items): return .array(items.map(stashJSON))
+        case .map(let entries): return .object(entries.mapValues(stashJSON))
+        case .null: return .null
+        }
+    }
+
+    /// Stash puts an override's list ahead of the profile's unless
+    /// the key is marked `#!append` or `#!replace`, in a comment
+    /// the YAML no longer holds.
+    func readStashDns(_ dns: [String: MiniYAMLValue], text: String) {
+        func markOf(_ key: String) -> ListMark {
+            guard let m = RX.match("(?m)^\\s+\(key):\\s*#!(replace|append)", text),
+                  let mark = m[1] else { return .insert }
+            return mark == "replace" ? .replace : .append
+        }
+        func strings(_ value: MiniYAMLValue?) -> [String] {
+            switch value {
+            case .list(let items): return items.map { stashText($0).trimmingCharacters(in: .whitespaces) }
+            case .null, nil: return []
+            default: return [stashText(value).trimmingCharacters(in: .whitespaces)]
+            }
+        }
+        for (key, value) in dns {
+            switch key {
+            case "nameserver", "default-nameserver":
+                let servers = strings(value).map(mitmDnsServer)
+                if servers.contains(nil) {
+                    skip("dns", "\(key): \(strings(value).joined(separator: ", "))", .unreadable)
+                    continue
+                }
+                editList(key == "nameserver" ? "dns-server" : key, mark: markOf(key), values: servers.compactMap { $0 })
+            case "fake-ip-filter":
+                editList(key, mark: markOf(key), values: strings(value))
+            case "nameserver-policy":
+                guard let policy = value.map else {
+                    skip("dns", key, .setting)
+                    continue
+                }
+                for (domain, servers) in policy {
+                    let read = strings(servers).map(mitmDnsServer)
+                    if read.contains(nil) || read.isEmpty {
+                        skip("dns", "\(domain): \(servers.display)", .unreadable)
+                    } else {
+                        setDomainEntry(&nameserverPolicy, domain: domain, values: read.compactMap { $0 })
+                    }
+                }
+            default:
+                skip("dns", key, .setting)
+            }
+        }
     }
 
     func readStashArguments(_ arguments: MiniYAMLValue?) {
@@ -2958,7 +4080,26 @@ func mergeMitmModules(hostname: [String], modules: [MitmModuleContent]) -> MitmM
         out.requestBodyMock += lists.requestBodyMock
         out.forceHttpHostname += lists.forceHttpHostname
         out.rules += module.rules
+        // Inline sets of one name add up, as Surge merges a
+        // module's [Ruleset] lines into the set of that name.
+        for (name, provider) in module.ruleProviders {
+            if let previous = out.ruleProviders[name],
+               previous["type"] == .string("inline"),
+               case .array(let previousPayload) = previous["payload"] ?? .null,
+               case .array(let payload) = provider["payload"] ?? .null {
+                var merged = previousPayload
+                for item in payload where !merged.contains(item) { merged.append(item) }
+                var copy = provider
+                copy["payload"] = .array(merged)
+                out.ruleProviders[name] = copy
+            } else {
+                out.ruleProviders[name] = provider
+            }
+        }
+        out.exits.formUnion(module.exits)
+        out.h2 = out.h2 || module.h2
     }
+    out.network = MitmModuleNetwork.merge(modules.map(\.network))
     return out
 }
 

@@ -383,7 +383,11 @@ final class TunnelManager: ObservableObject {
         proto.excludeAPNs = settings.excludeAPNs
         proto.excludeCellularServices = settings.excludeCellularServices
         proto.enforceRoutes = settings.enforceRoutes
-        proto.excludeDeviceCommunication = settings.excludeDeviceCommunication
+        // excludeDeviceCommunication needs iOS 17.4+; the app targets
+        // iOS 17.0, so on 17.0-17.3 it stays at the system default.
+        if #available(iOS 17.4, *) {
+            proto.excludeDeviceCommunication = settings.excludeDeviceCommunication
+        }
     }
 
     /// isEnabled + disconnectOnSleep + save + reload, the FlClash

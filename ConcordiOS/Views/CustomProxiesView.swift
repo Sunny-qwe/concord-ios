@@ -10,9 +10,12 @@ import SwiftUI
 struct CustomProxiesView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @StateObject private var store = CustomProxyStore()
+    @StateObject private var customStore = CustomSubscriptionStore()
     @State private var editing: CustomProxy?
     @State private var editingRawIndex: Int?
     @State private var message: String?
+    @State private var createdSubscriptionID: UUID?
+    @State private var showCreatedEditor = false
 
     var body: some View {
         List {
@@ -20,8 +23,10 @@ struct CustomProxiesView: View {
                 Text("自定义节点会写进当前配置的 proxies: 段，之后可以在代理组里选用。订阅更新后会自动重新写回。保存前先用核心校验节点是否可用。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                NavigationLink {
-                    CustomSubscriptionListView()
+                Button {
+                    let created = customStore.create(name: "未命名自定义订阅")
+                    createdSubscriptionID = created.id
+                    showCreatedEditor = true
                 } label: {
                     Label("完整自定义订阅编辑器（分组 / 拨号器 / 提供方 / 规则）", systemImage: "doc.badge.gearshape")
                         .font(.footnote)
@@ -116,6 +121,11 @@ struct CustomProxiesView: View {
                 } onDelete: {
                     deleteRawProxies(at: IndexSet(integer: index))
                 }
+            }
+        }
+        .navigationDestination(isPresented: $showCreatedEditor) {
+            if let createdSubscriptionID {
+                CustomSubscriptionEditorView(subscriptionID: createdSubscriptionID)
             }
         }
     }

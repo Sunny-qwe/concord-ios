@@ -55,7 +55,6 @@ enum ToolsDestination: Hashable {
     case mitmCertificate
     case localNetwork
     case loopback
-    case profileTools
     case settings
     case disclaimer
     case developer
@@ -152,8 +151,6 @@ struct ToolsView: View {
                         ToolRow(icon: "network", title: "tools.localNetwork".l10n) { navPath.append(.localNetwork) }
                         Divider().padding(.leading, 54)
                         ToolRow(icon: "arrow.triangle.2.circlepath", title: "tools.loopback".l10n) { navPath.append(.loopback) }
-                        Divider().padding(.leading, 54)
-                        ToolRow(icon: "list.clipboard", title: "订阅工具") { navPath.append(.profileTools) }
                     }
                     toolSection(header: "tools.section.other".l10n) {
                         ToolRow(icon: "doc.text", title: "tools.disclaimer".l10n) { navPath.append(.disclaimer) }
@@ -199,7 +196,6 @@ struct ToolsView: View {
                 case .mitmCertificate: MitmCertificateView()
                 case .localNetwork: LocalNetworkView()
                 case .loopback: LoopbackView()
-                case .profileTools: ProfileToolsView()
                 case .settings: SettingsView()
                 case .disclaimer: DisclaimerView()
                 case .developer: DeveloperView()

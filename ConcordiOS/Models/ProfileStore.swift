@@ -336,7 +336,7 @@ final class ProfileStore: ObservableObject {
     func seedSampleIfNeeded() {
         guard client.mode == .sample, profiles.isEmpty else { return }
         profiles = [
-            Profile(name: "示例订阅", kind: .url, urlString: "https://example.com/subscribe.yaml", updatedAt: Date().addingTimeInterval(-3600), isActive: true, note: "示例数据：这是一条示例订阅，不是真实订阅")
+            Profile(name: "示例订阅", kind: .url, urlString: "https://example.com/subscribe.yaml", updatedAt: Date().addingTimeInterval(-3600), isActive: true)
         ]
         save()
     }
@@ -503,13 +503,14 @@ final class ProfileStore: ObservableObject {
             let downloaded = try await downloadSubscription(from: url)
             // Age-encrypted body (FlClash validateProfile): a fresh
             // add has no stored key yet, so it cannot be decrypted
-            // here. Save the ciphertext as-is with an honest note —
-            // the user fills the age key in 编辑 and 更新 decrypts
-            // it with the stored key (see update()). Activating
-            // before that fails with the age-specific message in
-            // applyProfile, never with a generic parse error.
+            // here. Save the ciphertext as-is — the user fills the
+            // age key in 编辑 and 更新 decrypts it with the stored
+            // key (see update()). Activating before that fails with
+            // the age-specific message in applyProfile, never with a
+            // generic parse error. (FlClash's Profile model has no
+            // note field, so no note is stored on the card.)
             if Self.looksAgeEncrypted(downloaded.data) {
-                let profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), note: "age 加密：请在编辑页填写私钥后点「更新」解密", subscriptionInfo: downloaded.info)
+                let profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), subscriptionInfo: downloaded.info)
                 profiles.append(profile)
                 try saveProfileFile(profile: profile, data: downloaded.data)
                 statusMessage = "已导入订阅 \(profile.name)（age 加密，待填写私钥后更新解密）"

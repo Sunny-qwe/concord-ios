@@ -173,7 +173,7 @@ struct EditProfileView: View {
                                 .foregroundStyle(.red)
                         }
                     }
-                    Text("自动更新尚未接入定时器：打开后只会保存设置，仍需手动点「更新」同步订阅。")
+                    Text("开启后应用会每 20 分钟检查一次，到期的订阅会自动更新；也可随时手动点「更新」立即同步订阅。")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }

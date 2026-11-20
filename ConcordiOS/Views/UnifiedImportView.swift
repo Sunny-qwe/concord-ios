@@ -1,14 +1,17 @@
 import SwiftUI
-import UniformTypeIdentifiers
 import UIKit
 
-// MARK: - Import page (one item at a time)
-// Paste ONE subscription link, node share link or a whole YAML
-// config — the page detects what it is, imports just that one, and
-// activates it. A second link is pasted separately (the user asked
-// for one-at-a-time, not batch). Link subscriptions that return
-// base64 node links are decoded and rebuilt into a Clash config by
-// ProfileStore, so they import like any other subscription.
+// MARK: - Import from link (FlClash: lib/views/profiles/add.dart)
+// ONE of the three separate add entries (the others are the 文件
+// picker and the 扫码 page, both reached from the Profiles + menu —
+// not from this page). Paste ONE subscription link, node share link
+// or a whole YAML config — the page detects what it is, imports just
+// that one, and activates it. A second link is pasted separately
+// (the user asked for one-at-a-time, not batch). Link subscriptions
+// that return base64 node links are decoded and rebuilt into a Clash
+// config by ProfileStore, so they import like any other subscription.
+// The QR scanner feeds this same form (ProfilesView hands the
+// scanned text in with autoImport).
 
 struct UnifiedImportView: View {
     let profileStore: ProfileStore
@@ -17,16 +20,7 @@ struct UnifiedImportView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var importText = ""
     @State private var profileName = ""
-    @State private var showFileImporter = false
-    @State private var showLegacyAdd = false
-    @State private var showScanImport = false
     @State private var clipboardNotice: String?
-    /// Read/pick failure from the file importer, shown inline
-    /// instead of silently swallowing it (a .yaml picked from the
-    /// Files app lives outside the sandbox: without the
-    /// security-scope dance Data(contentsOf:) fails and the old
-    /// `try?` dropped the failure without a trace).
-    @State private var fileReadError: String?
     /// Text handed in by the QR scanner (ProfilesView): filled into
     /// the field and imported automatically when `autoImport` is set.
     private let initialText: String
@@ -70,19 +64,12 @@ struct UnifiedImportView: View {
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    actionsCard
-                    if let fileReadError {
-                        Text(fileReadError)
-                            .font(.system(size: 13))
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
                     tipText
                 }
                 .padding(16)
             }
             .concordPageBackground()
-            .navigationTitle("导入配置")
+            .navigationTitle("从链接导入")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -100,53 +87,6 @@ struct UnifiedImportView: View {
                     importText = item
                     clipboardNotice = "已从剪贴板填入一条\(UnifiedImporter.singleItemKind(clip).rawValue)，检查后点「导入」"
                 }
-            }
-            .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.yaml, UTType.plainText]) { result in
-                switch result {
-                case .success(let url):
-                    // Files-app URLs are security-scoped: the app
-                    // may only read them inside
-                    // startAccessingSecurityScopedResource() (same
-                    // dance as BackupStore.restore and
-                    // MitmScriptsView.importFile). Without it,
-                    // Data(contentsOf:) fails for files outside the
-                    // sandbox and the import silently never ran.
-                    guard url.startAccessingSecurityScopedResource() else {
-                        fileReadError = "无法读取该文件：系统拒绝访问，请重新选择"
-                        return
-                    }
-                    defer { url.stopAccessingSecurityScopedResource() }
-                    do {
-                        let data = try Data(contentsOf: url)
-                        fileReadError = nil
-                        Task { await importer.importFileData(data, fileName: url.lastPathComponent) }
-                    } catch {
-                        fileReadError = "读取文件失败：\(error.localizedDescription)"
-                    }
-                case .failure(let error):
-                    fileReadError = "未选择文件：\(error.localizedDescription)"
-                }
-            }
-            .sheet(isPresented: $showLegacyAdd) {
-                // The legacy sheet's "从文件导入" button drives this
-                // view's file importer. The picker cannot present
-                // while the legacy sheet is still on screen, so
-                // dismiss the sheet first and open the picker after
-                // the dismissal animation.
-                AddProfileView(showImporter: Binding(
-                    get: { showFileImporter },
-                    set: { newValue in
-                        if newValue {
-                            showLegacyAdd = false
-                            Task { @MainActor in
-                                try? await Task.sleep(for: .milliseconds(350))
-                                showFileImporter = true
-                            }
-                        } else {
-                            showFileImporter = false
-                        }
-                    }
-                ))
             }
         }
     }
@@ -338,73 +278,6 @@ struct UnifiedImportView: View {
                 .shadow(color: ConcordTheme.cardShadow, radius: 6, x: 0, y: 2)
             }
         }
-    }
-
-    // MARK: - Secondary actions
-
-    private var actionsCard: some View {
-        VStack(spacing: 0) {
-            Button { showScanImport = true } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "qrcode.viewfinder")
-                        .font(.system(size: 18))
-                        .foregroundStyle(ConcordTheme.accent)
-                        .frame(width: 24)
-                    Text("扫码导入")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 12)
-            }
-            .buttonStyle(.plain)
-            .sheet(isPresented: $showScanImport) {
-                ScanImportView { text in
-                    importText = text
-                    Task { await performImport() }
-                }
-            }
-            Divider()
-            Button { showFileImporter = true } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 18))
-                        .foregroundStyle(ConcordTheme.accent)
-                        .frame(width: 24)
-                    Text("从文件导入")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 12)
-            }
-            .buttonStyle(.plain)
-            Divider()
-            Button { showLegacyAdd = true } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "square.and.pencil")
-                        .font(.system(size: 18))
-                        .foregroundStyle(ConcordTheme.accent)
-                        .frame(width: 24)
-                    Text("使用旧版添加方式")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.vertical, 12)
-            }
-            .buttonStyle(.plain)
-        }
-        .concordCard()
     }
 
     private var tipText: some View {

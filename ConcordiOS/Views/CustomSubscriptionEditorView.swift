@@ -3,73 +3,9 @@ import SwiftUI
 // MARK: - Custom subscription editor (FlClash: lib/views/profiles/custom/)
 // Full editor for one custom subscription: groups (+ members),
 // dialers, proxy/rule providers and rules. The subscription itself
-// lives in CustomSubscriptionStore; "应用到当前配置" bakes it into
-// the ACTIVE profile's YAML through the existing profile apply
-// path (ProfileStore.saveActiveProfileYAML + reapplyActive).
-
-struct CustomSubscriptionListView: View {
-    @StateObject private var store = CustomSubscriptionStore()
-    @State private var editing: CustomSubscription?
-    @State private var newName = ""
-    @State private var showCreate = false
-
-    var body: some View {
-        List {
-            Section {
-                Text("自定义订阅是一套完整的分组 / 提供方 / 规则，可应用到当前配置上。节点本身仍在「代理」里编辑。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section("自定义订阅（\(store.subscriptions.count) 个）") {
-                ForEach(store.subscriptions) { sub in
-                    NavigationLink {
-                        CustomSubscriptionEditorView(subscriptionID: sub.id)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(sub.name).font(.system(size: 17, weight: .semibold))
-                            Text("\(sub.groups.count) 分组 · \(sub.rules.count) 规则 · \(sub.proxyProviders.count + sub.ruleProviders.count) 提供方")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button("重命名") { editing = sub; showCreate = true }
-                            .tint(.blue)
-                        Button("删除", role: .destructive) { store.delete(sub) }
-                    }
-                }
-                Button {
-                    newName = ""
-                    editing = nil
-                    showCreate = true
-                } label: {
-                    Label("新建自定义订阅", systemImage: "plus")
-                }
-            }
-        }
-        .font(.system(size: 13, weight: .semibold))
-        .navigationTitle("自定义订阅")
-        .navigationBarTitleDisplayMode(.inline)
-        .alert(editing == nil ? "新建自定义订阅" : "重命名", isPresented: $showCreate) {
-            TextField("名称", text: $newName)
-            Button("取消", role: .cancel) {}
-            Button("保存") {
-                if let existing = editing {
-                    var copy = existing
-                    copy.name = newName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? existing.name : newName
-                    store.update(copy)
-                } else {
-                    _ = store.create(name: newName)
-                }
-            }
-        } message: {
-            Text("名称只用来在列表里区分，应用到配置时用的是里面的分组和规则。")
-        }
-        .onChange(of: showCreate) { _, shown in
-            if shown, let existing = editing { newName = existing.name }
-        }
-    }
-}
+// lives in CustomSubscriptionStore; providers here are references
+// to existing providers by name (upstream custom/providers.dart),
+// never created from scratch.
 
 struct CustomSubscriptionEditorView: View {
     let subscriptionID: UUID
@@ -81,9 +17,13 @@ struct CustomSubscriptionEditorView: View {
     @State private var editingGroup: CustomGroup?
     @State private var editingDialer: CustomDialer?
     @State private var editingProxyProvider: CustomProvider?
-    @State private var editingRuleProvider: CustomProvider?
     @State private var editingRule: CustomRule?
-    @State private var message: String?
+    @State private var showProxyProviderPicker = false
+    @State private var showRuleProviderPicker = false
+    /// Rule providers defined in the active profile's YAML, loaded
+    /// once in .task — the existing providers a rule provider can
+    /// reference (upstream: the core's provider list).
+    @State private var ruleProviderCandidates: [CustomProvider] = []
     /// Node names read from the profile files, loaded once off the
     /// main thread (see the .task below).
     @State private var fileCandidates: [String] = []
@@ -114,6 +54,17 @@ struct CustomSubscriptionEditorView: View {
         memberCandidates + ["GLOBAL", "COMPATIBLE"]
     }
 
+    /// Existing subscriptions usable as proxy providers (upstream:
+    /// custom providers reference other profiles by name). Only URL
+    /// subscriptions: a file profile has no URL to fetch from, and
+    /// its file path is private to ProfileStore.
+    private var proxyProviderCandidates: [CustomProvider] {
+        let taken = Set(sub.proxyProviders.map { $0.name })
+        return profileStore.profiles
+            .filter { $0.kind == .url && !($0.urlString?.isEmpty ?? true) && !taken.contains($0.name) }
+            .map { CustomProvider(name: $0.name, kind: "http", url: $0.urlString ?? "") }
+    }
+
     var body: some View {
         List {
             Section {
@@ -121,21 +72,10 @@ struct CustomSubscriptionEditorView: View {
                     get: { sub.name },
                     set: { var copy = sub; copy.name = $0; draft = copy }
                 ))
-                Button {
-                    Task { await applyToActiveProfile() }
-                } label: {
-                    Label("应用到当前配置", systemImage: "checkmark.circle")
-                }
-                .disabled(profileStore.activeProfile == nil)
-                if let message {
-                    Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
             } header: {
                 Text("自定义订阅")
             } footer: {
-                Text("应用后，分组 / 提供方 / 规则会写进当前订阅的 YAML（带标记，可重复应用），拨号器会写到对应节点的 dialer-proxy 上；下次启动 VPN 或立即重应用后生效。")
+                Text("分组 / 提供方 / 规则保存在此自定义订阅中。")
                     .font(.system(size: 13))
             }
 
@@ -214,33 +154,30 @@ struct CustomSubscriptionEditorView: View {
                     copy.proxyProviders.remove(atOffsets: offsets)
                     draft = copy
                 }
-                Button { editingProxyProvider = CustomProvider() } label: {
+                Button { showProxyProviderPicker = true } label: {
                     Label("添加代理提供方", systemImage: "plus")
                 }
             }
 
             Section("规则提供方（\(sub.ruleProviders.count) 个）") {
                 ForEach(sub.ruleProviders) { provider in
-                    Button { editingRuleProvider = provider } label: {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(provider.name).font(.system(size: 17, weight: .semibold))
-                                Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
-                                    .font(.system(size: 13))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer()
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(provider.name).font(.system(size: 17, weight: .semibold))
+                            Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
+                                .font(.system(size: 13))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
+                        Spacer()
                     }
-                    .buttonStyle(.plain)
                 }
                 .onDelete { offsets in
                     var copy = sub
                     copy.ruleProviders.remove(atOffsets: offsets)
                     draft = copy
                 }
-                Button { editingRuleProvider = CustomProvider() } label: {
+                Button { showRuleProviderPicker = true } label: {
                     Label("添加规则提供方", systemImage: "plus")
                 }
             }
@@ -284,6 +221,9 @@ struct CustomSubscriptionEditorView: View {
             }
         }
         .task {
+            if let yaml = profileStore.activeProfileYAML() {
+                ruleProviderCandidates = ruleProvidersInYAML(yaml)
+            }
             // The profile-file scan used to run inside
             // memberCandidates on every body evaluation, stalling
             // the first frame, and inside each form sheet's
@@ -336,7 +276,7 @@ struct CustomSubscriptionEditorView: View {
             }
         }
         .sheet(item: $editingProxyProvider) { provider in
-            CustomProviderFormView(provider: provider, title: "代理提供方") { saved in
+            CustomProviderOptionsView(provider: provider) { saved in
                 var copy = sub
                 if let index = copy.proxyProviders.firstIndex(where: { $0.id == saved.id }) {
                     copy.proxyProviders[index] = saved
@@ -346,14 +286,27 @@ struct CustomSubscriptionEditorView: View {
                 draft = copy
             }
         }
-        .sheet(item: $editingRuleProvider) { provider in
-            CustomProviderFormView(provider: provider, title: "规则提供方") { saved in
+        .sheet(isPresented: $showProxyProviderPicker) {
+            CustomProviderPickerView(
+                title: "添加代理提供方",
+                candidates: proxyProviderCandidates,
+                emptyTip: "没有可引用的订阅：先在订阅页导入一个带链接的订阅。"
+            ) { picked in
                 var copy = sub
-                if let index = copy.ruleProviders.firstIndex(where: { $0.id == saved.id }) {
-                    copy.ruleProviders[index] = saved
-                } else {
-                    copy.ruleProviders.append(saved)
-                }
+                copy.proxyProviders.append(picked)
+                draft = copy
+            }
+        }
+        .sheet(isPresented: $showRuleProviderPicker) {
+            CustomProviderPickerView(
+                title: "添加规则提供方",
+                candidates: ruleProviderCandidates.filter { candidate in
+                    !sub.ruleProviders.contains(where: { $0.name == candidate.name })
+                },
+                emptyTip: "当前配置里没有规则提供方。"
+            ) { picked in
+                var copy = sub
+                copy.ruleProviders.append(picked)
                 draft = copy
             }
         }
@@ -373,28 +326,6 @@ struct CustomSubscriptionEditorView: View {
     private func saveDraft() {
         guard let draft else { return }
         store.update(draft)
-    }
-
-    private func applyToActiveProfile() async {
-        saveDraft()
-        guard var text = profileStore.activeProfileYAML() else {
-            message = "没有可写入的当前配置（先导入一个订阅）"
-            return
-        }
-        guard let active = profileStore.activeProfile else {
-            message = "没有可写入的当前配置（先导入一个订阅）"
-            return
-        }
-        text = CustomSubscriptionStore.bake(sub, into: text)
-        // Record which custom subscription lives in this profile,
-        // so a later subscription update (or switching back to it)
-        // re-applies these blocks from the store instead of wiping
-        // them (B9/B10).
-        CustomSubscriptionStore.noteBaked(subscriptionID: sub.id, into: active.id)
-        message = await profileStore.saveActiveProfileYAML(text)
-        if let live = await profileStore.reapplyActive() {
-            message = (message ?? "") + " " + live
-        }
     }
 }
 
@@ -608,40 +539,31 @@ private struct CustomDialerFormView: View {
     }
 }
 
-// MARK: - Provider form
+// MARK: - Provider options + reference picker
 
-private struct CustomProviderFormView: View {
+/// Overrides for one referenced proxy provider (FlClash
+/// custom/providers.dart: ProxyProviderOptions only — the name,
+/// type and url/path come from the referenced provider and are not
+/// edited here).
+private struct CustomProviderOptionsView: View {
     @State private var provider: CustomProvider
-    let title: String
     var onSave: (CustomProvider) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    init(provider: CustomProvider, title: String, onSave: @escaping (CustomProvider) -> Void) {
+    init(provider: CustomProvider, onSave: @escaping (CustomProvider) -> Void) {
         _provider = State(initialValue: provider)
-        self.title = title
         self.onSave = onSave
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("基本信息") {
-                    TextField("提供方名称", text: $provider.name)
-                    Picker("类型", selection: $provider.kind) {
-                        ForEach(CustomProvider.kinds, id: \.self) { kind in
-                            Text(kind == "http" ? "远程订阅（http）" : "本地文件（file）").tag(kind)
-                        }
-                    }
-                    if provider.kind == "http" {
-                        TextField("订阅地址", text: $provider.url)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(.URL)
-                    } else {
-                        TextField("本地文件路径", text: $provider.path)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    }
+                Section("提供方") {
+                    Text(provider.name)
+                    Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
                 Section("选项") {
                     HStack {
@@ -665,7 +587,7 @@ private struct CustomProviderFormView: View {
                 }
             }
             .font(.system(size: 13, weight: .semibold))
-            .navigationTitle(title)
+            .navigationTitle(provider.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -676,11 +598,99 @@ private struct CustomProviderFormView: View {
                         onSave(provider)
                         dismiss()
                     }
-                    .disabled(provider.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
     }
+}
+
+/// Pick an existing provider to reference by name — FlClash
+/// custom providers are references, never created from scratch.
+private struct CustomProviderPickerView: View {
+    let title: String
+    let candidates: [CustomProvider]
+    let emptyTip: String
+    var onPick: (CustomProvider) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if candidates.isEmpty {
+                    Text(emptyTip)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(candidates) { provider in
+                        Button {
+                            onPick(provider)
+                            dismiss()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(provider.name).font(.system(size: 17, weight: .semibold))
+                                Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .font(.system(size: 13, weight: .semibold))
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+/// Rule providers defined in a profile YAML text, with their
+/// definitions copied so a referenced provider still bakes a
+/// complete entry. Only the top-level `rule-providers:` section is
+/// read: `  Name:` entries with `    type:/url:/path:/interval:`
+/// underneath; the section ends at the next top-level key.
+private func ruleProvidersInYAML(_ yaml: String) -> [CustomProvider] {
+    let lines = yaml.components(separatedBy: "\n")
+    guard let start = lines.firstIndex(where: { $0 == "rule-providers:" || $0.hasPrefix("rule-providers: ") }) else { return [] }
+    var out: [CustomProvider] = []
+    var current: CustomProvider?
+    for line in lines[(start + 1)...] {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+        if !line.hasPrefix(" ") && !line.hasPrefix("\t") { break }
+        if line.hasPrefix("  "), !line.hasPrefix("   "), trimmed.hasSuffix(":") {
+            if let provider = current { out.append(provider) }
+            current = CustomProvider(name: yamlUnquote(String(trimmed.dropLast())))
+        } else if var provider = current {
+            if trimmed.hasPrefix("type:") {
+                provider.kind = yamlUnquote(String(trimmed.dropFirst("type:".count)))
+            } else if trimmed.hasPrefix("url:") {
+                provider.url = yamlUnquote(String(trimmed.dropFirst("url:".count)))
+            } else if trimmed.hasPrefix("path:") {
+                provider.path = yamlUnquote(String(trimmed.dropFirst("path:".count)))
+            } else if trimmed.hasPrefix("interval:") {
+                provider.interval = Int(yamlUnquote(String(trimmed.dropFirst("interval:".count)))) ?? 0
+            }
+            current = provider
+        }
+    }
+    if let provider = current { out.append(provider) }
+    return out
+}
+
+private func yamlUnquote(_ value: String) -> String {
+    let text = value.trimmingCharacters(in: .whitespaces)
+    if text.count >= 2,
+       (text.hasPrefix("\"") && text.hasSuffix("\"")) || (text.hasPrefix("'") && text.hasSuffix("'")) {
+        return String(text.dropFirst().dropLast())
+    }
+    return text
 }
 
 // MARK: - Rule form

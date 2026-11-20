@@ -18,7 +18,7 @@ struct ExtendConfigView: View {
     @State private var isApplying = false
     /// The library script picked for script mode (FlClash
     /// extend/script.dart picks from the stored script library;
-    /// picking one loads its text into the inline editor).
+    /// picking one selects it for script mode).
     @State private var selectedScriptID: String?
 
     /// The profile this page edits. nil = the active profile (the
@@ -127,14 +127,11 @@ struct ExtendConfigView: View {
                 }
             } else {
                 Section("脚本模式") {
-                    Toggle("启用脚本", isOn: Binding(
-                        get: { settings.scriptEnabled },
-                        set: { newValue in setDraft { $0.scriptEnabled = newValue } }
-                    ))
                     // FlClash extend/script.dart: pick one script
-                    // from the stored library, or keep the inline
-                    // editor. Picking loads the library script's
-                    // text into the editor below.
+                    // from the stored library. Picking one selects
+                    // it for script mode (there is no separate
+                    // enable switch or inline editor upstream);
+                    // picking "不使用脚本库" clears the selection.
                     Picker("从脚本库选择", selection: $selectedScriptID) {
                         Text("不使用脚本库").tag(nil as String?)
                         ForEach(scriptStore.scripts) { script in
@@ -144,8 +141,11 @@ struct ExtendConfigView: View {
                     .onChange(of: selectedScriptID) { _, id in
                         guard let id,
                               let script = scriptStore.scripts.first(where: { $0.id == id }),
-                              let content = scriptStore.content(of: script) else { return }
-                        setDraft { $0.scriptText = content }
+                              let content = scriptStore.content(of: script) else {
+                            setDraft { $0.scriptEnabled = false; $0.scriptText = "" }
+                            return
+                        }
+                        setDraft { $0.scriptEnabled = true; $0.scriptText = content }
                     }
                     NavigationLink {
                         MitmScriptsView()
@@ -160,20 +160,6 @@ struct ExtendConfigView: View {
                     Text("脚本定义 function main(config)，返回改写后的配置对象。config 是核心解析后的当前配置。运行需要核心可达（启动 VPN，或示例模式）。")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
-                }
-                Section("脚本") {
-                    TextEditor(text: Binding(
-                        get: { settings.scriptText },
-                        set: { newValue in setDraft { $0.scriptText = newValue } }
-                    ))
-                    .frame(minHeight: 220)
-                    .font(.system(.caption, design: .monospaced))
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .scrollContentBackground(.hidden)
-                    Button("填入示例脚本") {
-                        setDraft { $0.scriptText = ExtendSettings.defaultScript }
-                    }
                 }
             }
 

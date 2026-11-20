@@ -271,16 +271,24 @@ final class ProfileStore: ObservableObject {
     /// is not age-encrypted, `.success(plaintext)` after a
     /// decrypt, or `.failure(reason)` with the honest reason the
     /// download / save cannot proceed.
-    private func decryptAgeDataIfNeeded(_ data: Data, key: String?) async -> Result<Data, String> {
+    /// Error wrapper so the age-decrypt helper can return a plain
+    /// message in a `Result`: `String` itself does not conform to
+    /// `Error`, so `Result<Data, String>` does not compile.
+    private struct AgeDecryptError: Error, CustomStringConvertible {
+        let message: String
+        var description: String { message }
+    }
+
+    private func decryptAgeDataIfNeeded(_ data: Data, key: String?) async -> Result<Data, AgeDecryptError> {
         guard Self.looksAgeEncrypted(data) else { return .success(data) }
         guard let key, !key.trimmingCharacters(in: .whitespaces).isEmpty else {
-            return .failure("该订阅是 age 加密的，但没有填写 age 私钥：请在编辑页填写后再更新")
+            return .failure(AgeDecryptError(message: "该订阅是 age 加密的，但没有填写 age 私钥：请在编辑页填写后再更新"))
         }
         guard client.mode == .live, TunnelManager.shared.isRunning else {
-            return .failure("该订阅是 age 加密的，需先启动 VPN 才能解密（解密由扩展内的核心执行）")
+            return .failure(AgeDecryptError(message: "该订阅是 age 加密的，需先启动 VPN 才能解密（解密由扩展内的核心执行）"))
         }
         guard let dir = profilesDirectory else {
-            return .failure("App Group 容器不可用，无法解密 age 订阅")
+            return .failure(AgeDecryptError(message: "App Group 容器不可用，无法解密 age 订阅"))
         }
         let tempURL = dir.appendingPathComponent(".age-decrypt.yaml")
         defer { try? FileManager.default.removeItem(at: tempURL) }
@@ -289,11 +297,11 @@ final class ProfileStore: ObservableObject {
             try data.write(to: tempURL, options: .atomic)
             let plain = try await client.configDecrypt(profilePath: tempURL.path, key: key)
             guard !plain.isEmpty else {
-                return .failure("age 解密结果为空：请检查私钥是否正确")
+                return .failure(AgeDecryptError(message: "age 解密结果为空：请检查私钥是否正确"))
             }
             return .success(Data(plain.utf8))
         } catch {
-            return .failure("age 解密失败：\(error.localizedDescription)")
+            return .failure(AgeDecryptError(message: "age 解密失败：\(error.localizedDescription)"))
         }
     }
 

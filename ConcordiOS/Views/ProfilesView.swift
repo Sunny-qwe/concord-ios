@@ -532,15 +532,22 @@ struct ProfilesView: View {
     }
 
     /// Groups counts for the cards, from the local YAML parse
-    /// (FlClash _GroupsCountChip).
+    /// (FlClash _GroupsCountChip). The scan used to run
+    /// synchronously in onAppear / onChange, stalling the tab's
+    /// first frame; it now runs off-thread and the chips fill in
+    /// when it lands (nil count simply hides the chip meanwhile).
     private func refreshGroupCounts() {
-        var counts: [UUID: Int] = [:]
-        for profile in profileStore.profiles {
-            if let groups = profileStore.localProxyGroups(for: profile) {
-                counts[profile.id] = groups.groups.count
+        let profiles = profileStore.profiles
+        let storeRef = profileStore
+        Task.detached(priority: .userInitiated) {
+            var counts: [UUID: Int] = [:]
+            for profile in profiles {
+                if let groups = storeRef.localProxyGroups(for: profile) {
+                    counts[profile.id] = groups.groups.count
+                }
             }
+            await MainActor.run { groupCounts = counts }
         }
-        groupCounts = counts
     }
 
     private func copyLink(_ profile: Profile) {
@@ -596,8 +603,13 @@ struct ProfilesView: View {
 private struct ProfileQRCodeView: View {
     let profile: Profile
     @Environment(\.dismiss) private var dismiss
+    /// Generated off the main thread (see the .task below): the
+    /// CIFilter + CIContext render used to run inside body
+    /// evaluation and stall the sheet's first frame, title included.
+    @State private var qrImage: UIImage?
+    @State private var qrGenerated = false
 
-    private var qrImage: UIImage? {
+    private static func makeQRImage(for profile: Profile) -> UIImage? {
         guard let urlString = profile.urlString,
               let data = urlString.data(using: .utf8),
               let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
@@ -617,6 +629,9 @@ private struct ProfileQRCodeView: View {
                         .interpolation(.none)
                         .resizable()
                         .scaledToFit()
+                        .frame(width: 240, height: 240)
+                } else if !qrGenerated {
+                    ProgressView()
                         .frame(width: 240, height: 240)
                 } else {
                     Text("无法生成二维码：该订阅没有链接")
@@ -639,6 +654,13 @@ private struct ProfileQRCodeView: View {
             .padding(24)
             .navigationTitle(profile.name)
             .navigationBarTitleDisplayMode(.inline)
+            .task {
+                let image = await Task.detached(priority: .userInitiated) {
+                    Self.makeQRImage(for: profile)
+                }.value
+                qrImage = image
+                qrGenerated = true
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }

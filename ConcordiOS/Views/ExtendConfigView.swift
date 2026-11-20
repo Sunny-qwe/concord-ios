@@ -51,10 +51,12 @@ struct ExtendConfigView: View {
     }
 
     /// FlClash standard.dart: invalid when the target is neither a
-    /// built-in, nor a group, nor a proxy of the profile.
+    /// built-in, nor a group, nor a proxy of the profile. Gated on
+    /// matchTargetsLoaded: before the off-thread scan lands, an
+    /// empty candidate list must not flash the target red.
     private var isMatchTargetInvalid: Bool {
         let target = settings.matchTarget
-        guard !target.isEmpty else { return false }
+        guard !target.isEmpty, matchTargetsLoaded else { return false }
         return !matchTargetCandidates.contains(target)
     }
 
@@ -221,6 +223,17 @@ struct ExtendConfigView: View {
             if draft == nil, let profile {
                 draft = extendStore.settings(for: profile.id)
             }
+            // Match-target candidates need a full YAML scan; run it
+            // off-thread so the first frame (static title included)
+            // is not stalled. See matchTargetCandidates above.
+            if let profile {
+                let storeRef = profileStore
+                let targets = await Task.detached(priority: .userInitiated) {
+                    Self.matchTargets(for: profile, store: storeRef)
+                }.value
+                matchTargetCandidates = targets
+                matchTargetsLoaded = true
+            }
         }
         .onDisappear {
             // FlClash extend.dart:132-135: auto-apply on dispose.
@@ -237,15 +250,19 @@ struct ExtendConfigView: View {
     /// Targets the match-target picker offers: built-ins, the
     /// profile's groups, and its proxies (FlClash standard.dart
     /// match-target sheet: basic strategies + group names + proxy
-    /// names).
-    private var matchTargetCandidates: [String] {
+    /// names). Loaded once off the main thread in the .task below —
+    /// it used to be a computed property that scanned the whole
+    /// profile YAML on every body evaluation, stalling the first
+    /// frame. The picker shows only "跟随配置" until it lands.
+    @State private var matchTargetCandidates: [String] = []
+    @State private var matchTargetsLoaded = false
+
+    private static func matchTargets(for profile: Profile, store: ProfileStore) -> [String] {
         var targets = ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATIBLE"]
-        if let profile {
-            if let groups = profileStore.localProxyGroups(for: profile) {
-                targets.append(contentsOf: groups.groups.map { $0.name })
-            }
-            targets.append(contentsOf: profileStore.localNodeNames(for: profile))
+        if let groups = store.localProxyGroups(for: profile) {
+            targets.append(contentsOf: groups.groups.map { $0.name })
         }
+        targets.append(contentsOf: store.localNodeNames(for: profile))
         return Array(NSOrderedSet(array: targets)) as? [String] ?? []
     }
 

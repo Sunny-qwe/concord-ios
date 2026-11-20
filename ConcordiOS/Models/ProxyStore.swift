@@ -128,6 +128,71 @@ final class ProxyStore: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "concord.everDelaySucceeded") }
     }
 
+    /// What the applied config actually knows (one proxy.groups
+    /// response): every loaded name, plus — per provider — the
+    /// live node names the core really has. proxy.groups nodes
+    /// carry their provider (ConcordNodeInfo.provider), so the
+    /// inventory costs nothing extra: it is the same call
+    /// missingLoadedNames already made. The per-provider lists
+    /// are what makes a "names still missing" banner diagnosable
+    /// instead of a generic "请检查订阅": when a provider's live
+    /// list is empty the pull brought nothing usable; when it
+    /// holds other names the subscription renamed them.
+    private struct LoadedInventory {
+        /// Every proxy + group name the applied config knows.
+        let loaded: Set<String>
+        /// Live node names per provider. Only providers that own
+        /// at least one loaded node appear (a provider with zero
+        /// live nodes is absent — its count is 0). Order is
+        /// unsorted here; describeProviderContents sorts when it
+        /// samples them.
+        let namesByProvider: [String: [String]]
+    }
+
+    /// One proxy.groups read (app-side core while the VPN is off,
+    /// extension core while it runs), as an inventory. Nil when
+    /// the core is unreachable / the query fails — the caller then
+    /// reports the -2s without claiming a membership verdict.
+    private func loadedInventory() async -> LoadedInventory? {
+        do {
+            let groups: ConcordProxyGroups
+            if client.mode == .live && !TunnelManager.shared.isRunning {
+                groups = try await AppCore.shared.loadedProxyGroups()
+            } else {
+                groups = try await client.proxyGroups()
+            }
+            var loaded = Set(groups.nodes.map { $0.name })
+            loaded.formUnion(groups.groups.map { $0.name })
+            var namesByProvider: [String: [String]] = [:]
+            for node in groups.nodes {
+                guard let provider = node.provider else { continue }
+                namesByProvider[provider, default: []].append(node.name)
+            }
+            return LoadedInventory(loaded: loaded, namesByProvider: namesByProvider)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Describes what the loaded providers actually hold, for a
+    /// banner / report line: "「我的订阅」有 25 个节点，例如：A、B、C…"
+    /// (one clause per provider, sample of 5). `only`, when given,
+    /// restricts the line to those providers; a listed provider
+    /// with no loaded nodes is named with 0. "" when there is
+    /// nothing to describe.
+    private func describeProviderContents(_ namesByProvider: [String: [String]], only: Set<String>? = nil) -> String {
+        let providers = (only ?? Set(namesByProvider.keys)).sorted()
+        guard !providers.isEmpty else { return "" }
+        let clauses = providers.map { provider -> String in
+            let actual = (namesByProvider[provider] ?? []).sorted()
+            if actual.isEmpty { return "「\(provider)」有 0 个节点" }
+            let sample = actual.prefix(5).joined(separator: "、")
+            let suffix = actual.count > 5 ? "…" : ""
+            return "「\(provider)」有 \(actual.count) 个节点，例如：\(sample)\(suffix)"
+        }
+        return clauses.joined(separator: "；")
+    }
+
     /// Names among `names` that the currently loaded core config
     /// does NOT know. Nil when the check itself is unavailable
     /// (core unreachable / query failed) — the caller then reports
@@ -136,20 +201,8 @@ final class ProxyStore: ObservableObject {
     /// VPN-on reads the extension's core the same way (the
     /// extension RPC path has its own deadline since v0.2.36).
     private func missingLoadedNames(_ names: [String]) async -> Set<String>? {
-        do {
-            let loaded: Set<String>
-            if client.mode == .live && !TunnelManager.shared.isRunning {
-                loaded = try await AppCore.shared.loadedProxyNames()
-            } else {
-                let groups = try await client.proxyGroups()
-                var set = Set(groups.nodes.map { $0.name })
-                set.formUnion(groups.groups.map { $0.name })
-                loaded = set
-            }
-            return Set(names).subtracting(loaded)
-        } catch {
-            return nil
-        }
+        guard let inventory = await loadedInventory() else { return nil }
+        return Set(names).subtracting(inventory.loaded)
     }
 
     /// The timestamp line the delay-test diagnostic report opens
@@ -359,13 +412,20 @@ final class ProxyStore: ObservableObject {
             // profile's local YAML so the Proxies page still shows
             // the subscription's groups and nodes. The live path
             // above is untouched — this runs only when both core
-            // reads throw.
-            if let profile = activeProfile,
-               let local = profileStore?.localProxyGroups(for: profile),
-               loadLocalGroups(local, profileID: profile.id) {
-                lastUpdated = Date()
-                lastError = nil
-                return
+            // reads throw. The parse is a whole-file line scan
+            // (ProfileStore.localProxyGroups): it runs off the main
+            // thread so the Proxies page's first frame (static
+            // title + loading state) is not held up by it
+            // (v0.2.40 title-delay fix); the parsed result is
+            // applied back on the main actor below.
+            if let profile = activeProfile {
+                let store = profileStore
+                let local = await Task.detached { store?.localProxyGroups(for: profile) }.value
+                if let local, loadLocalGroups(local, profileID: profile.id) {
+                    lastUpdated = Date()
+                    lastError = nil
+                    return
+                }
             }
             lastError = error.localizedDescription
             isLocalFallback = false
@@ -855,12 +915,20 @@ final class ProxyStore: ObservableObject {
     ///      pull() -> load_buf() -> apply(): nodes.store +
     ///      route.moved + request_refresh), so NO config.apply is
     ///      needed afterwards.
-    ///   3. Re-check the names. Still missing → .stillMissing
-    ///      with the banner text: the provider.update error
-    ///      verbatim when the update failed, or "update succeeded
-    ///      but the names are still absent" when it did not.
-    ///      The test still runs afterwards: loaded nodes get real
-    ///      results, missing ones return -2.
+    ///   3. Re-check the names against a fresh inventory. Still
+    ///      missing → .stillMissing with a precise banner, not the
+    ///      old generic "更新成功但仍没有…请检查订阅": the provider
+    ///      update error verbatim when the update failed; when it
+    ///      did not throw, the provider name(s) updated plus what
+    ///      each one actually holds now (live count + a sample of
+    ///      real names) — so a rename upstream reads as a rename,
+    ///      and an empty provider reads as empty. When NO provider
+    ///      was updated at all (no provider owns the names and
+    ///      provider.list is empty — e.g. a literal-proxy config
+    ///      with no proxy-providers), the banner says exactly that
+    ///      instead of claiming a successful update that never
+    ///      happened. The test still runs afterwards: loaded nodes
+    ///      get real results, missing ones return -2.
     /// Sample mode skips this entirely (its data is fake).
     private func ensureProvidersLoaded(for names: [String], useAppCore: Bool) async -> ProviderPreload {
         guard client.mode == .live else { return .ready(updated: []) }
@@ -910,7 +978,17 @@ final class ProxyStore: ObservableObject {
                 updateErrors.append((provider, error.localizedDescription))
             }
         }
-        guard let stillMissing = await missingLoadedNames(names), !stillMissing.isEmpty else {
+        // Re-check with a fresh inventory (one proxy.groups call):
+        // it says which names are still missing AND what each
+        // updated provider actually holds now — the two facts the
+        // old generic "更新成功但仍没有" text never had. When the
+        // re-check itself fails, claim nothing about the update:
+        // the test below surfaces a dead channel on its own.
+        guard let after = await loadedInventory() else {
+            return .ready(updated: updated)
+        }
+        let stillMissing = Set(names).subtracting(after.loaded)
+        guard !stillMissing.isEmpty else {
             return .ready(updated: updated)
         }
         if !updateErrors.isEmpty {
@@ -922,8 +1000,25 @@ final class ProxyStore: ObservableObject {
         }
         let shown = stillMissing.sorted().prefix(3).joined(separator: "、")
         let shownSuffix = stillMissing.count > 3 ? "…" : ""
+        if updated.isEmpty {
+            // Nothing was updated at all: no row attributes the
+            // missing names to a provider, and provider.list came
+            // back empty, so the update loop ran zero times. The
+            // old text still printed "提供方更新成功" here — a
+            // success that never happened. Say so, with whatever
+            // the inventory shows, if anything.
+            let actual = describeProviderContents(after.namesByProvider)
+            let actualSuffix = actual.isEmpty ? "" : "（\(actual)）"
+            return .stillMissing(
+                reason: "没有可更新的提供方：核心的提供方列表为空，刚才没有更新任何提供方。核心已加载的配置里仍没有这 \(stillMissing.count) 个节点（\(shown)\(shownSuffix)）\(actualSuffix)，测速会失败（-2）。当前配置可能没有 proxy-providers（节点直接写在配置文件里），请检查订阅内容或配置文件。",
+                updated: updated)
+        }
+        // Updated, still missing: name the providers and what each
+        // one actually holds now, so the user can see whether the
+        // subscription renamed the nodes or the provider is empty.
+        let actual = describeProviderContents(after.namesByProvider, only: Set(updated))
         return .stillMissing(
-            reason: "提供方更新成功，但核心已加载的配置里仍没有这 \(stillMissing.count) 个节点（\(shown)\(shownSuffix)）。可能是订阅内容已变更或名字不一致，请检查订阅。",
+            reason: "已更新提供方：\(updated.sorted().joined(separator: "、"))，但核心已加载的配置里仍没有这 \(stillMissing.count) 个节点（\(shown)\(shownSuffix)）。\(actual)。订阅里的节点名可能已变更，请对照提供方实际的节点名检查订阅。",
             updated: updated)
     }
 
@@ -1116,16 +1211,23 @@ final class ProxyStore: ObservableObject {
                 // failure until proven otherwise: check whether the loaded
                 // config even knows these names.
                 let names = targets.map { $0.proxyName }
-                let missing = await missingLoadedNames(names)
-                if let missing, !missing.isEmpty {
-                    let shown = missing.sorted().prefix(3).joined(separator: "、")
-                    let shownSuffix = missing.count > 3 ? "…" : ""
-                    noteTestMessage("测速通道异常：核心已加载的配置里没有这 \(missing.count) 个节点（\(shown)\(shownSuffix)），很可能是订阅提供方还没加载。请先启动一次 VPN 再回来测速，仍失败请把日志导出发来定位。")
-                    let missingShown = missing.sorted().prefix(8).joined(separator: "、")
-                    channelNote = "核心缺少节点 \(missingShown)（共 \(missing.count) 个）；提供方缓存见启动诊断"
-                } else if missing != nil {
-                    noteTestMessage("测速通道异常：\(targets.count) 个节点全部测速失败（-2），核心里有这些节点，但拨测全部失败——可能是节点已失效或当前网络不通。请检查订阅是否过期，或把日志导出发来定位。")
-                    channelNote = "核心里有这些节点，但 delay 拨测全部返回 -2"
+                if let inventory = await loadedInventory() {
+                    let missing = Set(names).subtracting(inventory.loaded)
+                    if !missing.isEmpty {
+                        let shown = missing.sorted().prefix(3).joined(separator: "、")
+                        let shownSuffix = missing.count > 3 ? "…" : ""
+                        noteTestMessage("测速通道异常：核心已加载的配置里没有这 \(missing.count) 个节点（\(shown)\(shownSuffix)），很可能是订阅提供方还没加载。请先启动一次 VPN 再回来测速，仍失败请把日志导出发来定位。")
+                        let missingShown = missing.sorted().prefix(8).joined(separator: "、")
+                        // The report line names what the providers
+                        // actually hold, so the exported log shows
+                        // the rename/empty-provider mismatch instead
+                        // of only the gap.
+                        let actual = describeProviderContents(inventory.namesByProvider)
+                        channelNote = "核心缺少节点 \(missingShown)（共 \(missing.count) 个）" + (actual.isEmpty ? "；提供方缓存见启动诊断" : "；\(actual)")
+                    } else {
+                        noteTestMessage("测速通道异常：\(targets.count) 个节点全部测速失败（-2），核心里有这些节点，但拨测全部失败——可能是节点已失效或当前网络不通。请检查订阅是否过期，或把日志导出发来定位。")
+                        channelNote = "核心里有这些节点，但 delay 拨测全部返回 -2"
+                    }
                 } else {
                     noteTestMessage("测速通道异常：\(targets.count) 个节点全部测速失败（-2），且无法确认核心是否加载了这些节点（查询失败）。请把日志导出发来定位。")
                     channelNote = "全部 -2；核心节点查询失败，无法区分通道故障与节点故障"

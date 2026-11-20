@@ -271,7 +271,19 @@ struct ProxiesView: View {
             .sheet(item: $detailNode) { node in
                 NodeDetailView(node: node, testURL: detailTestURL)
             }
-            .task { if proxyStore.groups.isEmpty { await proxyStore.refresh(activeProfile: profileStore.activeProfile) } }
+            .task {
+                // The refresh's VPN-off fallback scans the active
+                // profile's YAML; the scan itself runs off the main
+                // thread (ProxyStore.refresh falls back via
+                // Task.detached). Deferring one runloop turn here
+                // additionally guarantees the static title and the
+                // loading state render before any of that starts.
+                if proxyStore.groups.isEmpty {
+                    DispatchQueue.main.async {
+                        Task { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
+                    }
+                }
+            }
             .onChange(of: profileStore.activeProfile?.id) { _, _ in
                 Task { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
             }

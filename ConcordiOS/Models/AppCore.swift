@@ -516,13 +516,19 @@ final class AppCore {
 
     /// Copies the provider cache (providers/ + rules/ + proxies/)
     /// from the extension core's home (App Group container) into
-    /// this core's home, before config.apply. Only files that are
-    /// missing here, or older/smaller than the source, are copied
-    /// — a newer file here (e.g. written by this core's own pull)
-    /// is never downgraded. Hidden files and partial temp files
-    /// are skipped. Best-effort: the caller still boots when the
-    /// source has no cache at all (the core then pulls over the
-    /// network); the report says so honestly.
+    /// this core's home, before config.apply. A file is copied
+    /// when it is missing here or its CONTENT differs from the
+    /// source — the old size+mtime shortcut could keep a stale
+    /// copy: the app core's own pulls touch_file() the local copy
+    /// on every unchanged update, so it can look newer than the
+    /// extension's fresher file while holding older content (same
+    /// size, e.g. renamed nodes), and the copy was then skipped.
+    /// Content equality is the only safe skip; provider files are
+    /// small YAML, so one extra read per file is cheap. Hidden
+    /// files and partial temp files are skipped. Best-effort: the
+    /// caller still boots when the source has no cache at all (the
+    /// core then pulls over the network); the report says so
+    /// honestly.
     static func seedProviderCache(appHome: URL, groupHome: URL?) -> ProviderCacheSeed.Report {
         var report = ProviderCacheSeed.Report()
         guard let groupHome else {
@@ -536,7 +542,7 @@ final class AppCore {
                 report.sourceMissingDirs.append(dir)
                 continue
             }
-            guard let enumerator = fm.enumerator(at: sourceDir, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]) else { continue }
+            guard let enumerator = fm.enumerator(at: sourceDir, includingPropertiesForKeys: [.isRegularFileKey]) else { continue }
             for case let source as URL in enumerator {
                 let name = source.lastPathComponent
                 guard !name.hasPrefix("."), !name.contains(".tmp-") else { continue }
@@ -544,19 +550,14 @@ final class AppCore {
                 let rel = source.path.replacingOccurrences(of: sourceDir.path + "/", with: "\(dir)/")
                 let dest = appHome.appendingPathComponent(rel)
                 do {
+                    let data = try Data(contentsOf: source)
                     if fm.fileExists(atPath: dest.path),
-                       let srcAttrs = try? fm.attributesOfItem(atPath: source.path),
-                       let dstAttrs = try? fm.attributesOfItem(atPath: dest.path),
-                       let srcSize = srcAttrs[.size] as? NSNumber,
-                       let dstSize = dstAttrs[.size] as? NSNumber,
-                       let srcDate = srcAttrs[.modificationDate] as? Date,
-                       let dstDate = dstAttrs[.modificationDate] as? Date,
-                       dstSize.intValue == srcSize.intValue, dstDate >= srcDate {
+                       let dstData = try? Data(contentsOf: dest),
+                       dstData == data {
                         report.alreadyPresent.append(rel)
                         continue
                     }
                     try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    let data = try Data(contentsOf: source)
                     let temp = dest.deletingLastPathComponent()
                         .appendingPathComponent(".\(name).tmp-\(UUID().uuidString)")
                     do {
@@ -584,10 +585,19 @@ final class AppCore {
     /// loaded / name mismatch), so its -2 is a channel failure,
     /// not a dead node. The core must already be started.
     func loadedProxyNames() async throws -> Set<String> {
-        let groups = try await sendRequest(method: "proxy.groups", params: [:], resultType: ConcordProxyGroups.self, timeoutSeconds: 15)
+        let groups = try await loadedProxyGroups()
         var names = Set(groups.nodes.map { $0.name })
         names.formUnion(groups.groups.map { $0.name })
         return names
+    }
+
+    /// The full proxy.groups response behind loadedProxyNames —
+    /// ProxyStore builds its per-provider inventory from it
+    /// (nodes carry their provider), so the "names still missing"
+    /// banner can name what each provider actually holds. The
+    /// core must already be started.
+    func loadedProxyGroups() async throws -> ConcordProxyGroups {
+        try await sendRequest(method: "proxy.groups", params: [:], resultType: ConcordProxyGroups.self, timeoutSeconds: 15)
     }
 
     // MARK: Delay test

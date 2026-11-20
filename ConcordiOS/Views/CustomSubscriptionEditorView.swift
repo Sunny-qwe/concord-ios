@@ -84,16 +84,26 @@ struct CustomSubscriptionEditorView: View {
     @State private var editingRuleProvider: CustomProvider?
     @State private var editingRule: CustomRule?
     @State private var message: String?
+    /// Node names read from the profile files, loaded once off the
+    /// main thread (see the .task below).
+    @State private var fileCandidates: [String] = []
 
+    /// The subscription being edited. The store loads its file
+    /// synchronously in init, so the real name is already there for
+    /// the navigation title on the first frame — no .task round-trip
+    /// that first shows the "自定义订阅" fallback and then flips.
     private var sub: CustomSubscription {
-        draft ?? CustomSubscription(id: subscriptionID, name: "自定义订阅")
+        draft ?? store.subscriptions.first(where: { $0.id == subscriptionID })
+            ?? CustomSubscription(id: subscriptionID, name: "自定义订阅")
     }
 
     /// Names a group member can pick: custom nodes, other groups,
-    /// providers and the built-in targets.
+    /// providers and the built-in targets. The file scan (every
+    /// profile YAML) lives in fileCandidates, loaded once off the
+    /// main thread; only the cheap draft-dependent names are merged
+    /// here, so opening a form sheet never re-scans the files.
     private var memberCandidates: [String] {
-        var names = proxyStore.proxies.map { $0.name }
-        names.append(contentsOf: profileStore.profiles.flatMap { profileStore.localNodeNames(for: $0) })
+        var names = fileCandidates
         names.append(contentsOf: sub.groups.map { $0.name })
         names.append(contentsOf: sub.proxyProviders.map { $0.name })
         names.append(contentsOf: CustomGroup.reservedTargets)
@@ -274,9 +284,22 @@ struct CustomSubscriptionEditorView: View {
             }
         }
         .task {
-            if draft == nil {
-                draft = store.subscriptions.first(where: { $0.id == subscriptionID })
-            }
+            // The profile-file scan used to run inside
+            // memberCandidates on every body evaluation, stalling
+            // the first frame, and inside each form sheet's
+            // presentation. Snapshot the inputs on the main actor,
+            // scan off-thread, and write the result back to state:
+            // the title and the page render first, the candidate
+            // lists fill in (live, even if a sheet is already open).
+            let profiles = profileStore.profiles
+            let customNames = proxyStore.proxies.map { $0.name }
+            let storeRef = profileStore
+            let names = await Task.detached(priority: .userInitiated) {
+                var names = customNames
+                names.append(contentsOf: profiles.flatMap { storeRef.localNodeNames(for: $0) })
+                return names
+            }.value
+            fileCandidates = names
         }
         .onDisappear {
             saveDraft()

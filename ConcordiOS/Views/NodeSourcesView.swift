@@ -104,7 +104,20 @@ struct NodeSourcesView: View {
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "搜索节点名或类型")
         .task {
-            rebuildFromLocalFiles()
+            // Every profile YAML is scanned synchronously by
+            // localProxyGroups/localNodeNames; running that in this
+            // task's first (main-actor) segment stalled the push
+            // transition and the nav title. Snapshot the inputs on
+            // the main actor, scan off-thread, assign back on the
+            // main actor. The page starts with its empty state and
+            // fills in when the scan lands.
+            let profiles = profileStore.profiles
+            let customs = customProxyStore.proxies
+            let raws = customProxyStore.rawProxies
+            let storeRef = profileStore
+            sections = await Task.detached(priority: .userInitiated) {
+                Self.buildSections(profiles: profiles, customProxies: customs, rawProxies: raws, store: storeRef)
+            }.value
         }
     }
 
@@ -124,15 +137,17 @@ struct NodeSourcesView: View {
     /// plus the locally added custom nodes. Types and providers
     /// come from the same offline parse (proxy-provider nodes are
     /// resolved from their files / the core's cached copies).
-    private func rebuildFromLocalFiles() {
-        var built: [NodeSourceSection] = profileStore.profiles.map { profile in
+    /// Pure file work (no @Published state touched), so it runs in
+    /// a detached task — see the .task above.
+    private static func buildSections(profiles: [Profile], customProxies: [CustomProxy], rawProxies: [JSONValue], store: ProfileStore) -> [NodeSourceSection] {
+        var built: [NodeSourceSection] = profiles.map { profile in
             let nodes: [NodeEntry]
-            if let parsed = profileStore.localProxyGroups(for: profile) {
+            if let parsed = store.localProxyGroups(for: profile) {
                 nodes = parsed.nodes.map {
                     NodeEntry(name: $0.name, type: $0.type == "unknown" ? "" : $0.type, provider: $0.provider)
                 }
             } else {
-                nodes = profileStore.localNodeNames(for: profile).map {
+                nodes = store.localNodeNames(for: profile).map {
                     NodeEntry(name: $0, type: "")
                 }
             }
@@ -143,8 +158,8 @@ struct NodeSourcesView: View {
                 nodes: nodes
             )
         }
-        let customNames = customProxyStore.proxies.map { NodeEntry(name: $0.name, type: $0.type) }
-            + customProxyStore.rawProxies.compactMap { value -> NodeEntry? in
+        let customNames = customProxies.map { NodeEntry(name: $0.name, type: $0.type) }
+            + rawProxies.compactMap { value -> NodeEntry? in
                 guard let name = value.objectValue?["name"]?.stringValue else { return nil }
                 return NodeEntry(name: name, type: value.objectValue?["type"]?.stringValue ?? "")
             }
@@ -156,7 +171,7 @@ struct NodeSourcesView: View {
                 nodes: customNames
             ))
         }
-        sections = built.filter { !$0.nodes.isEmpty }
+        return built.filter { !$0.nodes.isEmpty }
     }
 
     /// Merge the core's convert.subscription output: adds the node

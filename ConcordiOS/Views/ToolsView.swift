@@ -5,8 +5,10 @@ import SwiftUI
 // The reference Tools page is three plain white cards with grey
 // outline icons and 17pt semibold titles — no coloured tiles, no
 // subtitles:
-//   (no header)  请求 / DNS查询 / 资源 / 日志（仅当 常规 -> 记录日志
-//                开启时显示，见 FlClash ToolsView 的 openLogs 门控）
+//   (no header)  请求 / DNS查询 / 资源 / 日志（v0.2.40 起始终显示；
+//                此前仅当 常规 -> 记录日志开启时显示，见 FlClash
+//                ToolsView 的 openLogs 门控——用户找不到日志入口，
+//                故改为常显；日志本身一直由 LogStore 收集，与该开关无关）
 //   设置         语言（值 "默认"）/ 主题 / 字体 / 应用图标 / 图标集 /
 //                备份与恢复 / 可靠性中心 / 进阶配置 / MITM模块 /
 //                MITM证书设置 / 常规 / 本地网络设置 / 回环保护
@@ -99,10 +101,8 @@ struct ToolsView: View {
                         ToolRow(icon: "server.rack", title: "tools.dns".l10n) { navPath.append(.dns) }
                         Divider().padding(.leading, 54)
                         ToolRow(icon: "archivebox", title: "tools.resources".l10n) { navPath.append(.resources) }
-                        if settingsStore.openLogs {
-                            Divider().padding(.leading, 54)
-                            ToolRow(icon: "doc.text", title: "tools.logs".l10n) { navPath.append(.logs) }
-                        }
+                        Divider().padding(.leading, 54)
+                        ToolRow(icon: "doc.text", title: "tools.logs".l10n) { navPath.append(.logs) }
                     }
                     toolSection(header: "tools.section.settings".l10n) {
                         Button { navPath.append(.language) } label: {

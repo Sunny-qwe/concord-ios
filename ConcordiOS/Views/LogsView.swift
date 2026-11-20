@@ -17,6 +17,12 @@ struct LogsView: View {
     @State private var showExportError = false
     @State private var showCopiedAlert = false
     @State private var tab = LogsTab.logs
+    /// Persisted diagnostics (v0.2.40): AppCore writes the boot
+    /// report and the last delay-test report to disk; they do not
+    /// need the tunnel running, so the Logs page shows them while
+    /// the VPN is off and the live list is empty.
+    @State private var bootReport: String?
+    @State private var delayReport: String?
 
     var body: some View {
         // No NavigationStack here on purpose: this page is pushed
@@ -68,6 +74,9 @@ struct LogsView: View {
 
                     if logStore.filtered.isEmpty {
                         ContentUnavailableView("暂无日志", systemImage: "doc.text", description: Text("日志级别或搜索条件可能过滤掉了全部条目"))
+                        ScrollView {
+                            persistedDiagnosticsView
+                        }
                     } else {
                         ScrollViewReader { proxy in
                             List(logStore.filtered) { entry in
@@ -192,7 +201,10 @@ struct LogsView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Task {
-                            if tab == .logs { await logStore.refresh() } else { await eventStore.refresh() }
+                            if tab == .logs {
+                                loadPersistedReports()
+                                await logStore.refresh()
+                            } else { await eventStore.refresh() }
                         }
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -215,7 +227,10 @@ struct LogsView: View {
                 Text(exportError ?? "未知错误")
             }
             .refreshable {
-                if tab == .logs { await logStore.refresh() } else { await eventStore.refresh() }
+                if tab == .logs {
+                    loadPersistedReports()
+                    await logStore.refresh()
+                } else { await eventStore.refresh() }
             }
             // Live feed (audit B26/B35): poll the active tab every
             // 1 s like FlClash, only while this page is visible and
@@ -225,6 +240,7 @@ struct LogsView: View {
             // view gone. New rows auto-scroll via the onChange
             // handlers on each list.
             .task(id: tab) {
+                loadPersistedReports()
                 if tab == .logs {
                     if logStore.entries.isEmpty { await logStore.refresh() }
                 } else if eventStore.entries.isEmpty {
@@ -237,6 +253,51 @@ struct LogsView: View {
                     if tab == .logs { await logStore.refresh() } else { await eventStore.refresh() }
                 }
             }
+    }
+
+    /// Reads the persisted diagnostics AppCore wrote to disk
+    /// (boot report + last delay-test report). They do not need
+    /// the tunnel running, so the Logs page can show them while
+    /// the VPN is off and the live list is empty.
+    private func loadPersistedReports() {
+        bootReport = AppCore.lastBootReportText()
+        delayReport = AppCore.lastDelayTestReportText()
+    }
+
+    /// Persisted diagnostics (v0.2.40): the live list is empty
+    /// when the VPN is off — the 1 s poll is gated on
+    /// TunnelManager.isRunning — so show the reports AppCore
+    /// already wrote to disk below the empty state instead of a
+    /// blank page. "暂无记录" when a report was never written.
+    @ViewBuilder
+    private var persistedDiagnosticsView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            diagnosticsBlock(title: "应用内核心启动诊断", text: bootReport)
+            diagnosticsBlock(title: "最近一次测速诊断", text: delayReport)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func diagnosticsBlock(title: String, text: String?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            if let text = text, !text.isEmpty {
+                Text(text)
+                    .font(.system(size: 10, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 8))
+            } else {
+                Text("暂无记录")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Writes the bundled log export to a .txt file and opens the

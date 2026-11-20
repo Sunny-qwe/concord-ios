@@ -13,6 +13,11 @@ struct VisualConfigView: View {
     @StateObject private var customStore = CustomSubscriptionStore()
     @State private var createdSubscriptionID: UUID?
     @State private var showCreatedEditor = false
+    /// Offline node count for the "当前配置" section, loaded off
+    /// the main thread (see the .task below). It used to call
+    /// localNodeNames — a whole-YAML scan — inline in body, on
+    /// every body evaluation, stalling the first frame.
+    @State private var localNodeCount: Int?
 
     private var active: Profile? { profileStore.activeProfile }
 
@@ -26,7 +31,7 @@ struct VisualConfigView: View {
                         LabeledContent("代理组", value: "\(inspect.proxyGroups)")
                         LabeledContent("规则", value: "\(inspect.rules)")
                     } else {
-                        LabeledContent("节点", value: "\(profileStore.localNodeNames(for: active).count)（本地文件）")
+                        LabeledContent("节点", value: localNodeCount.map { "\($0)（本地文件）" } ?? "…")
                     }
                 }
             } else {
@@ -91,6 +96,17 @@ struct VisualConfigView: View {
         .font(.system(size: 13, weight: .semibold))
         .navigationTitle("可视化配置")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: active?.id) {
+            // Only needed while the core's inspect snapshot has not
+            // arrived (the branch above); the scan runs off-thread
+            // and the count fills in when it lands.
+            localNodeCount = nil
+            guard let active, profileStore.inspect == nil else { return }
+            let storeRef = profileStore
+            localNodeCount = await Task.detached(priority: .userInitiated) {
+                storeRef.localNodeNames(for: active).count
+            }.value
+        }
         .navigationDestination(isPresented: $showCreatedEditor) {
             if let createdSubscriptionID {
                 CustomSubscriptionEditorView(subscriptionID: createdSubscriptionID)

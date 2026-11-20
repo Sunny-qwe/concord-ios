@@ -164,7 +164,9 @@ struct SettingsView: View {
                             Text(level.rawValue).tag(level)
                         }
                     }
-                    Toggle("记录日志（工具页显示「日志」）", isOn: $settingsStore.openLogs)
+                    // v0.2.40: the "记录日志" toggle is gone — it only
+                    // gated the Tools "日志" row, which is now always
+                    // shown (users could not find the log page).
                     Text("启动时自动连接：打开应用后自动启动 VPN（需已有配置）。校验订阅证书：关闭后订阅下载不再验证服务器证书（自签证书的订阅源可用）。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
@@ -594,7 +596,6 @@ struct SettingsView: View {
                 settingsStore.save()
             }
             .onChange(of: settingsStore.autoCheckUpdate) { _, _ in settingsStore.save() }
-            .onChange(of: settingsStore.openLogs) { _, _ in settingsStore.save() }
             .task {
                 if client.mode == .live {
                     await settingsStore.refreshMitmStatus()

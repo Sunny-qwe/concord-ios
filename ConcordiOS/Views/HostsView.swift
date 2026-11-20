@@ -23,7 +23,7 @@ struct HostsView: View {
                 // FlClash MapEditView: values edit in place. Each
                 // row is two text fields; leaving a field (submit)
                 // or tapping 保存 writes hosts.json.
-                ForEach(hosts.indices, id: \.self) { index in
+                ForEach(Array(hosts.indices), id: \.self) { index in
                     HStack {
                         TextField("域名", text: Binding(
                             get: { hosts[index].host },

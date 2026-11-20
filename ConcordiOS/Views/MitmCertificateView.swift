@@ -282,6 +282,16 @@ struct MitmHostnameEditorView: View {
         hostnames.filter { !Self.isValidHostname($0) }
     }
 
+    /// Per-row Binding, extracted so the compiler does not have to
+    /// type-check the inline Binding inside the List body (that
+    /// expression was too complex and timed out type-checking).
+    private func hostnameBinding(for index: Int) -> Binding<String> {
+        Binding(
+            get: { hostnames[index] },
+            set: { hostnames[index] = $0 }
+        )
+    }
+
     var body: some View {
         List {
             Section {
@@ -295,12 +305,9 @@ struct MitmHostnameEditorView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                ForEach(hostnames.indices, id: \.self) { index in
+                ForEach(Array(hostnames.indices), id: \.self) { index in
                     HStack {
-                        TextField("域名，如 *.example.com", text: Binding(
-                            get: { hostnames[index] },
-                            set: { hostnames[index] = $0 }
-                        ))
+                        TextField("域名，如 *.example.com", text: hostnameBinding(for: index))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .foregroundStyle(Self.isValidHostname(hostnames[index]) ? .primary : .red)

@@ -1862,9 +1862,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let congestionController = tunOverrides?["congestion-controller"] as? String
                 ?? json["congestion-controller"] as? String
             let loopbackDevice = LoopbackNetworkSettings.isEnabled(in: json)
-            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, congestionController: congestionController, loopbackDevice: loopbackDevice)
+            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, loopbackDevice: loopbackDevice, congestionController: congestionController)
         }
-        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true, congestionController: nil, loopbackDevice: false)
+        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true, loopbackDevice: false, congestionController: nil)
     }
 
     /// Parse a CIDR ("10.0.0.0/8" or "::1/128") into an excluded

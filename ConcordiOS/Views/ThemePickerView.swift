@@ -277,8 +277,38 @@ struct ThemePickerView: View {
                                 .foregroundStyle(mode == "规则" ? .white : Color(.label))
                         }
                     }
-                    Toggle("VPN 开关", isOn: $previewVpnOn)
-                        .tint(themeStore.accentColor)
+                    // NAGRAM-style VPN row (v0.2.46 ITEM 2): the
+                    // preview depicts the running state (its header
+                    // pill says 运行中), so it shows the blue shield
+                    // + "已连接" + an ON toggle. The toggle stays
+                    // decorative — bound to local $previewVpnOn
+                    // only, never wired to start/stop the VPN.
+                    // (VpnGlyphIcon is file-private to
+                    // DashboardView, so the preview uses the SF
+                    // shield.fill glyph: white shield on the same
+                    // blue flower badge.)
+                    HStack(spacing: 12) {
+                        ZStack {
+                            FlowerBadgeShape()
+                                .fill(Color.blue)
+                                .frame(width: 40, height: 40)
+                            Image(systemName: "shield.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                        .frame(width: 40, height: 40)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("VPN")
+                                .font(.system(size: 14, weight: .semibold))
+                            Text("已连接")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Toggle("", isOn: $previewVpnOn)
+                            .labelsHidden()
+                            .tint(.blue)
+                    }
                 }
                 .concordCard()
             }

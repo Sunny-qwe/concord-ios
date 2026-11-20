@@ -1064,10 +1064,13 @@ struct DashboardView: View {
     // MARK: - VPN card (FlClash network_takeover.dart VpnCard)
     //
     // Badge: AppGlyphs.vpn — a shield outline with a keyhole — drawn
-    // 22pt inside a 48pt badge (cookie6/blob when enabled, circle
-    // when disabled). Whole-card tap toggles (FlClash onTap); the
-    // switch keeps working (see V3 in the audit: ours actually
-    // toggles the tunnel, FlClash's iOS switch is a no-op).
+    // 22pt inside a 48pt badge. NAGRAM-style (v0.2.46 ITEM 2):
+    // solid blue circle + white glyph while the VPN is running,
+    // the previous grey circle + grey glyph while it is off.
+    // Whole-card tap toggles (FlClash onTap); the switch keeps
+    // working (see V3 in the audit: ours actually toggles the
+    // tunnel, FlClash's iOS switch is a no-op). The switch is
+    // tinted iOS blue, like NAGRAM.
 
     /// The VPN card plus its banners (D5): the disconnect / crash-loop
     /// / TUN-restart banners live HERE, on the main VPN card, where
@@ -1198,7 +1201,12 @@ struct DashboardView: View {
                 set: { _ in Task { await proxyStore.toggle() } }
             ))
             .labelsHidden()
-            .tint(ConcordTheme.accent)
+            // NAGRAM-style row (v0.2.46 ITEM 2): the switch is
+            // iOS blue, matching the NAGRAM screenshot — not the
+            // theme accent. Same start/stop path as the play
+            // button (proxyStore.toggle()); start errors land in
+            // proxyStore.startError.
+            .tint(.blue)
         }
         .concordCard(padding: 12)
         // The Toggle keeps its own tap (the inner control wins the
@@ -1847,17 +1855,63 @@ private struct VpnGlyphIcon: View {
     }
 }
 
-/// The VPN badge (FlClash network_takeover.dart VpnCard): 48pt,
-/// blob (cookie6-like) + accent when enabled, circle + tone when
-/// disabled, glyph 22pt centred.
+/// Scalloped flower badge (NAGRAM-style, v0.2.46 refinement):
+/// a circle whose radius is modulated by a cosine with 8 rounded
+/// lobes — the blue badge behind the shield glyph once the VPN is
+/// running (the NAGRAM reference uses the same flower for its VPN
+/// row badge and its pause button). Lobe depth is modest (6% of
+/// the radius) so it reads as a flower, not a gear. The path is
+/// scaled so the lobe TIPS touch the rect's edges — the badge's
+/// outer extent equals the frame, same as the circle it replaces.
+/// Internal (not private): ThemePickerView's preview row uses it
+/// too.
+struct FlowerBadgeShape: Shape {
+    /// Number of rounded lobes around the badge.
+    var lobes: Int = 8
+    /// Lobe depth as a fraction of the mean radius.
+    var depth: CGFloat = 0.06
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        // Tips must reach the rect's edges, so the mean radius is
+        // the half-size divided by (1 + depth).
+        let meanRadius = min(rect.width, rect.height) / 2 / (1 + depth)
+        let stepsPerLobe = 16
+        let totalSteps = lobes * stepsPerLobe
+        var path = Path()
+        for step in 0...totalSteps {
+            let angle = CGFloat(step) / CGFloat(totalSteps) * 2 * .pi
+            let radius = meanRadius * (1 + depth * cos(CGFloat(lobes) * angle))
+            let point = CGPoint(
+                x: center.x + radius * cos(angle),
+                y: center.y + radius * sin(angle)
+            )
+            if step == 0 {
+                path.move(to: point)
+            } else {
+                path.addLine(to: point)
+            }
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// The VPN badge (FlClash network_takeover.dart VpnCard): 48pt.
+/// NAGRAM-style (v0.2.46 ITEM 2, user-confirmed 2026-11-21):
+/// the blue shield appears ONLY while the VPN is running — a
+/// solid blue flower badge (FlowerBadgeShape) + white glyph.
+/// When the VPN is off the badge is exactly as before: a
+/// light-grey circle + grey glyph (AppGlyphs.vpn shield outline
+/// with keyhole, unchanged).
 private struct VpnBadge: View {
     let enabled: Bool
 
     var body: some View {
         ZStack {
             if enabled {
-                BlobShape()
-                    .fill(ConcordTheme.accent)
+                FlowerBadgeShape()
+                    .fill(Color.blue)
                     .frame(width: 48, height: 48)
                 VpnGlyphIcon(color: .white)
             } else {

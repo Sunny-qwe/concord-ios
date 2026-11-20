@@ -144,6 +144,71 @@ struct Profile: Identifiable, Codable {
     }
 }
 
+// MARK: - Rule-set repair plan (v0.2.46 ITEM 1)
+//
+// A repair plan for one missing rule-set (see the engine in
+// ProfileStore, "Rule-set repair"). `newText` is nil exactly
+// when the plan is unrepairable — nothing can be written from
+// such a plan; the sheet only shows its reason.
+
+/// One missing rule-set's repair plan. Identifiable so the
+/// Proxies page can present it with `.sheet(item:)`.
+struct RuleSetRepairPlan: Identifiable {
+    enum Kind: Equatable {
+        /// Inferred from `templateProvider`; `siblingCount` is
+        /// how many siblings share the winning template (the
+        /// template sibling included).
+        case complete(templateProvider: String, siblingCount: Int)
+        /// `ruleCount` RULE-SET lines will be removed.
+        case delete(ruleCount: Int)
+        case unrepairable
+    }
+
+    let id = UUID()
+    let missingName: String
+    let kind: Kind
+    /// Exact lines to add (complete) or remove (delete); empty
+    /// when unrepairable. Shown verbatim in the confirmation.
+    let previewLines: [String]
+    /// Full new file text; nil when unrepairable.
+    let newText: String?
+    /// One-line explanation shown above the preview.
+    let summary: String
+
+    var isRepairable: Bool { newText != nil }
+
+    var previewTitle: String {
+        switch kind {
+        case .complete:
+            return "将追加到当前订阅的 rule-providers："
+        case .delete:
+            return "将从当前订阅的 rules 里删除："
+        case .unrepairable:
+            return ""
+        }
+    }
+
+    var confirmTitle: String {
+        switch kind {
+        case .complete: return "补全并重新应用"
+        case .delete: return "删除规则并重新应用"
+        case .unrepairable: return ""
+        }
+    }
+
+    /// Banner line after a successful repair + re-test.
+    var successMessage: String {
+        switch kind {
+        case .complete(let template, let count):
+            return "已补全规则集「\(missingName)」的定义（参照「\(template)」等 \(count) 个同类提供方），配置已重新应用，测速已恢复。"
+        case .delete(let count):
+            return "已删除引用规则集「\(missingName)」的 \(count) 条规则，配置已重新应用，测速已恢复。"
+        case .unrepairable:
+            return ""
+        }
+    }
+}
+
 final class ProfileStore: ObservableObject {
     @Published var profiles: [Profile] = []
     @Published var statusMessage = "尚未导入订阅"
@@ -1422,6 +1487,297 @@ final class ProfileStore: ObservableObject {
             return String(value.dropFirst().dropLast())
         }
         return value
+    }
+
+    // MARK: - Rule-set repair (v0.2.46 ITEM 1)
+    //
+    // The core refuses the WHOLE config at compile time when a
+    // rule references a rule-set no `rule-providers:` entry
+    // defines ("rules[0] [RULE-SET, Apple, …] error: rule set
+    // [Apple] not found", upstream crates/config/src/profile.rs).
+    // The delay test then cannot run at all (AppCoreError
+    // .configApplyFailed). This engine builds a repair plan for
+    // the ACTIVE profile's YAML — never applied automatically,
+    // never written without the user's confirmation (the Proxies
+    // banner offers it, the sheet shows the exact lines,
+    // ProxyStore applies it through updateProfileFile).
+    //
+    // COMPLETION (primary): the missing definition is inferred
+    // from the profile's other rule-providers. Siblings are
+    // grouped by (behavior, URL template, path template,
+    // interval) after the sibling's own name is replaced by a
+    // placeholder; the most common combination wins, but only
+    // on a strict majority — a tie or a scatter means "no
+    // pattern", and the plan falls back to DELETE. The new block
+    // copies the template sibling's field lines verbatim (full
+    // fidelity: type, format, proxy, filter, … — not just the
+    // four grouped fields), with the missing name substituted
+    // for the sibling's name in the header and in every field
+    // value that contains it (URL + path), preserving the
+    // siblings' indent style and quoting.
+    // DELETE (fallback): when no pattern can be inferred (no
+    // section, flow-style section, zero siblings, no majority),
+    // remove the RULE-SET lines that reference the missing set
+    // from `rules:` (block lines and quoted lines alike).
+    // Everything is line-based and preserves the rest of the
+    // file byte-for-byte; a section the parser cannot read
+    // safely yields .unrepairable with the reason, and nothing
+    // is written. A flow-style provider entry (`  Name: {…}`)
+    // is simply skipped by the parser (its fields are never
+    // guessed at); a mapping-style sibling next to it can still
+    // serve as the template.
+
+    /// The missing rule-set name in a core error, if it names
+    /// one: "… rule set [Apple] not found". Nil for any other
+    /// error — the repair offer only appears for this exact
+    /// failure.
+    static func missingRuleSetName(from message: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: #"rule set \[([^\]]+)\] not found"#),
+              let match = regex.firstMatch(in: message, range: NSRange(message.startIndex..., in: message)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: message) else { return nil }
+        let name = String(message[range]).trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
+    }
+
+    /// Builds the repair plan for one profile's file. Nil only
+    /// when the file cannot be read at all; an unreadable
+    /// section or an uninferable pattern still returns a plan
+    /// (delete or unrepairable with the reason).
+    func ruleSetRepairPlan(for profile: Profile, missingName: String) -> RuleSetRepairPlan? {
+        guard let url = fileURL(for: profile),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return Self.ruleSetRepairPlan(text: text, missingName: missingName)
+    }
+
+    /// Pure core: completion first, delete fallback,
+    /// unrepairable last. Line-based; the rest of the file is
+    /// preserved byte-for-byte.
+    static func ruleSetRepairPlan(text: String, missingName: String) -> RuleSetRepairPlan {
+        let lines = text.components(separatedBy: "\n")
+        // --- Completion ---
+        var completionBlocker: String? = nil
+        if let section = topLevelSection(named: "rule-providers", in: lines) {
+            if section.isFlowStyle {
+                completionBlocker = "rule-providers 是单行 flow 写法，无法安全补全"
+            } else {
+                let entries = ruleProviderEntries(in: lines, section: section)
+                if entries.contains(where: { $0.name == missingName }) {
+                    completionBlocker = "「\(missingName)」已在 rule-providers 中定义，无法再补全"
+                } else if entries.isEmpty {
+                    completionBlocker = "rule-providers 一节是空的，没有可参照的提供方"
+                } else {
+                    let pool = entries.filter { !$0.fieldLines.isEmpty }
+                    if pool.isEmpty {
+                        completionBlocker = "现有的提供方都没有字段，无法推断定义"
+                    } else {
+                        var groups: [String: [RuleProviderEntry]] = [:]
+                        for entry in pool {
+                            groups[templateKey(for: entry.fields, name: entry.name), default: []].append(entry)
+                        }
+                        if let winners = groups.values.max(by: { $0.count < $1.count }),
+                           winners.count * 2 > pool.count,
+                           let template = winners.first {
+                            let headerLine = lines[template.headerIndex]
+                                .replacingOccurrences(of: template.name, with: missingName)
+                            let fieldLines = template.fieldLines.map { raw -> String in
+                                // Substitute only in the value part
+                                // (after the first colon): a key never
+                                // holds the provider name, and a nested
+                                // list item without a colon is left
+                                // untouched rather than guessed at.
+                                guard let colon = raw.firstIndex(of: ":") else { return raw }
+                                let prefix = raw[..<colon]
+                                let valuePart = raw[raw.index(after: colon)...]
+                                return String(prefix) + ":" + valuePart.replacingOccurrences(of: template.name, with: missingName)
+                            }
+                            let blockLines = [headerLine] + fieldLines
+                            var newLines = lines
+                            let insertAt = entries.last?.endIndex ?? section.endIndex
+                            newLines.insert(contentsOf: blockLines, at: insertAt)
+                            let behavior = template.fields["behavior"] ?? ""
+                            let behaviorNote = behavior.isEmpty ? "" : "（相同的 \(behavior) 模板）"
+                            return RuleSetRepairPlan(
+                                missingName: missingName,
+                                kind: .complete(templateProvider: template.name, siblingCount: winners.count),
+                                previewLines: blockLines,
+                                newText: newLines.joined(separator: "\n"),
+                                summary: "核心拒绝配置，因为规则引用了未定义的规则集「\(missingName)」。「\(template.name)」等 \(winners.count) 个同类提供方使用相同的地址模板\(behaviorNote)，已据此推断出定义。")
+                        } else {
+                            completionBlocker = "现有的 \(pool.count) 个提供方没有形成多数共识的地址模板（各用各的地址），无法推断「\(missingName)」的定义"
+                        }
+                    }
+                }
+            }
+        } else {
+            completionBlocker = "配置文件里没有 rule-providers 一节"
+        }
+        // --- Delete fallback ---
+        let blockerPrefix = completionBlocker ?? "无法推断「\(missingName)」的定义"
+        if let rulesSection = topLevelSection(named: "rules", in: lines) {
+            if rulesSection.isFlowStyle {
+                return RuleSetRepairPlan(
+                    missingName: missingName, kind: .unrepairable, previewLines: [], newText: nil,
+                    summary: "\(blockerPrefix)；且 rules 是单行 flow 写法，无法安全删除引用它的规则。请在配置编辑页手动处理。")
+            }
+            let matched = ruleSetRuleLineIndices(in: lines, section: rulesSection, missingName: missingName)
+            if !matched.isEmpty {
+                var newLines = lines
+                for index in matched.reversed() { newLines.remove(at: index) }
+                return RuleSetRepairPlan(
+                    missingName: missingName,
+                    kind: .delete(ruleCount: matched.count),
+                    previewLines: matched.map { lines[$0] },
+                    newText: newLines.joined(separator: "\n"),
+                    summary: "\(blockerPrefix)，改为删除引用「\(missingName)」的 \(matched.count) 条规则。")
+            }
+            return RuleSetRepairPlan(
+                missingName: missingName, kind: .unrepairable, previewLines: [], newText: nil,
+                summary: "\(blockerPrefix)；且 rules 里没有引用「\(missingName)」的 RULE-SET 规则行，无从删除。请在配置编辑页手动处理。")
+        }
+        return RuleSetRepairPlan(
+            missingName: missingName, kind: .unrepairable, previewLines: [], newText: nil,
+            summary: "\(blockerPrefix)；且配置文件里没有 rules 一节。请在配置编辑页手动处理。")
+    }
+
+    /// One top-level `name:` section: its header line, the line
+    /// just past it, and whether the header line itself carries
+    /// a value (flow style — not safely editable line-by-line).
+    private struct TopLevelSection {
+        let headerIndex: Int
+        let endIndex: Int
+        let isFlowStyle: Bool
+    }
+
+    private static func indent(of line: String) -> Int {
+        line.prefix(while: { $0 == " " || $0 == "\t" }).count
+    }
+
+    private static func topLevelSection(named name: String, in lines: [String]) -> TopLevelSection? {
+        for (index, rawLine) in lines.enumerated() {
+            let line = rawLine.replacingOccurrences(of: "\r", with: "")
+            guard indent(of: line) == 0 else { continue }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+            // A same-named key with more text after the colon
+            // (e.g. `rule-providers-extra:`) is not this section.
+            guard trimmed == "\(name):" || trimmed.hasPrefix("\(name): ") || trimmed.hasPrefix("\(name):\t") else { continue }
+            let rest = String(trimmed.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces)
+            let isFlow = !rest.isEmpty && !rest.hasPrefix("#")
+            var end = lines.count
+            for j in (index + 1)..<lines.count {
+                let next = lines[j].replacingOccurrences(of: "\r", with: "")
+                let nextTrimmed = next.trimmingCharacters(in: .whitespaces)
+                if nextTrimmed.isEmpty || nextTrimmed.hasPrefix("#") { continue }
+                if indent(of: next) == 0 { end = j; break }
+            }
+            return TopLevelSection(headerIndex: index, endIndex: end, isFlowStyle: isFlow)
+        }
+        return nil
+    }
+
+    /// One mapping-style `rule-providers:` entry: its `  Name:`
+    /// header plus its deeper field lines, in file order.
+    private struct RuleProviderEntry {
+        let name: String
+        let headerIndex: Int
+        let fieldLines: [String]
+        /// Index just past the last field line.
+        let endIndex: Int
+        let fields: [String: String]
+        let headerIndent: Int
+    }
+
+    private static func ruleProviderEntries(in lines: [String], section: TopLevelSection) -> [RuleProviderEntry] {
+        var entries: [RuleProviderEntry] = []
+        var currentName: String? = nil
+        var currentHeaderIndex = -1
+        var currentHeaderIndent = 2
+        var currentFields: [(lineIndex: Int, raw: String)] = []
+        func flush() {
+            guard let name = currentName else { return }
+            var fields: [String: String] = [:]
+            for pair in currentFields.compactMap({ yamlKeyValue($0.raw.trimmingCharacters(in: .whitespaces)) }) {
+                if fields[pair.key] == nil { fields[pair.key] = pair.value }
+            }
+            let endIndex = currentFields.last.map { $0.lineIndex + 1 } ?? (currentHeaderIndex + 1)
+            entries.append(RuleProviderEntry(
+                name: name, headerIndex: currentHeaderIndex,
+                fieldLines: currentFields.map(\.raw), endIndex: endIndex,
+                fields: fields, headerIndent: currentHeaderIndent))
+            currentName = nil
+            currentFields = []
+        }
+        for index in (section.headerIndex + 1)..<section.endIndex {
+            let raw = lines[index]
+            let line = raw.replacingOccurrences(of: "\r", with: "")
+            let lineIndent = indent(of: line)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            if currentName == nil {
+                // First header sets the section's header indent;
+                // a header is an indent->0 line ending in ":".
+                if lineIndent > 0, trimmed.hasSuffix(":"), !trimmed.hasPrefix("- ") {
+                    currentName = unquote(String(trimmed.dropLast()).trimmingCharacters(in: .whitespaces))
+                    currentHeaderIndex = index
+                    currentHeaderIndent = lineIndent
+                }
+                continue
+            }
+            if lineIndent == currentHeaderIndent, trimmed.hasSuffix(":"), !trimmed.hasPrefix("- ") {
+                flush()
+                currentName = unquote(String(trimmed.dropLast()).trimmingCharacters(in: .whitespaces))
+                currentHeaderIndex = index
+                continue
+            }
+            if lineIndent > currentHeaderIndent {
+                currentFields.append((lineIndex: index, raw: raw))
+            }
+            // A stray line at/below the header indent that is not
+            // a header is ignored, never treated as a field.
+        }
+        flush()
+        return entries
+    }
+
+    /// (behavior, URL template, path template, interval) with the
+    /// sibling's own name replaced by a placeholder in the
+    /// name-bearing values, so siblings that differ only by name
+    /// group together.
+    private static func templateKey(for fields: [String: String], name: String) -> String {
+        func templated(_ value: String) -> String {
+            value.replacingOccurrences(of: name, with: "§")
+        }
+        return [
+            templated(fields["behavior"] ?? ""),
+            templated(fields["url"] ?? ""),
+            templated(fields["path"] ?? ""),
+            fields["interval"] ?? "",
+        ].joined(separator: "\n")
+    }
+
+    /// Indices of the `rules:` lines that reference the missing
+    /// set: `- RULE-SET,<name>,…` block lines and quoted lines
+    /// (`- 'RULE-SET,<name>,…'` / `- "…"`). The name must match
+    /// exactly as the second comma field.
+    private static func ruleSetRuleLineIndices(in lines: [String], section: TopLevelSection, missingName: String) -> [Int] {
+        var matched: [Int] = []
+        for index in (section.headerIndex + 1)..<section.endIndex {
+            let trimmed = lines[index].replacingOccurrences(of: "\r", with: "").trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("- ") || trimmed == "-" else { continue }
+            var rest = trimmed == "-" ? "" : String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+            if (rest.hasPrefix("\"") && rest.hasSuffix("\"") && rest.count >= 2) ||
+                (rest.hasPrefix("'") && rest.hasSuffix("'") && rest.count >= 2) {
+                rest = String(rest.dropFirst().dropLast())
+            }
+            let fields = rest.split(separator: ",", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard fields.count >= 2,
+                  fields[0].uppercased() == "RULE-SET",
+                  fields[1] == missingName else { continue }
+            matched.append(index)
+        }
+        return matched
     }
 
     // MARK: Activate + inspect (config.validate / config.apply /

@@ -313,6 +313,143 @@ final class ProxyStore: ObservableObject {
         return true
     }
 
+    // MARK: - Rule-set repair (v0.2.46 ITEM 1)
+    //
+    // The Proxies banner's 修复 button: only when the current
+    // testError names a missing rule-set (AppCoreError
+    // .configApplyFailed — the core refused the WHOLE config
+    // because a rule references an undefined rule-set). Tapping
+    // builds a plan from the ACTIVE profile's YAML (ProfileStore:
+    // complete from sibling providers, else delete the
+    // referencing RULE-SET lines); the sheet shows the exact
+    // lines and the user confirms before anything is written.
+    // The write goes through ProfileStore.updateProfileFile (the
+    // normal update path: profile file + shared config.yaml +
+    // live apply when the tunnel runs); the re-apply is then
+    // verified — AppCore.ensureStarted while the VPN is off, a
+    // fresh delay test while it runs — and a further missing set
+    // named by the next error offers repair again from the same
+    // banner. Never automatic: no repair runs on boot, on
+    // update, or on any test — only this button, only after
+    // confirmation.
+
+    /// The missing rule-set name in the current banner error, if
+    /// it names one. Nil in sample mode (no real core) and for
+    /// every other failure — the 修复 button only appears for
+    /// this exact failure.
+    var missingRuleSetName: String? {
+        guard client.mode == .live, let message = testError else { return nil }
+        return ProfileStore.missingRuleSetName(from: message)
+    }
+
+    /// The repair plan awaiting confirmation in the sheet, if any.
+    @Published var ruleSetRepairOffer: RuleSetRepairPlan?
+    /// True while a confirmed repair is writing + re-applying.
+    @Published var isRepairingRuleSet = false
+
+    /// Builds the plan for the banner's error and presents the
+    /// confirmation sheet. Never writes anything.
+    @MainActor
+    func prepareRuleSetRepair() {
+        guard let missing = missingRuleSetName else { return }
+        guard let store = profileStore, let profile = store.activeProfile else {
+            noteTestMessage("没有已激活的订阅，无法修复缺失的规则集「\(missing)」")
+            return
+        }
+        guard let plan = store.ruleSetRepairPlan(for: profile, missingName: missing) else {
+            noteTestMessage("无法读取当前订阅「\(profile.name)」的文件，无法修复缺失的规则集「\(missing)」")
+            return
+        }
+        ruleSetRepairOffer = plan
+    }
+
+    /// Applies the confirmed plan, then re-applies + re-tests.
+    /// The sheet's confirm button calls this; the offer is
+    /// cleared first so the sheet dismisses while the work runs.
+    @MainActor
+    func confirmRuleSetRepair() async {
+        guard let offer = ruleSetRepairOffer, !isRepairingRuleSet else { return }
+        guard offer.isRepairable else {
+            // Unrepairable plans have no confirm button; this
+            // only fires if the sheet is dismissed another way.
+            ruleSetRepairOffer = nil
+            return
+        }
+        guard let store = profileStore, let profile = store.activeProfile else {
+            ruleSetRepairOffer = nil
+            noteTestMessage("没有已激活的订阅，无法修复")
+            return
+        }
+        ruleSetRepairOffer = nil
+        isRepairingRuleSet = true
+        defer { isRepairingRuleSet = false }
+        // Re-plan fresh: the file may have changed since the
+        // offer was built (subscription update, another edit). A
+        // plan that no longer matches is refused, never written
+        // stale.
+        guard let fresh = store.ruleSetRepairPlan(for: profile, missingName: offer.missingName),
+              fresh.isRepairable,
+              fresh.kind == offer.kind,
+              fresh.previewLines == offer.previewLines,
+              let newText = fresh.newText,
+              let newData = newText.data(using: .utf8) else {
+            noteTestMessage("配置文件在确认前已变化，请重新点「修复」再确认")
+            return
+        }
+        noteTestMessage("正在修复缺失的规则集「\(offer.missingName)」…")
+        // The normal update path: sanity check + profile file +
+        // shared config.yaml + live apply when the tunnel runs.
+        // lastError carries a live-apply / validate refusal
+        // verbatim; nil means the write + apply succeeded.
+        await store.updateProfileFile(profile, data: newData)
+        if let failure = store.lastError {
+            noteTestMessage(failure)
+            offerNextRepair(from: failure, excluding: offer.missingName, profile: profile)
+            return
+        }
+        if TunnelManager.shared.isRunning {
+            // Live apply already succeeded inside
+            // updateProfileFile; verify end to end with the test
+            // that failed.
+            await rerunLastTest()
+            if testError == nil {
+                noteTestMessage(offer.successMessage)
+            } else if let error = testError {
+                offerNextRepair(from: error, excluding: offer.missingName, profile: profile)
+            }
+            return
+        }
+        // VPN off: the app-side core is the one that refused the
+        // config — re-apply on it now (it restarts on the changed
+        // shared config.yaml). A refusal names the next missing
+        // set, if any; success re-runs the failed test.
+        do {
+            try await AppCore.shared.ensureStarted()
+        } catch {
+            noteTestError(error)
+            offerNextRepair(from: error.localizedDescription, excluding: offer.missingName, profile: profile)
+            return
+        }
+        await rerunLastTest()
+        if testError == nil {
+            noteTestMessage(offer.successMessage)
+        } else if let error = testError {
+            offerNextRepair(from: error, excluding: offer.missingName, profile: profile)
+        }
+    }
+
+    /// When an error after a repair names ANOTHER missing
+    /// rule-set, offer its repair from the same banner. The same
+    /// name again means the repair did not take — reported
+    /// verbatim, not looped.
+    private func offerNextRepair(from message: String, excluding repairedName: String, profile: Profile) {
+        guard let next = ProfileStore.missingRuleSetName(from: message),
+              next != repairedName,
+              let store = profileStore,
+              let plan = store.ruleSetRepairPlan(for: profile, missingName: next) else { return }
+        ruleSetRepairOffer = plan
+    }
+
     private func rerunLastTest() async {
         switch lastTest {
         case .all:

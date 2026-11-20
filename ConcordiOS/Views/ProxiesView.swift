@@ -232,6 +232,21 @@ struct ProxiesView: View {
                                     .accessibilityLabel("重新下载 GeoIP 数据库并重试测速")
                                 }
                             }
+                            // Rule-set repair (v0.2.46 ITEM 1): the
+                            // banner error names a rule-set the
+                            // config references but never defines,
+                            // so the core refused the whole config.
+                            // Tapping 修复 only builds the plan and
+                            // shows the exact lines; nothing is
+                            // written without confirmation.
+                            if let missing = proxyStore.missingRuleSetName {
+                                Button("修复") {
+                                    proxyStore.prepareRuleSetRepair()
+                                }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 12, weight: .semibold))
+                                .accessibilityLabel("修复缺失的规则集 \(missing)")
+                            }
                             Button { self.notice = nil } label: {
                                 Image(systemName: "xmark")
                                     .font(.system(size: 10))
@@ -270,6 +285,9 @@ struct ProxiesView: View {
             }
             .sheet(item: $detailNode) { node in
                 NodeDetailView(node: node, testURL: detailTestURL)
+            }
+            .sheet(item: $proxyStore.ruleSetRepairOffer) { plan in
+                RuleSetRepairSheet(plan: plan)
             }
             .task {
                 // The refresh's VPN-off fallback scans the active
@@ -1154,6 +1172,64 @@ struct NodeDetailView: View {
             }
             .task {
                 detail = await proxyStore.fetchNodeDetail(name: node.name)
+            }
+        }
+    }
+}
+
+/// Confirmation sheet for the rule-set repair (v0.2.46 ITEM 1):
+/// shows the exact YAML lines the repair will add / remove and
+/// requires an explicit tap — nothing is written from the banner
+/// alone. Unrepairable plans show the reason with no confirm
+/// button. While a confirmed repair is writing + re-applying,
+/// the button becomes a spinner.
+private struct RuleSetRepairSheet: View {
+    @EnvironmentObject private var proxyStore: ProxyStore
+    @Environment(\.dismiss) private var dismiss
+    let plan: RuleSetRepairPlan
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(plan.summary)
+                        .font(.system(size: 14))
+                    if !plan.previewLines.isEmpty {
+                        Text(plan.previewTitle)
+                            .font(.system(size: 13, weight: .semibold))
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            Text(plan.previewLines.joined(separator: "\n"))
+                                .font(.system(size: 12, design: .monospaced))
+                                .padding(10)
+                        }
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    if plan.isRepairable {
+                        Text("确认后写入当前订阅文件并重新应用配置，然后重测一次；若核心又报出另一个缺失的规则集，会再次提示修复。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("修复缺失的规则集")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                if plan.isRepairable {
+                    ToolbarItem(placement: .confirmationAction) {
+                        if proxyStore.isRepairingRuleSet {
+                            ProgressView()
+                        } else {
+                            Button(plan.confirmTitle) {
+                                Task { await proxyStore.confirmRuleSetRepair() }
+                            }
+                            .fontWeight(.semibold)
+                        }
+                    }
+                }
             }
         }
     }

@@ -23,26 +23,8 @@ struct HostsView: View {
                 // FlClash MapEditView: values edit in place. Each
                 // row is two text fields; leaving a field (submit)
                 // or tapping 保存 writes hosts.json.
-                ForEach(Array(hosts.indices), id: \.self) { index in
-                    HStack {
-                        TextField("域名", text: Binding(
-                            get: { hosts[index].host },
-                            set: { hosts[index].host = $0 }
-                        ))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .onSubmit { save() }
-                        TextField("IP", text: Binding(
-                            get: { hosts[index].ip },
-                            set: { hosts[index].ip = $0 }
-                        ))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .frame(width: 120)
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(Self.isValidIP(hosts[index].ip) ? .primary : .red)
-                        .onSubmit { save() }
-                    }
+                ForEach(Array(hosts.enumerated()), id: \.offset) { index, _ in
+                    HostRowView(hosts: $hosts, index: index, onSubmit: save)
                 }
                 .onDelete { offsets in
                     hosts.remove(atOffsets: offsets)
@@ -140,5 +122,36 @@ struct HostsView: View {
         newHost = ""
         newIp = ""
         save()
+    }
+}
+
+/// One hosts row, extracted into its own view so the List body stays
+/// trivial for the type checker (the inline row with two Bindings
+/// previously defeated ForEach overload resolution and type-checking).
+private struct HostRowView: View {
+    @Binding var hosts: [(host: String, ip: String)]
+    let index: Int
+    let onSubmit: () -> Void
+
+    var body: some View {
+        HStack {
+            TextField("域名", text: Binding(
+                get: { hosts[index].host },
+                set: { hosts[index].host = $0 }
+            ))
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .onSubmit { onSubmit() }
+            TextField("IP", text: Binding(
+                get: { hosts[index].ip },
+                set: { hosts[index].ip = $0 }
+            ))
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .frame(width: 120)
+            .font(.system(.body, design: .monospaced))
+            .foregroundStyle(HostsView.isValidIP(hosts[index].ip) ? .primary : .red)
+            .onSubmit { onSubmit() }
+        }
     }
 }

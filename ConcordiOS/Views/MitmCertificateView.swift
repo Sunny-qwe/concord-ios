@@ -282,16 +282,6 @@ struct MitmHostnameEditorView: View {
         hostnames.filter { !Self.isValidHostname($0) }
     }
 
-    /// Per-row Binding, extracted so the compiler does not have to
-    /// type-check the inline Binding inside the List body (that
-    /// expression was too complex and timed out type-checking).
-    private func hostnameBinding(for index: Int) -> Binding<String> {
-        Binding(
-            get: { hostnames[index] },
-            set: { hostnames[index] = $0 }
-        )
-    }
-
     var body: some View {
         List {
             Section {
@@ -305,17 +295,8 @@ struct MitmHostnameEditorView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                ForEach(Array(hostnames.indices), id: \.self) { index in
-                    HStack {
-                        TextField("域名，如 *.example.com", text: hostnameBinding(for: index))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .foregroundStyle(Self.isValidHostname(hostnames[index]) ? .primary : .red)
-                        if !Self.isValidHostname(hostnames[index]) {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .foregroundStyle(.red)
-                        }
-                    }
+                ForEach(Array(hostnames.enumerated()), id: \.offset) { index, _ in
+                    HostnameRowView(hostnames: $hostnames, index: index)
                 }
                 .onDelete { offsets in
                     hostnames.remove(atOffsets: offsets)
@@ -441,5 +422,29 @@ struct MitmHostnameEditorView: View {
             }
         }
         return true
+    }
+}
+
+/// One MITM hostname row, extracted into its own view so the List
+/// body stays trivial for the type checker (the inline row previously
+/// timed out type-checking).
+private struct HostnameRowView: View {
+    @Binding var hostnames: [String]
+    let index: Int
+
+    var body: some View {
+        HStack {
+            TextField("域名，如 *.example.com", text: Binding(
+                get: { hostnames[index] },
+                set: { hostnames[index] = $0 }
+            ))
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .foregroundStyle(MitmHostnameEditorView.isValidHostname(hostnames[index]) ? .primary : .red)
+            if !MitmHostnameEditorView.isValidHostname(hostnames[index]) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+            }
+        }
     }
 }

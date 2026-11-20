@@ -677,11 +677,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // reason to differ from upstream here.
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         settings.mtu = NSNumber(value: tun.mtu)
-        let ipv4 = NEIPv4Settings(addresses: [tunnelAddress], subnetMasks: ["255.255.255.252"])
+        var ipv4 = NEIPv4Settings(addresses: [tunnelAddress], subnetMasks: ["255.255.255.252"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
         // E6: Loopback 10.7.0.1 switch — adds 10.7.0.2 + a 10.7.0.1/32
         // route when on (no-op when off). Needs a VPN restart.
-        LoopbackNetworkSettings.apply(to: ipv4, enabled: tun.loopbackDevice)
+        // apply() may rebuild the settings (addresses are get-only),
+        // so the return value must be used.
+        ipv4 = LoopbackNetworkSettings.apply(to: ipv4, enabled: tun.loopbackDevice)
         // Local network settings (FlClash: 本地网络设置）: excluded
         // routes bypass the tunnel — the standard private ranges when
         // bypass-private-route is on, plus the user's list.

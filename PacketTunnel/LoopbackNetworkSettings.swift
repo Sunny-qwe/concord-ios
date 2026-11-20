@@ -69,47 +69,47 @@ enum LoopbackNetworkSettings {
     }
 
     /// Adds the loopback address + peer route to an already-built
-    /// NEIPv4Settings (the fork's `options.loopbackDevice` branch,
-    /// as a mutation instead of a rebuild so the provider's
-    /// existing address / mask / route code stays untouched).
-    /// Call AFTER `includedRoutes` is set (the peer route is
-    /// appended to it). Idempotent: calling twice adds nothing
-    /// twice. No-op when `enabled` is false.
-    static func apply(to ipv4Settings: NEIPv4Settings, enabled: Bool) {
-        guard enabled else { return }
+    /// NEIPv4Settings (the fork's `options.loopbackDevice` branch).
+    /// `NEIPv4Settings.addresses` / `subnetMasks` are get-only, so
+    /// the address can only be added by rebuilding the settings
+    /// object — this returns a new one (carrying over
+    /// includedRoutes / excludedRoutes) when the address is missing,
+    /// and the same object otherwise. Call AFTER `includedRoutes`
+    /// is set (the peer route is appended to it). Idempotent:
+    /// calling twice adds nothing twice. No-op when `enabled` is
+    /// false. Callers must use the return value.
+    static func apply(to ipv4Settings: NEIPv4Settings, enabled: Bool) -> NEIPv4Settings {
+        guard enabled else { return ipv4Settings }
+        var result = ipv4Settings
         if !ipv4Settings.addresses.contains(tunnelAddress) {
-            ipv4Settings.addresses = ipv4Settings.addresses + [tunnelAddress]
-            ipv4Settings.subnetMasks = ipv4Settings.subnetMasks + [tunnelSubnetMask]
+            result = NEIPv4Settings(
+                addresses: ipv4Settings.addresses + [tunnelAddress],
+                subnetMasks: ipv4Settings.subnetMasks + [tunnelSubnetMask])
+            result.includedRoutes = ipv4Settings.includedRoutes
+            result.excludedRoutes = ipv4Settings.excludedRoutes
         }
-        var routes = ipv4Settings.includedRoutes ?? []
+        var routes = result.includedRoutes ?? []
         if !routes.contains(where: { $0.destinationAddress == peerAddress }) {
             routes.append(NEIPv4Route(
                 destinationAddress: peerAddress,
                 subnetMask: peerRouteSubnetMask
             ))
-            ipv4Settings.includedRoutes = routes
+            result.includedRoutes = routes
         }
+        return result
     }
 }
 
-// MARK: - Coordinator hook (do NOT apply from this file)
+// MARK: - Provider hook (already applied in PacketTunnelProvider.swift)
 //
-// PacketTunnelProvider.swift is owned by another worker for the
-// SSID item; apply these three edits after that work lands:
-//
-//   1. `TunnelSettings` struct — add one field:
-//        let loopbackDevice: Bool
-//
-//   2. `readTunnelSettings(container:)` — read the key in both
-//      return paths (file present + fallback default):
-//        let loopbackDevice = LoopbackNetworkSettings.isEnabled(in: json)
-//      (file-present path) and `loopbackDevice: false` in the
-//      fallback TunnelSettings initializer.
-//
-//   3. `bootCore()`, right after the IPv4 settings are built
-//      (after `ipv4.includedRoutes = [NEIPv4Route.default()]`,
-//      before `settings.ipv4Settings = ipv4`), add one line:
-//        LoopbackNetworkSettings.apply(to: ipv4, enabled: tun.loopbackDevice)
+//   1. `TunnelSettings` has the `loopbackDevice: Bool` field.
+//   2. `readTunnelSettings(container:)` reads it in both return
+//      paths (`LoopbackNetworkSettings.isEnabled(in: json)` when the
+//      file is present, `false` in the fallback).
+//   3. `bootCore()` calls it right after the IPv4 settings are
+//      built: `ipv4 = LoopbackNetworkSettings.apply(to: ipv4,
+//      enabled: tun.loopbackDevice)` — the return value must be
+//      used because apply() may rebuild the settings.
 //
 // Do NOT add the flag to `tunTripleFingerprint`'s doc["tunnel"]:
 // the NE interface settings are built once at startup, so a live

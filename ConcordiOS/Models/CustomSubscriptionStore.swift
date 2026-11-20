@@ -373,10 +373,11 @@ final class CustomSubscriptionStore: ObservableObject {
         return value
     }
 
-    /// Insert (or re-insert) a marker-delimited block right after
-    /// the `key:` line; when the key is missing, append the whole
-    /// section at the end. An empty block just removes the stale
-    /// one.
+    /// Insert (or re-insert) a marker-delimited block at the END
+    /// of the `key:` section (after the section's own entries, so
+    /// baked content never outranks them); when the key is missing,
+    /// append the whole section at the end. An empty block just
+    /// removes the stale one.
     private static func bakeSection(
         _ text: String, key: String, begin: String, end: String,
         lines: [String]
@@ -391,7 +392,29 @@ final class CustomSubscriptionStore: ObservableObject {
         block.append(contentsOf: lines)
         block.append(end)
         if let keyIndex = out.firstIndex(where: { $0 == key || $0.hasPrefix(key + " ") }) {
-            out.insert(contentsOf: block, at: keyIndex + 1)
+            if out[keyIndex] == key {
+                // B26-sub: the block belongs at the END of the
+                // section, not right after the `key:` line — the old
+                // position made custom rules outrank the
+                // subscription author's own rules (first match
+                // wins). The section ends at the first non-empty,
+                // non-comment line at column 0 after the key (the
+                // next top-level key); the block goes just before
+                // it, or at the end of file.
+                var insertAt = out.endIndex
+                for idx in (keyIndex + 1)..<out.endIndex {
+                    let line = out[idx]
+                    if line.isEmpty || line.hasPrefix("#") { continue }
+                    if line.hasPrefix(" ") || line.hasPrefix("\t") { continue }
+                    insertAt = idx
+                    break
+                }
+                out.insert(contentsOf: block, at: insertAt)
+            } else {
+                // Inline value (e.g. `rules: [...]`): no block to
+                // append to, keep the old behaviour.
+                out.insert(contentsOf: block, at: keyIndex + 1)
+            }
         } else {
             if let last = out.last, !last.isEmpty { out.append("") }
             out.append(key)

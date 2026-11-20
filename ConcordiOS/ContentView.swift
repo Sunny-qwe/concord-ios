@@ -46,6 +46,10 @@ struct ContentView: View {
 
     @State private var selectedTab: AppTab = .dashboard
     @State private var updateAlertMessage: String?
+    // T1: the TrafficStore 1 s timer had no stop() caller and ran
+    // forever, even in the background — waking the app every
+    // second to RPC a (usually dead) core.
+    @Environment(\.scenePhase) private var scenePhase
     /// The 20-minute subscription auto-update timer (S8): a
     /// Combine cancellable held in @State so it lives as long as
     /// the root view and is cancelled with it.
@@ -126,10 +130,20 @@ struct ContentView: View {
             if geoAutoUpdate {
                 let last = UserDefaults.standard.double(forKey: "ConcordiOS.geoLastUpdate")
                 if last == 0 || Date().timeIntervalSince1970 - last > geoAutoUpdateHours * 3600 {
+                    // Audit B9: stamp the update time only when all
+                    // three kinds actually succeeded. geoUpdate
+                    // reports through lastError (nil on success, set
+                    // on failure — e.g. VPN off -> notRunning), so a
+                    // failed kind must not stamp the time, or the
+                    // 24 h interval would suppress the retry.
+                    var geoAllSucceeded = true
                     for kind in ["MMDB", "ASN", "GEOSITE"] {
                         await ruleStore.geoUpdate(kind: kind)
+                        if ruleStore.lastError != nil { geoAllSucceeded = false }
                     }
-                    UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "ConcordiOS.geoLastUpdate")
+                    if geoAllSucceeded {
+                        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "ConcordiOS.geoLastUpdate")
+                    }
                 }
             }
             // Auto-run: start the VPN on launch when the user asked
@@ -150,6 +164,17 @@ struct ContentView: View {
                 await ruleStore.refresh()
                 await connectionStore.refresh()
                 await logStore.refresh()
+            }
+        }
+        // T1: stop the TrafficStore 1 s timer when the app goes to
+        // the background, restart it on foreground. start() is
+        // idempotent (it stops first) and re-fires one immediate
+        // refresh / probe / memory read.
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active: trafficStore.start()
+            case .background: trafficStore.stop()
+            default: break
             }
         }
         // NOTE (audit A1): a node picked while the VPN was off is

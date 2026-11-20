@@ -283,6 +283,18 @@ struct ConcordGeneralState: Codable {
     var globalUa: String?
     var keepAliveIdle: UInt32?
     var keepAliveInterval: UInt32?
+    /// Audit A4: the five schema-required fields config.general
+    /// used to drop (upstream crates/proto/src/types/state.rs,
+    /// GeneralState): disable_keep_alive (bool), geo_auto_update
+    /// (bool), geo_update_interval (u32 seconds), geox_url (map
+    /// keyed mmdb/asn/geosite) and selections (group -> picked
+    /// proxy). All optional: older cores may omit them.
+    var disableKeepAlive: Bool?
+    var geoAutoUpdate: Bool?
+    var geoUpdateInterval: UInt32?
+    var geoxUrl: [String: String]?
+    /// The pick of each group that has one.
+    var selections: [String: String]?
     /// The core's TUN state (config.general `tun`, upstream
     /// crates/proto TunState). Display-only on iOS: the PacketTunnel
     /// extension owns the TUN device (tun.start/tun.stop +
@@ -420,6 +432,25 @@ struct ConcordConnection: Codable, Identifiable {
     /// Present since the upstream 83bfbae schema (ConnectionInfo
     /// `rematchName`); older cores omit it and it decodes as nil.
     let rematchName: String? = nil
+    /// Audit A5: the fields below were decoded out of
+    /// ConnectionInfo (upstream crates/proto/src/types/live.rs).
+    /// All optional-with-default so older cores / sample data that
+    /// omit them still decode; the display side (connection rows)
+    /// can now show the exit chain, MITM flags and geo/ASN.
+    /// `chains` is the exit chain (Vec<String>); `rulePayload` is
+    /// the matched rule's payload; `mitm`/`mitmRefused` are bools.
+    let chains: [String]? = nil
+    let providerChains: [String]? = nil
+    let rulePayload: String? = nil
+    let mitm: Bool? = nil
+    let mitmRefused: Bool? = nil
+    let remoteDestination: String? = nil
+    let sourceGeoIp: [String]? = nil
+    let destinationGeoIp: [String]? = nil
+    let sourceAsn: String? = nil
+    let destinationAsn: String? = nil
+    let specialRules: String? = nil
+    let specialProxy: String? = nil
 
     // Wire keys are snake_case (upstream crates/proto/src/types/live.rs:
     // ConnectionInfo). Explicit keys because the synthesized ones would
@@ -443,6 +474,18 @@ struct ConcordConnection: Codable, Identifiable {
         case processPath = "process_path"
         case upload, download, rule, proxy
         case rematchName = "rematch_name"
+        case chains
+        case providerChains = "provider_chains"
+        case rulePayload = "rule_payload"
+        case mitm
+        case mitmRefused = "mitm_refused"
+        case remoteDestination = "remote_destination"
+        case sourceGeoIp = "source_geo_ip"
+        case destinationGeoIp = "destination_geo_ip"
+        case sourceAsn = "source_asn"
+        case destinationAsn = "destination_asn"
+        case specialRules = "special_rules"
+        case specialProxy = "special_proxy"
     }
 }
 

@@ -117,6 +117,12 @@ final class TunnelManager: ObservableObject {
                 self.unexpectedDisconnect = false
                 self.reachedConnectedThisStart = true
                 self.connectedAt = Date()
+                // Config B1: the extension may have written
+                // tun-restart-needed.json while this tunnel was
+                // coming up (or during a previous run) — re-read it
+                // on every connect so the Dashboard banner shows
+                // without waiting for a pull-refresh.
+                self.checkTunRestartNeeded()
                 return
             }
             if new == .disconnected,
@@ -150,7 +156,7 @@ final class TunnelManager: ObservableObject {
     }
 
     /// Crash-loop bookkeeping, called on a connected -> disconnected
-    /// drop. A drop within 20 s of a successful start is a rapid
+    /// drop. A drop within 60 s of a successful start is a rapid
     /// drop; a drop after 60 s of healthy uptime resets the count.
     /// At 3 rapid drops inside a 5-minute window the tunnel is
     /// crash-looping: suspend On-Demand (stop the restart loop) and
@@ -442,6 +448,24 @@ final class TunnelManager: ObservableObject {
         return "VPN 阶段：\(record.stage)"
     }
 
+    /// The extension's vpn-diagnostics.json startedAt (audit D4):
+    /// the tunnel's real start time, written when the tunnel comes
+    /// up and refreshed on the watchdog tick (30 s). The app reads
+    /// it so the Dashboard uptime survives an app restart while the
+    /// VPN is running, instead of restarting from zero. Nil when
+    /// there is no fresh record (updated within 180 s) or the
+    /// tunnel is stopped (startedAt is null then).
+    func readTunnelStartedAt() -> Date? {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
+              let data = try? Data(contentsOf: container.appendingPathComponent("vpn-diagnostics.json")),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let startedMs = json["startedAt"] as? Int64,
+              let updatedMs = json["updatedAt"] as? Int64,
+              Date().timeIntervalSince1970 * 1000 - Double(updatedMs) < 180_000 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(startedMs) / 1000)
+    }
+
     /// Reads the extension's tun-restart-needed.json (config B1):
     /// written when a live config change killed the TUN runner and
     /// the extension could not restart it, deleted on the next
@@ -549,6 +573,15 @@ final class TunnelManager: ObservableObject {
                 try session.sendProviderMessage(data) { reply in
                     guard claim.claim() else { return }
                     if let reply {
+                        // Config B1: the extension re-starts the TUN
+                        // runner (or records tun-restart-needed.json)
+                        // before answering a live config.apply /
+                        // config.patch — re-read the flag now, so the
+                        // Dashboard banner appears without waiting
+                        // for a pull-refresh or a reconnect.
+                        if method == "config.apply" || method == "config.patch" {
+                            Task { @MainActor [weak self] in self?.checkTunRestartNeeded() }
+                        }
                         continuation.resume(returning: reply)
                     } else {
                         continuation.resume(throwing: TunnelError.noReply)

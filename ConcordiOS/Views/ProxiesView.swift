@@ -283,6 +283,18 @@ struct ProxiesView: View {
                 // the files) dismisses the banner.
                 if let new { notice = new } else { notice = nil }
             }
+            .onChange(of: proxyStore.testErrorNonce) { _, _ in
+                // The same failure twice in a row does not change
+                // testError, so the observer above never fires —
+                // the nonce re-shows the banner for the repeat.
+                if let current = proxyStore.testError { notice = current }
+            }
+            .onAppear {
+                // Returning to this page with a failure already
+                // recorded (e.g. the run finished while another tab
+                // was frontmost) must still show it.
+                if let current = proxyStore.testError { notice = current }
+            }
         }
     }
 

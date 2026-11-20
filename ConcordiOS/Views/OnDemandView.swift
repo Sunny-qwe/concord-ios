@@ -17,7 +17,7 @@ struct OnDemandView: View {
     var body: some View {
         List {
             Section {
-                Text("按需连接：打开后，iPhone 会在网络变化时自动按规则连接或断开 VPN。下面的 Wi-Fi 不自动连接（其它网络都会自动连接）。手动从仪表盘启动 VPN 不受这些规则限制。\n\n默认开启：启动 VPN 时会自动开启按需连接，断网或切换网络（Wi-Fi ↔ 蜂窝）后系统会自动重连，不用手动再开；不想自动重连时可以关掉下面的开关。")
+                Text("按需连接：打开后，iPhone 会在网络变化时自动按规则连接或断开 VPN。下面的 Wi-Fi 不自动连接（其它网络都会自动连接）。手动从仪表盘启动 VPN 不受这些规则限制。\n\n默认关闭：启动 VPN 时不会自动开启按需连接；打开下面的开关后，断网或切换网络（Wi-Fi ↔ 蜂窝）后系统会自动重连，不用手动再开。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

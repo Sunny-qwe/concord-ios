@@ -197,6 +197,19 @@ final class CustomProxyStore: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    /// The group/proxy name on a `- name: ...` line, quotes
+    /// stripped (same rule as CustomSubscriptionStore.exactName):
+    /// "US" parses to US, `"US"` and `'US'` too.
+    private static func exactName(from line: String, key: String = "- name:") -> String {
+        guard let range = line.range(of: key) else { return "" }
+        var value = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+        if (value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2) ||
+            (value.hasPrefix("'") && value.hasSuffix("'") && value.count >= 2) {
+            value = String(value.dropFirst().dropLast())
+        }
+        return value
+    }
+
     /// Apply stored filter overrides to a profile's YAML text: for
     /// each overridden group, the `filter:` line inside that group's
     /// block is replaced (or inserted after the group's `name:` line
@@ -207,9 +220,15 @@ final class CustomProxyStore: ObservableObject {
         guard !overrides.isEmpty else { return text }
         var lines = text.components(separatedBy: "\n")
         for (group, filter) in overrides {
+            // Exact-name match: a filter for "US" must not land on
+            // the first "- name: US-2" (the old contains() match did
+            // exactly that — audit B20). The name is parsed out of
+            // the `- name:` line (quotes stripped) and compared
+            // exactly; a flow-style `- {name: US}` line has no
+            // `- name:` prefix and is skipped, like before.
             guard let nameIndex = lines.firstIndex(where: {
-                $0.trimmingCharacters(in: .whitespaces).hasPrefix("- name:") &&
-                $0.contains(group)
+                let trimmed = $0.trimmingCharacters(in: .whitespaces)
+                return trimmed.hasPrefix("- name:") && Self.exactName(from: trimmed) == group
             }) else { continue }
             var end = lines.count
             for i in (nameIndex + 1)..<lines.count {

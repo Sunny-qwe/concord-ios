@@ -1015,6 +1015,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // A resync means events were dropped and the local table is
         // stale; a fresh subscribe returns a new snapshot to replace it.
         Task {
+            // V8: the API has no unsubscribe, so drop the old sub's
+            // entries first — otherwise its late deltas keep
+            // applying to the replaced table after the new snapshot
+            // lands (closed connections resurrecting, counters
+            // double-counted). Enqueued on coreQueue ahead of the
+            // new registerStream, so the order is deterministic.
+            self.coreQueue.async { self.subscriptions = self.subscriptions.filter { $0.value != kind } }
             do {
                 let params: [String: Any]
                 switch kind {

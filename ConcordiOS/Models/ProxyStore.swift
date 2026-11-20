@@ -61,6 +61,13 @@ final class ProxyStore: ObservableObject {
     /// used to write only lastError, which no view on this page
     /// reads, so every failure was total silence (v0.2.32).
     @Published var testError: String?
+    /// Bumps on every (re-)set of testError, so the banner
+    /// re-appears even when the new failure text is identical to
+    /// the previous one (@Published only notifies on change — a
+    /// dismissed banner would otherwise never come back for the
+    /// same error, e.g. every tap failing with the same -2
+    /// channel message).
+    @Published var testErrorNonce = 0
     /// True when testError is a GeoSeed failure (the MMDB could not
     /// be seeded). The Proxies banner shows a retry button only in
     /// that case: tapping it re-seeds immediately, bypassing the
@@ -100,6 +107,57 @@ final class ProxyStore: ObservableObject {
         lastError = error.localizedDescription
         testError = error.localizedDescription
         testErrorIsGeoSeed = Self.isGeoSeedError(error)
+        testErrorNonce += 1
+    }
+
+    /// Same as noteTestError, for a channel failure that is not an
+    /// Error (e.g. every node returning -2 — a value, not a throw).
+    private func noteTestMessage(_ message: String) {
+        lastError = message
+        testError = message
+        testErrorIsGeoSeed = false
+        testErrorNonce += 1
+    }
+
+    /// True once any delay test has ever returned a positive
+    /// latency on this device. An all--2 run with this false means
+    /// the speed-test channel never worked at all (not "nodes that
+    /// used to work just died").
+    private var everDelaySucceeded: Bool {
+        get { UserDefaults.standard.bool(forKey: "concord.everDelaySucceeded") }
+        set { UserDefaults.standard.set(newValue, forKey: "concord.everDelaySucceeded") }
+    }
+
+    /// Names among `names` that the currently loaded core config
+    /// does NOT know. Nil when the check itself is unavailable
+    /// (core unreachable / query failed) — the caller then reports
+    /// the -2s without claiming a membership verdict. VPN-off
+    /// reads the app-side core (proxy.groups, 15 s timeout);
+    /// VPN-on reads the extension's core the same way (the
+    /// extension RPC path has its own deadline since v0.2.36).
+    private func missingLoadedNames(_ names: [String]) async -> Set<String>? {
+        do {
+            let loaded: Set<String>
+            if client.mode == .live && !TunnelManager.shared.isRunning {
+                loaded = try await AppCore.shared.loadedProxyNames()
+            } else {
+                let groups = try await client.proxyGroups()
+                var set = Set(groups.nodes.map { $0.name })
+                set.formUnion(groups.groups.map { $0.name })
+                loaded = set
+            }
+            return Set(names).subtracting(loaded)
+        } catch {
+            return nil
+        }
+    }
+
+    /// The timestamp line the delay-test diagnostic report opens
+    /// with (yyyy-MM-dd HH:mm:ss, local time).
+    private static func reportTimestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: date)
     }
 
     private static func isGeoSeedError(_ error: Error) -> Bool {
@@ -516,9 +574,10 @@ final class ProxyStore: ObservableObject {
 
     /// One dial target after nested-group resolution (FlClash
     /// computeRealSelectedProxyState / _resolveDelayTestTargets):
-    /// the real node to dial + the URL to dial it with ("" = the
-    /// core default). Hashable on (testUrl, proxyName) — the same
-    /// key upstream dedupes and stores delays under.
+    /// the real node to dial + the URL to dial it with — always a
+    /// real URL now (see defaultTestURL), never "". Hashable on
+    /// (testUrl, proxyName) — the same key upstream dedupes and
+    /// stores delays under.
     private struct DelayTarget: Hashable {
         let proxyName: String
         let testUrl: String
@@ -573,11 +632,19 @@ final class ProxyStore: ObservableObject {
         return nil
     }
 
+    /// FlClash default test URL (lib/common/constant.dart:134):
+    /// the last fallback of realTestUrl, so a delay test always
+    /// has a URL to dial. delay.test is always called with a
+    /// non-empty url now (B2 second version): the old "" left the
+    /// choice to the core's own default and hid a missing
+    /// test-url from the diagnostic report.
+    private static let defaultTestURL = "https://www.gstatic.com/generate_204"
+
     /// A group's effective delay-test URL (FlClash realTestUrl):
     /// the group's own testUrl, else the stored override
-    /// test-url, else "" (core default).
+    /// test-url, else the FlClash default above — never "".
     private func effectiveTestURL(for group: ProxyGroup) -> String {
-        firstNonEmpty(group.testUrl, overrideTestURL()) ?? ""
+        firstNonEmpty(group.testUrl, overrideTestURL(), Self.defaultTestURL) ?? Self.defaultTestURL
     }
 
     /// Resolves a group member to the real node FlClash would dial
@@ -626,18 +693,31 @@ final class ProxyStore: ObservableObject {
             ?? latencies[target.proxyName]
     }
 
-    /// Batch latency test for every node. In live mode this uses
-    /// delay.run: one stream tests all nodes at once and the extension
-    /// accumulates the results into snapshots/delay.json, which is
-    /// polled here until the run reports `done` (up to ~60 s). If the
-    /// run cannot start, or the poll never completes, it falls back to
-    /// sequential delay.test calls — the same results, just slower.
-    /// With the VPN OFF (live mode) the test runs on the app-side
-    /// core (AppCore, FlClash parity) instead of failing: the
-    /// extension's core is down, so the batch/sequential calls below
-    /// go to AppCore. A transport failure (no core at all) never
-    /// records -2 — a throw means the test never ran, not that the
-    /// node failed; only a returned value of -2 marks a failure.
+    /// The delay to show for one node row in a group (audit B7,
+    /// for DashboardView.timeoutCount): resolve the row to the
+    /// real node FlClash would dial (nested group -> its current
+    /// pick, with that pick's test URL), read the (testUrl, real
+    /// name) entry first, and fall back to the legacy name-keyed
+    /// entry when resolution fails or the URL-keyed entry is
+    /// absent (e.g. a result whose URL the core echoed
+    /// differently). Nil = untested.
+    func latency(forNodeNamed name: String, inGroup group: ProxyGroup) -> Int32? {
+        let fallback = effectiveTestURL(for: group)
+        if let target = resolveDelayTarget(memberName: name, fallbackTestUrl: fallback) {
+            return latency(for: target)
+        }
+        return latencies[name]
+    }
+
+    /// Latency test for every node (FlClash delayTestGroups on
+    /// all groups): each resolved target gets one delay.test call,
+    /// at most 2 in flight (see runLatencyTest). With the VPN OFF
+    /// (live mode) the test runs on the app-side core (AppCore,
+    /// FlClash parity) instead of failing: the extension's core is
+    /// down, so the calls below go to AppCore. A transport failure
+    /// records -2 for that node and, after 3 such throws, stops
+    /// the run — a throw means the backend is down, not that the
+    /// node failed; only a returned value of -2 marks a dead node.
     @MainActor
     func testLatency() async {
         lastTest = .all
@@ -660,9 +740,9 @@ final class ProxyStore: ObservableObject {
         await runLatencyTest(targets: targets, groupNames: Set(groups.map { $0.name }))
     }
 
-    /// Batch latency test for one group only (the bolt on a group
+    /// Latency test for one group only (the bolt on a group
     /// header, or the top bolt in tab style, which tests the current
-    /// group). Same batch/sequential logic as the all-groups test.
+    /// group). Same per-target logic as the all-groups test.
     /// `nodeNames`, when given, restricts the test to those nodes
     /// (the Proxies page passes the search-matching names while
     /// searching — FlClash tests only search matches).
@@ -681,19 +761,236 @@ final class ProxyStore: ObservableObject {
         await runLatencyTest(targets: targets, groupNames: [group.name])
     }
 
-    /// Runs the resolved targets. One delay.run batch per distinct
-    /// test URL (the batch takes a single URL for all its proxies),
-    /// then a sequential delay.test pass for whatever the batches
-    /// did not complete. A batch that never reports `done` keeps
-    /// its partial results and returns without the sequential pass
-    /// (audit B5 behaviour, untouched — B5 is out of scope).
-    /// Every delay call passes the timeout explicitly (audit B1):
-    /// SettingsStore.delayTestTimeout, else the FlClash default
-    /// 8000ms. A failed test stays "untested" — a throw never
-    /// records a latency, and only a returned -2 marks a failure.
+    // MARK: - Delay test, FlClash-style (B2 second version)
+
+    /// One per-target delay outcome (FlClash _runDelayTest returns
+    /// one Delay per target; the guard timeout and the transport
+    /// throw are ours, mapped onto FlClash's values: a guard
+    /// timeout is a timeout (-1), a throw is a transport failure
+    /// recorded as -2 for that node — see runLatencyTest). The
+    /// transport failure carries the error's message as a String,
+    /// not the Error itself, so the outcome stays Sendable for the
+    /// task group; the caller re-wraps it (DelayTransportFailure)
+    /// for the banner.
+    private enum DelayTargetOutcome {
+        case value(DelayTarget, Int32)
+        case guardTimedOut(DelayTarget)
+        case transportFailed(DelayTarget, String)
+    }
+
+    /// A transport failure re-wrapped for the banner (the message
+    /// is the RPC error's localizedDescription, verbatim).
+    private struct DelayTransportFailure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    /// One delay.test call with the 30 s outer guard (FlClash
+    /// delayTestGuardDuration, lib/common/constant.dart:62, applied
+    /// to the testDelay call in lib/core/interface.dart:195). The
+    /// RPC layer keeps its own timeout underneath — 15 s on the
+    /// app-side core (AppCore.sendRequest default), 30 s for
+    /// delay.* on the extension path (TunnelManager
+    /// timeoutForMethod) — so the guard is a backstop for a call
+    /// that neither returns nor times out on its own. A guard
+    /// timeout is NOT a node failure: it comes back as
+    /// .guardTimedOut and the caller records -1 (FlClash
+    /// delayTimedOutValue, constant.dart:64).
+    private func runOneDelayTest(target: DelayTarget, useAppCore: Bool) async -> DelayTargetOutcome {
+        do {
+            return try await withThrowingTaskGroup(of: Int32?.self) { group in
+                group.addTask {
+                    let result: ConcordDelayResult
+                    if useAppCore {
+                        result = try await AppCore.shared.delayTest(proxy: target.proxyName, url: target.testUrl, timeout: self.delayTimeoutMs)
+                    } else {
+                        result = try await self.client.delayTest(proxy: target.proxyName, url: target.testUrl, timeout: self.delayTimeoutMs)
+                    }
+                    return result.value
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 30_000_000_000)
+                    return nil
+                }
+                let first: Int32?? = try await group.next()
+                group.cancelAll()
+                switch first {
+                case .some(.some(let value)):
+                    return .value(target, value)
+                default:
+                    return .guardTimedOut(target)
+                }
+            }
+        } catch {
+            return .transportFailed(target, error.localizedDescription)
+        }
+    }
+
+    /// What the provider preload step found (B2 second version).
+    /// `updated` lists the providers that were actually updated —
+    /// empty when nothing was missing, or when the loaded-names
+    /// check itself was unavailable (the test then surfaces a
+    /// dead channel on its own).
+    private enum ProviderPreload {
+        case ready(updated: [String])
+        case stillMissing(reason: String, updated: [String])
+    }
+
+    /// Makes sure the providers behind `names` are really loaded
+    /// in the core BEFORE any delay.test runs — the step the first
+    /// B version was missing. Flow: seedProviderCache inside
+    /// ensureStarted only COPIES the cache, and when the user has
+    /// never started the VPN there is no cache to copy; the
+    /// providers' own pull at config.apply may then fail on this
+    /// network exactly like the MMDB download did, and
+    /// config.apply still succeeds with zero provider nodes, so
+    /// every delay.test returns -2 with no throw.
+    ///   1. loadedProxyNames / missingLoadedNames: all present
+    ///      → .ready (nothing updated).
+    ///   2. Missing → update the owning providers (group rows
+    ///      carry the provider name; when no row attributes a
+    ///      missing name, every provider from provider.list).
+    ///      Upstream provider.update pulls and swaps the node set
+    ///      LIVE (crates/group/src/provider/mod.rs update() ->
+    ///      pull() -> load_buf() -> apply(): nodes.store +
+    ///      route.moved + request_refresh), so NO config.apply is
+    ///      needed afterwards.
+    ///   3. Re-check the names. Still missing → .stillMissing
+    ///      with the banner text: the provider.update error
+    ///      verbatim when the update failed, or "update succeeded
+    ///      but the names are still absent" when it did not.
+    ///      The test still runs afterwards: loaded nodes get real
+    ///      results, missing ones return -2.
+    /// Sample mode skips this entirely (its data is fake).
+    private func ensureProvidersLoaded(for names: [String], useAppCore: Bool) async -> ProviderPreload {
+        guard client.mode == .live else { return .ready(updated: []) }
+        guard let missing = await missingLoadedNames(names), !missing.isEmpty else {
+            return .ready(updated: [])
+        }
+        // Which provider owns each missing node? The group rows
+        // carry it (proxy.groups nodes[].provider, and the local
+        // YAML parse for the offline list). One node name can sit
+        // in several groups, so duplicates keep the first provider
+        // (uniqueKeysWithValues would trap on a repeated name).
+        let providerByNode: [String: String] = Dictionary(
+            allNodes.compactMap { node in
+                node.provider.map { (node.name, $0) }
+            },
+            uniquingKeysWith: { first, _ in first })
+        var providers = Set(missing.compactMap { providerByNode[$0] })
+        if providers.isEmpty {
+            // No row attributes the missing names to a provider
+            // (e.g. a stale pick): update every provider the core
+            // knows, then re-check.
+            do {
+                let list: ConcordProviderList
+                if useAppCore {
+                    list = try await AppCore.shared.providerList()
+                } else {
+                    list = try await client.providerList()
+                }
+                providers = Set(list.providers.map { $0.name })
+            } catch {
+                return .stillMissing(
+                    reason: "测速前检查提供方失败：无法列出提供方（\(error.localizedDescription)），核心已加载的配置里没有这 \(missing.count) 个节点，测速会失败（-2）。",
+                    updated: [])
+            }
+        }
+        var updated: [String] = []
+        var updateErrors: [(provider: String, error: String)] = []
+        for provider in providers.sorted() {
+            do {
+                if useAppCore {
+                    try await AppCore.shared.providerUpdate(name: provider)
+                } else {
+                    try await client.providerUpdate(name: provider)
+                }
+                updated.append(provider)
+            } catch {
+                updateErrors.append((provider, error.localizedDescription))
+            }
+        }
+        guard let stillMissing = await missingLoadedNames(names), !stillMissing.isEmpty else {
+            return .ready(updated: updated)
+        }
+        if !updateErrors.isEmpty {
+            let detail = updateErrors.prefix(2).map { "\($0.provider)：\($0.error)" }.joined(separator: "；")
+            let suffix = updateErrors.count > 2 ? "；等 \(updateErrors.count) 个提供方" : ""
+            return .stillMissing(
+                reason: "提供方更新失败：\(detail)\(suffix)。核心已加载的配置里仍没有这 \(stillMissing.count) 个节点，测速会失败（-2）。请检查订阅链接/网络后重试。",
+                updated: updated)
+        }
+        let shown = stillMissing.sorted().prefix(3).joined(separator: "、")
+        let shownSuffix = stillMissing.count > 3 ? "…" : ""
+        return .stillMissing(
+            reason: "提供方更新成功，但核心已加载的配置里仍没有这 \(stillMissing.count) 个节点（\(shown)\(shownSuffix)）。可能是订阅内容已变更或名字不一致，请检查订阅。",
+            updated: updated)
+    }
+
+    /// Runs the resolved targets, FlClash-style (lib/providers/
+    /// actions/proxies.dart _runDelayTests, :405-445): every target
+    /// gets exactly ONE delay.test call (timeout = the settings
+    /// delayTestTimeout, default 8000 ms — constant.dart:60), run
+    /// in parallel with at most 2 in flight (TaskPool
+    /// maxConcurrentDelayTests = 2 on iOS, constant.dart:99), each
+    /// call guarded by a 30 s outer timeout (delayTestGuardDuration,
+    /// constant.dart:62, applied in lib/core/interface.dart:195).
+    /// There is deliberately NO delay.run batch here any more (B2
+    /// second version): the batch event stream is an extra failure
+    /// surface on the in-app core and upstream never uses it for
+    /// manual delay tests. The delayRunStart/delayRunPoll wrappers
+    /// in ConcordClient/AppCore are left in place, unused.
+    /// A returned value is the verdict (-1 timeout, -2 failure);
+    /// a THROW is a transport failure (the core never throws for a
+    /// dead node — urltest.rs test_delay returns Failed), so it
+    /// records -2 for that node and, after 3 such throws, cancels
+    /// the rest of the run: the backend is down, not the nodes.
     @MainActor
     private func runLatencyTest(targets: [DelayTarget], groupNames: Set<String>) async {
-        guard !targets.isEmpty, testingGroups.isDisjoint(with: groupNames) else { return }
+        guard testingGroups.isDisjoint(with: groupNames) else { return }
+        let startedAt = Date()
+        let backend = client.mode == .live
+            ? (TunnelManager.shared.isRunning ? "隧道核心（VPN 运行中）" : "应用内核心（VPN 未运行）")
+            : "示例数据"
+        let timeoutMs = delayTimeoutMs
+        var okCount = 0, timeoutCount = 0, failedCount = 0
+        var throwError: Error?
+        var preloadNote: String?
+        var channelNote: String?
+        // The diagnostic report for the Logs export (method, params,
+        // per-node outcome counts, channel diagnosis): written on
+        // EVERY exit — including the early ones below — so the file
+        // the user sends always describes the last run, never a
+        // stale one. Counts are tallied in the shared tail from the
+        // recorded latencies (one record per target — the parallel
+        // loop records each outcome exactly once), so the counts
+        // cannot double-count.
+        defer {
+            let untested = targets.count - okCount - timeoutCount - failedCount
+            let urlText = Set(targets.map { $0.testUrl }).sorted().joined(separator: "、")
+            let everText = everDelaySucceeded ? "是" : "否"
+            var lines = ["[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)）"]
+            lines.append("方法：delay.test（逐个，并行 2 个）；超时：\(timeoutMs)ms（单次调用另有 30s 兜底）")
+            lines.append("测速地址：\(urlText)")
+            lines.append("目标：\(targets.count) 个节点；结果：成功 \(okCount)，超时(-1) \(timeoutCount)，失败(-2) \(failedCount)，未返回 \(untested)")
+            if failedCount > 0 {
+                let failedNames = targets.filter { latency(for: $0) == -2 }.map { $0.proxyName }
+                let failedText = failedNames.prefix(8).joined(separator: "、") + (failedNames.count > 8 ? "…" : "")
+                lines.append("失败节点（前 8）：\(failedText)")
+            }
+            if let preloadNote { lines.append("提供方预加载：\(preloadNote)") }
+            if let throwError { lines.append("调用失败：\(throwError.localizedDescription)") }
+            if let channelNote { lines.append("通道诊断：\(channelNote)") }
+            lines.append("此前是否测速成功过：\(everText)")
+            AppCore.recordDelayTestReport(lines.joined(separator: "\n"))
+        }
+        // No resolvable target (e.g. a group whose members are all
+        // nested groups with no current pick): tapping the bolt
+        // used to do nothing at all — say why instead.
+        guard !targets.isEmpty else {
+            noteTestMessage("该组没有可测速的节点（成员无法解析为真实节点，或策略组未选择节点）")
+            return
+        }
         testingGroups.formUnion(groupNames)
         defer { testingGroups.subtract(groupNames) }
         // A new test supersedes the old failure: clear the banner
@@ -712,100 +1009,129 @@ final class ProxyStore: ObservableObject {
             do {
                 try await AppCore.shared.ensureStarted()
             } catch {
+                throwError = error
                 noteTestError(error)
                 return
             }
         }
-        var pending = targets
+        // Provider preload (B2 second version): seedProviderCache
+        // inside ensureStarted only copies the cache — when the user
+        // has never started the VPN there is no cache to copy, and
+        // the providers' own pull may fail on this network exactly
+        // like the MMDB download did. So before testing, check
+        // whether the loaded config even knows these names; if not,
+        // update the owning providers (live swap, no config.apply —
+        // see ensureProvidersLoaded) and re-check. Still missing
+        // after that is a banner with the real reason, not a silent
+        // wall of -2s. Sample mode skips this: its data is fake.
+        let preload: ProviderPreload
         if client.mode == .live {
-            // One batch per distinct test URL: a single delay.run
-            // cannot honour mixed URLs, so the all-groups path no
-            // longer funnels every group through the core default
-            // (audit B9 falls out of the B3 fix).
-            let partitions = Dictionary(grouping: targets, by: { $0.testUrl })
-            var batchIncomplete = false
-            for testUrl in partitions.keys.sorted() {
-                let batch = partitions[testUrl]!
-                let names = batch.map { $0.proxyName }
-                do {
-                    if useAppCore {
-                        _ = try await AppCore.shared.delayRunStart(proxies: names, url: testUrl.isEmpty ? nil : testUrl, timeout: delayTimeoutMs)
-                    } else {
-                        _ = try await client.delayRunStart(proxies: names, url: testUrl.isEmpty ? nil : testUrl, timeout: delayTimeoutMs)
-                    }
-                    var polls = 0
-                    var done = false
-                    while polls < 120, !Task.isCancelled {
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                        polls += 1
-                        do {
-                            let snapshot: DelayRunSnapshot
-                            if useAppCore {
-                                guard let polled = await AppCore.shared.delayRunPoll() else { continue }
-                                snapshot = polled
-                            } else {
-                                snapshot = try await client.delayRunPoll()
-                            }
-                            for result in snapshot.results {
-                                recordLatency(name: result.name, url: result.url, value: result.value)
-                                pending.removeAll { $0.proxyName == result.name && ($0.testUrl.isEmpty || result.url.isEmpty || $0.testUrl == result.url) }
-                            }
-                            applyLatencies()
-                            if snapshot.done {
-                                done = true
-                                break
-                            }
-                        } catch is TunnelError {
-                            // The extension has not written the run file
-                            // yet — keep polling, do not fail.
-                            continue
-                        }
-                    }
-                    if !done {
-                        // The run is still going (or its file never appeared):
-                        // keep the partial results and let the next test
-                        // start a fresh run.
-                        batchIncomplete = true
-                        break
-                    }
-                } catch {
-                    // This partition's run never started, or its
-                    // poll failed for a non-transient reason — its
-                    // targets fall through to the sequential loop.
-                    continue
+            preload = await ensureProvidersLoaded(for: targets.map { $0.proxyName }, useAppCore: useAppCore)
+            switch preload {
+            case .ready(let updated):
+                if !updated.isEmpty {
+                    preloadNote = "已更新提供方：\(updated.joined(separator: "、"))；复查后节点已全部加载"
                 }
+            case .stillMissing(let reason, let updated):
+                preloadNote = updated.isEmpty ? reason : "已更新提供方：\(updated.joined(separator: "、"))；\(reason)"
+                noteTestMessage(reason)
             }
-            if batchIncomplete {
-                lastError = nil
-                return
-            }
-            if pending.isEmpty {
-                lastError = nil
-                return
-            }
+        } else {
+            preload = .ready(updated: [])
         }
-        for target in pending {
-            do {
-                let result: ConcordDelayResult
-                let url = target.testUrl.isEmpty ? nil : target.testUrl
-                if useAppCore {
-                    result = try await AppCore.shared.delayTest(proxy: target.proxyName, url: url, timeout: delayTimeoutMs)
-                } else {
-                    result = try await client.delayTest(proxy: target.proxyName, url: url, timeout: delayTimeoutMs)
+        // One delay.test per target, at most 2 in flight (FlClash
+        // TaskPool, iOS = 2). Each call carries the settings timeout
+        // and the 30 s guard; see runOneDelayTest.
+        var firstTransportError: Error?
+        var transportThrowCount = 0
+        var cancelledByTransport = false
+        var index = 0
+        while index < targets.count, !cancelledByTransport {
+            let batch = Array(targets[index..<min(index + 2, targets.count)])
+            index += batch.count
+            await withTaskGroup(of: DelayTargetOutcome.self) { group in
+                for target in batch {
+                    group.addTask { await self.runOneDelayTest(target: target, useAppCore: useAppCore) }
                 }
-                recordLatency(name: result.name, url: result.url, value: result.value)
-            } catch {
-                // A throw means the CALL failed (transport / core
-                // down), not that the node failed: the core reports
-                // a node failure as a returned value of -2, never
-                // as a throw. Leave the node untested and stop —
-                // the backend is down, further calls fail too.
-                // Surface the reason instead of going silent.
-                noteTestError(error)
+                for await outcome in group {
+                    switch outcome {
+                    case .value(let target, let value):
+                        recordLatency(name: target.proxyName, url: target.testUrl, value: value)
+                    case .guardTimedOut(let target):
+                        recordLatency(name: target.proxyName, url: target.testUrl, value: -1)
+                    case .transportFailed(let target, let message):
+                        // A throw is a transport failure, never a
+                        // dead node — but the node still shows as
+                        // failed (-2) instead of silently untested.
+                        recordLatency(name: target.proxyName, url: target.testUrl, value: -2)
+                        transportThrowCount += 1
+                        if firstTransportError == nil { firstTransportError = DelayTransportFailure(message: message) }
+                        if transportThrowCount >= 3 { cancelledByTransport = true }
+                    }
+                }
+            }
+            applyLatencies()
+        }
+        if let firstTransportError { throwError = firstTransportError }
+        // Tally the run from the recorded latencies (one record per
+        // target — the parallel loop records each outcome once).
+        for target in targets {
+            switch latency(for: target) {
+            case .some(let value) where value > 0:
+                okCount += 1
+            case .some(-1):
+                timeoutCount += 1
+            case .some:
+                failedCount += 1
+            case .none:
                 break
             }
         }
-        applyLatencies()
+        if okCount > 0 { everDelaySucceeded = true }
+        // Failure handling, FlClash _runDelayTest (:449-458): only a
+        // dead core cancels the job. Three transport throws in one
+        // run mean the backend is down — a dead node returns -2, it
+        // never throws (urltest.rs test_delay) — so the run was cut
+        // short above and the banner carries the real transport
+        // reason instead of silence.
+        if cancelledByTransport, let firstTransportError {
+            noteTestError(firstTransportError)
+            channelNote = "传输层连续失败 \(transportThrowCount) 次，已停止剩余测速：\(firstTransportError.localizedDescription)"
+        } else if client.mode == .live, okCount == 0, failedCount == targets.count {
+            if case .stillMissing = preload {
+                // The preload already explained why, with the
+                // provider.update error verbatim — keep that instead
+                // of the generic membership verdict below. (The
+                // banner was set at preload time; only the report
+                // line is recorded here.)
+                channelNote = preloadNote
+            } else {
+                // Channel failure vs dead nodes: -2 is a VALUE, never a
+                // throw, so a run where every node fails -2 never set
+                // testError — the page showed red cards and total silence
+                // (IMG_1145). Upstream returns -2 for a name that is not
+                // part of the applied config (urltest.rs test_delay), which
+                // is exactly what happens when the subscription's provider
+                // never loaded — so all -2 with no success is a channel
+                // failure until proven otherwise: check whether the loaded
+                // config even knows these names.
+                let names = targets.map { $0.proxyName }
+                let missing = await missingLoadedNames(names)
+                if let missing, !missing.isEmpty {
+                    let shown = missing.sorted().prefix(3).joined(separator: "、")
+                    let shownSuffix = missing.count > 3 ? "…" : ""
+                    noteTestMessage("测速通道异常：核心已加载的配置里没有这 \(missing.count) 个节点（\(shown)\(shownSuffix)），很可能是订阅提供方还没加载。请先启动一次 VPN 再回来测速，仍失败请把日志导出发来定位。")
+                    let missingShown = missing.sorted().prefix(8).joined(separator: "、")
+                    channelNote = "核心缺少节点 \(missingShown)（共 \(missing.count) 个）；提供方缓存见启动诊断"
+                } else if missing != nil {
+                    noteTestMessage("测速通道异常：\(targets.count) 个节点全部测速失败（-2），核心里有这些节点，但拨测全部失败——可能是节点已失效或当前网络不通。请检查订阅是否过期，或把日志导出发来定位。")
+                    channelNote = "核心里有这些节点，但 delay 拨测全部返回 -2"
+                } else {
+                    noteTestMessage("测速通道异常：\(targets.count) 个节点全部测速失败（-2），且无法确认核心是否加载了这些节点（查询失败）。请把日志导出发来定位。")
+                    channelNote = "全部 -2；核心节点查询失败，无法区分通道故障与节点故障"
+                }
+            }
+        }
         lastError = nil
     }
 
@@ -815,12 +1141,15 @@ final class ProxyStore: ObservableObject {
     /// URL (audit B3, FlClash _handleTestCurrentDelay +
     /// _resolveDelayTestTargets); a plain node is dialled with the
     /// group's test URL, else the stored override test-url (B24),
-    /// else the core default. Every call passes the timeout
-    /// explicitly (audit B1). Uses the app-side core when the VPN
-    /// is off; a transport failure only sets lastError/testError
-    /// and leaves the chip unchanged (never -2, never silent).
-    /// A nested group with no current pick cannot be dialled: the
-    /// chip stays untested and the banner says why.
+    /// else the FlClash default URL — never empty. Every call
+    /// passes the timeout explicitly (audit B1). Uses the app-side
+    /// core when the VPN is off; runs through the same per-target
+    /// path as the all-groups test (runOneDelayTest: settings timeout +
+    /// 30 s guard) and the same provider preload first. A transport
+    /// failure only sets lastError/testError and marks the chip
+    /// failed (-2), never silent; a guard timeout shows as 超时
+    /// (-1). A nested group with no current pick cannot be dialled:
+    /// the chip stays untested and the banner says why.
     @MainActor
     func testLatency(node: ProxyNode, testURL: String? = nil) async {
         guard !testingNodes.contains(node.name) else { return }
@@ -829,26 +1158,91 @@ final class ProxyStore: ObservableObject {
         testErrorIsGeoSeed = false
         lastTest = .node(node, testURL: testURL)
         defer { testingNodes.remove(node.name) }
-        let fallbackURL = firstNonEmpty(testURL, overrideTestURL()) ?? ""
+        let fallbackURL = firstNonEmpty(testURL, overrideTestURL(), Self.defaultTestURL) ?? Self.defaultTestURL
         guard let target = resolveDelayTarget(memberName: node.name, fallbackTestUrl: fallbackURL) else {
             let reason = "该节点当前没有可测速的真实节点（策略组未选择节点）"
             lastError = reason
             testError = reason
             return
         }
-        do {
-            let result: ConcordDelayResult
-            let url = target.testUrl.isEmpty ? nil : target.testUrl
-            if client.mode == .live && !TunnelManager.shared.isRunning {
+        let startedAt = Date()
+        let backend = client.mode == .live
+            ? (TunnelManager.shared.isRunning ? "隧道核心（VPN 运行中）" : "应用内核心（VPN 未运行）")
+            : "示例数据"
+        let useAppCore = client.mode == .live && !TunnelManager.shared.isRunning
+        // Writes the single-node diagnostic report (last-delay-
+        // test-report.txt) for one outcome. `extra` carries the
+        // channel diagnosis, if any; the preload line is added
+        // when the preload ran and did anything.
+        func writeReport(resultLine: String, preloadNote: String?, extra: [String] = []) {
+            var lines = ["[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)，单节点）"]
+            lines.append("方法：delay.test；节点：\(target.proxyName)；测速地址：\(target.testUrl)；超时：\(delayTimeoutMs)ms（单次调用另有 30s 兜底）")
+            lines.append("结果：\(resultLine)")
+            if let preloadNote { lines.append("提供方预加载：\(preloadNote)") }
+            lines.append(contentsOf: extra)
+            lines.append("此前是否测速成功过：\(everDelaySucceeded ? "是" : "否")")
+            AppCore.recordDelayTestReport(lines.joined(separator: "\n"))
+        }
+        // ensureStarted throws (no config / core won't boot) are a
+        // dead backend, not a dead node: banner the real reason.
+        if useAppCore {
+            do {
                 try await AppCore.shared.ensureStarted()
-                result = try await AppCore.shared.delayTest(proxy: target.proxyName, url: url, timeout: delayTimeoutMs)
-            } else {
-                result = try await client.delayTest(proxy: target.proxyName, url: url, timeout: delayTimeoutMs)
+            } catch {
+                noteTestError(error)
+                writeReport(resultLine: "调用失败：\(error.localizedDescription)", preloadNote: nil)
+                return
             }
-            recordLatency(name: result.name, url: result.url, value: result.value)
+        }
+        // Provider preload, same as the all-groups path.
+        var preloadNote: String?
+        if client.mode == .live {
+            switch await ensureProvidersLoaded(for: [target.proxyName], useAppCore: useAppCore) {
+            case .ready(let updated):
+                if !updated.isEmpty {
+                    preloadNote = "已更新提供方：\(updated.joined(separator: "、"))；复查后节点已全部加载"
+                }
+            case .stillMissing(let reason, let updated):
+                preloadNote = updated.isEmpty ? reason : "已更新提供方：\(updated.joined(separator: "、"))；\(reason)"
+                noteTestMessage(reason)
+            }
+        }
+        switch await runOneDelayTest(target: target, useAppCore: useAppCore) {
+        case .value(_, let value):
+            recordLatency(name: target.proxyName, url: target.testUrl, value: value)
             applyLatencies()
-        } catch {
+            if value > 0 { everDelaySucceeded = true }
+            let resultText = value > 0 ? "成功 \(value)ms" : value == -1 ? "超时(-1)" : "失败(-2)"
+            var extra: [String] = []
+            if value == -2, client.mode == .live, testError == nil {
+                // A single -2 is usually a dead node — except when
+                // the name is not in the loaded config at all
+                // (provider never loaded), which is a channel
+                // failure and deserves the banner, not silence.
+                // (The preload above already tried provider.update,
+                // so this only fires when the preload check was
+                // unavailable or the name vanished mid-run.)
+                if let missing = await missingLoadedNames([target.proxyName]),
+                   missing.contains(target.proxyName) {
+                    noteTestMessage("测速通道异常：核心已加载的配置里没有节点“\(target.proxyName)”（订阅提供方还没加载到核心）。请检查订阅更新后重试，仍失败请把日志导出发来定位。")
+                    extra.append("通道诊断：核心缺少该节点（订阅提供方未加载）；提供方缓存见启动诊断")
+                }
+            }
+            writeReport(resultLine: resultText, preloadNote: preloadNote, extra: extra)
+        case .guardTimedOut:
+            recordLatency(name: target.proxyName, url: target.testUrl, value: -1)
+            applyLatencies()
+            writeReport(resultLine: "超时（30s 兜底，未等到核心返回）", preloadNote: preloadNote)
+        case .transportFailed(_, let message):
+            // A throw is a transport failure, never a dead node —
+            // but the chip still shows as failed (-2) instead of
+            // silently untested, and the banner carries the real
+            // reason.
+            recordLatency(name: target.proxyName, url: target.testUrl, value: -2)
+            applyLatencies()
+            let error = DelayTransportFailure(message: message)
             noteTestError(error)
+            writeReport(resultLine: "调用失败：\(message)", preloadNote: preloadNote)
         }
     }
 
@@ -907,8 +1301,17 @@ final class ProxyStore: ObservableObject {
     // startTunnel boots the core (engine.start + tun.start) and its
     // stopTunnel tears it down; isRunning follows the tunnel status.
     // `.sample`: only flips local UI state, as before.
+    /// D2: true while toggle() is running. The Dashboard play
+    /// button, the VPN row and the toggle all call toggle(), so a
+    /// double tap used to start two stop/start races; the second
+    /// call now returns immediately while the first is in flight.
+    private var isToggling = false
+
     @MainActor
     func toggle() async {
+        guard !isToggling else { return }
+        isToggling = true
+        defer { isToggling = false }
         if client.mode == .live {
             if TunnelManager.shared.isRunning {
                 await TunnelManager.shared.stop()

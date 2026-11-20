@@ -195,10 +195,10 @@ struct DashboardView: View {
     private var timeoutCount: Int {
         proxyStore.groups.filter { group in
             if let selected = group.selectedNodeName,
-               let delay = proxyStore.latencies[selected] {
+               let delay = proxyStore.latency(forNodeNamed: selected, inGroup: group) {
                 return delay < 0
             }
-            let tested = group.nodes.compactMap { proxyStore.latencies[$0.name] }
+            let tested = group.nodes.compactMap { proxyStore.latency(forNodeNamed: $0.name, inGroup: group) }
             return !tested.isEmpty && tested.allSatisfy { $0 < 0 }
         }.count
     }
@@ -413,6 +413,13 @@ struct DashboardView: View {
 
     private func refreshAll() async {
         tunnelManager.checkTunRestartNeeded()
+        // D4: correct the uptime from the extension's start time
+        // when the tunnel is up (the local clock started when the
+        // app observed .connected, which is later — and resets to
+        // zero on every app restart while the VPN keeps running).
+        if proxyStore.isRunning, let extStarted = tunnelManager.readTunnelStartedAt() {
+            tunnelStartedAt = extStarted
+        }
         await proxyStore.refresh()
         await connectionStore.refresh()
         await trafficStore.refresh()
@@ -451,7 +458,7 @@ struct DashboardView: View {
         .task {
             morphProgress = proxyStore.isRunning ? 1 : 0
             if proxyStore.isRunning && tunnelStartedAt == nil {
-                tunnelStartedAt = Date()
+                tunnelStartedAt = tunnelManager.readTunnelStartedAt() ?? Date()
             }
             tunnelManager.checkTunRestartNeeded()
             intranetIp = DeviceNetwork.localIPv4Address()
@@ -466,7 +473,12 @@ struct DashboardView: View {
             }
         }
         .onChange(of: proxyStore.isRunning) { _, running in
-            tunnelStartedAt = running ? (tunnelStartedAt ?? Date()) : nil
+            // D4: prefer the extension's own start time
+            // (vpn-diagnostics.json) so the uptime survives an app
+            // restart while the VPN is running; the local clock is
+            // only the fallback when the extension has not written
+            // the file yet.
+            tunnelStartedAt = running ? (tunnelStartedAt ?? tunnelManager.readTunnelStartedAt() ?? Date()) : nil
             // Morph circle -> cookie9 over 450ms (easeOutBack, the
             // forward curve of FlClash's _StartToggle).
             withAnimation(.timingCurve(0.34, 1.56, 0.64, 1, duration: 0.45)) {
@@ -483,6 +495,22 @@ struct DashboardView: View {
                 ipFetchFailed = false
             }
             Task { await fetchIPInfo() }
+            // D8/D10: the tunnel flip also refreshes the engine /
+            // services / connections snapshots and re-probes the
+            // egress IP through the core, otherwise the dashboard
+            // keeps showing pre-connect values (or nothing) until
+            // the next pull-to-refresh.
+            Task {
+                await trafficStore.refreshEngineStatus()
+                await connectionStore.refresh()
+                if running {
+                    await trafficStore.probe()
+                    if let proxy = proxyStore.selectedOutbound,
+                       client.mode == .sample || tunnelManager.isRunning {
+                        await trafficStore.probeServices(proxy: proxy)
+                    }
+                }
+            }
         }
         .onChange(of: settingsStore.mode) { _, _ in
             Task { await settingsStore.applyGeneralToCore() }
@@ -621,6 +649,20 @@ struct DashboardView: View {
     // _StatusWavePainter, painted behind the content and clipped to
     // the card's rounded rect (34pt, the FlClash mobile card radius).
 
+    /// IP to show in the status card (audit D10): the core's own
+    /// probe.outboundIp result first — it measures the egress
+    /// through the selected proxy — ip-api.com only as fallback
+    /// for the geo/org enrichment. TrafficStore.probe() runs when
+    /// the tunnel connects (see the isRunning onChange below).
+    private var displayIp: String? {
+        if proxyStore.isRunning,
+           let coreIp = trafficStore.outboundIp?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !coreIp.isEmpty {
+            return coreIp
+        }
+        return ipInfo?.query
+    }
+
     /// IP slot (FlClash _ExitRow): a static grey bar while the core
     /// is not running, a pulsing skeleton while running and the
     /// probe has not answered, the real IP once it has, "服务失败"
@@ -629,7 +671,7 @@ struct DashboardView: View {
         Group {
             if !proxyStore.isRunning {
                 SkeletonBar(width: 140, height: 18)
-            } else if let ip = ipInfo?.query {
+            } else if let ip = displayIp {
                 // FlClash _IpText: hideIp masks the IP as "*****
                 // (current_outbound.dart _ipMask).
                 Text(settingsStore.hideIp ? "*****" : ip)
@@ -778,14 +820,12 @@ struct DashboardView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 34))
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 34))
-        // FlClash current_outbound.dart: a primary-coloured border +
-        // "状态 root" label while MITM root access is on; iOS has no
-        // root concept, so the border follows the MITM switch.
-        .overlay(
-            RoundedRectangle(cornerRadius: 34)
-                .stroke(ConcordTheme.accent, lineWidth: settingsStore.mitmEnabled ? 1.5 : 0)
-        )
-        .accessibilityLabel(settingsStore.mitmEnabled ? "状态 root" : "状态")
+        // v0.2.37 A组:去掉状态卡片的蓝色描边。之前这里按 FlClash
+        // current_outbound.dart 的 "root" 概念画了一圈主色描边
+        // (MITM 开关开时 lineWidth 1.5),但 iOS 没有 root 概念,
+        // FlClash 的卡片本身也没有这圈边框;其余卡片用的
+        // .concordCard() 本来就没有描边,此处应与之一致。
+        .accessibilityLabel("状态")
         .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
     }
 
@@ -1056,7 +1096,11 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("VPN")
                     .font(.system(size: 14, weight: .semibold))
-                Text(proxyStore.isRunning ? "已连接" : "已断开")
+                // D3: the subtitle follows the real tunnel status
+                // ("连接中" while connecting), not the isRunning
+                // boolean — isRunning is only true once connected,
+                // so the old text claimed "已连接" during connecting.
+                Text(tunnelStatusText)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }

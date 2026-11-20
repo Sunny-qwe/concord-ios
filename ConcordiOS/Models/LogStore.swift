@@ -75,6 +75,7 @@ final class LogStore: ObservableObject {
             sections.append("== 核心警告 ==\n" + warnings.map(\.message).joined(separator: "\n"))
         }
         sections.append("== 应用内核心启动诊断 ==\n" + (AppCore.lastBootReportText() ?? "暂无记录（尚未在应用内启动过核心）"))
+        sections.append("== 最近一次测速诊断 ==\n" + (AppCore.lastDelayTestReportText() ?? "暂无记录（尚未测速，或本次测速未写入诊断）"))
         sections.append("== VPN 启动诊断 ==\n" + (TunnelManager.shared.lastStartupDiagnostic() ?? "暂无最近的 VPN 启动诊断（扩展未写入或已超过 180 秒）"))
         if let lastError {
             sections.append("== 日志拉取错误 ==\n\(lastError)")

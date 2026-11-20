@@ -34,6 +34,13 @@ final class TrafficStore: ObservableObject {
     private var timer: AnyCancellable?
     private let maxHistory = 60
 
+    /// Consecutive refresh() failures (audit D9): one failed
+    /// snapshot keeps the last values (a transient), but after 3
+    /// in a row the core is really gone, so the live rates are
+    /// zeroed instead of showing stale numbers forever. Totals
+    /// are kept — they are cumulative counters, not live rates.
+    private var consecutiveRefreshFailures = 0
+
     init(client: ConcordClient = ConcordClient()) {
         self.client = client
     }
@@ -46,7 +53,13 @@ final class TrafficStore: ObservableObject {
         timer = Timer.publish(every: 1.0, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
-                Task { await self?.refresh() }
+                Task {
+                    await self?.refresh()
+                    // D11: the engine row rides the same 1 s tick
+                    // as the traffic snapshot, otherwise it freezes
+                    // after the first read.
+                    await self?.refreshEngineStatus()
+                }
             }
         Task { await refresh() }
         Task { await probe() }
@@ -75,9 +88,16 @@ final class TrafficStore: ObservableObject {
             current = traffic
             history.append(TrafficPoint(date: Date(), up: traffic.up, down: traffic.down))
             if history.count > maxHistory { history.removeFirst(history.count - maxHistory) }
+            consecutiveRefreshFailures = 0
             lastError = nil
         } catch {
             lastError = error.localizedDescription
+            consecutiveRefreshFailures += 1
+            if consecutiveRefreshFailures >= 3 {
+                // The core has been unreachable for 3 ticks: drop
+                // the stale live rates (keep the cumulative totals).
+                current = ConcordTraffic(up: 0, down: 0, totalUp: current.totalUp, totalDown: current.totalDown)
+            }
         }
     }
 

@@ -26,11 +26,15 @@ struct MitmCertificateView: View {
     @State private var isCheckingTrust = false
     @State private var showRegenerateConfirm = false
     @State private var regenerateNote: String?
+    @State private var isInstallingProfile = false
+    @State private var installMessage: String?
+    @State private var installFailed = false
+    @State private var installHint: String?
 
     var body: some View {
         List {
             Section {
-                Text("MITM 需要把 CA 证书装到系统里并信任：在「设置 → 通用 → VPN 与设备管理」安装描述文件，再到「关于本机 → 证书信任设置」里打开完全信任。应用本身装不了系统证书。")
+                Text("安装分两步：① 点下面的「安装描述文件」，系统会打开安装页面，按提示装好描述文件（装完后在「设置 → 通用 → VPN 与设备管理」里能看到它）；② 去「设置 → 通用 → 关于本机 → 证书信任设置」里打开 Concord CA 的完全信任。应用本身装不了系统证书，这两步都要手动完成。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -40,6 +44,29 @@ struct MitmCertificateView: View {
                     labeled("指纹", info.fingerprint)
                     labeled("有效期自", info.notBefore)
                     labeled("有效期至", info.notAfter)
+                    // Primary entry: the system install flow. The
+                    // app builds a .mobileconfig with the CA and
+                    // hands it to iOS, which prompts the install —
+                    // the app itself cannot install a system CA.
+                    Button {
+                        installProfile()
+                    } label: {
+                        Label("安装描述文件（去 Safari 安装）", systemImage: "arrow.down.doc.fill")
+                    }
+                    .disabled(isInstallingProfile)
+                    if isInstallingProfile {
+                        ProgressView()
+                    }
+                    if let installHint {
+                        Text(installHint)
+                            .font(.footnote)
+                            .foregroundStyle(Color.orange)
+                    }
+                    if let installMessage {
+                        Text(installMessage)
+                            .font(.footnote)
+                            .foregroundStyle(installFailed ? Color.red : Color.secondary)
+                    }
                     ShareLink("分享 CA 证书（PEM）", item: info.pem)
                 } else {
                     Text(settingsStore.mitmStatusMessage ?? "尚未读取 CA 状态")
@@ -50,7 +77,11 @@ struct MitmCertificateView: View {
                     Task { await settingsStore.refreshMitmStatus() }
                 }
                 Button("生成 CA 证书") {
-                    Task { _ = await generateCertificate() }
+                    Task {
+                        if await generateCertificate() {
+                            installHint = "CA 已生成：下一步点「安装描述文件」，按系统提示装好，再去「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任。"
+                        }
+                    }
                 }
                 // FlClash mitm.dart:253-340 _regenerate: confirm,
                 // then generate a new CA. The old CA stays installed
@@ -186,6 +217,32 @@ struct MitmCertificateView: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }.count
         return count == 0 ? "未设置" : "\(count) 个域名"
+    }
+
+    /// System install flow: build a .mobileconfig with the CA and
+    /// hand it to iOS, which prompts the user to install the
+    /// profile. A success here only means iOS accepted the open —
+    /// the app cannot observe whether the user finished installing,
+    /// so the message says what to do next instead of claiming the
+    /// CA is installed. A failure is reported honestly with the
+    /// PEM-share fallback.
+    private func installProfile() {
+        guard let pem = settingsStore.mitmCertificate?.pem else { return }
+        isInstallingProfile = true
+        installMessage = nil
+        installFailed = false
+        MobileConfigInstaller.install(caPEM: pem) { result in
+            isInstallingProfile = false
+            switch result {
+            case .success:
+                installHint = nil
+                installFailed = false
+                installMessage = "已交给系统打开安装页面：按提示装好描述文件，然后去「设置 → 通用 → 关于本机 → 证书信任设置」里打开 Concord CA 的完全信任，再回来点「检测信任状态」确认。"
+            case .failure(let error):
+                installFailed = true
+                installMessage = "打不开安装页面：\(error.localizedDescription)。可以改用下面的「分享 CA 证书（PEM）」把证书发到电脑上安装。"
+            }
+        }
     }
 
     /// Generates the CA. Tunnel running (or sample mode) → the

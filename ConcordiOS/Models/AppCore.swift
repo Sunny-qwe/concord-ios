@@ -112,12 +112,52 @@ final class AppCore {
     }
     private var delayRun: DelayRunAccumulator?
 
+    /// delay.run event batches that arrived before their run was
+    /// registered (see delayRunStart): the reply and the first
+    /// result events race across the MainActor hop, and a
+    /// fast-failing run (every node missing from the config fails
+    /// with no I/O at all) can emit its whole batch — results AND
+    /// the done event — inside that window. Dropping them made the
+    /// poll loop wait the full 60 s for a `done` that already
+    /// passed, then give up with the nodes still untested. Batches
+    /// are keyed by sub and replayed on registration.
+    private var delayRunStash: [(sub: Int, items: [Any])] = []
+
     /// True while the app-side core session is open.
     var isRunning: Bool { session != 0 }
 
     /// The file name the last boot report is persisted under, in
     /// this core's app-private home dir.
     private static let bootReportFileName = "last-boot-report.txt"
+
+    /// The file name the last delay-test diagnostic is persisted
+    /// under, in this core's app-private home dir. Written by
+    /// ProxyStore after every delay run (method, params, per-node
+    /// outcome counts, channel diagnosis); read by the Logs export,
+    /// so the user can send the last failure as-is.
+    private static let delayTestReportFileName = "last-delay-test-report.txt"
+
+    /// Writes one delay-test diagnostic (plain text, already
+    /// timestamped by the caller) to `last-delay-test-report.txt`.
+    /// Best-effort and synchronous: called from ProxyStore's
+    /// run-exits, including the throw paths.
+    static func recordDelayTestReport(_ text: String) {
+        guard let home = try? appHomeDirectory() else { return }
+        try? text.write(
+            to: home.appendingPathComponent(delayTestReportFileName),
+            atomically: true, encoding: .utf8)
+    }
+
+    /// The last delay-test diagnostic, if one was ever written.
+    static func lastDelayTestReportText() -> String? {
+        guard let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let url = base.appendingPathComponent("ConcordAppCore", isDirectory: true)
+            .appendingPathComponent(delayTestReportFileName)
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              !text.isEmpty else { return nil }
+        return text
+    }
 
     /// The last app-core boot attempt, as timestamped plain-text
     /// lines (GeoSeed outcome per file + boot result), read back
@@ -135,12 +175,12 @@ final class AppCore {
         return text
     }
 
-    /// Records one boot attempt (GeoSeed outcome + result) to
-    /// `last-boot-report.txt` in this core's home dir, for the Logs
-    /// export. Called on success, on a GeoSeed failure, and on any
-    /// other boot failure — so the file always describes the latest
-    /// attempt, never a stale one.
-    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String) {
+    /// Records one boot attempt (GeoSeed outcome + provider-cache
+    /// seed outcome + result) to `last-boot-report.txt` in this
+    /// core's home dir, for the Logs export. Called on success, on
+    /// a GeoSeed failure, and on any other boot failure — so the
+    /// file always describes the latest attempt, never a stale one.
+    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String, providerSeed: ProviderCacheSeed.Report? = nil) {
         let stamp = Self.bootReportTimestamp(Date())
         var lines = ["[\(stamp)] 应用内核心启动"]
         for spec in GeoSeed.files {
@@ -155,6 +195,26 @@ final class AppCore {
             } else {
                 lines.append("GeoSeed \(spec.fileName)：未尝试")
             }
+        }
+        if let providerSeed {
+            if providerSeed.sourceUnavailable {
+                lines.append("提供方缓存：App Group 容器不可用，未复制")
+            } else {
+                if !providerSeed.copied.isEmpty || !providerSeed.alreadyPresent.isEmpty {
+                    let shown = providerSeed.copied.prefix(3).joined(separator: "、")
+                    let shownSuffix = providerSeed.copied.count > 3 ? "…" : ""
+                    let copiedDetail = shown.isEmpty ? "" : "（\(shown)\(shownSuffix))"
+                    lines.append("提供方缓存：已复制 \(providerSeed.copied.count) 个\(copiedDetail)，已存在 \(providerSeed.alreadyPresent.count) 个")
+                } else if !providerSeed.sourceMissingDirs.isEmpty {
+                    let missingDirs = providerSeed.sourceMissingDirs.joined(separator: "、")
+                    lines.append("提供方缓存：扩展侧无缓存（\(missingDirs) 均不存在），提供方需联网拉取")
+                }
+                for failure in providerSeed.failures {
+                    lines.append("提供方缓存 \(failure.file)：复制失败：\(failure.error.localizedDescription)")
+                }
+            }
+        } else {
+            lines.append("提供方缓存：未尝试")
         }
         lines.append("启动结果：\(outcome)")
         try? lines.joined(separator: "\n").write(
@@ -188,12 +248,17 @@ final class AppCore {
     // MARK: Lifecycle
 
     /// The app-private home directory for this core instance.
-    private func homeDirectory() throws -> URL {
+    static func appHomeDirectory() throws -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         let dir = base.appendingPathComponent("ConcordAppCore", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// The app-private home directory for this core instance.
+    private func homeDirectory() throws -> URL {
+        try Self.appHomeDirectory()
     }
 
     /// The shared config.yaml the extension reads at startTunnel
@@ -225,13 +290,26 @@ final class AppCore {
               let signature = configSignature(for: configURL) else {
             throw AppCoreError.noConfig
         }
-        if session != 0 {
-            guard signature != loadedConfigSignature else { return }
-            await stop()
-        }
         let home = try homeDirectory()
         let groupHome = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)
+        if session != 0 {
+            guard signature != loadedConfigSignature else {
+                // The core is already running this exact config — but
+                // re-seed the provider cache anyway: the extension
+                // may have cached provider files since this core
+                // booted (first VPN start). If files that were
+                // missing appear now, restart so the provider
+                // initial() load (disk-first) picks them up — a
+                // running core never re-reads the cache file on its
+                // own, so without the restart the next test would
+                // keep reporting the same nodes as missing.
+                let reseeded = Self.seedProviderCache(appHome: home, groupHome: groupHome)
+                if reseeded.copied.isEmpty { return }
+                await stop()
+            }
+            await stop()
+        }
         // Heal a one-sided CA before the core boots and reads its CA
         // from disk: if the tunnel generated a CA, this core loads
         // that one instead of creating a divergent one on first MITM
@@ -276,6 +354,19 @@ final class AppCore {
             recordBootReport(home: home, seed: appSeed, outcome: "失败：\(failure.localizedDescription)")
             throw failure
         }
+        // Seed the proxy/rule provider cache (seedProviderCache)
+        // BEFORE the core boots: config.apply starts each
+        // proxy-provider's initial() load, which reads its cache
+        // file from THIS home first and only pulls over the network
+        // when nothing is on disk — and a failed pull is non-fatal
+        // to apply (upstream provider/mod.rs run(): it only logs a
+        // warning), so the config loads with zero provider nodes
+        // and every delay.test then returns -2 for a name the core
+        // never saw ("not part of the applied config"). The
+        // extension core's home (App Group container) already holds
+        // the cache from earlier VPN starts; this home is separate
+        // and starts empty, so copy it across here.
+        let providerSeed = Self.seedProviderCache(appHome: home, groupHome: groupHome)
         let context = Unmanaged.passRetained(self).toOpaque()
         do {
             if !Self.coreStarted {
@@ -338,10 +429,10 @@ final class AppCore {
                 "overlay": overlay,
             ], resultType: EmptyResult.self, timeoutSeconds: 60)
             _ = try await sendRequest(method: "engine.start", params: [:], resultType: EmptyResult.self, timeoutSeconds: 60)
-            recordBootReport(home: home, seed: appSeed, outcome: "成功")
+            recordBootReport(home: home, seed: appSeed, outcome: "成功", providerSeed: providerSeed)
             loadedConfigSignature = signature
         } catch {
-            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)")
+            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)", providerSeed: providerSeed)
             // Balance the passRetained above exactly once: if the
             // session was opened, tearDown() closes it and the
             // releaseCallback balances the retain (sync or async);
@@ -384,8 +475,120 @@ final class AppCore {
             }
             pending.removeAll()
             delayRun = nil
+            delayRunStash.removeAll()
             loadedConfigSignature = nil
         }
+    }
+
+    // MARK: Provider cache seeding + loaded-config membership
+    //
+    // The provider cache lives under the core home (upstream
+    // crates/group/src/provider/mod.rs: the cache `path` is
+    // confined to shared.home, and initial() reads it from disk
+    // before pulling over the network). The extension core's home
+    // is the App Group container; this core's home is the
+    // app-private ConcordAppCore dir — a different home, so a
+    // provider the extension already cached is still missing here
+    // on first boot. A missing provider is not fatal to
+    // config.apply (its load runs async and only warns), so the
+    // config loads with zero provider nodes and every delay.test
+    // for one returns -2 with no throw — the silent all-nodes-fail
+    // of IMG_1145. Copying the cache across before boot makes
+    // initial() load from disk instead of the network.
+
+    /// The outcome of one provider-cache seeding pass, for the
+    /// boot report. `copied` / `alreadyPresent` are paths relative
+    /// to the home (e.g. providers/subscription.yaml).
+    struct ProviderCacheSeed {
+        struct Report {
+            var copied: [String] = []
+            var alreadyPresent: [String] = []
+            var sourceMissingDirs: [String] = []
+            var failures: [(file: String, error: Error)] = []
+            var sourceUnavailable = false
+        }
+
+        /// Home-relative dirs holding provider cache files: the
+        /// explicit `path:` of http proxy/rule providers
+        /// (./providers/…, ./rules/…) and the md5-named cache of
+        /// providers without an explicit path (proxies/<md5>).
+        static let cacheDirs = ["providers", "rules", "proxies"]
+    }
+
+    /// Copies the provider cache (providers/ + rules/ + proxies/)
+    /// from the extension core's home (App Group container) into
+    /// this core's home, before config.apply. Only files that are
+    /// missing here, or older/smaller than the source, are copied
+    /// — a newer file here (e.g. written by this core's own pull)
+    /// is never downgraded. Hidden files and partial temp files
+    /// are skipped. Best-effort: the caller still boots when the
+    /// source has no cache at all (the core then pulls over the
+    /// network); the report says so honestly.
+    static func seedProviderCache(appHome: URL, groupHome: URL?) -> ProviderCacheSeed.Report {
+        var report = ProviderCacheSeed.Report()
+        guard let groupHome else {
+            report.sourceUnavailable = true
+            return report
+        }
+        let fm = FileManager.default
+        for dir in ProviderCacheSeed.cacheDirs {
+            let sourceDir = groupHome.appendingPathComponent(dir, isDirectory: true)
+            guard fm.fileExists(atPath: sourceDir.path) else {
+                report.sourceMissingDirs.append(dir)
+                continue
+            }
+            guard let enumerator = fm.enumerator(at: sourceDir, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]) else { continue }
+            for case let source as URL in enumerator {
+                let name = source.lastPathComponent
+                guard !name.hasPrefix("."), !name.contains(".tmp-") else { continue }
+                guard (try? source.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                let rel = source.path.replacingOccurrences(of: sourceDir.path + "/", with: "\(dir)/")
+                let dest = appHome.appendingPathComponent(rel)
+                do {
+                    if fm.fileExists(atPath: dest.path),
+                       let srcAttrs = try? fm.attributesOfItem(atPath: source.path),
+                       let dstAttrs = try? fm.attributesOfItem(atPath: dest.path),
+                       let srcSize = srcAttrs[.size] as? NSNumber,
+                       let dstSize = dstAttrs[.size] as? NSNumber,
+                       let srcDate = srcAttrs[.modificationDate] as? Date,
+                       let dstDate = dstAttrs[.modificationDate] as? Date,
+                       dstSize.intValue == srcSize.intValue, dstDate >= srcDate {
+                        report.alreadyPresent.append(rel)
+                        continue
+                    }
+                    try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    let data = try Data(contentsOf: source)
+                    let temp = dest.deletingLastPathComponent()
+                        .appendingPathComponent(".\(name).tmp-\(UUID().uuidString)")
+                    do {
+                        try data.write(to: temp, options: .atomic)
+                        if fm.fileExists(atPath: dest.path) {
+                            try fm.removeItem(at: dest)
+                        }
+                        try fm.moveItem(at: temp, to: dest)
+                    } catch {
+                        try? fm.removeItem(at: temp)
+                        throw error
+                    }
+                    report.copied.append(rel)
+                } catch {
+                    report.failures.append((file: rel, error: error))
+                }
+            }
+        }
+        return report
+    }
+
+    /// The proxy + group names the applied config knows
+    /// (proxy.groups), for the channel-vs-node diagnosis: a delay
+    /// target absent from this set was never loaded (provider not
+    /// loaded / name mismatch), so its -2 is a channel failure,
+    /// not a dead node. The core must already be started.
+    func loadedProxyNames() async throws -> Set<String> {
+        let groups = try await sendRequest(method: "proxy.groups", params: [:], resultType: ConcordProxyGroups.self, timeoutSeconds: 15)
+        var names = Set(groups.nodes.map { $0.name })
+        names.formUnion(groups.groups.map { $0.name })
+        return names
     }
 
     // MARK: Delay test
@@ -415,11 +618,18 @@ final class AppCore {
         if let timeout { params["timeout"] = timeout }
         if let concurrency { params["concurrency"] = concurrency }
         let start = try await sendRequest(method: "delay.run", params: params, resultType: DelayRunStart.self)
-        coreQueue.async {
-            // The reply's snapshot is empty for delay.run (the
-            // result type carries EmptyResult?); the real results
-            // arrive as $/event notifications and accumulate here.
+        // Register the accumulator SYNCHRONOUSLY on coreQueue and
+        // replay any batches that arrived before registration (see
+        // delayRunStash): the old `coreQueue.async` assignment left
+        // a window in which fast-failing results and the done event
+        // were dropped, stalling the poll loop for the full 60 s.
+        coreQueue.sync {
             self.delayRun = DelayRunAccumulator(sub: start.sub)
+            let stashed = self.delayRunStash.filter { $0.sub == start.sub }
+            self.delayRunStash.removeAll { $0.sub == start.sub }
+            for batch in stashed {
+                self.accumulateDelayItems(batch.items)
+            }
         }
         return start
     }
@@ -442,6 +652,33 @@ final class AppCore {
                 continuation.resume(returning: DelayRunSnapshot(runId: run.sub, done: run.done, results: results))
             }
         }
+    }
+
+    // MARK: Providers (B2 second version)
+
+    /// Updates one proxy provider (provider.update) on the app-side
+    /// core, for the delay-test preload (ProxyStore
+    /// ensureProvidersLoaded): pulls the provider's content and
+    /// swaps its node set live — upstream crates/group/src/
+    /// provider/mod.rs update() -> pull() -> load_buf() ->
+    /// apply() does nodes.store + route.moved +
+    /// request_refresh(), so NO config.apply is needed afterwards.
+    /// 60 s: a subscription pull over the user's network can be
+    /// slow; a tight timeout would fail the preload on a
+    /// slow-but-working network. Throws the core's reason verbatim
+    /// (download failure, timeout, already-updating), which the
+    /// caller puts in the banner.
+    func providerUpdate(name: String) async throws {
+        _ = try await sendRequest(method: "provider.update", params: ["name": name], resultType: EmptyResult.self, timeoutSeconds: 60)
+    }
+
+    /// Lists the providers the app-side core knows (provider.list),
+    /// for the preload fallback: when no group row attributes a
+    /// missing node to a provider, every provider is updated and
+    /// the names are re-checked. A local read, so the 15 s default
+    /// stands.
+    func providerList() async throws -> ConcordProviderList {
+        try await sendRequest(method: "provider.list", params: [:], resultType: ConcordProviderList.self, timeoutSeconds: 15)
     }
 
     // MARK: MITM CA (v0.2.35 Item C)
@@ -710,8 +947,28 @@ final class AppCore {
     private func handleStreamEvent(params: [String: Any]?) {
         guard let params,
               let sub = (params["sub"] as? NSNumber)?.intValue,
-              var run = delayRun, run.sub == sub,
               let items = params["data"] as? [Any] else { return }
+        if delayRun?.sub == sub {
+            accumulateDelayItems(items)
+            return
+        }
+        // No run registered for this sub yet — the delay.run reply
+        // has not reached delayRunStart's registration (see
+        // delayRunStash). Stash the batch instead of dropping it;
+        // anything else (a stale run's late batch) is bounded and
+        // discarded on the next registration.
+        if delayRunStash.count < 64 {
+            delayRunStash.append((sub: sub, items: items))
+        }
+    }
+
+    /// Applies one batch of delay.run events ({type: "result",
+    /// name, url, value} and a final {type: "done"}) to the
+    /// registered run. Runs on coreQueue. Refills one unit of
+    /// credit per batch consumed, like the extension; without it
+    /// the server pump stops after the initial credit.
+    private func accumulateDelayItems(_ items: [Any]) {
+        guard var run = delayRun else { return }
         for item in items {
             guard let event = item as? [String: Any],
                   let type = event["type"] as? String else { continue }
@@ -725,9 +982,6 @@ final class AppCore {
             }
         }
         delayRun = run
-        // Refill one unit of credit per batch consumed, like the
-        // extension; without it the server pump stops after the
-        // initial credit.
-        sendNotification(method: "$/credit", params: ["sub": sub, "n": 1])
+        sendNotification(method: "$/credit", params: ["sub": run.sub, "n": 1])
     }
 }

@@ -150,7 +150,7 @@ private struct HostRowView: View {
             .autocorrectionDisabled()
             .frame(width: 120)
             .font(.system(.body, design: .monospaced))
-            .foregroundStyle(HostsView.isValidIP(hosts[index].ip) ? .primary : .red)
+            .foregroundStyle(HostsView.isValidIP(hosts[index].ip) ? Color.primary : Color.red)
             .onSubmit { onSubmit() }
         }
     }

@@ -440,7 +440,7 @@ private struct HostnameRowView: View {
             ))
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
-            .foregroundStyle(MitmHostnameEditorView.isValidHostname(hostnames[index]) ? .primary : .red)
+            .foregroundStyle(MitmHostnameEditorView.isValidHostname(hostnames[index]) ? Color.primary : Color.red)
             if !MitmHostnameEditorView.isValidHostname(hostnames[index]) {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(.red)

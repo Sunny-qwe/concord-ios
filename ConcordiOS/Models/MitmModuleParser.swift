@@ -1187,7 +1187,6 @@ private let qxMitmPattern = #"^(skip_dst_ip|skip_src_ip|skip_validating_cert|pas
 private let qxRewritePattern = #"^\S+\s+url\s+\S|\surl-and-header\s"#
 
 private let qxFilterPattern = #"^(host|host-suffix|host-keyword|host-wildcard|ip-cidr|ip6-cidr|user-agent|geoip|ip-asn|final)\s*,"#
-private let qxRewritePattern = #"^\S+\s+url\s+\S|\surl-and-header\s"#
 private let qxScripts: [String: (phase: String, body: Bool)] = [
     "script-request-header": ("http-request", false),
     "script-request-body": ("http-request", true),

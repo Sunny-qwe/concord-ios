@@ -15,6 +15,8 @@ import UniformTypeIdentifiers
 struct MitmModulesView: View {
     @EnvironmentObject private var moduleStore: MitmModuleStore
     @EnvironmentObject private var client: ConcordClient
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var tunnelManager: TunnelManager
 
     @State private var urlText = ""
     @State private var showPasteImport = false
@@ -24,6 +26,25 @@ struct MitmModulesView: View {
     @State private var showConsentAlert = false
     @State private var deleteModule: MitmModule?
     @State private var showDeleteConfirm = false
+    /// Live per-module status from the core (mitm.moduleStatus),
+    /// keyed by module name. Refreshed on appear, on pull-to-refresh,
+    /// when the VPN comes up, and after a re-fetch.
+    @State private var statusByName: [String: ConcordMitmModuleStatus] = [:]
+    /// Why no status could be fetched yet (gate not met: sample mode,
+    /// VPN off, MITM off). Shown briefly inside an expanded row.
+    @State private var statusNote: String?
+    /// The last status-fetch failure, shown briefly inside an
+    /// expanded row — status is advisory, never a banner.
+    @State private var statusError: String?
+    @State private var isLoadingStatus = false
+    /// Detail page target: the row tap now expands the row in place,
+    /// so detail navigation is programmatic instead of a
+    /// NavigationLink inside the row.
+    @State private var detailModule: MitmModule?
+    /// Modules currently re-fetching their remote files.
+    @State private var refetchingNames: Set<String> = []
+    /// Per-module re-fetch failure, shown inline in the expanded row.
+    @State private var refetchErrorByName: [String: String] = [:]
 
     var body: some View {
         List {
@@ -85,6 +106,12 @@ struct MitmModulesView: View {
                 ForEach(moduleStore.modules) { module in
                     MitmModuleRow(
                         module: module,
+                        status: statusByName[module.name],
+                        statusNote: statusNote,
+                        statusError: statusError,
+                        isLoadingStatus: isLoadingStatus,
+                        isRefetching: refetchingNames.contains(module.name),
+                        refetchError: refetchErrorByName[module.name],
                         onToggle: { on in toggle(module, on: on) },
                         onMoveUp: { Task { await moduleStore.moveUp(module) } },
                         onMoveDown: { Task { await moduleStore.moveDown(module) } },
@@ -98,7 +125,10 @@ struct MitmModulesView: View {
                         },
                         onDismissAwaiting: {
                             Task { await moduleStore.answerConsent(module, agreed: false) }
-                        }
+                        },
+                        onShowDetail: { detailModule = module },
+                        onRefetch: { Task { await refetch(module) } },
+                        onExpand: { Task { await refreshStatusIfNeeded() } }
                     )
                 }
             }
@@ -108,6 +138,31 @@ struct MitmModulesView: View {
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("MITM 模块")
+        .task { await refreshStatus() }
+        .refreshable { await refreshStatus() }
+        .onChange(of: tunnelManager.isRunning) { _, running in
+            if running {
+                Task { await refreshStatus() }
+            } else {
+                // The status belongs to the running core — once the
+                // VPN stops it is stale, so drop it and say so.
+                statusByName = [:]
+                statusError = nil
+                statusNote = "启动 VPN 后可以看到模块实时状态"
+            }
+        }
+        .onChange(of: settingsStore.mitmEnabled) { _, enabled in
+            if enabled {
+                Task { await refreshStatus() }
+            } else {
+                statusByName = [:]
+                statusError = nil
+                statusNote = "打开 MITM 后可以看到模块实时状态"
+            }
+        }
+        .navigationDestination(item: $detailModule) { module in
+            MitmModuleDetailView(moduleId: module.id)
+        }
         .sheet(isPresented: $showPasteImport) {
             MitmModulePasteImportView(onImported: { saved in
                 offerConsent(saved)
@@ -201,6 +256,70 @@ struct MitmModulesView: View {
         Task { await moduleStore.setEnabled(module, on: on) }
     }
 
+    /// Reads the core's per-module status (mitm.moduleStatus). The
+    /// handler is gated by mitm_enabled() in the core, and the sample
+    /// transport would answer with sample data — so this only calls
+    /// when the client is live, the VPN is up and MITM is on.
+    /// Otherwise it records an honest note for the expanded rows
+    /// instead of failing loudly.
+    private func refreshStatus() async {
+        guard client.mode == .live else {
+            statusByName = [:]
+            statusError = nil
+            statusNote = "示例数据模式下没有实时状态"
+            return
+        }
+        guard tunnelManager.isRunning else {
+            statusByName = [:]
+            statusError = nil
+            statusNote = "启动 VPN 后可以看到模块实时状态"
+            return
+        }
+        guard settingsStore.mitmEnabled else {
+            statusByName = [:]
+            statusError = nil
+            statusNote = "打开 MITM 后可以看到模块实时状态"
+            return
+        }
+        statusNote = nil
+        isLoadingStatus = true
+        defer { isLoadingStatus = false }
+        do {
+            let list = try await client.mitmModuleStatus()
+            statusByName = Dictionary(
+                list.modules.map { ($0.name, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            statusError = nil
+        } catch {
+            statusError = error.localizedDescription
+        }
+    }
+
+    /// A row expanding re-reads the status only when nothing is
+    /// loaded yet — expanding a row that already has status must
+    /// not hit the core again.
+    private func refreshStatusIfNeeded() async {
+        guard statusByName.isEmpty, !isLoadingStatus else { return }
+        await refreshStatus()
+    }
+
+    /// Re-fetches one module's remote files (mitm.fetchModule) and
+    /// then re-reads the status, so the expanded row shows the fresh
+    /// state. A failure is recorded per module and shown inline in
+    /// its expanded row.
+    private func refetch(_ module: MitmModule) async {
+        refetchingNames.insert(module.name)
+        refetchErrorByName[module.name] = nil
+        defer { refetchingNames.remove(module.name) }
+        do {
+            try await client.mitmFetchModule(name: module.name)
+            await refreshStatus()
+        } catch {
+            refetchErrorByName[module.name] = error.localizedDescription
+        }
+    }
+
     /// Imports every URL on its own line, skipping ones already
     /// installed (FlClash mitm_modules.dart:174-205), then offers
     /// script consent for any newly imported module that awaits it
@@ -248,6 +367,18 @@ struct MitmModulesView: View {
 
 private struct MitmModuleRow: View {
     let module: MitmModule
+    /// Live status for this module from mitm.moduleStatus, matched
+    /// by name; nil when the core has no entry for it.
+    let status: ConcordMitmModuleStatus?
+    /// Why no status could be fetched (sample mode / VPN off /
+    /// MITM off); shown briefly inside the expanded row.
+    let statusNote: String?
+    /// The last status-fetch failure, shown briefly in the row.
+    let statusError: String?
+    let isLoadingStatus: Bool
+    let isRefetching: Bool
+    /// The last re-fetch failure for this module, shown inline.
+    let refetchError: String?
     let onToggle: (Bool) -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
@@ -256,101 +387,267 @@ private struct MitmModuleRow: View {
     /// this module; the × next to it declines without asking.
     let onAwaitingConsent: () -> Void
     let onDismissAwaiting: () -> Void
+    /// Opens the module detail page (the row tap itself now expands
+    /// the row in place instead of navigating).
+    let onShowDetail: () -> Void
+    /// Re-fetches this module's remote files (mitm.fetchModule).
+    let onRefetch: () -> Void
+    /// Called when the row expands, so the list can load the status
+    /// if it has none yet.
+    let onExpand: () -> Void
 
     @EnvironmentObject private var moduleStore: MitmModuleStore
+    /// Tapping the row expands it in place to show the core's live
+    /// status for this module.
+    @State private var isExpanded = false
 
     private var content: MitmModuleContent? {
         moduleStore.parsedContent(for: module)
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Toggle("", isOn: Binding(
-                get: { module.enabled },
-                set: { onToggle($0) }
-            ))
-            .labelsHidden()
-            NavigationLink {
-                MitmModuleDetailView(moduleId: module.id)
-            } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        Text(module.name)
-                            .font(.system(size: 13))
-                            .fontWeight(.semibold)
-                            .foregroundStyle(Color(.label))
-                        if module.url != nil {
-                            Text("链接")
-                                .font(.system(size: 10))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1)
-                                .background(Color.blue.opacity(0.12), in: Capsule())
-                        }
-                        if let content, content.declaredScripts > 0 {
-                            Text("\(content.declaredScripts) 脚本")
-                                .font(.system(size: 10))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1)
-                                .background(Color.orange.opacity(0.14), in: Capsule())
-                                .foregroundStyle(.orange)
-                        }
-                        // Fork 2d31f10: the module awaits consent —
-                        // off, never answered, asking about something.
-                        // The state lives in the row, so the badge
-                        // survives app restart. Tapping it opens the
-                        // consent prompt; the × declines it.
-                        if moduleStore.awaitsConsent(module) {
-                            Button("待确认", action: onAwaitingConsent)
-                                .font(.system(size: 10))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1)
-                                .background(Color.orange.opacity(0.14), in: Capsule())
-                                .foregroundStyle(.orange)
-                                .buttonStyle(.plain)
-                            Button(action: onDismissAwaiting) {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 9, weight: .bold))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Toggle("", isOn: Binding(
+                    get: { module.enabled },
+                    set: { onToggle($0) }
+                ))
+                .labelsHidden()
+                Button(action: toggleExpand) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text(module.name)
+                                .font(.system(size: 13))
+                                .fontWeight(.semibold)
+                                .foregroundStyle(Color(.label))
+                            if module.url != nil {
+                                Text("链接")
+                                    .font(.system(size: 10))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Color.blue.opacity(0.12), in: Capsule())
                             }
-                            .foregroundStyle(.secondary)
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("不再询问此模块")
+                            if let content, content.declaredScripts > 0 {
+                                Text("\(content.declaredScripts) 脚本")
+                                    .font(.system(size: 10))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Color.orange.opacity(0.14), in: Capsule())
+                                    .foregroundStyle(.orange)
+                            }
+                            // Fork 2d31f10: the module awaits consent —
+                            // off, never answered, asking about something.
+                            // The state lives in the row, so the badge
+                            // survives app restart. Tapping it opens the
+                            // consent prompt; the × declines it.
+                            if moduleStore.awaitsConsent(module) {
+                                Button("待确认", action: onAwaitingConsent)
+                                    .font(.system(size: 10))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Color.orange.opacity(0.14), in: Capsule())
+                                    .foregroundStyle(.orange)
+                                    .buttonStyle(.plain)
+                                Button(action: onDismissAwaiting) {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 9, weight: .bold))
+                                }
+                                .foregroundStyle(.secondary)
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("不再询问此模块")
+                            }
+                            if let content, !content.skipped.isEmpty {
+                                Text("\(content.skipped.count) 跳过")
+                                    .font(.system(size: 10))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Color.gray.opacity(0.14), in: Capsule())
+                            }
+                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
                         }
-                        if let content, !content.skipped.isEmpty {
-                            Text("\(content.skipped.count) 跳过")
+                        if !module.description.isEmpty {
+                            Text(module.description)
                                 .font(.system(size: 10))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 1)
-                                .background(Color.gray.opacity(0.14), in: Capsule())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
                         }
-                    }
-                    if !module.description.isEmpty {
-                        Text(module.description)
+                        Text("更新于 \(ConcordRelativeTime.string(since: module.lastUpdateTime))")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
                     }
-                    Text("更新于 \(ConcordRelativeTime.string(since: module.lastUpdateTime))")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
                 }
+                .buttonStyle(.plain)
+                VStack(spacing: 4) {
+                    Button(action: onMoveUp) {
+                        Image(systemName: "chevron.up").font(.system(size: 13, weight: .semibold))
+                    }
+                    .disabled(moduleStore.modules.first?.id == module.id)
+                    Button(action: onMoveDown) {
+                        Image(systemName: "chevron.down").font(.system(size: 13, weight: .semibold))
+                    }
+                    .disabled(moduleStore.modules.last?.id == module.id)
+                }
+                .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
-            VStack(spacing: 4) {
-                Button(action: onMoveUp) {
-                    Image(systemName: "chevron.up").font(.system(size: 13, weight: .semibold))
-                }
-                .disabled(moduleStore.modules.first?.id == module.id)
-                Button(action: onMoveDown) {
-                    Image(systemName: "chevron.down").font(.system(size: 13, weight: .semibold))
-                }
-                .disabled(moduleStore.modules.last?.id == module.id)
+            if isExpanded {
+                Divider()
+                    .padding(.top, 8)
+                statusArea
+                    .padding(.top, 8)
             }
-            .foregroundStyle(.secondary)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button(role: .destructive, action: onDelete) {
                 Label("删除", systemImage: "trash")
             }
+        }
+    }
+
+    private func toggleExpand() {
+        isExpanded.toggle()
+        if isExpanded { onExpand() }
+    }
+
+    /// The expanded area: the core's live status for this module,
+    /// or an honest note when there is none. The re-fetch and
+    /// detail actions live here too — the row tap is expansion now,
+    /// so the detail page is one tap away from the expanded row.
+    private var statusArea: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let status {
+                statusContent(status)
+            } else if isLoadingStatus {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let statusError {
+                Text("拉取状态失败：\(statusError)")
+                    .font(.system(size: 10)).foregroundStyle(.red)
+            } else if let statusNote {
+                Text(statusNote)
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            } else {
+                Text("暂无状态")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 16) {
+                Button(isRefetching ? "拉取中…" : "重新拉取", action: onRefetch)
+                    .disabled(isRefetching)
+                Button("详情", action: onShowDetail)
+            }
+            .font(.system(size: 11))
+            if let refetchError {
+                Text("重新拉取失败：\(refetchError)")
+                    .font(.system(size: 10)).foregroundStyle(.red)
+            }
+        }
+    }
+
+    /// Enabled / in force, the problem that keeps the module out
+    /// entirely, the requirement that turns it off, each remote
+    /// resource's state, and the rules the core refused.
+    private func statusContent(_ status: ConcordMitmModuleStatus) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(status.enabled
+                 ? (status.inForce ? "已启用 · 生效中" : "已启用 · 未生效")
+                 : "未启用")
+                .font(.system(size: 10))
+                .foregroundStyle(status.inForce ? Color.green : Color.secondary)
+            if let problem = status.problem {
+                Text(problemText(problem))
+                    .font(.system(size: 10)).foregroundStyle(.orange)
+            }
+            if let off = status.off {
+                Text(off.reason == "requirement"
+                     ? "整体不生效：前置条件不满足"
+                     : "整体不生效：前置条件无法读取")
+                    .font(.system(size: 10)).foregroundStyle(.orange)
+            }
+            if !status.resources.isEmpty {
+                Text("远程资源（\(status.resources.count)）")
+                    .font(.system(size: 10)).fontWeight(.semibold)
+                ForEach(Array(status.resources.enumerated()), id: \.offset) { _, resource in
+                    resourceRow(resource)
+                }
+            }
+            if !status.refusedRules.isEmpty {
+                Text("被拒绝的规则（\(status.refusedRules.count)）")
+                    .font(.system(size: 10)).fontWeight(.semibold)
+                ForEach(Array(status.refusedRules.enumerated()), id: \.offset) { _, rule in
+                    Text("第 \(rule.line) 行：\(rule.detail)")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func problemText(_ problem: ConcordMitmModuleProblem) -> String {
+        switch problem.reason {
+        case "unreadable":
+            if let detail = problem.detail, !detail.isEmpty {
+                return "无法读取：\(detail)"
+            }
+            return "模块文件无法读取"
+        case "duplicate":
+            return "与另一模块重名，未生效"
+        default:
+            return "未生效：\(problem.reason)"
+        }
+    }
+
+    private func resourceRow(_ resource: ConcordMitmModuleResourceStatus) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(resourceKindLabel(resource.kind))
+                    .font(.system(size: 10)).fontWeight(.semibold)
+                Text(resourceStateLabel(resource.state))
+                    .font(.system(size: 10))
+                    .foregroundStyle(resourceStateColor(resource.state))
+                if !resource.lines.isEmpty {
+                    Text("行 \(resource.lines.map(String.init).joined(separator: "、"))")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }
+            Text(resource.url)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            if let file = resource.file, !file.isEmpty {
+                Text("已存为 \(file)")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            if let error = resource.error {
+                Text("拉取失败（\(error.reason)\(error.status.map { " \($0)" } ?? "")）：\(error.detail)")
+                    .font(.system(size: 10)).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func resourceKindLabel(_ kind: String) -> String {
+        switch kind {
+        case "script": return "脚本"
+        case "map-local": return "本地映射"
+        case "jq": return "jq"
+        default: return kind
+        }
+    }
+
+    private func resourceStateLabel(_ state: String) -> String {
+        switch state {
+        case "ok": return "已就绪"
+        case "fetching": return "拉取中…"
+        case "failed": return "失败"
+        case "missing": return "缺失"
+        default: return state
+        }
+    }
+
+    private func resourceStateColor(_ state: String) -> Color {
+        switch state {
+        case "ok": return Color.green
+        case "failed", "missing": return Color.orange
+        default: return Color.secondary
         }
     }
 }

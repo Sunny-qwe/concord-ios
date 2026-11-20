@@ -60,9 +60,16 @@ enum ZipArchive {
     /// real integrity check for the entry.
     private static func inflateRawDeflate(_ data: Data, expectedSize: Int) -> Data? {
         guard !data.isEmpty, expectedSize >= 0 else { return Data() }
-        // compression_stream has no zero-arg init in Swift: the C
-        // struct's memberwise init needs all five fields.
-        var stream = compression_stream(dst_ptr: nil, dst_size: 0, src_ptr: nil, src_size: 0, state: nil)
+        // compression_stream has no zero-arg init in Swift, and its
+        // memberwise init takes NON-optional pointers, so a nil
+        // literal does not compile either. A 1-byte dummy buffer
+        // stands in for the pointers until the real ones are
+        // assigned below; compression_stream_init never
+        // dereferences them. (destroy's defer is registered after
+        // dummy's, so it runs first.)
+        let dummy = UnsafeMutablePointer<UInt8>.allocate(capacity: 1)
+        defer { dummy.deallocate() }
+        var stream = compression_stream(dst_ptr: dummy, dst_size: 0, src_ptr: UnsafePointer(dummy), src_size: 0, state: nil)
         guard compression_stream_init(&stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK else {
             return nil
         }

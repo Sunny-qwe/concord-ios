@@ -73,7 +73,7 @@ struct ExtendConfigView: View {
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(mode.label).font(.system(size: 17, weight: .semibold))
+                                Text(mode.label).font(.system(size: 13, weight: .semibold))
                                 Text(mode.description)
                                     .font(.system(size: 13))
                                     .foregroundStyle(.secondary)
@@ -96,7 +96,7 @@ struct ExtendConfigView: View {
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("附加规则").font(.system(size: 17, weight: .semibold))
+                                Text("附加规则").font(.system(size: 13, weight: .semibold))
                                 Text("在当前配置的规则之前先生效，扩展合并进配置")
                                     .font(.system(size: 13))
                                     .foregroundStyle(.secondary)
@@ -198,6 +198,7 @@ struct ExtendConfigView: View {
                     }
                 } footer: {
                     Text("应用后立即生效（VPN 运行时）或下次启动 VPN 时生效；标准模式的附加规则由扩展合并，不用改订阅文件。")
+                        .font(.system(size: 13))
                 }
             }
             if let message {
@@ -208,6 +209,7 @@ struct ExtendConfigView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("扩展配置")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

@@ -136,6 +136,7 @@ struct NetworkSettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("网络")
         .navigationBarTitleDisplayMode(.inline)
     }

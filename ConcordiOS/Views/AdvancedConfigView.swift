@@ -28,6 +28,7 @@ struct AdvancedConfigView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("进阶配置")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -38,7 +39,7 @@ struct AdvancedConfigView: View {
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: icon)
-                    .font(.system(size: 16))
+                    .font(.system(size: 18, weight: .regular))
                     .foregroundStyle(ConcordTheme.accent)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {

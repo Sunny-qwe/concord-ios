@@ -80,6 +80,7 @@ struct ConfigEditorView: View {
                 ContentUnavailableView("打不开配置", systemImage: "doc.text.magnifyingglass", description: Text(loadError))
             } else if !isLoaded {
                 ProgressView("正在读取配置…")
+                    .font(.system(size: 13))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 editorHeader
@@ -186,6 +187,7 @@ struct ConfigEditorView: View {
         VStack(alignment: .leading, spacing: 8) {
             if isWorking {
                 ProgressView("正在校验…")
+                    .font(.system(size: 13))
             }
             if !validationIssues.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {

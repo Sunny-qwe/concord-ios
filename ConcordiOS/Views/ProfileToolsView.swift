@@ -250,6 +250,7 @@ struct ProfileToolsView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("订阅工具")

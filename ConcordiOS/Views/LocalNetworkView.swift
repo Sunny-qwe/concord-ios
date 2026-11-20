@@ -84,6 +84,7 @@ struct LocalNetworkView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("本地网络设置")
         .navigationBarTitleDisplayMode(.inline)
     }

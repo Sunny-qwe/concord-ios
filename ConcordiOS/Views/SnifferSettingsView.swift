@@ -67,6 +67,7 @@ struct SnifferSettingsView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("嗅探")
         .navigationBarTitleDisplayMode(.inline)
     }

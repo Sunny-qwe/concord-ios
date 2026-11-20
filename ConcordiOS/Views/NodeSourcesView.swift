@@ -76,7 +76,7 @@ struct NodeSourcesView: View {
                     ForEach(section.nodes) { node in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(node.name).font(.system(size: 17, weight: .semibold))
+                                Text(node.name).font(.system(size: 13))
                                 if !node.type.isEmpty {
                                     Text(node.type)
                                         .font(.system(size: 13))
@@ -89,6 +89,7 @@ struct NodeSourcesView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("节点来源")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $query, prompt: "搜索节点名或类型")

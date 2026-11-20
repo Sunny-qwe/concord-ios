@@ -144,6 +144,7 @@ struct BackupView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("备份与恢复")
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.zip], allowsMultipleSelection: false) { result in

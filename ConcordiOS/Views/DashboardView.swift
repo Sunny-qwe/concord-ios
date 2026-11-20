@@ -1143,6 +1143,7 @@ struct DashboardView: View {
             .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
             Divider()
             LabeledContent("引擎", value: trafficStore.engineStatus.map { engineStateLabel($0.state) } ?? (proxyStore.isRunning ? "已启动" : "已停止"))
+                .font(.system(size: 13, weight: .semibold))
             if let engine = trafficStore.engineStatus,
                let faults = engine.faults, !faults.isEmpty {
                 ForEach(faults, id: \.service) { fault in
@@ -1157,6 +1158,7 @@ struct DashboardView: View {
                 Text(error).font(.system(size: 10)).foregroundStyle(.red)
             }
             LabeledContent("VPN 隧道", value: tunnelStatusText)
+                .font(.system(size: 13, weight: .semibold))
             // Unexpected disconnect (Batch F): the tunnel dropped
             // without the user asking (system kill, core stall, failed
             // start). One tap reconnects via the same path as the play
@@ -1193,7 +1195,9 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
             }
             LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
+                .font(.system(size: 13, weight: .semibold))
             LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
+                .font(.system(size: 13, weight: .semibold))
             Text(client.mode == .live
                  ? "数据面：PacketTunnel 扩展内的 Concord 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
                  : "示例模式：VPN 开关只切换界面状态，不转发流量。切到实时核心并启动 VPN 后由扩展转发流量。")
@@ -1855,6 +1859,7 @@ private struct MemoryDetailSheet: View {
                     }
                 }
             }
+            .font(.system(size: 13, weight: .semibold))
             .navigationTitle("内存")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1932,6 +1937,7 @@ private struct DashboardEditSheet: View {
             }
             .environment(\.editMode, .constant(.active))
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("title.editDashboard".l10n)
             .navigationBarTitleDisplayMode(.inline)

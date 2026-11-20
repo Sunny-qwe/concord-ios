@@ -284,6 +284,7 @@ struct ThemePickerView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("主题")
     }

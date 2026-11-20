@@ -63,6 +63,7 @@ struct TunOverrideView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("TUN 覆盖")
         .navigationBarTitleDisplayMode(.inline)
     }

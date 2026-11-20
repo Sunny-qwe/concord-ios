@@ -560,6 +560,7 @@ struct SettingsView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .tint(ConcordTheme.accent)
             .navigationTitle("title.settings".l10n)
@@ -766,6 +767,7 @@ struct DnsQueriesView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("DNS 查询")
@@ -894,6 +896,7 @@ private struct DnsEntryDetailView: View {
                     }
                 }
             }
+            .font(.system(size: 13, weight: .semibold))
             .navigationTitle("DNS 详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1015,6 +1018,7 @@ struct ProvidersView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("提供方")
@@ -1262,6 +1266,7 @@ struct ResourcesView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("资源")
@@ -1291,7 +1296,7 @@ private struct GeoURLRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(title)下载地址")
-                .font(.system(size: 13))
+                .font(.system(size: 13, weight: .semibold))
             HStack {
                 TextField("留空为默认地址", text: $url)
                     .textInputAutocapitalization(.never)

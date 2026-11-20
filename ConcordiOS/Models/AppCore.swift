@@ -29,6 +29,14 @@ import Foundation
 //     except the delay.run accumulator. Engine boot is
 //     core.hello -> core.init -> config.apply -> engine.start,
 //     mirroring PacketTunnelProvider.bootCore.
+//   * Geo data is pre-seeded before boot (GeoSeed): config.apply
+//     compiles the profile's GEOIP,CN,DIRECT rule, and a missing
+//     geoip.metadb makes the core download it over its own TLS
+//     client, which the campus network rejects (v0.2.33). The
+//     files are fetched with URLSession (system trust store) into
+//     this home dir — and into the App Group container too, so the
+//     next VPN start finds them — and the overlay forces
+//     geo-auto-update off for this instance only.
 //
 // If the in-app core cannot start (staticlib missing, engine
 // failure), ensureStarted throws and the caller leaves nodes
@@ -40,6 +48,10 @@ enum AppCoreError: LocalizedError {
     case coreStartFailed
     case sessionFailed
     case rpcFailed(String)
+    /// The geo databases could not be pre-seeded and geoip.metadb is
+    /// still missing, so config.apply would fail in the core's own
+    /// MMDB download. Carries the real download reason (see GeoSeed).
+    case geoSeedFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -53,6 +65,8 @@ enum AppCoreError: LocalizedError {
             return "应用内核心会话打开失败（核心未运行）"
         case .rpcFailed(let message):
             return "核心调用失败：\(message)"
+        case .geoSeedFailed(let message):
+            return "GeoIP 数据库下载失败：\(message)（测速需要 geoip.metadb，核心自带的下载在当前网络下同样失败；请检查网络后重试）"
         }
     }
 }
@@ -154,6 +168,42 @@ final class AppCore {
             await stop()
         }
         let home = try homeDirectory()
+        // Pre-seed the geo databases (GeoSeed) BEFORE the core boots:
+        // config.apply compiles the profile's GEOIP,CN,DIRECT rule,
+        // and a missing geoip.metadb makes the core download it over
+        // its own TLS client — which rejects the campus network's
+        // MITM certificate ("can't download MMDB: ... UnknownIssuer",
+        // v0.2.33). URLSession uses the iOS system trust store, so
+        // the same file downloads here where the core's cannot, and
+        // a present file makes the core skip its download entirely.
+        // Seed the extension's home (App Group container) at the
+        // same time, so the next VPN start finds the files already
+        // there; that pass is best-effort — the tunnel reports the
+        // core's own error if files are still missing. The two homes
+        // seed concurrently so a slow network does not pay both
+        // timeouts in series.
+        let groupHome = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)
+        let groupSeedTask = groupHome.map { dir in
+            Task { await GeoSeed.ensureGeoFiles(in: dir, perFileTimeout: 30) }
+        }
+        let appSeed = await GeoSeed.ensureGeoFiles(in: home, perFileTimeout: 45)
+        _ = await groupSeedTask?.value
+        // The MMDB is the one file config.apply cannot live without.
+        // If it is still missing, say so with the real download
+        // reason instead of letting the core fail later with its TLS
+        // error — the Proxies banner shows this verbatim.
+        if !GeoSeed.isPresent(GeoSeed.mmdbFileName, in: home) {
+            let reason: String
+            if let failure = appSeed.failures.first(where: { $0.file == GeoSeed.mmdbFileName }) {
+                reason = failure.error.localizedDescription
+            } else if appSeed.skippedByCooldown.contains(GeoSeed.mmdbFileName) {
+                reason = "上次下载失败不久（\(Int(GeoSeed.cooldownSeconds / 60)) 分钟内不再重试）"
+            } else {
+                reason = "文件缺失且未能下载"
+            }
+            throw AppCoreError.geoSeedFailed(reason)
+        }
         let context = Unmanaged.passRetained(self).toOpaque()
         do {
             if !Self.coreStarted {
@@ -172,13 +222,16 @@ final class AppCore {
             // (PacketTunnelProvider.sendCoreRequest): a healthy but
             // slow boot — config.apply loading GeoIP data and the
             // profile's rule providers, the core warming up — must
-            // not be aborted at 15 s. The 15 s default killed the
-            // first delay test on every tap (v0.2.32: the tap did
-            // nothing at all) and the torn-down session made the
-            // next tap restart the same slow boot and time out
-            // again. Only the boot is slow; delay.test itself
-            // keeps the 15 s default (the core's own probe timeout
-            // is 5 s).
+            // not be aborted at 15 s. (v0.2.33's failure was not a
+            // timeout: the MMDB download itself was rejected by the
+            // core's TLS client — GeoSeed above pre-seeds the file
+            // so config.apply no longer downloads it.) The 15 s
+            // default killed the first delay test on every tap
+            // (v0.2.32: the tap did nothing at all) and the torn-down
+            // session made the next tap restart the same slow boot
+            // and time out again. Only the boot is slow; delay.test
+            // itself keeps the 15 s default (the core's own probe
+            // timeout is 5 s).
             _ = try await sendRequest(method: "core.hello", params: [
                 "protocol": ["min": 1, "max": 1],
                 "client": ["name": "concord-ios", "version": "0.2.0"],
@@ -190,12 +243,23 @@ final class AppCore {
             // overlay carries everything else — here the listener
             // ports, so this instance can never clash with the
             // extension's core or with anything else on the device.
+            // geo-auto-update is forced off for this instance: the
+            // delay test needs no geo refresh, and a periodic
+            // re-download would run through the core's own TLS
+            // client — the same one the campus network rejects
+            // (v0.2.33 MMDB failure). The seeded files stay until
+            // the user re-imports. This overlay is app-core-only:
+            // the extension core keeps the profile's own setting.
+            // (There is no overlay key that skips the compile-time
+            // MMDB need itself — a GEOIP rule must have the file.
+            // GeoSeed above is what removes that need.)
             let overlay: [String: Any] = [
                 "mixed-port": Self.appMixedPort,
                 "socks-port": Self.appSocksPort,
                 "port": Self.appHTTPPort,
                 "external-controller": Self.appController,
                 "dns": ["listen": Self.appDNSListen],
+                "geo-auto-update": false,
             ]
             _ = try await sendRequest(method: "config.apply", params: [
                 "profile": ["path": configURL.path],

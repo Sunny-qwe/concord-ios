@@ -102,6 +102,7 @@ struct GeneralAuthView: View {
                     .foregroundStyle(.orange)
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("鉴权与控制器")
         .navigationBarTitleDisplayMode(.inline)
     }

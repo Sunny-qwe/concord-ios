@@ -245,6 +245,7 @@ struct ConnectionDetailView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("连接详情")
             .navigationBarTitleDisplayMode(.inline)

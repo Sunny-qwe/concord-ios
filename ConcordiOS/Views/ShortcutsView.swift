@@ -57,7 +57,7 @@ struct ShortcutsView: View {
                                 .frame(width: 28)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(action.title)
-                                    .font(.system(size: 13))
+                                    .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(Color(.label))
                                 Text(action.url)
                                     .font(.system(size: 10))
@@ -80,6 +80,7 @@ struct ShortcutsView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("快捷指令")
     }
@@ -92,7 +93,7 @@ struct ShortcutsView: View {
                 .frame(width: 40, height: 40)
                 .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 12))
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13))
+                Text(title).font(.system(size: 13, weight: .semibold))
                 Text(subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }

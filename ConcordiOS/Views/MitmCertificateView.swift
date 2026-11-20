@@ -145,6 +145,7 @@ struct MitmCertificateView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("MITM 证书设置")
         .navigationBarTitleDisplayMode(.inline)
         .task {
@@ -333,6 +334,7 @@ struct MitmHostnameEditorView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("解密主机名")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -371,6 +373,7 @@ struct MitmHostnameEditorView: View {
                         }
                     }
                 }
+                .font(.system(size: 13, weight: .semibold))
                 .navigationTitle("批量编辑主机名")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {

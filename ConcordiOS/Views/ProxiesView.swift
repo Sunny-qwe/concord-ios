@@ -1093,6 +1093,7 @@ struct NodeDetailView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("title.nodeDetail".l10n)
             .navigationBarTitleDisplayMode(.inline)

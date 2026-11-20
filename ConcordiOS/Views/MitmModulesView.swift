@@ -97,6 +97,7 @@ struct MitmModulesView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("MITM 模块")
@@ -470,6 +471,7 @@ struct MitmModuleDetailView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle(module?.name ?? "模块")
@@ -749,6 +751,7 @@ private struct MitmModulePasteImportView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("粘贴模块文本")
             .navigationBarTitleDisplayMode(.inline)
@@ -809,6 +812,7 @@ private struct MitmModuleTextEditorView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle(module?.name ?? "新建模块")
             .navigationBarTitleDisplayMode(.inline)

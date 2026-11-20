@@ -72,7 +72,7 @@ struct LoopbackView: View {
                 }
                 ForEach(addresses, id: \.self) { address in
                     Text(address)
-                        .font(.system(size: 17))
+                        .font(.system(size: 13))
                 }
                 .onDelete { offsets in
                     var list = addresses
@@ -88,6 +88,7 @@ struct LoopbackView: View {
                 Text("虚拟接口回流地址")
             } footer: {
                 Text("发往这些 IPv4 地址的 TCP 连接会在虚拟接口上折返回本机，让 App 能通过一个对端地址连上本机自身的服务。地址不能属于 127.0.0.0/8，也不能是虚拟接口自身的地址。只要配置了地址，虚拟接口就仅使用 IPv4，IPv6 设置只对本应用自身的出站连接生效。")
+                    .font(.system(size: 13))
             }
             Section {
                 Text("当前版本说明：核心接受 tun.loopback-address 这个配置项，但尚未实现回流路由——地址会保存并随配置发给核心，在本版本中还不会改变实际路由。")
@@ -107,6 +108,7 @@ struct LoopbackView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("虚拟接口回流地址")
         .navigationBarTitleDisplayMode(.inline)
         .task {

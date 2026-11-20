@@ -62,6 +62,7 @@ struct CustomProxiesView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("代理")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $editing) { proxy in
@@ -184,6 +185,7 @@ struct CustomProxyFormView: View {
                     Toggle("UDP", isOn: $proxy.udp)
                 }
             }
+            .font(.system(size: 13, weight: .semibold))
             .navigationTitle(proxy.id.isEmpty || isNew ? "添加代理" : "编辑代理")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

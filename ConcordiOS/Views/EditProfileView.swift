@@ -122,14 +122,14 @@ struct EditProfileView: View {
             Section {
                 fieldRow(label: "名称", invalid: isNameInvalid, error: isNameInvalid ? "请填写名称" : nil) {
                     TextField("必填", text: $name)
-                        .font(.system(size: 17))
+                        .font(.system(size: 13, weight: .semibold))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 }
                 if isURLProfile {
                     fieldRow(label: "链接", invalid: isURLInvalid, error: isURLInvalid ? "订阅链接无效，应为 http(s) 链接" : nil) {
                         TextField("必填", text: $urlString)
-                            .font(.system(size: 17))
+                            .font(.system(size: 13, weight: .semibold))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
@@ -137,7 +137,7 @@ struct EditProfileView: View {
                 }
                 fieldRow(label: "age 私钥") {
                     SecureField("可选", text: $ageSecretKey)
-                        .font(.system(size: 17))
+                        .font(.system(size: 13, weight: .semibold))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
@@ -148,21 +148,21 @@ struct EditProfileView: View {
             if isURLProfile {
                 Section {
                     Toggle("自动更新", isOn: $autoUpdate)
-                        .font(.system(size: 17))
+                        .font(.system(size: 13, weight: .semibold))
                     if autoUpdate {
                         HStack(spacing: 8) {
                             Text("更新间隔")
-                                .font(.system(size: 17))
+                                .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(isIntervalInvalid ? .red : .primary)
                             Spacer()
                             TextField("必填", text: $intervalText)
-                                .font(.system(size: 17))
+                                .font(.system(size: 13, weight: .semibold))
                                 .keyboardType(.numberPad)
                                 .multilineTextAlignment(.trailing)
                                 .frame(width: 100)
                                 .foregroundStyle(isIntervalInvalid ? .red : .primary)
                             Text("分钟")
-                                .font(.system(size: 15))
+                                .font(.system(size: 13))
                                 .foregroundStyle(.secondary)
                         }
                         if isIntervalInvalid {
@@ -300,7 +300,7 @@ struct EditProfileView: View {
     private func fieldRow<Content: View>(label: String, invalid: Bool = false, error: String? = nil, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.system(size: 13))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(invalid ? .red : .secondary)
             content()
             if let error {

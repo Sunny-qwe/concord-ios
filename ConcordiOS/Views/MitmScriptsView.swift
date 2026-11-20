@@ -105,6 +105,7 @@ struct MitmScriptsView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("MITM 脚本")
@@ -311,6 +312,7 @@ private struct MitmScriptEditorView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle(script?.label ?? "新建脚本")
             .navigationBarTitleDisplayMode(.inline)
@@ -385,6 +387,7 @@ private struct MitmScriptImportURLView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("从链接导入")
             .navigationBarTitleDisplayMode(.inline)
@@ -435,6 +438,7 @@ private struct MitmScriptEditURLView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("编辑链接")
             .navigationBarTitleDisplayMode(.inline)

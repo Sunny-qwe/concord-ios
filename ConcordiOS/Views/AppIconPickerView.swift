@@ -57,7 +57,7 @@ struct AppIconPickerView: View {
                                 .frame(width: 56, height: 56)
                                 .clipShape(RoundedRectangle(cornerRadius: 13))
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(option.title).font(.system(size: 13))
+                                Text(option.title).font(.system(size: 13, weight: .semibold))
                                 Text(option.subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -71,6 +71,7 @@ struct AppIconPickerView: View {
                 }
             } footer: {
                 Text("切换后系统会弹出确认框，确认后主屏幕图标立即更换。图标文件都在 App 里，不联网。")
+                    .font(.system(size: 13))
             }
             if isChanging {
                 Section {
@@ -87,6 +88,7 @@ struct AppIconPickerView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("App 图标")

@@ -47,6 +47,7 @@ struct CustomSubscriptionListView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("自定义订阅")
         .navigationBarTitleDisplayMode(.inline)
         .alert(editing == nil ? "新建自定义订阅" : "重命名", isPresented: $showCreate) {
@@ -125,6 +126,7 @@ struct CustomSubscriptionEditorView: View {
                 Text("自定义订阅")
             } footer: {
                 Text("应用后，分组 / 提供方 / 规则会写进当前订阅的 YAML（带标记，可重复应用），拨号器会写到对应节点的 dialer-proxy 上；下次启动 VPN 或立即重应用后生效。")
+                    .font(.system(size: 13))
             }
 
             Section("代理组（\(sub.groups.count) 个）") {
@@ -260,6 +262,7 @@ struct CustomSubscriptionEditorView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle(sub.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -496,6 +499,7 @@ private struct CustomGroupFormView: View {
                         .autocorrectionDisabled()
                 }
             }
+            .font(.system(size: 13, weight: .semibold))
             .navigationTitle(isNew ? "添加代理组" : "编辑代理组")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -553,6 +557,7 @@ private struct CustomDialerFormView: View {
                     }
                 }
             }
+            .font(.system(size: 13, weight: .semibold))
             .navigationTitle(isNew ? "添加拨号器" : "编辑拨号器")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -627,6 +632,7 @@ private struct CustomProviderFormView: View {
                         .autocorrectionDisabled()
                 }
             }
+            .font(.system(size: 13, weight: .semibold))
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -689,6 +695,7 @@ private struct CustomRuleFormView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .font(.system(size: 13, weight: .semibold))
             .navigationTitle("规则")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -11,6 +11,46 @@ import Darwin
 // capsule badges. Only the look changed here — no data logic lives
 // in this file (except the local intranet-IP read, which is device
 // info, not core data).
+//
+// Typography standard (v0.2.34 font unification; grounded in the
+// four tab roots — Dashboard, Proxies, Config, Tools — and the
+// screenshots IMG_1132–1135). The app root sets a 17pt body font
+// (ConcordiOSApp: .environment(\.font, fontStore.rootFont)), so any
+// Text without an explicit font renders at 17pt regular — that is
+// why sub-pages built from plain List/Form/Section looked bigger
+// than the first-level pages. Sub-pages fix it with a container
+// font on their outermost List/Form — .font(.system(size: 13,
+// weight: .semibold)) — which propagates to rows, Toggles, Pickers,
+// TextFields, Buttons and section headers, while explicit fonts on
+// individual elements override it:
+//   - Pushed-page nav title: system .inline (17 semibold, default);
+//     .largeTitle kept where already used (DNS 查询 mirrors Proxies).
+//   - Section header: 13 semibold, secondary grey.
+//   - Row label / primary text (settings row, nav row, Toggle /
+//     Picker label, Button row, TextField input): 13 semibold.
+//   - Row value / secondary text: 13 regular.
+//   - Row icon (SF Symbol): 18 regular.
+//   - Card title inside a card: 14 semibold (Proxies) / 12 semibold
+//     (Dashboard CardTitleRow).
+//   - Footnote / explainer / message / error: 10 (Diagnostics uses
+//     .footnote = 13, also in range); section footers: explicit 13
+//     regular (the root font would otherwise make them 17).
+//   - Caption / badge / chip / timestamp: 10 (semibold for chips).
+//   - Small secondary: 11.
+//   - Named-entity primary: profile / group / provider / dialer
+//     names 17 semibold (Profiles lineage); group names 15
+//     (Proxies); node names 13 regular (Proxies); provider names 13
+//     regular (ProvidersView).
+//   - Mono / code text: keep .body / .caption mono.
+//   - Large display numbers / titles: keep (Dashboard 21 bold,
+//     Tools title 18 bold, hero titles 17 bold).
+//   - Leave alone (system-styled): alert text, ContentUnavailableView,
+//     Picker .tag option texts, Menu / context-menu items, toolbar
+//     buttons, segmented Picker option labels.
+//   - Known trade-off: LabeledContent label AND value both become
+//     13 semibold under a container font (values ideally 13 regular,
+//     but they cannot be separated without restructuring ~100 sites);
+//     strictly closer to the first-level row style than 17 regular.
 
 enum ConcordTheme {
     /// Page background: the system grouped background — #F2F2F7 in

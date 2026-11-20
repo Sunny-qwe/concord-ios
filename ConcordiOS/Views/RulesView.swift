@@ -56,6 +56,7 @@ struct RulesView: View {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(provider.name)
+                                            .font(.system(size: 13))
                                         Text("\(provider.behavior ?? provider.format ?? "") · \(provider.count) 条")
                                             .font(.system(size: 10))
                                             .foregroundStyle(.secondary)
@@ -257,6 +258,7 @@ struct RulesView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .listStyle(.insetGrouped)
             .navigationTitle("规则")
@@ -369,6 +371,7 @@ struct ProviderDetailView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle(provider.name)
             .navigationBarTitleDisplayMode(.inline)

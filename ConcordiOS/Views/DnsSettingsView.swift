@@ -204,6 +204,7 @@ struct DnsSettingsView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("DNS")
         .navigationBarTitleDisplayMode(.inline)
     }

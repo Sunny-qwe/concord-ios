@@ -190,7 +190,7 @@ struct UnifiedImportView: View {
             }
             HStack(spacing: 8) {
                 TextField("粘贴订阅链接或节点链接", text: $importText)
-                    .font(.system(size: 17))
+                    .font(.system(size: 13, weight: .semibold))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .lineLimit(1)
@@ -254,7 +254,7 @@ struct UnifiedImportView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.secondary)
             TextField("例如：我的订阅", text: $profileName)
-                .font(.system(size: 17))
+                .font(.system(size: 13, weight: .semibold))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .padding(.horizontal, 12)
@@ -347,10 +347,11 @@ struct UnifiedImportView: View {
             Button { showScanImport = true } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "qrcode.viewfinder")
+                        .font(.system(size: 18))
                         .foregroundStyle(ConcordTheme.accent)
                         .frame(width: 24)
                     Text("扫码导入")
-                        .font(.system(size: 17))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.primary)
                     Spacer()
                     Image(systemName: "chevron.right")
@@ -370,10 +371,11 @@ struct UnifiedImportView: View {
             Button { showFileImporter = true } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "folder")
+                        .font(.system(size: 18))
                         .foregroundStyle(ConcordTheme.accent)
                         .frame(width: 24)
                     Text("从文件导入")
-                        .font(.system(size: 17))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.primary)
                     Spacer()
                     Image(systemName: "chevron.right")
@@ -387,10 +389,11 @@ struct UnifiedImportView: View {
             Button { showLegacyAdd = true } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "square.and.pencil")
+                        .font(.system(size: 18))
                         .foregroundStyle(ConcordTheme.accent)
                         .frame(width: 24)
                     Text("使用旧版添加方式")
-                        .font(.system(size: 17))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.primary)
                     Spacer()
                     Image(systemName: "chevron.right")

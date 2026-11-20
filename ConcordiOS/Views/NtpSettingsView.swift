@@ -42,6 +42,7 @@ struct NtpSettingsView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("NTP")
         .navigationBarTitleDisplayMode(.inline)
     }

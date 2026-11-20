@@ -72,6 +72,7 @@ struct DiagnosticsView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("可靠性中心")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -108,7 +109,7 @@ struct DiagnosticsView: View {
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: icon)
-                    .font(.system(size: 16))
+                    .font(.system(size: 18, weight: .regular))
                     .foregroundStyle(ConcordTheme.accent)
                     .frame(width: 24)
                 VStack(alignment: .leading, spacing: 2) {
@@ -236,6 +237,7 @@ struct NetworkHealthView: View {
                 .disabled(isChecking)
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("网络健康")
         .navigationBarTitleDisplayMode(.inline)
         .task { await check() }
@@ -378,6 +380,7 @@ struct ModuleAuditView: View {
                 }
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("模块审计")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -445,6 +448,7 @@ struct ConfigPreflightView: View {
                 .disabled(isRunning)
             }
         }
+        .font(.system(size: 13, weight: .semibold))
         .navigationTitle("配置预检")
         .navigationBarTitleDisplayMode(.inline)
         .task { await run() }

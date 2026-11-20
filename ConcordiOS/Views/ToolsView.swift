@@ -309,9 +309,11 @@ private struct LanguageView: View {
                 .pickerStyle(.inline)
             } footer: {
                 Text("切换语言后需要重启应用才会生效。重启后底部标签栏、工具页标题与常用按钮会按所选语言显示；页面内的其他文字仍为中文（只本地化了主要界面文字）。")
+                    .font(.system(size: 13))
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("语言")
         .navigationBarTitleDisplayMode(.inline)

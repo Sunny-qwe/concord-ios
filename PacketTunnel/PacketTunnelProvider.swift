@@ -18,6 +18,14 @@ import os
 // EngineConfig { android: false } and capabilities
 // ["tun.inherited", "tun.channel"] (upstream/bins/ios/src/core.rs):
 //   1. Read config.yaml from the App Group shared container.
+//   1b. GeoSeed.ensureGeoFiles(container): pre-seed geoip.metadb /
+//      GeoSite.dat / ASN.mmdb with URLSession (system trust store)
+//      before config.apply — a missing MMDB makes the core download
+//      it over its own TLS client, which the campus network rejects
+//      (v0.2.33 "can't download MMDB: ... UnknownIssuer"); a present
+//      file makes the core skip its download entirely. Best-effort:
+//      if files are still missing, config.apply fails with the core's
+//      own error, recorded in the startup diagnostic.
 //   2. concord_ios_start() (once per process), then open a JSON-RPC
 //      session (concord_ios_open_session). Replies arrive on the Deliver
 //      callback, on a core thread; all state lives on `coreQueue`.
@@ -458,6 +466,31 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             throw TunnelSetupError.noConfig
         }
         recordStartup("configuration")
+
+        // Pre-seed the geo databases (GeoSeed) before config.apply:
+        // config.apply compiles the profile's GEOIP,CN,DIRECT rule,
+        // and a missing geoip.metadb makes the core download it over
+        // its own TLS client (rustls) — which rejects the campus
+        // network's MITM certificate ("can't download MMDB: ...
+        // UnknownIssuer", v0.2.33 in the in-app core). The extension
+        // core runs the SAME config.apply against the SAME rule, so
+        // it hits the same download and the same failure whenever
+        // the file is missing — here it fails startTunnel outright
+        // (no compiled route program, no tunnel), so this is one of
+        // the VPN-won't-start causes, not the v0.2.31 "tunnel up but
+        // traffic goes direct" report (there the tunnel showed as
+        // running, so config.apply must have succeeded that time).
+        // URLSession uses the iOS system trust store, so the same
+        // file downloads here where the core's cannot, and a present
+        // file makes the core skip its download entirely. Best-effort
+        // and bounded (30 s per file): if files are still missing,
+        // config.apply below fails with the core's own error,
+        // recorded in the startup diagnostic as before. The app seeds
+        // this same container from AppCore.ensureStarted too, so a
+        // user who delay-tests first never pays the download at VPN
+        // start. No TLS verification is disabled anywhere.
+        let seed = await GeoSeed.ensureGeoFiles(in: container, perFileTimeout: 30)
+        Self.log.info("geo seed: seeded \(seed.seeded.joined(separator: ","), privacy: .public), present \(seed.alreadyPresent.joined(separator: ","), privacy: .public), failed \(seed.failures.map(\.file).joined(separator: ","), privacy: .public)")
 
         guard concord_ios_start() == 0 else {
             throw TunnelSetupError.coreStartFailed

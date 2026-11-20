@@ -163,6 +163,7 @@ struct MitmView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("MITM 拦截")
@@ -248,6 +249,7 @@ struct MitmExchangeDetailView: View {
                 }
             }
             .scrollContentBackground(.hidden)
+            .font(.system(size: 13, weight: .semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("拦截详情")
             .navigationBarTitleDisplayMode(.inline)

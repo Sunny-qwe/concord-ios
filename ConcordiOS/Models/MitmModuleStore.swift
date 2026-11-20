@@ -46,7 +46,7 @@ struct ModuleAudit: Identifiable {
     let missingResources: [String]
 }
 
-struct MitmModule: Codable, Equatable, Identifiable {
+struct MitmModule: Codable, Equatable, Hashable, Identifiable {
     var id: String
     var name: String
     var description: String

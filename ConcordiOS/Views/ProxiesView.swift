@@ -2055,8 +2055,10 @@ private struct ProxyNodeCard: View, Equatable {
     /// Remote type icon from the selected imported icon set
     /// (IconSetStore, C17): nil when the pack has no remote image
     /// for this type — the SF Symbol above is the fallback. A plain
-    /// URL value, so the Equatable row is unaffected.
-    let remoteIconURL: URL? = nil
+    /// URL value, so the Equatable row is unaffected. No default
+    /// here: the init below assigns it once (its parameter
+    /// defaults to nil for callers that omit it).
+    let remoteIconURL: URL?
     /// The nested group's profile icon, for nodes that are
     /// themselves groups (MuYu card.dart member icon, 16pt).
     /// Nil for leaf nodes — the core exposes no per-node icon.

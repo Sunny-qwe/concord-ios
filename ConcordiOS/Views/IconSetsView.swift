@@ -418,9 +418,9 @@ final class IconSetStore: ObservableObject {
                     if let image = phase.image {
                         image.resizable().scaledToFit()
                     } else {
-                        Image(systemName: symbol(for: type))
+                        Image(systemName: self.symbol(for: type))
                             .font(.system(size: size))
-                            .foregroundStyle(color(for: type))
+                            .foregroundStyle(self.color(for: type))
                     }
                 }
                 .frame(width: size + 8, height: size + 8)

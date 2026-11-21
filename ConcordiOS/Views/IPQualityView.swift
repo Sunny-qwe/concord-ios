@@ -614,8 +614,6 @@ struct IPQualityView: View {
         case failed(String, IPQualitySourceStatus)
         case hedge(Int)
     }
-
-    }
 }
 
 /// One source's parse outcome: an answer (with its inferred

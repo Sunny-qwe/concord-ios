@@ -50,6 +50,7 @@ struct ContentView: View {
     /// floating bar (matchedGeometryEffect): the pill glides to the
     /// tapped tab inside the same 0.3 s ease-out transaction that
     /// slides the page, like FlClash's PageView + dock indicator.
+    @Namespace private var tabPillNamespace
     // T1: the TrafficStore 1 s timer had no stop() caller and ran
     // forever, even in the background — waking the app every
     // second to RPC a (usually dead) core.

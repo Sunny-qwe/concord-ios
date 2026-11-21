@@ -2063,6 +2063,38 @@ private struct ProxyNodeCard: View, Equatable {
     let memberIcon: String?
     let onTest: () -> Void
 
+    init(
+        name: String,
+        type: String,
+        description: String,
+        latencyMs: Int32?,
+        testing: Bool,
+        pinned: Bool,
+        selected: Bool,
+        cardType: ProxyStyleStore.CardType,
+        cardHeight: CGFloat,
+        iconSymbol: String,
+        iconColor: Color,
+        remoteIconURL: URL? = nil,
+        memberIcon: String?,
+        onTest: @escaping () -> Void
+    ) {
+        self.name = name
+        self.type = type
+        self.description = description
+        self.latencyMs = latencyMs
+        self.testing = testing
+        self.pinned = pinned
+        self.selected = selected
+        self.cardType = cardType
+        self.cardHeight = cardHeight
+        self.iconSymbol = iconSymbol
+        self.iconColor = iconColor
+        self.remoteIconURL = remoteIconURL
+        self.memberIcon = memberIcon
+        self.onTest = onTest
+    }
+
     // Closures are not Equatable: compare everything else, and
     // treat the test action as always equal (it only fires on tap).
     static func == (lhs: ProxyNodeCard, rhs: ProxyNodeCard) -> Bool {

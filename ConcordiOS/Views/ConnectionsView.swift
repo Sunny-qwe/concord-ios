@@ -494,7 +494,7 @@ struct ConnectionDetailView: View {
                     // Upstream shows the chains reversed with arrows
                     // between them (tracker_info_item.dart _buildChains).
                     HStack(spacing: 6) {
-                        ForEach(Array(connection.chains.reversed.enumerated()), id: \.offset) { index, chain in
+                        ForEach(Array(connection.chains.reversed().enumerated()), id: \.offset) { index, chain in
                             if index > 0 {
                                 Text("→")
                                     .font(.caption2)

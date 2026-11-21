@@ -668,11 +668,11 @@ private struct LogPayload {
         }
         if let match = dialRegex?.firstMatch(in: message, range: range) {
             return Route(
-                proxy: group(match, 1, in: message),
-                rule: group(match, 2, in: message),
                 source: group(match, 3, in: message),
                 sourceDetail: group(match, 4, in: message),
                 destination: group(match, 5, in: message),
+                rule: group(match, 2, in: message),
+                proxy: group(match, 1, in: message),
                 error: group(match, 6, in: message))
         }
         return nil

@@ -111,8 +111,8 @@ final class TrafficStore: ObservableObject {
     private func maintainTodayBaseline() {
         let today = Self.todayString()
         let storedDate = UserDefaults.standard.string(forKey: Self.todayDateKey)
-        let storedUp = UserDefaults.standard.integer(forKey: Self.todayUpKey)
-        let storedDown = UserDefaults.standard.integer(forKey: Self.todayDownKey)
+        let storedUp = Int64(UserDefaults.standard.integer(forKey: Self.todayUpKey))
+        let storedDown = Int64(UserDefaults.standard.integer(forKey: Self.todayDownKey))
         if storedDate != today
             || current.totalUp < storedUp
             || current.totalDown < storedDown {
@@ -124,12 +124,12 @@ final class TrafficStore: ObservableObject {
 
     var todayUp: Int64 {
         guard UserDefaults.standard.string(forKey: Self.todayDateKey) == Self.todayString() else { return 0 }
-        return max(0, current.totalUp - UserDefaults.standard.integer(forKey: Self.todayUpKey))
+        return max(0, current.totalUp - Int64(UserDefaults.standard.integer(forKey: Self.todayUpKey)))
     }
 
     var todayDown: Int64 {
         guard UserDefaults.standard.string(forKey: Self.todayDateKey) == Self.todayString() else { return 0 }
-        return max(0, current.totalDown - UserDefaults.standard.integer(forKey: Self.todayDownKey))
+        return max(0, current.totalDown - Int64(UserDefaults.standard.integer(forKey: Self.todayDownKey)))
     }
     /// Live up/down per proxy and group name (MuYu
     /// nodeSpeedsProvider), from the same snapshots as the

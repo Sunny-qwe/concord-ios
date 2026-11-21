@@ -62,6 +62,7 @@ struct ProfilesView: View {
     @StateObject private var customStore = CustomSubscriptionStore()
     @State private var navPath: [ProfileNavDestination] = []
     @State private var showUnifiedImport = false
+    @State private var showCustomSubscriptionImport = false
     @State private var showScanImport = false
     @State private var scannedText: String?
     @State private var showFileImporter = false
@@ -193,6 +194,11 @@ struct ProfilesView: View {
             }
             .sheet(isPresented: $showUnifiedImport, onDismiss: { scannedText = nil }) {
                 UnifiedImportView(profileStore: profileStore, initialText: scannedText ?? "", autoImport: scannedText != nil)
+            }
+            .sheet(isPresented: $showCustomSubscriptionImport) {
+                CustomSubscriptionImportView(store: customStore) { sub in
+                    navPath.append(.customSubscription(sub.id))
+                }
             }
             .sheet(isPresented: $showScanImport) {
                 ScanImportView { text in
@@ -334,6 +340,13 @@ struct ProfilesView: View {
                 navPath.append(.customSubscription(sub.id))
             } label: {
                 Label("自定义订阅", systemImage: "doc.badge.gearshape")
+                    .font(.subheadline)
+            }
+            // v0.2.55: import a Clash-style YAML file/URL as a custom
+            // subscription (groups/providers/rules only; nodes are
+            // rejected with an explanation — see CustomSubscriptionImport).
+            Button { showCustomSubscriptionImport = true } label: {
+                Label("导入自定义订阅（YAML）", systemImage: "arrow.down.doc")
                     .font(.subheadline)
             }
         }

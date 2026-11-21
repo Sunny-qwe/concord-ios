@@ -316,6 +316,21 @@ final class OverrideStore: ObservableObject {
         save()
     }
 
+    /// Whole-scope replace for the YAML quick editor (OverrideView):
+    /// replaces every section of one scope with the given values
+    /// (sections absent from `values` become empty), then persists.
+    /// `test-url` is preserved by the caller when it was set (the
+    /// editor's YAML text never shows it — see yamlText(scope:)).
+    func replaceScope(scope: String?, values: [String: [String: JSONValue]]) {
+        if let scope {
+            profiles[scope] = values
+        } else {
+            global = values
+        }
+        objectWillChange.send()
+        save()
+    }
+
     /// Enables a key at its default value (FlClash: adding an entry
     /// resets it to the spec default).
     func addKey(scope: String?, section: OverrideSection, key: String) {

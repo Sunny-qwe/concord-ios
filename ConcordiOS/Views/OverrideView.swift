@@ -21,6 +21,10 @@ struct OverrideView: View {
     /// edits update the target live; ours applies when leaving
     /// with changes, or on 应用覆盖）.
     @State private var baselineYAML: String?
+    /// YAML quick-edit draft, error and saved flag (v0.2.55).
+    @State private var yamlDraft = ""
+    @State private var yamlEditError: String?
+    @State private var yamlEditSaved = false
 
     init(scope: String? = nil) {
         _scope = State(initialValue: scope)
@@ -69,7 +73,30 @@ struct OverrideView: View {
                     UIPasteboard.general.string = store.yamlText(scope: scope)
                     copied = true
                 }
-                Text("YAML 仅供查看：App 内没有 YAML 解析器，改动请在上面的表单里做。")
+                Text("也可以在下面直接编辑 YAML（解析校验通过后才保存）。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("YAML 快速编辑") {
+                TextEditor(text: $yamlDraft)
+                    .font(.system(.footnote, design: .monospaced))
+                    .frame(minHeight: 200)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("校验并保存") {
+                    saveYAMLQuickEdit()
+                }
+                .disabled(yamlDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if let yamlEditError {
+                    Text(yamlEditError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                } else if yamlEditSaved {
+                    Text("已保存，离开本页时应用（或点「应用覆盖」立即应用）。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Text("只接受 general、dns、tun、sniffer、ntp 五个分组和已知的覆盖项；未知项或类型不对会报错并保留原文本。test-url 不在这里编辑（它只保存在 App 内用作测速地址兜底）。切换作用范围会丢弃未保存的编辑。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -89,9 +116,15 @@ struct OverrideView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             baselineYAML = store.yamlText(scope: scope)
+            if yamlDraft.isEmpty {
+                yamlDraft = store.yamlText(scope: scope)
+            }
         }
         .onChange(of: scope) { _, newScope in
             baselineYAML = store.yamlText(scope: newScope)
+            yamlDraft = store.yamlText(scope: newScope)
+            yamlEditError = nil
+            yamlEditSaved = false
         }
         .onDisappear {
             // FlClash applies override edits live; ours applies on
@@ -100,6 +133,183 @@ struct OverrideView: View {
             if baselineYAML != store.yamlText(scope: scope) {
                 Task { await store.applyOverrides() }
             }
+        }
+    }
+
+    // MARK: - YAML 快速编辑（v0.2.55）
+
+    /// 解析并校验编辑框里的 YAML；只有全部合法才替换当前作用范围的
+    /// 覆盖状态，否则显示精确的中文错误并保留原文本和旧状态。
+    private func saveYAMLQuickEdit() {
+        do {
+            let values = try validateOverrideYAML(yamlDraft, scope: scope)
+            store.replaceScope(scope: scope, values: values)
+            yamlEditError = nil
+            yamlEditSaved = true
+            yamlDraft = store.yamlText(scope: scope)
+        } catch {
+            yamlEditError = error.localizedDescription
+            yamlEditSaved = false
+        }
+    }
+
+    /// 把 YAML 文本解析成 scope 的完整覆盖状态（section -> key -> value）。
+    /// test-url 是客户端专用的测速地址兜底，预览里不显示，保存时原样保留。
+    private func validateOverrideYAML(_ text: String, scope: String?) throws -> [String: [String: JSONValue]] {
+        let doc = try YamlParser.parse(text)
+        // 空文档（或只有注释，如预览的 "# 暂无覆盖项"）= 清空本范围的覆盖
+        let top: [String: JSONValue]
+        switch doc {
+        case .null:
+            top = [:]
+        case .object(let dict):
+            top = dict
+        default:
+            throw YamlParserError(line: nil, message: "顶层必须是映射（key: value 形式）")
+        }
+        var out: [String: [String: JSONValue]] = [:]
+        for (sectionName, sectionValue) in top {
+            guard let section = OverrideSection(rawValue: sectionName) else {
+                throw YamlParserError(line: nil, message: "未知的分组「\(sectionName)」，只能是 general、dns、tun、sniffer、ntp")
+            }
+            guard case .object(let sectionDict) = sectionValue else {
+                throw YamlParserError(line: nil, message: "分组「\(sectionName)」的值必须是映射")
+            }
+            var flat: [String: JSONValue] = [:]
+            try flattenOverrideKeys(section: section, dict: sectionDict, prefix: "", into: &flat)
+            if !flat.isEmpty {
+                out[sectionName] = flat
+            }
+        }
+        if let testURL = store.testURL(scope: scope) {
+            var general = out["general"] ?? [:]
+            general["test-url"] = .string(testURL)
+            out["general"] = general
+        }
+        return out
+    }
+
+    /// 把一个分组的嵌套映射展平成点分键（fallback-filter.geoip、
+    /// sniff.HTTP），并按该分组的 key spec 逐项校验。stringMap
+    /// （nameserver-policy）和 sniff 协议对象整体校验，不再展开。
+    private func flattenOverrideKeys(section: OverrideSection, dict: [String: JSONValue], prefix: String, into out: inout [String: JSONValue]) throws {
+        let specs = OverrideStore.specs(for: section)
+        for (key, value) in dict {
+            let fullKey = prefix.isEmpty ? key : "\(prefix).\(key)"
+            if key.contains(".") {
+                guard let spec = specs.first(where: { $0.key == fullKey }) else {
+                    throw YamlParserError(line: nil, message: "未知的覆盖项「\(fullKey)」")
+                }
+                out[fullKey] = try validateOverrideValue(value, spec: spec, key: fullKey)
+                continue
+            }
+            if let spec = specs.first(where: { $0.key == fullKey }) {
+                switch spec.kind {
+                case .stringMap, .sniff:
+                    out[fullKey] = try validateOverrideValue(value, spec: spec, key: fullKey)
+                default:
+                    if case .object(let nested) = value {
+                        try flattenOverrideKeys(section: section, dict: nested, prefix: fullKey, into: &out)
+                    } else {
+                        out[fullKey] = try validateOverrideValue(value, spec: spec, key: fullKey)
+                    }
+                }
+                continue
+            }
+            if case .object(let nested) = value {
+                try flattenOverrideKeys(section: section, dict: nested, prefix: fullKey, into: &out)
+            } else {
+                throw YamlParserError(line: nil, message: "未知的覆盖项「\(fullKey)」")
+            }
+        }
+    }
+
+    /// 按 key spec 的 kind 校验一个值（类型、选项范围、数字上下限）。
+    private func validateOverrideValue(_ value: JSONValue, spec: OverrideKeySpec, key: String) throws -> JSONValue {
+        switch spec.kind {
+        case .toggle:
+            guard case .bool = value else {
+                throw YamlParserError(line: nil, message: "「\(key)」应为 true/false")
+            }
+            return value
+        case .text:
+            guard case .string = value else {
+                throw YamlParserError(line: nil, message: "「\(key)」应为字符串")
+            }
+            return value
+        case .number:
+            guard case .int(let number) = value else {
+                throw YamlParserError(line: nil, message: "「\(key)」应为整数")
+            }
+            if let min = spec.min, number < Int64(min) {
+                throw YamlParserError(line: nil, message: "「\(key)」不能小于 \(min)")
+            }
+            if let max = spec.max, number > Int64(max) {
+                throw YamlParserError(line: nil, message: "「\(key)」不能大于 \(max)")
+            }
+            return value
+        case .stringList:
+            guard case .array(let items) = value else {
+                throw YamlParserError(line: nil, message: "「\(key)」应为字符串列表")
+            }
+            for item in items {
+                guard case .string = item else {
+                    throw YamlParserError(line: nil, message: "「\(key)」里的每一项都必须是字符串")
+                }
+            }
+            return value
+        case .numberList:
+            guard case .array(let items) = value else {
+                throw YamlParserError(line: nil, message: "「\(key)」应为数字列表")
+            }
+            for item in items {
+                guard case .int = item else {
+                    throw YamlParserError(line: nil, message: "「\(key)」里的每一项都必须是整数")
+                }
+            }
+            return value
+        case .stringMap:
+            guard case .object(let dict) = value else {
+                throw YamlParserError(line: nil, message: "「\(key)」应为映射")
+            }
+            for (_, item) in dict {
+                guard case .string = item else {
+                    throw YamlParserError(line: nil, message: "「\(key)」的值都必须是字符串")
+                }
+            }
+            return value
+        case .options:
+            guard case .string(let text) = value else {
+                throw YamlParserError(line: nil, message: "「\(key)」应为字符串")
+            }
+            guard spec.options?.contains(text) == true else {
+                throw YamlParserError(line: nil, message: "「\(key)」的值「\(text)」不在可选范围：\((spec.options ?? []).joined(separator: "、"))")
+            }
+            return value
+        case .sniff:
+            guard case .object(let dict) = value else {
+                throw YamlParserError(line: nil, message: "「\(key)」应为映射")
+            }
+            let allowed: Set<String> = ["ports", "override-destination"]
+            for child in dict.keys where !allowed.contains(child) {
+                throw YamlParserError(line: nil, message: "「\(key)」含有无法识别的字段「\(child)」")
+            }
+            if let ports = dict["ports"] {
+                guard case .array(let items) = ports else {
+                    throw YamlParserError(line: nil, message: "「\(key)」的 ports 应为列表")
+                }
+                for item in items {
+                    guard case .string = item else {
+                        throw YamlParserError(line: nil, message: "「\(key)」的 ports 里的每一项都必须是字符串")
+                    }
+                }
+            }
+            if let dest = dict["override-destination"] {
+                guard case .bool = dest else {
+                    throw YamlParserError(line: nil, message: "「\(key)」的 override-destination 应为 true/false")
+                }
+            }
+            return value
         }
     }
 }

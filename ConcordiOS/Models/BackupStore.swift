@@ -386,6 +386,8 @@ final class BackupStore: ObservableObject {
         "ConcordiOS.proxies.cardType",
         "ConcordiOS.proxies.iconStyle",
         "ConcordiOS.proxies.hideTimeout",
+        // User-imported group icon pack (Settings → 图标源, v0.2.53).
+        "ConcordiOS.iconPack.v1",
     ]
 
     /// Keys whose UserDefaults value is a String (the rest are Data

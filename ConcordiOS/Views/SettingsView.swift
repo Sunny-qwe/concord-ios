@@ -14,6 +14,10 @@ struct SettingsView: View {
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var client: ConcordClient
+    // User-imported group icon pack (Settings → 图标源). A shared
+    // singleton, not an environment object: the Proxies page reads
+    // it through its icon leaf views only, never at page level.
+    @ObservedObject private var iconPack = IconPackStore.shared
     @State private var mitmIssueHost = ""
     @State private var showCrashConfirm = false
     @State private var showMitmEnableConfirm = false
@@ -511,6 +515,55 @@ struct SettingsView: View {
                          : "实时核心模式：数据来自 PacketTunnel 扩展内的真实核心（需先启动 VPN）。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                }
+
+                // Group icon pack (v0.2.53): the user pastes the URL
+                // of an icon-pack JSON file (iBL3ND format) and taps
+                // 导入 / 更新; the pack is downloaded once, stored
+                // locally, and group icons resolve from it by name.
+                // There are no bundled brand icons — the pack is the
+                // only icon source besides a group's own profile
+                // icon. The field starts empty; nothing is fetched
+                // until the button is tapped.
+                Section("图标源") {
+                    TextField("图标源链接（JSON）", text: $iconPack.urlText)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    HStack {
+                        Button(iconPack.iconCount > 0 ? "更新" : "导入") {
+                            Task { await iconPack.importPack() }
+                        }
+                        .disabled(iconPack.isImporting || iconPack.urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Spacer()
+                        if iconPack.isImporting {
+                            ProgressView()
+                        } else if iconPack.iconCount > 0 {
+                            Button("删除", role: .destructive) {
+                                iconPack.clearPack()
+                            }
+                        }
+                    }
+                    if let name = iconPack.packName, iconPack.iconCount > 0 {
+                        LabeledContent("图标包", value: name)
+                        LabeledContent("图标数量", value: "\(iconPack.iconCount) 个")
+                        if let date = iconPack.fetchedAt {
+                            LabeledContent("上次更新", value: date.formatted(date: .abbreviated, time: .shortened))
+                        }
+                    } else {
+                        Text("粘贴一个图标源链接（JSON，iBL3ND 格式），导入后策略组会按名称自动匹配图标。留空表示不使用图标源。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let error = iconPack.errorMessage {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    } else if let notice = iconPack.noticeMessage {
+                        Text(notice)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("settings.appIcon".l10n) {

@@ -1722,28 +1722,12 @@ private struct SelectedNodeSpeedsView: View {
 
     /// Group icon (FlClash _GroupIcon): the profile's icon when it
     /// is a URL (loaded) or short text (shown as-is), else the
+    /// user-imported icon pack (matched by group name), else the
     /// group's first character. Filled puts it in a rounded tile,
     /// plain shows it bare, hidden leaves a small gap so the title
     /// lines up with the card names below.
     private func groupIcon(_ group: ProxyGroup) -> some View {
-        let monogram = String(group.name.prefix(1))
-        let isURL = group.icon.hasPrefix("http")
-        let text = group.icon.isEmpty ? monogram : (isURL ? monogram : group.icon)
-        let content: some View = Group {
-            if isURL, let url = URL(string: group.icon) {
-                AsyncImage(url: url) { image in
-                    image.resizable().scaledToFill()
-                } placeholder: {
-                    Text(monogram)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                }
-            } else {
-                Text(text)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-            }
-        }
+        let content: some View = GroupIconImageView(icon: group.icon, name: group.name)
         switch styleStore.iconStyle {
         case .hidden:
             return AnyView(Color.clear.frame(width: 4, height: 28))
@@ -1936,59 +1920,26 @@ private struct SelectedNodeSpeedsView: View {
     }
 }
 
-/// A group's brand icon at any size (MuYu _GroupBrandIcon,
-/// widgets/icon.dart): the profile's icon URL (loaded) or short
-/// text, else the MuYu brandIconFor(name) mark, else the code-drawn
-/// send glyph for a group literally named "rocket", else the
-/// group's first character. Filled = rounded tile with 6pt inner
-/// padding, plain = bare in the accent colour, hidden = nothing.
-/// The 14 bundled marks are the MuYu assets/images/services SVGs
-/// (Simple Icons 13.0.0, CC0) converted to template PDFs; the two
-/// GPL-3.0 FlClash-original marks (claude, disney/disneyplus) are
-/// deliberately NOT bundled — the repo has no LICENSE file — so
-/// those names fall through to the monogram.
-private struct GroupBrandIconView: View {
+/// A group's icon image, resolved in priority order: the profile's
+/// own icon (URL loaded, short text shown as-is), then the
+/// user-imported icon pack (IconPackStore, matched by group name),
+/// else the group's first character. There are NO bundled brand
+/// icons (v0.2.53, user direction): the pack is the only icon source
+/// besides the profile icon, and the monogram is the only fallback.
+/// Observes the pack itself, so an import re-renders only this leaf
+/// — ProxiesView never observes the store (v0.2.51 scroll fix).
+/// A failed image load falls back to the monogram: the simple
+/// AsyncImage form shows the placeholder on failure as well as
+/// while loading.
+private struct GroupIconImageView: View {
+    @ObservedObject private var iconPack = IconPackStore.shared
     let icon: String
     let name: String
-    let size: CGFloat
-    let iconStyle: ProxyStyleStore.IconStyle
-
-    /// MuYu brandIcons.dart: group name -> bundled asset, keyed by
-    /// the name lowercased with all non-[a-z0-9] stripped.
-    private static let brandAssets: [String: String] = [
-        "apple": "BrandApple",
-        "appletv": "BrandAppletv",
-        "bilibili": "BrandBilibili",
-        "chatgpt": "BrandOpenai",
-        "discord": "BrandDiscord",
-        "gemini": "BrandGemini",
-        "github": "BrandGithub",
-        "google": "BrandGoogle",
-        "netflix": "BrandNetflix",
-        "openai": "BrandOpenai",
-        "prime": "BrandPrimevideo",
-        "primevideo": "BrandPrimevideo",
-        "spotify": "BrandSpotify",
-        "steam": "BrandSteam",
-        "tiktok": "BrandTiktok",
-        "youtube": "BrandYoutube",
-    ]
-
-    /// MuYu _compactBrandName: lowercase, strip all non-[a-z0-9].
-    private static func compactBrandName(_ value: String) -> String {
-        value.lowercased().filter { ("a"..."z").contains($0) || ("0"..."9").contains($0) }
-    }
-
-    private static func brandAssetName(for groupName: String) -> String? {
-        let key = compactBrandName(groupName)
-        guard !key.isEmpty else { return nil }
-        return brandAssets[key]
-    }
 
     var body: some View {
         let monogram = String(name.prefix(1))
         let isURL = icon.hasPrefix("http")
-        let content: some View = Group {
+        Group {
             if isURL, let url = URL(string: icon) {
                 AsyncImage(url: url) { image in
                     image.resizable().scaledToFill()
@@ -1999,30 +1950,40 @@ private struct GroupBrandIconView: View {
                 }
             } else if !icon.isEmpty {
                 // The profile's own text icon (e.g. an emoji or a
-                // letter) wins over the brand mark, as before.
+                // letter) wins over the icon pack.
                 Text(icon)
                     .font(.subheadline)
                     .fontWeight(.semibold)
-            } else if let brandAsset = Self.brandAssetName(for: name) {
-                // MuYu brandIconFor step 2: the bundled brand mark,
-                // rendered as a template so it tints like the
-                // monogram does.
-                Image(brandAsset)
-                    .renderingMode(.template)
-                    .resizable()
-                    .scaledToFit()
-            } else if Self.compactBrandName(name) == "rocket" {
-                // MuYu brandIconFor step 3: the code-drawn send
-                // glyph (AppGlyphs.send).
-                Image(systemName: "paperplane.fill")
-                    .resizable()
-                    .scaledToFit()
+            } else if let packURL = iconPack.iconURL(for: name) {
+                AsyncImage(url: packURL) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Text(monogram)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                }
             } else {
                 Text(monogram)
                     .font(.subheadline)
                     .fontWeight(.semibold)
             }
         }
+    }
+}
+
+/// A group's icon at any size: the profile's icon URL (loaded) or
+/// short text, else the user-imported icon pack (matched by group
+/// name), else the group's first character. No bundled brand icons
+/// (v0.2.53, user direction). Filled = rounded tile with 6pt inner
+/// padding, plain = bare in the accent colour, hidden = nothing.
+private struct GroupBrandIconView: View {
+    let icon: String
+    let name: String
+    let size: CGFloat
+    let iconStyle: ProxyStyleStore.IconStyle
+
+    var body: some View {
+        let content: some View = GroupIconImageView(icon: icon, name: name)
         switch iconStyle {
         case .hidden:
             EmptyView()

@@ -76,7 +76,7 @@ struct CustomSubscriptionEditorView: View {
                 Text("自定义订阅")
             } footer: {
                 Text("分组 / 提供方 / 规则保存在此自定义订阅中。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
             }
 
             Section("代理组（\(sub.groups.count) 个）") {
@@ -84,9 +84,9 @@ struct CustomSubscriptionEditorView: View {
                     Button { editingGroup = group } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(group.name).font(.system(size: 17, weight: .semibold))
+                                Text(group.name).font(.headline)
                                 Text("\(group.type) · \(group.members.count) 成员\(group.useProviders.isEmpty ? "" : " · 用 \(group.useProviders.joined(separator: ", "))")")
-                                    .font(.system(size: 13))
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -113,11 +113,11 @@ struct CustomSubscriptionEditorView: View {
                 ForEach(sub.dialers) { dialer in
                     Button { editingDialer = dialer } label: {
                         HStack {
-                            Text(dialer.proxy).font(.system(size: 17, weight: .semibold))
+                            Text(dialer.proxy).font(.headline)
                             Image(systemName: "arrow.right")
-                                .font(.system(size: 13))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
-                            Text(dialer.dialer).font(.system(size: 17, weight: .semibold))
+                            Text(dialer.dialer).font(.headline)
                             Spacer()
                         }
                     }
@@ -138,9 +138,9 @@ struct CustomSubscriptionEditorView: View {
                     Button { editingProxyProvider = provider } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(provider.name).font(.system(size: 17, weight: .semibold))
+                                Text(provider.name).font(.headline)
                                 Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
-                                    .font(.system(size: 13))
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
@@ -163,9 +163,9 @@ struct CustomSubscriptionEditorView: View {
                 ForEach(sub.ruleProviders) { provider in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(provider.name).font(.system(size: 17, weight: .semibold))
+                            Text(provider.name).font(.headline)
                             Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
-                                .font(.system(size: 13))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
@@ -187,7 +187,7 @@ struct CustomSubscriptionEditorView: View {
                     Button { editingRule = rule } label: {
                         HStack {
                             Text(rule.text)
-                                .font(.system(size: 12, design: .monospaced))
+                                .font(.system(.caption, design: .monospaced))
                                 .lineLimit(2)
                             Spacer()
                         }
@@ -209,7 +209,7 @@ struct CustomSubscriptionEditorView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle(sub.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -462,7 +462,7 @@ private struct CustomGroupFormView: View {
                         .autocorrectionDisabled()
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle(isNew ? "添加代理组" : "编辑代理组")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -520,7 +520,7 @@ private struct CustomDialerFormView: View {
                     }
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle(isNew ? "添加拨号器" : "编辑拨号器")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -586,7 +586,7 @@ private struct CustomProviderOptionsView: View {
                         .autocorrectionDisabled()
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle(provider.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -627,9 +627,9 @@ private struct CustomProviderPickerView: View {
                             dismiss()
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(provider.name).font(.system(size: 17, weight: .semibold))
+                                Text(provider.name).font(.headline)
                                 Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
-                                    .font(.system(size: 13))
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
@@ -638,7 +638,7 @@ private struct CustomProviderPickerView: View {
                     }
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -737,7 +737,7 @@ private struct CustomRuleFormView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle("规则")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

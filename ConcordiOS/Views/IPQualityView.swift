@@ -113,11 +113,11 @@ struct IPQualityView: View {
                         size: 56)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(isViaVPN ? "代理出口 IP" : "本机直连 IP")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.caption.weight(.semibold))
                         Text(isViaVPN
                              ? "VPN 正在运行：下面是代理出口的 IP 质量。"
                              : "VPN 未运行：下面是你手机直连网络的 IP 质量，不是代理出口。开启 VPN 后再刷新，看到的才是代理出口。")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -137,7 +137,7 @@ struct IPQualityView: View {
             if let errorMessage {
                 Section {
                     Text(errorMessage)
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.red)
                 }
             }
@@ -171,21 +171,22 @@ struct IPQualityView: View {
             } else if info != nil {
                 Section {
                     Text("查询服务返回失败：\(info?.message ?? "未知错误")")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.red)
                 }
             }
 
             Section {
                 Text("多源查询（ident.me、ip-api.com、ipquery.io、iplocate.io、ipapi.is、proxycheck.io，配额最紧的源最后问），每个源 8 秒超时；同一出口 IP 的结果缓存 3 天，全部失败后 5 分钟内不再自动重试（点「刷新」可立即重试）。它只告诉你出口 IP 是谁、在哪里、属于哪个运营商，不做测速、不判断节点能不能解锁流媒体。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("IP 质量")
+        .navigationBarTitleDisplayMode(.inline)
         .task { await fetch() }
     }
 

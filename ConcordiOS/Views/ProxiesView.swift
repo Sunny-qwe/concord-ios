@@ -197,7 +197,7 @@ struct ProxiesView: View {
                         HStack {
                             SampleDataBadge()
                             Text("节点与延迟为示例数据")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                             Spacer()
                         }
@@ -207,7 +207,7 @@ struct ProxiesView: View {
                     if let notice {
                         HStack {
                             Text(notice)
-                                .font(.system(size: 12))
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                             Spacer()
                             // GeoIP-failure banner (v0.2.35): the
@@ -228,7 +228,7 @@ struct ProxiesView: View {
                                         Task { await proxyStore.retryGeoSeedAndRetest() }
                                     }
                                     .buttonStyle(.plain)
-                                    .font(.system(size: 12, weight: .semibold))
+                                    .font(.caption.weight(.semibold))
                                     .accessibilityLabel("重新下载 GeoIP 数据库并重试测速")
                                 }
                             }
@@ -244,13 +244,13 @@ struct ProxiesView: View {
                                     Task { await proxyStore.prepareRuleSetRepair() }
                                 }
                                 .buttonStyle(.plain)
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.caption.weight(.semibold))
                                 .accessibilityLabel("修复缺失的规则集 \(missing)")
                                 .disabled(proxyStore.isRepairingRuleSet)
                             }
                             Button { self.notice = nil } label: {
                                 Image(systemName: "xmark")
-                                    .font(.system(size: 10))
+                                    .font(.caption2)
                             }
                             .buttonStyle(.plain)
                         }
@@ -270,6 +270,7 @@ struct ProxiesView: View {
                 .background(ConcordTheme.pageBackground)
             }
             .navigationTitle("tab.proxies".l10n)
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, isPresented: $isSearching, prompt: "搜索节点")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -502,7 +503,7 @@ struct ProxiesView: View {
                 Text(label)
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 12)
@@ -624,7 +625,7 @@ struct ProxiesView: View {
 
             if let group = selectedVisibleGroup {
                 Text("\(group.type) · \(group.nodes.count) 个节点 · 当前：\(group.selectedNodeName ?? "未选择")")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
@@ -716,7 +717,7 @@ struct ProxiesView: View {
     private var localFallbackNote: some View {
         if proxyStore.isLocalFallback {
             Text("本地配置 · 未连接 VPN — 点按节点会记住选择，启动后自动应用")
-                .font(.system(size: 11))
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -729,11 +730,11 @@ struct ProxiesView: View {
                 groupIcon(group)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(group.name)
-                        .font(.system(size: 15))
+                        .font(.subheadline)
                         .fontWeight(.semibold)
                         .lineLimit(1)
                     Text(expanded ? (group.selectedNodeName ?? "未选择") : group.type)
-                        .font(.system(size: 11))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -760,11 +761,11 @@ struct ProxiesView: View {
                     .disabled(testing)
                 } else {
                     Text(group.type)
-                        .font(.system(size: 11))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 11))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             .padding(12)
@@ -819,12 +820,12 @@ struct ProxiesView: View {
                     image.resizable().scaledToFill()
                 } placeholder: {
                     Text(monogram)
-                        .font(.system(size: 15))
+                        .font(.subheadline)
                         .fontWeight(.semibold)
                 }
             } else {
                 Text(text)
-                    .font(.system(size: 15))
+                    .font(.subheadline)
                     .fontWeight(.semibold)
             }
         }
@@ -867,17 +868,17 @@ struct ProxiesView: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 4) {
                 Text(node.name)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .fontWeight(.semibold)
                     .lineLimit(styleStore.cardType == .compact ? 1 : 2)
                 Spacer()
                 if pinned {
                     Image(systemName: "pin.fill")
-                        .font(.system(size: 11))
+                        .font(.caption2)
                         .foregroundStyle(selected ? ConcordTheme.accent : .secondary)
                 } else if selected {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.blue)
                 }
             }
@@ -885,7 +886,7 @@ struct ProxiesView: View {
                 HStack(spacing: 4) {
                     iconSetStore.icon(for: node.type)
                     Text(nodeDescription(node))
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -897,7 +898,7 @@ struct ProxiesView: View {
                 HStack {
                     iconSetStore.icon(for: node.type)
                     Text(node.type)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer()
@@ -1087,7 +1088,7 @@ private struct DelayText: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .font(.system(size: 10))
+        .font(.caption2)
         .fontWeight(.semibold)
     }
 }
@@ -1153,7 +1154,7 @@ struct NodeDetailView: View {
                     }
                 } else if let error = detail?.error {
                     Section {
-                        Text(error).font(.system(size: 10)).foregroundStyle(.orange)
+                        Text(error).font(.caption2).foregroundStyle(.orange)
                     }
                 } else {
                     Section {
@@ -1162,7 +1163,7 @@ struct NodeDetailView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("title.nodeDetail".l10n)
             .navigationBarTitleDisplayMode(.inline)
@@ -1202,7 +1203,7 @@ private struct RuleSetRepairSheet: View {
                         .font(.system(size: 14))
                     if let blockingIssue = plan.blockingIssue {
                         Text(blockingIssue)
-                            .font(.system(size: 12))
+                            .font(.caption)
                             .foregroundStyle(.orange)
                             .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1212,9 +1213,9 @@ private struct RuleSetRepairSheet: View {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 6) {
                                 Text("「\(item.missingName)」")
-                                    .font(.system(size: 13, weight: .semibold))
+                                    .font(.footnote.weight(.semibold))
                                 Text(item.actionTitle)
-                                    .font(.system(size: 11, weight: .semibold))
+                                    .font(.caption2.weight(.semibold))
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 2)
                                     .background(itemActionColor(item.kind).opacity(0.15), in: Capsule())
@@ -1222,11 +1223,11 @@ private struct RuleSetRepairSheet: View {
                             }
                             if !item.previewLines.isEmpty {
                                 Text(item.previewTitle)
-                                    .font(.system(size: 12))
+                                    .font(.caption)
                                     .foregroundStyle(.secondary)
                                 ScrollView(.horizontal, showsIndicators: false) {
                                     Text(item.previewLines.joined(separator: "\n"))
-                                        .font(.system(size: 12, design: .monospaced))
+                                        .font(.system(.caption, design: .monospaced))
                                         .padding(10)
                                 }
                                 .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
@@ -1235,12 +1236,12 @@ private struct RuleSetRepairSheet: View {
                     }
                     if plan.isRepairable {
                         Text("确认后一次性写入当前订阅文件并重新应用配置，然后重测一次；若仍有问题，结果会直接显示在这里。")
-                            .font(.system(size: 12))
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     if let outcome = proxyStore.ruleSetRepairOutcome {
                         Text(outcome)
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .foregroundStyle(proxyStore.ruleSetRepairOutcomeIsSuccess ? .green : .red)
                             .padding(10)
                             .frame(maxWidth: .infinity, alignment: .leading)

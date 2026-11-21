@@ -449,14 +449,14 @@ struct DashboardView: View {
                     HStack {
                         SampleDataBadge()
                         Text("示例数据：所有数值均为内置示例，不是真实核心数据")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
                 pendingModulesCard
                 ForEach(orderedCards, id: \.self) { cardView(for: $0) }
                 if let error = proxyStore.lastError {
-                    Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                    Text(error).font(.caption2).foregroundStyle(.red)
                 }
             }
             .padding(.horizontal, 16)
@@ -610,7 +610,7 @@ struct DashboardView: View {
                 Text(pending.count == 1
                      ? "\(pending[0].name) 的更新带来了你未同意过的脚本或网络改动"
                      : "\(pending.count) 个模块的更新带来了你未同意过的脚本或网络改动")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(Color(.label))
                 Button("查看") { reviewNext() }
                     .buttonStyle(.borderedProminent)
@@ -665,7 +665,7 @@ struct DashboardView: View {
                         Image(systemName: "exclamationmark.circle.fill")
                             .foregroundStyle(.red)
                         Text("启动失败：\(startError)")
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .foregroundStyle(.red)
                     }
                     .padding(.horizontal, 4)
@@ -802,7 +802,7 @@ struct DashboardView: View {
                 }
             } else if ipFetchFailed {
                 Text("点击图标重试")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 6) {
@@ -869,7 +869,7 @@ struct DashboardView: View {
                     HStack(spacing: 24) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("运行时间")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                             TimelineView(.periodic(from: .now, by: 1)) { _ in
                                 Text(uptimeText)
@@ -879,7 +879,7 @@ struct DashboardView: View {
                         }
                         VStack(alignment: .leading, spacing: 2) {
                             Text("组织")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                             orgValue
                         }
@@ -946,7 +946,7 @@ struct DashboardView: View {
             fg = Color(red: 0.72, green: 0.15, blue: 0.12)
         }
         return Text(text)
-            .font(.system(size: 10, weight: .semibold))
+            .font(.caption2.weight(.semibold))
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(bg, in: Capsule())
@@ -973,17 +973,17 @@ struct DashboardView: View {
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: isUp ? "arrow.up" : "arrow.down")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(isUp ? Color(.label) : ConcordTheme.accent)
                 Text(isUp ? "上传" : "下载")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .fontWeight(.semibold)
             }
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(split.number)
                     .font(.system(size: bigNumberSize, weight: .bold))
                 Text("\(split.unit)/s")
-                    .font(.system(size: 12))
+                    .font(.caption)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
             }
@@ -994,7 +994,7 @@ struct DashboardView: View {
                 // formats 0 as "0.0 B", so special-case zero locally
                 // (the shared formatter is used elsewhere and stays).
                 Text("累计 \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .fontWeight(.medium)
                     .foregroundStyle(.secondary)
             }
@@ -1020,7 +1020,7 @@ struct DashboardView: View {
                             Image(systemName: modeIcon(mode))
                                 .font(.system(size: 18, weight: .semibold))
                             Text(modeShortLabel(mode))
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
@@ -1037,7 +1037,7 @@ struct DashboardView: View {
             .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 26))
             if let message = settingsStore.generalApplyMessage, !densityCompact {
                 Text(message)
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
@@ -1093,12 +1093,12 @@ struct DashboardView: View {
                         .foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("VPN 意外断开")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.footnote.weight(.semibold))
                         // The extension's startup diagnostic (if any)
                         // names the exact stage where the start died;
                         // otherwise fall back to the app-side error.
                         Text(tunnelManager.lastStartupDiagnostic() ?? tunnelManager.lastError ?? "隧道被系统关闭或核心停止响应。")
-                            .font(.system(size: 11))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -1122,9 +1122,9 @@ struct DashboardView: View {
                         .foregroundStyle(.red)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("VPN 反复掉线，已暂停自动重连")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.footnote.weight(.semibold))
                         Text(tunnelManager.lastError ?? "隧道在短时间内多次掉线，系统已暂停自动重连，请检查配置后手动重新启动。")
-                            .font(.system(size: 11))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -1149,9 +1149,9 @@ struct DashboardView: View {
                         .foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("TUN 数据面需要重启 VPN")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.footnote.weight(.semibold))
                         Text(tunRestartNeeded)
-                            .font(.system(size: 11))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -1192,7 +1192,7 @@ struct DashboardView: View {
                 // boolean — isRunning is only true once connected,
                 // so the old text claimed "已连接" during connecting.
                 Text(tunnelStatusText)
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -1243,10 +1243,10 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 6) {
                 Image(systemName: "network")
-                    .font(.system(size: 12))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("内网 IP")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
                 // FlClash intranet_ip.dart: header copy icon copies
@@ -1255,7 +1255,7 @@ struct DashboardView: View {
                 // feedback (FlClash shows a "复制成功" banner).
                 Button { copyIntranetAddress() } label: {
                     Image(systemName: intranetCopied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(intranetCopied ? .green : Color(.label))
                 }
                 .buttonStyle(.plain)
@@ -1268,18 +1268,18 @@ struct DashboardView: View {
                 .minimumScaleFactor(0.7)
             HStack(spacing: 12) {
                 Image(systemName: "wifi")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(Color(.label))
                     .frame(width: 40, height: 40)
                     .background(Color.white, in: Circle())
                 VStack(alignment: .leading, spacing: 2) {
                     Text("局域网代理")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .fontWeight(.semibold)
                     // FlClash intranet_ip.dart: "端口 {port}" when on,
                     // "已禁用" when off.
                     Text(settingsStore.allowLan ? "端口 \(settingsStore.mixedPort)" : "已禁用")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -1309,15 +1309,15 @@ struct DashboardView: View {
             Button { withAnimation { servicesExpanded.toggle() } } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "shield.checkmark")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.callout.weight(.semibold))
                     Text("服务状态")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.caption.weight(.semibold))
                     Spacer()
                     if let badge = serviceBadge {
                         PillBadge(text: badge.text, tint: badge.tint)
                     }
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(servicesExpanded ? 90 : 0))
                 }
@@ -1353,7 +1353,7 @@ struct DashboardView: View {
                 }
             }
             Text(service?.delay.map { "\($0) ms" } ?? "—")
-                .font(.system(size: 13))
+                .font(.footnote)
                 .fontWeight(.semibold)
             Spacer()
         }
@@ -1375,23 +1375,23 @@ struct DashboardView: View {
                 ProgressView()
             }
             if let error = trafficStore.servicesError {
-                Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                Text(error).font(.caption2).foregroundStyle(.red)
             }
             if trafficStore.services.isEmpty {
                 Text("通过当前出站检测 Google / GitHub / YouTube 等服务的可用性（probe.services）。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(trafficStore.services) { service in
                     HStack {
-                        Text(service.name).font(.system(size: 13))
+                        Text(service.name).font(.footnote)
                         Spacer()
                         if let region = service.region, !region.isEmpty {
-                            Text(region).font(.system(size: 10)).foregroundStyle(.secondary)
+                            Text(region).font(.caption2).foregroundStyle(.secondary)
                         }
-                        Text(service.delay.map { "\($0) ms" } ?? "—").font(.system(size: 10))
+                        Text(service.delay.map { "\($0) ms" } ?? "—").font(.caption2)
                         Text(serviceStatusLabel(service.status))
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .fontWeight(.semibold)
                             .foregroundStyle(serviceStatusColor(service.status))
                     }
@@ -1410,38 +1410,38 @@ struct DashboardView: View {
             .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
             Divider()
             LabeledContent("引擎", value: trafficStore.engineStatus.map { engineStateLabel($0.state) } ?? (proxyStore.isRunning ? "已启动" : "已停止"))
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
             if let engine = trafficStore.engineStatus,
                let faults = engine.faults, !faults.isEmpty {
                 ForEach(faults, id: \.service) { fault in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("启动失败：\(fault.service)").font(.system(size: 13))
+                        Text("启动失败：\(fault.service)").font(.footnote)
                         Text("\(fault.reason)：\(fault.message)")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
             } else if let error = trafficStore.engineStatusError {
-                Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                Text(error).font(.caption2).foregroundStyle(.red)
             }
             LabeledContent("VPN 隧道", value: tunnelStatusText)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
             // D5: the unexpected-disconnect banner used to live here,
             // inside this collapsed section — it now lives on the main
             // VPN card (vpnCardSection), always visible.
             if onDemandStore.enabled {
                 Text("按需连接已开启：断网或切换网络后系统会自动重连。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
             LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
             Text(client.mode == .live
                  ? "数据面：PacketTunnel 扩展内的 Concord 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
                  : "示例模式：VPN 开关只切换界面状态，不转发流量。切到实时核心并启动 VPN 后由扩展转发流量。")
-                .font(.system(size: 10))
+                .font(.caption2)
                 .foregroundStyle(.secondary)
         }
     }
@@ -1452,9 +1452,9 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "doc.text")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                 Text("配置")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                 Spacer()
                 // FlClash profiles.dart _SyncButton: only for URL
                 // profiles, replaced by a spinner while updating.
@@ -1474,7 +1474,7 @@ struct DashboardView: View {
                             }
                         } label: {
                             Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 13))
+                                .font(.footnote)
                                 .foregroundStyle(Color(.label))
                         }
                         .buttonStyle(.plain)
@@ -1483,7 +1483,7 @@ struct DashboardView: View {
                 }
                 Button { onSelectTab(.profiles) } label: {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
@@ -1498,7 +1498,7 @@ struct DashboardView: View {
                 if profileStore.profiles.count > 1 {
                     Button { onSelectTab(.profiles) } label: {
                         Image(systemName: "arrow.left.arrow.right")
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .foregroundStyle(Color(.label))
                     }
                     .buttonStyle(.plain)
@@ -1507,11 +1507,11 @@ struct DashboardView: View {
             }
             HStack {
                 Text("更新于 \(updatedText)")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(profileEndText)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(profileEndIsWarn ? .orange : .secondary)
                     // FlClash tooltip: the full expiry date. .help
                     // has no visible effect on iOS; the date is also
@@ -1523,11 +1523,11 @@ struct DashboardView: View {
                 Text(usedPercentText)
                     .font(.system(size: statNumberSize, weight: .bold))
                 Text("已用")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(trafficText)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
             }
@@ -1536,7 +1536,7 @@ struct DashboardView: View {
             UsageMeterBar(fraction: usedFraction, warn: usedFraction >= 0.9)
             if subscription == nil {
                 Text("订阅流量信息：核心未提供（需订阅支持 subscription-userinfo，或先启动 VPN）。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
@@ -1550,15 +1550,15 @@ struct DashboardView: View {
             Button { onSelectTab(.proxies) } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "square.stack.3d.up")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.callout.weight(.semibold))
                     Text("策略组")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.caption.weight(.semibold))
                     if timeoutCount > 0 {
                         PillBadge(text: "\(timeoutCount) 超时", tint: .orange)
                     }
                     Spacer()
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
                 .foregroundStyle(Color(.label))
@@ -1572,11 +1572,11 @@ struct DashboardView: View {
                     Text("\(proxyStore.groups.count)")
                         .font(.system(size: bigNumberSize, weight: .bold))
                     Text("个")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .fontWeight(.semibold)
                         .foregroundStyle(.secondary)
                     Image(systemName: "arrow.up")
-                        .font(.system(size: 12))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -1591,7 +1591,7 @@ struct DashboardView: View {
                     }
                     if extraGroups > 0 {
                         Text("+\(extraGroups)")
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .fontWeight(.semibold)
                             .foregroundStyle(Color(.label))
                             .frame(width: 40, height: 40)
@@ -1620,10 +1620,10 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
             }
             Text(proxyStore.isRunning ? "暂无策略组" : "内核未运行")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
             if !proxyStore.isRunning {
                 Text("启动后显示策略组")
-                    .font(.system(size: 12))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
@@ -1639,7 +1639,7 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Text("连接统计")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                 Spacer()
             }
             HStack(spacing: 0) {
@@ -1675,7 +1675,7 @@ struct DashboardView: View {
             Text(value)
                 .font(.system(size: statNumberSize, weight: .bold))
             Text(label)
-                .font(.system(size: 10))
+                .font(.caption2)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -1700,7 +1700,7 @@ struct DashboardView: View {
                     CardTitleRow(icon: "memorychip", title: "内存信息")
                     Spacer()
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
@@ -1715,7 +1715,7 @@ struct DashboardView: View {
                 }
                 if !proxyStore.isRunning {
                     Text("核心未运行：仅应用内存为实测值，核心为 0。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -1743,9 +1743,9 @@ struct DashboardView: View {
     private func memoryLegend(dot: Color, label: String, bytes: UInt64) -> some View {
         HStack(spacing: 6) {
             Circle().fill(dot).frame(width: 8, height: 8)
-            Text(label).font(.system(size: 10)).foregroundStyle(Color(.label))
+            Text(label).font(.caption2).foregroundStyle(Color(.label))
             Text(ConcordFormat.bytes(Int64(bytes)))
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(Color(.label))
         }
     }
@@ -1774,32 +1774,32 @@ struct DashboardView: View {
                 Text("v\(appVersion)")
                     .font(.system(size: bigNumberSize, weight: .bold))
                 Text("当前版本")
-                    .font(.system(size: 12))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             if lastUpdateChecked {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("最新提交 \(String(lastUpdateSha.prefix(7)))")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .fontWeight(.semibold)
                     Text(lastUpdateMessage)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                     if !lastUpdateDate.isEmpty {
                         Text(lastUpdateDate)
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                 }
             } else {
                 Text("尚未检查过更新。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             if let message = updateCheckMessage {
                 Text(message)
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Button(isCheckingUpdate ? "检查中…" : "检查更新") {
@@ -1811,7 +1811,7 @@ struct DashboardView: View {
             .disabled(isCheckingUpdate)
             if lastUpdateIsNew {
                 Text("新版本需在 GitHub Actions 重新构建 IPA 后手动安装，本应用内无法直接更新。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
@@ -2023,7 +2023,7 @@ private struct CloverBadge: View {
                     .rotationEffect(.degrees(45 + spin))
                 if let code = countryCode, !code.isEmpty {
                     Text(code.uppercased())
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.footnote.weight(.semibold))
                         .tracking(0.5)
                         .foregroundStyle(Color(.label))
                 } else {
@@ -2117,7 +2117,7 @@ private struct MemoryDetailSheet: View {
                 Section("总计") {
                     memoryRow("应用 + 核心", value: ConcordFormat.bytes(Int64(appBytes + (coreBytes ?? 0))))
                     Text("应用与核心是两个进程（应用进程与 NetworkExtension 进程），两项相加是占用总和。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Section("应用") {
@@ -2128,11 +2128,11 @@ private struct MemoryDetailSheet: View {
                         memoryRow("RSS", value: ConcordFormat.bytes(Int64(core)))
                     } else {
                         Text("核心未运行，无内存数据。")
-                            .font(.system(size: 12))
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Text("core.stats 只暴露 rss。NetworkExtension 进程内存上限很紧（历史约 15–50 MB），大规则集与 GeoIP 可能触发 Jetsam。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Section {
@@ -2141,11 +2141,11 @@ private struct MemoryDetailSheet: View {
                     }
                     .disabled(isReleasing || coreBytes == nil)
                     if let message = releaseMessage {
-                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(message).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle("内存")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2190,7 +2190,7 @@ private struct DashboardEditSheet: View {
                     // FlClash widget_registry.dart: the status card is
                     // non-removable ("含启动键，不可移除") — no toggle.
                     Text("状态卡片含启动键，不可移除。")
-                        .font(.system(size: 12))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                     Toggle("网络速度", isOn: $showSpeed)
                     Toggle("出站模式", isOn: $showMode)
@@ -2206,7 +2206,7 @@ private struct DashboardEditSheet: View {
                 Section("密度") {
                     Toggle("紧凑密度", isOn: $densityCompact)
                     Text("紧凑模式缩小字号与启动按钮、收紧卡片间距，并隐藏部分副标题（FlClash DashboardDensity.compact）。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Section("卡片顺序") {
@@ -2217,13 +2217,13 @@ private struct DashboardEditSheet: View {
                         cardOrder.move(fromOffsets: from, toOffset: to)
                     }
                     Text("拖动右侧手柄调整顺序，关闭的卡片会从仪表盘隐藏，可随时再打开。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
             .environment(\.editMode, .constant(.active))
             .scrollContentBackground(.hidden)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("title.editDashboard".l10n)
             .navigationBarTitleDisplayMode(.inline)

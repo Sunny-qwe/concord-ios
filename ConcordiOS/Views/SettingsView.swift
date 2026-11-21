@@ -114,7 +114,7 @@ struct SettingsView: View {
                         .onChange(of: tproxyPort) { _, _ in settingsStore.save() }
                     if let portIssue {
                         Text(portIssue)
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.red)
                     }
                     Button("恢复默认端口（混合 7890、SOCKS 7891，其余停用）") {
@@ -126,7 +126,7 @@ struct SettingsView: View {
                         settingsStore.save()
                     }
                     Text("端口 0 表示停用；启用的端口须在 1024–49151 之间且互不冲突。HTTP / redir / tproxy 在 iOS 上一般用不到，FlClash 仍在 iOS 上提供这三项，这里同样提供。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Toggle("允许局域网连接", isOn: $settingsStore.allowLan)
                     NavigationLink("鉴权与外部控制器") {
@@ -145,7 +145,7 @@ struct SettingsView: View {
                         Text("关闭（off）").tag("off")
                     }
                     Text("进程查找方式：默认 strict（核心默认）；always 始终按进程匹配，off 关闭进程匹配。核心当前报告：\(settingsStore.findProcessMode ?? "未知")。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Toggle("切换配置后自动关闭连接", isOn: $settingsStore.autoCloseConnections)
                     Toggle("流量嗅探", isOn: $settingsStore.sniffing)
@@ -167,7 +167,7 @@ struct SettingsView: View {
                     Stepper("TCP 保活间隔：\(settingsStore.keepAliveInterval) 秒", value: $settingsStore.keepAliveInterval, in: 0...3600, step: 15)
                     Toggle("禁用 TCP 保活", isOn: $settingsStore.disableKeepAlive)
                     Text("保活空闲 / 间隔为 0 表示用核心默认（空闲 15 秒）。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Toggle("IPv6", isOn: $settingsStore.ipv6)
                     Picker("日志级别", selection: $settingsStore.logLevel) {
@@ -179,7 +179,7 @@ struct SettingsView: View {
                     // gated the Tools "日志" row, which is now always
                     // shown (users could not find the log page).
                     Text("启动时自动连接：打开应用后自动启动 VPN（需已有配置）。校验订阅证书：关闭后订阅下载不再验证服务器证书（自签证书的订阅源可用）。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Button("从核心读取当前配置") {
                         Task { await settingsStore.refreshFromCore() }
@@ -189,7 +189,7 @@ struct SettingsView: View {
                     }
                     if let message = settingsStore.generalApplyMessage {
                         Text(message)
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -206,7 +206,7 @@ struct SettingsView: View {
                         HostsView()
                     }
                     Text("上面的 5 项是覆盖：启用后才生效，作用于全部订阅；单个订阅的覆盖（设置 → 配置 → 覆盖）优先于这里。Hosts 在这里改，核心在 DNS 查询前先查这张表。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -225,11 +225,11 @@ struct SettingsView: View {
                         TunOverrideView()
                     }
                     Text("iOS 上 TUN 由系统 NetworkExtension 拥有，核心不会自己创建 TUN 设备（见 TUN_INVESTIGATION.md）。这些参数会写入共享 tunnel.json，扩展启动时传给 tun.start（packet-channel 路径）并用于配置隧道接口。改动后需重启 VPN 生效。IPv6 开关（通用里）打开时，隧道接口会同时配置 IPv6 地址 fdfe:dcba:9876::1/126 并接管 IPv6 默认路由；关闭时 IPv6 流量不进隧道。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     if !settingsStore.tunEnabled {
                         Text("TUN 已关闭：iOS 上 TUN 是唯一的数据面，关闭后启动 VPN 会直接报错。请重新打开后再启动。")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.orange)
                     }
                     Button("从核心读取 TUN 状态（config.general）") {
@@ -242,11 +242,11 @@ struct SettingsView: View {
                         LabeledContent("自动路由", value: tun.autoRoute == true ? "开" : "关")
                         LabeledContent("MTU", value: tun.mtu.map { "\($0)" } ?? "—")
                         Text("以上是核心报告的 TUN 状态，仅供查看：iOS 上 TUN 由扩展拥有（tun.start / tunnel.json），App 不会发 config.patch tun——那样会停用或替换扩展正在用的 TUN 设备。")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     if let message = settingsStore.tunStateMessage {
-                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(message).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
 
@@ -269,11 +269,11 @@ struct SettingsView: View {
                     }
                     if let message = settingsStore.dnsApplyMessage {
                         Text(message)
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Text("DNS 设置会写入共享 dns.json，扩展把它并进 config.apply 的 overlay（会覆盖订阅自带的 DNS）。Fake-IP 段须为 a.b.c.d/n 格式。改动后下次启动 VPN 生效；VPN 运行时点「应用」可立即生效。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     NavigationLink("DNS 查询记录") {
                         DnsQueriesView()
@@ -297,7 +297,7 @@ struct SettingsView: View {
                         SnifferSettingsView()
                     }
                     Text("覆盖：对通用、DNS、TUN、嗅探、NTP 的逐项覆盖，分全局和单个订阅两级，带 YAML 预览。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -347,7 +347,7 @@ struct SettingsView: View {
                     .disabled(!settingsStore.mitmAvailable || !settingsStore.mitmCapture)
                     .onChange(of: settingsStore.mitmCaptureEntries) { _, _ in settingsStore.save() }
                     Text("开启后拦截记录才会保存；iOS 上限 64 条（1 MB）。改动下次启动 VPN 后生效。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Button("验证 MITM 配置（mitm.validate）") {
                         Task { await settingsStore.validateMitmConfig() }
@@ -367,7 +367,7 @@ struct SettingsView: View {
                         ShareLink("分享 CA 证书（PEM）", item: info.pem)
                     } else {
                         Text("尚未生成 CA 证书。")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Button("生成 CA 证书（mitm.generateCertificate）") {
@@ -387,7 +387,7 @@ struct SettingsView: View {
                     }
                 } footer: {
                     Text("安装 CA 到系统信任（必须手动完成）：App 无法以编程方式安装受信任 CA。分享上面的 CA 证书，在 iPhone「设置 → 通用 → VPN 与设备管理」里安装，再到「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任。未安装时 HTTPS 只做透传，仅明文 HTTP 可改写。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -399,7 +399,7 @@ struct SettingsView: View {
                             Text("MITM 模块")
                             Spacer()
                             Text("Surge / Loon / QX")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -425,19 +425,19 @@ struct SettingsView: View {
                         .disabled(!settingsStore.mitmAvailable)
                         .onChange(of: settingsStore.mitmSkipServerCertVerify) { _, _ in settingsStore.save() }
                     Text("只跳过上游服务器证书的验证（测试自签服务时用）；开启后中间人可伪造服务器证书，不要长期开。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Toggle("阻止 QUIC", isOn: $settingsStore.mitmAutoQuicBlock)
                         .disabled(!settingsStore.mitmAvailable)
                         .onChange(of: settingsStore.mitmAutoQuicBlock) { _, _ in settingsStore.save() }
                     Text("默认开启：QUIC 把 TLS 握手藏在 UDP 里，解密不了；阻止后客户端回落到 TCP + TLS 才能解密。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Toggle("启用 HTTP/2（h2）", isOn: $mitmH2)
                         .disabled(!settingsStore.mitmAvailable)
                         .onChange(of: mitmH2) { _, _ in settingsStore.save() }
                     Text("改动随 MITM 配置保存，下次启动 VPN 或重载配置后生效。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
                         .disabled(!settingsStore.mitmAvailable)
@@ -446,7 +446,7 @@ struct SettingsView: View {
                         .disabled(!settingsStore.mitmAvailable)
                         .onChange(of: mitmDecryptUntrusted) { _, _ in settingsStore.save() }
                     Text("上游 decrypt-untrusted：打开后，即使服务器证书不受信任也解密。发给核心的 decrypt-tls = 解密不受信任的证书 || 已填受信任的服务器证书指纹（FlClash clash_config.dart:2322-2323）。改动随 MITM 配置保存，下次启动 VPN 或重载配置后生效。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     TextField("受信任的服务器证书指纹（可选）", text: $settingsStore.mitmTrustedFingerprint)
                         .textInputAutocapitalization(.never)
@@ -454,7 +454,7 @@ struct SettingsView: View {
                         .disabled(!settingsStore.mitmAvailable)
                         .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save() }
                     Text("填入某个服务器证书的 SHA-256 指纹后，只信任该指纹的证书（解密 TLS 随之开启）；留空则用本应用 CA 的指纹。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 } header: {
                     Text("选项")
@@ -463,12 +463,12 @@ struct SettingsView: View {
                 Section {
                     if !settingsStore.mitmIssues.isEmpty {
                         ForEach(settingsStore.mitmIssues, id: \.self) { issue in
-                            Text(issue).font(.system(size: 10)).foregroundStyle(.orange)
+                            Text(issue).font(.caption2).foregroundStyle(.orange)
                         }
                     }
                     if let message = settingsStore.mitmStatusMessage {
                         Text(message)
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     NavigationLink("MITM 拦截记录") {
@@ -477,7 +477,7 @@ struct SettingsView: View {
                     .disabled(!settingsStore.mitmAvailable)
                     if !settingsStore.mitmAvailable {
                         Text("MITM 当前不可用：核心未报告 mitm 能力（core.capabilities features.mitm），或隧道未运行。请先启动 VPN。")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -487,7 +487,7 @@ struct SettingsView: View {
                         ProvidersView()
                     }
                     Text("代理提供方 \(ruleStore.providers.filter { $0.type == "proxy" }.count) 个 · 规则提供方 \(ruleStore.ruleProviders.count) 个")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -509,7 +509,7 @@ struct SettingsView: View {
                     Text(client.mode == .sample
                          ? "示例数据模式：所有页面显示的都是内置示例数据，不是真实核心数据。"
                          : "实时核心模式：数据来自 PacketTunnel 扩展内的真实核心（需先启动 VPN）。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -518,7 +518,7 @@ struct SettingsView: View {
                         AppIconPickerView()
                     }
                     Text("在 App 内切换主屏幕图标（默认 / 墨黑 / 曜青 / 雪白），用的是系统公开接口。切换失败时页面会显示完整错误信息。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -527,7 +527,7 @@ struct SettingsView: View {
                         ThemePickerView()
                     }
                     Text("浅色 / 深色 / 跟随系统，外加 8 种主题色。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -536,7 +536,7 @@ struct SettingsView: View {
                         BackupView()
                     }
                     Text("把全部订阅、设置和 MITM 模块导出成一个备份文件，或从备份文件恢复。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -575,11 +575,11 @@ struct SettingsView: View {
                             LabeledContent("拥塞控制", value: capabilities.congestionControllers.isEmpty ? "—" : capabilities.congestionControllers.joined(separator: ", "))
                         } else {
                             Text("点「读取核心能力」查看核心报告的能力（需 VPN 运行）。")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                         if let message = settingsStore.developerInfoMessage {
-                            Text(message).font(.system(size: 10)).foregroundStyle(.red)
+                            Text(message).font(.caption2).foregroundStyle(.red)
                         }
                         Picker("MITM 内存压力（core.setPressure）", selection: $settingsStore.pressureLevel) {
                             Text("0 无压力").tag(0)
@@ -591,10 +591,10 @@ struct SettingsView: View {
                             Task { await settingsStore.setPressure(level: settingsStore.pressureLevel) }
                         }
                         if let message = settingsStore.pressureMessage {
-                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                            Text(message).font(.caption2).foregroundStyle(.secondary)
                         }
                         Text("压力只升不降（核心在一段时间后自动解除），只影响 MITM 抓包的内存占用：等级 1 停止运行脚本、2 停止保存请求体、3 仅中继流量。MITM 关闭时不起作用。")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                         Button("让核心崩溃（debug.crash）", role: .destructive) {
                             showCrashConfirm = true
@@ -608,7 +608,7 @@ struct SettingsView: View {
                             Text("debug.crash 会让核心进程立即中止，VPN 隧道随之断开，仅用于调试。注意：iOS 的发布版核心没有编译 debug 功能，调用会被核心拒绝，实际不会崩溃。")
                         }
                         if let message = settingsStore.crashMessage {
-                            Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                            Text(message).font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -618,15 +618,16 @@ struct SettingsView: View {
                     LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
                     LabeledContent("界面来源", value: "chen08209/FlClash（GPL-3.0）")
                     Text("本 App 是 FlClash 界面的 SwiftUI 复刻，核心经 PacketTunnel 扩展链接（packet-channel 数据面），但静态库构建与真机数据面尚未验证，见 README 的「已上线与待办」一节。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .tint(ConcordTheme.accent)
             .navigationTitle("title.settings".l10n)
+            .navigationBarTitleDisplayMode(.inline)
             .onChange(of: settingsStore.mode) { _, _ in settingsStore.save() }
             .onChange(of: settingsStore.logLevel) { _, _ in settingsStore.save() }
             .onChange(of: settingsStore.allowLan) { _, _ in settingsStore.save() }
@@ -685,6 +686,7 @@ private struct FoldedDnsEntry: Identifiable {
 
 struct DnsQueriesView: View {
     @EnvironmentObject private var dnsStore: DnsStore
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var client: ConcordClient
     @State private var queryName = ""
     @State private var queryType = "A"
@@ -735,7 +737,7 @@ struct DnsQueriesView: View {
                 HStack {
                     SampleDataBadge()
                     Text("DNS 记录为示例数据")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 .listRowBackground(Color.clear)
@@ -762,21 +764,21 @@ struct DnsQueriesView: View {
                 if let result = dnsStore.queriedResult {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("返回码 \(result.rcode) · 应答 \(result.answers.count) 条")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                         ForEach(result.answers, id: \.data) { record in
                             Text("\(record.name) → \(record.data)（TTL \(record.ttl)）")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                         }
                         if !result.authorities.isEmpty {
                             Text("权威记录 \(result.authorities.count) 条")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
                 if let error = dnsStore.queryError {
-                    Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                    Text(error).font(.caption2).foregroundStyle(.red)
                 }
             }
             Section {
@@ -787,14 +789,14 @@ struct DnsQueriesView: View {
                     Task { await dnsStore.flushFakeIp() }
                 }
                 if let message = dnsStore.lastActionMessage {
-                    Text(message).font(.system(size: 10)).foregroundStyle(.green)
+                    Text(message).font(.caption2).foregroundStyle(.green)
                 }
                 // Failures of the actions above (clear cache /
                 // clear Fake-IP, or a VPN-off attempt) only wrote
                 // lastError — render it here so the failure is
                 // visible with its real reason (audit B16).
                 if let error = dnsStore.lastError {
-                    Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                    Text(error).font(.caption2).foregroundStyle(.red)
                 }
             }
             Section("查询记录（dns.watch）") {
@@ -819,13 +821,13 @@ struct DnsQueriesView: View {
                 .listRowBackground(Color.clear)
                 if visibleEntries.isEmpty {
                     Text(dnsStore.filtered.isEmpty ? "暂无 DNS 查询记录" : "没有符合筛选的记录")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     // A failed refresh (e.g. VPN off) only wrote
                     // lastError — show the real reason instead of a
                     // bare "暂无记录" (audit B16).
                     if let error = dnsStore.lastError, dnsStore.filtered.isEmpty {
-                        Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                        Text(error).font(.caption2).foregroundStyle(.red)
                     }
                 } else {
                     ForEach(foldedEntries) { folded in
@@ -835,10 +837,10 @@ struct DnsQueriesView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack {
-                                    Text(entry.domain).font(.system(size: 13))
+                                    Text(entry.domain).font(.footnote)
                                     if folded.count > 1 {
                                         Text("×\(folded.count)")
-                                            .font(.system(size: 10))
+                                            .font(.caption2)
                                             .fontWeight(.semibold)
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 2)
@@ -847,16 +849,16 @@ struct DnsQueriesView: View {
                                     }
                                     Spacer()
                                     Text(entry.type)
-                                        .font(.system(size: 10))
+                                        .font(.caption2)
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
                                         .background(Color.blue.opacity(0.12), in: Capsule())
                                 }
                                 Text("上游 \(entry.upstream) · \(entry.delay) ms · \(entry.cached == true ? "缓存命中" : "实时查询")")
-                                    .font(.system(size: 10))
+                                    .font(.caption2)
                                     .foregroundStyle(.secondary)
                                 Text("应答：\(entry.answers.joined(separator: ", "))")
-                                    .font(.system(size: 10))
+                                    .font(.caption2)
                                     .foregroundStyle(.secondary)
                                 // Keyword chips (FlClash _DnsKeyword):
                                 // tapping one filters the list by it.
@@ -874,7 +876,7 @@ struct DnsQueriesView: View {
                                     DnsErrorRow(error: error)
                                 }
                                 Text(ConcordFormat.time(entry.time))
-                                    .font(.system(size: 10))
+                                    .font(.caption2)
                                     .foregroundStyle(.tertiary)
                             }
                         }
@@ -884,13 +886,19 @@ struct DnsQueriesView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("DNS 查询")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .searchable(text: $dnsStore.searchText, prompt: "搜索域名或上游")
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await dnsStore.refresh() } } label: {
                     Image(systemName: "arrow.clockwise")
@@ -920,7 +928,7 @@ private struct DnsKeywordChip: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background((isError ? Color.red : Color.blue).opacity(0.12), in: Capsule())
@@ -949,12 +957,12 @@ private struct DnsErrorRow: View {
         } label: {
             HStack(spacing: 4) {
                 Text(error)
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.red)
                     .lineLimit(2)
                 if copied {
                     Text("已复制")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -987,7 +995,7 @@ private struct DnsEntryDetailView: View {
                 Section("应答") {
                     if entry.answers.isEmpty {
                         Text("无应答记录")
-                            .font(.system(size: 12))
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(entry.answers, id: \.self) { answer in
@@ -1014,7 +1022,7 @@ private struct DnsEntryDetailView: View {
                     }
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle("DNS 详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1040,6 +1048,7 @@ private struct DnsEntryDetailView: View {
 
 struct ProvidersView: View {
     @EnvironmentObject private var ruleStore: RuleStore
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var client: ConcordClient
     @State private var sideLoadName = ""
     @State private var sideLoadText = ""
@@ -1051,7 +1060,7 @@ struct ProvidersView: View {
                 HStack {
                     SampleDataBadge()
                     Text("提供方为示例数据")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 .listRowBackground(Color.clear)
@@ -1059,20 +1068,20 @@ struct ProvidersView: View {
             ForEach(ruleStore.providers) { provider in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
-                        Text(provider.name).font(.system(size: 13))
+                        Text(provider.name).font(.footnote)
                         Spacer()
                         Text(provider.type)
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(Color.purple.opacity(0.12), in: Capsule())
                     }
                     Text("\(provider.vehicleType) · \(provider.count) 条 · \(provider.path)")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     if let updated = provider.updatedAt {
                         Text("更新于 \(Date(timeIntervalSince1970: TimeInterval(updated)).formatted(date: .abbreviated, time: .shortened))")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                 }
@@ -1119,12 +1128,12 @@ struct ProvidersView: View {
                 }
                 .disabled(sideLoadName.trimmingCharacters(in: .whitespaces).isEmpty || sideLoadText.isEmpty)
                 Text("把提供方文件内容（YAML / MRS / 文本）直接贴进来，核心会把它存到该名称下。只处理本地内容，不联网拉取。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             if let message = ruleStore.providerActionMessage {
                 Text(message)
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .listRowBackground(Color.clear)
             }
@@ -1136,23 +1145,29 @@ struct ProvidersView: View {
             // wording; this footnote states it on this page too,
             // next to the 健康检查 swipe action above.
             Text("健康检查已触发，但核心不返回提供方健康状态，无法显示结果")
-                .font(.system(size: 10))
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .listRowBackground(Color.clear)
             if let error = ruleStore.lastError {
                 Text(error)
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.red)
                     .listRowBackground(Color.clear)
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("提供方")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
         .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu("地理数据库") {
                     Button("更新 GeoIP（MMDB）") {
@@ -1191,6 +1206,7 @@ struct ProvidersView: View {
 
 struct ResourcesView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var mitmModuleStore: MitmModuleStore
@@ -1235,7 +1251,7 @@ struct ResourcesView: View {
             Section("核心") {
                 LabeledContent("内存占用", value: trafficStore.coreMemoryBytes.map { ConcordFormat.bytes(Int64($0)) } ?? "—")
                 Text("core.stats 只暴露 rss。NetworkExtension 进程内存上限很紧（历史约 15–50 MB），大规则集与 GeoIP 可能触发 Jetsam。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 Button("释放核心内存（core.releaseMemory）") {
                     Task {
@@ -1249,7 +1265,7 @@ struct ResourcesView: View {
                     }
                 }
                 if let message = releaseMessage {
-                    Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(message).font(.caption2).foregroundStyle(.secondary)
                 }
             }
             Section("已加载") {
@@ -1266,16 +1282,16 @@ struct ResourcesView: View {
                 }
                 .disabled(isUpdatingAll)
                 if let message = updateAllMessage {
-                    Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(message).font(.caption2).foregroundStyle(.secondary)
                 }
                 Text("全部更新会依次更新所有提供方、MITM 模块与三类 Geo 数据库；失败的项会继续更新其余项，最后汇总。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Section("规则提供方") {
                 if ruleStore.ruleProviders.isEmpty {
                     Text("没有规则提供方。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(ruleStore.ruleProviders) { provider in
@@ -1293,7 +1309,7 @@ struct ResourcesView: View {
                 let proxyProviders = ruleStore.providers.filter { $0.type == "proxy" }
                 if proxyProviders.isEmpty {
                     Text("没有代理提供方。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(proxyProviders) { provider in
@@ -1310,7 +1326,7 @@ struct ResourcesView: View {
             Section("MITM 模块") {
                 if mitmModuleStore.modules.isEmpty {
                     Text("没有 MITM 模块。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(mitmModuleStore.modules) { module in
@@ -1328,13 +1344,13 @@ struct ResourcesView: View {
                 let totalScripts = mitmModuleStore.modules.reduce(0) { $0 + $1.scripts }
                 LabeledContent("脚本总数", value: "\(totalScripts) 个")
                 Text("脚本没有独立的更新接口，随所属 MITM 模块一起更新。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Section("图标集") {
                 LabeledContent("内置备用图标", value: "深色 / 青色 / 浅色")
                 Text("图标集随应用内置，没有远程更新；切换图标见 工具 → 应用图标。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Section("Geo 资源") {
@@ -1362,15 +1378,15 @@ struct ResourcesView: View {
                 }
                 if geoFiles.isEmpty {
                     Text("容器里没有找到 Geo 文件（MMDB / ASN / GeoSite）。点下面按钮更新，核心会在后台下载。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(geoFiles) { file in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(file.name)
-                                .font(.system(size: 13))
+                                .font(.footnote)
                             Text("\(ConcordFormat.bytes(file.size))\(file.modified.map { " · 更新于 \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "")")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -1385,19 +1401,19 @@ struct ResourcesView: View {
                     Task { await ruleStore.geoUpdate(kind: "GEOSITE") }
                 }
                 Text("concord 的 geo.update 只支持 MMDB、ASN、GEOSITE 三种，没有 GEOIP。更新在后台进行，完成后文件会出现在容器里。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 Text("自定义下载地址：核心 geo.update 目前不接受自定义地址参数，下面填的地址会先保存在本机，待核心 / 扩展的下载路径支持自定义地址后使用；留空为默认地址。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 GeoURLRow(title: "GeoIP（MMDB）", url: $geoURLMMDB)
                 GeoURLRow(title: "ASN", url: $geoURLASN)
                 GeoURLRow(title: "GeoSite", url: $geoURLGeosite)
                 if let message = ruleStore.providerActionMessage {
-                    Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(message).font(.caption2).foregroundStyle(.secondary)
                 }
                 if let error = ruleStore.lastError {
-                    Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                    Text(error).font(.caption2).foregroundStyle(.red)
                 }
             }
             Section {
@@ -1412,11 +1428,19 @@ struct ResourcesView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("资源")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                }
+            }
+        }
         .task {
             scanGeoFiles()
         }
@@ -1443,7 +1467,7 @@ private struct GeoURLRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(title)下载地址")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
             HStack {
                 TextField("留空为默认地址", text: $url)
                     .textInputAutocapitalization(.never)
@@ -1457,7 +1481,7 @@ private struct GeoURLRow: View {
             }
             if let urlIssue {
                 Text(urlIssue)
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.red)
             }
         }
@@ -1476,14 +1500,14 @@ private struct GeoURLRow: View {
         HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .lineLimit(1)
                 Text(subtitle)
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 if let updatedAt {
                     Text("更新于 \(Date(timeIntervalSince1970: TimeInterval(updatedAt)).formatted(date: .abbreviated, time: .shortened))")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
             }

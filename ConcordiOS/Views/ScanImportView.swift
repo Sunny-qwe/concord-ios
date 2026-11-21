@@ -71,14 +71,14 @@ struct ScanImportView: View {
                     cornerMarks
                 }
             Text(invalidHint ? "二维码不是订阅链接或节点链接" : "将订阅或节点二维码放入框内")
-                .font(.system(size: 13))
+                .font(.footnote)
                 .foregroundStyle(invalidHint ? .red : .white)
                 .padding(.top, 20)
             Button {
                 torchOn.toggle()
             } label: {
                 Image(systemName: torchOn ? "flashlight.on.fill" : "flashlight.off.fill")
-                    .font(.system(size: 22))
+                    .font(.title2)
                     .foregroundStyle(.white)
                     .frame(width: 56, height: 56)
                     .background(Color.white.opacity(0.2), in: Circle())
@@ -108,10 +108,10 @@ struct ScanImportView: View {
                 .font(.system(size: 44))
                 .foregroundStyle(.white.opacity(0.7))
             Text("需要相机权限才能扫码")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.headline)
                 .foregroundStyle(.white)
             Text("请在系统「设置 → Concord → 相机」中允许访问相机，然后返回这里重新扫码。也可以直接粘贴链接导入，不用扫码。")
-                .font(.system(size: 13))
+                .font(.footnote)
                 .foregroundStyle(.white.opacity(0.8))
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)

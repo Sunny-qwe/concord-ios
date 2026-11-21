@@ -132,7 +132,7 @@ struct LoopbackView: View {
                 }
                 if addresses.isEmpty {
                     Text("未配置回流地址")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 ForEach(addresses, id: \.self) { address in
@@ -162,7 +162,7 @@ struct LoopbackView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    .font(.system(size: 13))
+                    .font(.footnote)
                 }
                 .onDelete { offsets in
                     var list = addresses
@@ -173,7 +173,7 @@ struct LoopbackView: View {
                 Text("虚拟接口回流地址")
             } footer: {
                 Text("发往这些 IPv4 地址的 TCP 连接会在虚拟接口上折返回本机，让 App 能通过一个对端地址连上本机自身的服务。地址不能属于 127.0.0.0/8，也不能是虚拟接口自身的地址。只要配置了地址，虚拟接口就仅使用 IPv4，IPv6 设置只对本应用自身的出站连接生效。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
             }
             Section {
                 Text("当前版本说明：核心接受 tun.loopback-address 这个配置项，但尚未实现回流路由——地址会保存并随配置发给核心，在本版本中还不会改变实际路由。")
@@ -189,7 +189,7 @@ struct LoopbackView: View {
                 Text("Loopback 10.7.0.1（SideStore / SideInstaller）")
             } footer: {
                 Text("打开后，下次启动 VPN 时隧道接口会多一个地址 10.7.0.2，并把 10.7.0.1/32 的流量引进隧道，让安装器在 VPN 开启时也能连上本机。注意：核心没有实现 sing-tun 一侧的回流，10.7.0.1 的包进隧道后核心不会把它送回本机，所以这个开关可能不起作用；主要是给 SideStore / SideInstaller 这类安装器准备的（本机安装用的是 SideKite）。改动需重启 VPN 生效，下面的「重新应用」不会让它生效。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
             }
             Section {
                 Button("重新应用（VPN 运行时立即生效）") {
@@ -204,7 +204,7 @@ struct LoopbackView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("虚拟接口回流地址")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -308,7 +308,7 @@ private struct LoopbackEditSheet: View {
                     Text("输入一个 IPv4 地址，不能属于 127.0.0.0/8，也不能是虚拟接口自身的地址 \(tunnelAddress)。")
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -74,7 +74,7 @@ struct AddedRulesView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("附加规则")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "搜索规则")

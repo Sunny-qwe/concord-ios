@@ -49,10 +49,10 @@ struct NodeSourcesView: View {
                     ForEach(section.nodes) { node in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(node.name).font(.system(size: 13))
+                                Text(node.name).font(.footnote)
                                 if !node.type.isEmpty || node.provider != nil {
                                     Text(nodeDetail(node))
-                                        .font(.system(size: 13))
+                                        .font(.footnote)
                                         .foregroundStyle(.secondary)
                                 }
                             }
@@ -62,7 +62,7 @@ struct NodeSourcesView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("节点来源")
         .navigationBarTitleDisplayMode(.inline)
         .task {

@@ -7,6 +7,7 @@ import SwiftUI
 
 struct DnsSettingsView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
+    @Environment(\.dismiss) private var dismiss
     // FlClash dns.dart:191-193: listen-routing-mark number field.
     // Stored here until the SettingsStore owner wires it into
     // dns.json ("listen-routing-mark").
@@ -207,8 +208,16 @@ struct DnsSettingsView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("DNS")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                }
+            }
+        }
     }
 }

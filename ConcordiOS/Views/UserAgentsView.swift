@@ -51,7 +51,7 @@ struct UserAgentsView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("User-Agent")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -165,7 +165,7 @@ private struct UserAgentEditSheet: View {
                     }
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

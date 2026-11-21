@@ -101,7 +101,7 @@ struct CustomProxiesView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("代理")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $editing) { proxy in
@@ -259,7 +259,7 @@ struct CustomProxyFormView: View {
                     Toggle("UDP", isOn: $proxy.udp)
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle(proxy.id.isEmpty || isNew ? "添加代理" : "编辑代理")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -328,7 +328,7 @@ struct RawProxyEditView: View {
                     TextField("端口", text: $portText)
                         .keyboardType(.numberPad)
                     Text("只能改这三项：其余参数（传输选项等）不在表单里，会按原样保留。")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 Section("完整定义（原样保留）") {
@@ -343,7 +343,7 @@ struct RawProxyEditView: View {
                     }
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle("编辑本地节点")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

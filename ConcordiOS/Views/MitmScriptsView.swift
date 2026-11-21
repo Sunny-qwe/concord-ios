@@ -30,19 +30,19 @@ struct MitmScriptsView: View {
         List {
             Section {
                 Text("独立脚本库：脚本文件保存在核心资源目录。核心只运行已被模块 [Script] 段引用的脚本——点「复制核心脚本行」粘贴进模块即可引用，引用后点「运行」按名字运行（mitm.runScript）。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 if let message = scriptStore.statusMessage {
-                    Text(message).font(.system(size: 10)).foregroundStyle(.green)
+                    Text(message).font(.caption2).foregroundStyle(.green)
                 }
                 if let error = scriptStore.lastError {
-                    Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                    Text(error).font(.caption2).foregroundStyle(.red)
                 }
                 if isRunning {
                     ProgressView()
                 }
                 if let message = runMessage {
-                    Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(message).font(.caption2).foregroundStyle(.secondary)
                 }
                 if let result = runResult {
                     JSONValueView(value: result)
@@ -53,7 +53,7 @@ struct MitmScriptsView: View {
             Section("脚本（\(scriptStore.scripts.count)）") {
                 if scriptStore.scripts.isEmpty {
                     Text("还没有脚本。点右上角 + 新建一个，或从链接、文件导入。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 ForEach(scriptStore.scripts) { script in
@@ -85,7 +85,7 @@ struct MitmScriptsView: View {
                 let files = scriptStore.resourceFiles()
                 if files.isEmpty {
                     Text("资源目录里还没有 .js 文件。模块下载的脚本和这里保存的脚本都会出现在这里。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 ForEach(files) { file in
@@ -95,20 +95,21 @@ struct MitmScriptsView: View {
                             .lineLimit(1)
                         Spacer()
                         Text("\(ConcordFormat.bytes(Int64(file.size))) · \(ConcordRelativeTime.string(since: file.modified))")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
                 Text("这些文件属于模块或本页的脚本，在「MITM 模块」里管理；删模块时会连同清理。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("MITM 脚本")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -213,11 +214,11 @@ private struct MitmScriptRow: View {
             Button(action: onEdit) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(script.label)
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .fontWeight(.semibold)
                         .foregroundStyle(Color(.label))
                     Text("\(script.isRemote ? "远程" : "本地") · 更新于 \(ConcordRelativeTime.string(since: script.lastUpdateTime))")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -277,7 +278,7 @@ private struct MitmScriptEditorView: View {
                         .autocapitalization(.none)
                         .autocorrectionDisabled()
                     Text("脚本以 main(config) 的形式运行，返回改写后的配置或结果。保存后会同步一份到核心资源目录。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Section {
@@ -307,12 +308,12 @@ private struct MitmScriptEditorView: View {
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || scriptStore.isBusy)
                     if let error = scriptStore.lastError {
-                        Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                        Text(error).font(.caption2).foregroundStyle(.red)
                     }
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle(script?.label ?? "新建脚本")
             .navigationBarTitleDisplayMode(.inline)
@@ -348,7 +349,7 @@ private struct MitmScriptImportURLView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     Text("下载后以链接的文件名命名；之后点「从链接更新」可重新下载。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Section {
@@ -382,12 +383,12 @@ private struct MitmScriptImportURLView: View {
                     .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isImporting)
                     if isImporting { ProgressView() }
                     if let error = scriptStore.lastError {
-                        Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                        Text(error).font(.caption2).foregroundStyle(.red)
                     }
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("从链接导入")
             .navigationBarTitleDisplayMode(.inline)
@@ -420,7 +421,7 @@ private struct MitmScriptEditURLView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     Text("保存后会立即从该链接下载一次，覆盖当前内容。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Section {
@@ -433,12 +434,12 @@ private struct MitmScriptEditURLView: View {
                     .disabled(scriptStore.updatingIds.contains(script.id))
                     if scriptStore.updatingIds.contains(script.id) { ProgressView() }
                     if let error = scriptStore.lastError {
-                        Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                        Text(error).font(.caption2).foregroundStyle(.red)
                     }
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("编辑链接")
             .navigationBarTitleDisplayMode(.inline)

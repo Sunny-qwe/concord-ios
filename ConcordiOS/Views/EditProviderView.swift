@@ -67,7 +67,7 @@ struct EditProviderView: View {
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
                     Text("核心不保存提供方的订阅链接：这里重新填写链接，保存时会下载内容并以该名称载入（provider.sideLoad）。改名相当于用新名称载入一份，旧名称的提供方保留。")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 Section {
@@ -76,15 +76,15 @@ struct EditProviderView: View {
                     }
                     .disabled(isSaving || trimmedName.isEmpty || trimmedURL.isEmpty)
                     if let message {
-                        Text(message).font(.system(size: 13)).foregroundStyle(.secondary)
+                        Text(message).font(.footnote).foregroundStyle(.secondary)
                     }
                     if let errorMessage {
-                        Text(errorMessage).font(.system(size: 13)).foregroundStyle(.red)
+                        Text(errorMessage).font(.footnote).foregroundStyle(.red)
                     }
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("编辑提供方")
             .navigationBarTitleDisplayMode(.inline)

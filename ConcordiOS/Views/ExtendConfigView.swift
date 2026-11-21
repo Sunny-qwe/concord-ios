@@ -75,9 +75,9 @@ struct ExtendConfigView: View {
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(mode.label).font(.system(size: 13, weight: .semibold))
+                                Text(mode.label).font(.footnote.weight(.semibold))
                                 Text(mode.description)
-                                    .font(.system(size: 13))
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -98,9 +98,9 @@ struct ExtendConfigView: View {
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("附加规则").font(.system(size: 13, weight: .semibold))
+                                Text("附加规则").font(.footnote.weight(.semibold))
                                 Text("在当前配置的规则之前先生效，扩展合并进配置")
-                                    .font(.system(size: 13))
+                                    .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -118,11 +118,11 @@ struct ExtendConfigView: View {
                     .foregroundStyle(isMatchTargetInvalid ? .red : .primary)
                     if isMatchTargetInvalid {
                         Text("该匹配目标在当前配置里不存在（不是分组也不是节点），保存后会回落到配置自身的最后一条规则。")
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .foregroundStyle(.red)
                     }
                     Text("匹配目标会作为最后一条 MATCH 规则写进当前配置；留空则跟随配置自身的最后一条规则。")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             } else {
@@ -158,7 +158,7 @@ struct ExtendConfigView: View {
                         }
                     }
                     Text("脚本定义 function main(config)，返回改写后的配置对象。config 是核心解析后的当前配置。运行需要核心可达（启动 VPN，或示例模式）。")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -176,17 +176,17 @@ struct ExtendConfigView: View {
                     .disabled(isApplying || profile == nil)
                     if let profile, !isTargetActive {
                         Text("正在编辑「\(profile.name)」的扩展配置；立即应用只对当前已激活的订阅生效，切换到该订阅后才能立即应用。设置已保存。")
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                     if profile == nil {
                         Text("没有已激活的订阅：先导入并切换一个订阅。")
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                 } footer: {
                     Text("应用后立即生效（VPN 运行时）或下次启动 VPN 时生效；标准模式的附加规则由扩展合并，不用改订阅文件。")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                 }
             }
             if let message {
@@ -197,7 +197,7 @@ struct ExtendConfigView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("扩展配置")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

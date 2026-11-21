@@ -88,7 +88,7 @@ struct NetworkSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Text("路由地址")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                 Text("走隧道的地址段（tun.route-address），与「TUN 覆盖」里的路由地址是同一项。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -147,7 +147,7 @@ struct NetworkSettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("网络")
         .navigationBarTitleDisplayMode(.inline)
     }

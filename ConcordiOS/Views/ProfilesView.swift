@@ -78,7 +78,7 @@ struct ProfilesView: View {
                     VStack(spacing: 12) {
                         if let notice = copyNotice {
                             Text(notice)
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.footnote.weight(.semibold))
                                 .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 10)
@@ -101,6 +101,7 @@ struct ProfilesView: View {
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
             .navigationTitle("title.profiles".l10n)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { navPath.append(.nodeSources) } label: {
@@ -189,15 +190,15 @@ struct ProfilesView: View {
                     NavigationStack {
                         VStack(spacing: 16) {
                             Text(url.lastPathComponent)
-                                .font(.system(size: 17, weight: .semibold))
+                                .font(.headline)
                             ShareLink(item: url) {
                                 Label("分享配置文件", systemImage: "square.and.arrow.up")
-                                    .font(.system(size: 17, weight: .semibold))
+                                    .font(.headline)
                             }
                             .buttonStyle(.borderedProminent)
                             .tint(ConcordTheme.accent)
                             Text("导出成功")
-                                .font(.system(size: 13))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                             Spacer()
                         }
@@ -262,19 +263,19 @@ struct ProfilesView: View {
     private var addProfileMenuItems: some View {
         Button { navPath.append(.nodeSources) } label: {
             Label("节点来源", systemImage: "list.bullet")
-                .font(.system(size: 15))
+                .font(.subheadline)
         }
         Button { showScanImport = true } label: {
             Label("扫码", systemImage: "qrcode.viewfinder")
-                .font(.system(size: 15))
+                .font(.subheadline)
         }
         Button { showFileImporter = true } label: {
             Label("文件", systemImage: "doc")
-                .font(.system(size: 15))
+                .font(.subheadline)
         }
         Button { showUnifiedImport = true } label: {
             Label("链接", systemImage: "link")
-                .font(.system(size: 15))
+                .font(.subheadline)
         }
         Section {
             // FlClash add.dart:137-149: create the custom profile
@@ -287,7 +288,7 @@ struct ProfilesView: View {
                 navPath.append(.customSubscription(sub.id))
             } label: {
                 Label("自定义订阅", systemImage: "doc.badge.gearshape")
-                    .font(.system(size: 15))
+                    .font(.subheadline)
             }
         }
     }
@@ -305,7 +306,7 @@ struct ProfilesView: View {
                 addProfileMenuItems
             } label: {
                 Label("添加配置", systemImage: "plus.circle")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.headline)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 12)
@@ -351,16 +352,16 @@ struct ProfilesView: View {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(sub.name)
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.headline)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     Text("\(sub.groups.count) 分组 · \(sub.rules.count) 规则 · \(sub.proxyProviders.count + sub.ruleProviders.count) 提供方")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     if sub.groups.count > 0 {
                         Text("\(sub.groups.count) 个分组")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(ConcordTheme.accent.opacity(0.12), in: Capsule())
@@ -383,11 +384,11 @@ struct ProfilesView: View {
         .contextMenu {
             Button { navPath.append(.customSubscription(sub.id)) } label: {
                 Label("编辑", systemImage: "square.and.pencil")
-                    .font(.system(size: 15))
+                    .font(.subheadline)
             }
             Button(role: .destructive) { customStore.delete(sub) } label: {
                 Label("删除", systemImage: "trash")
-                    .font(.system(size: 15))
+                    .font(.subheadline)
             }
         }
     }
@@ -399,21 +400,21 @@ struct ProfilesView: View {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(profile.name)
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.headline)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                     // FlClash card subtitle: the usage line when
                     // the provider sent subscription-userinfo, else
                     // the 远程 / 本地 fallback.
                     Text(profileSubtitle(profile))
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     if let info = profile.subscriptionInfo,
                        profile.kind == .url,
                        let expiry = info.expiryLine() {
                         Text(expiry.text)
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .foregroundStyle(expiry.warning ? .red : .secondary)
                             .lineLimit(1)
                     }
@@ -431,7 +432,7 @@ struct ProfilesView: View {
                         .frame(width: 24, height: 24)
                 } else if let updated = profile.updatedAt {
                     Text(ConcordRelativeTime.string(since: updated))
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 if profile.isActive {
@@ -450,16 +451,16 @@ struct ProfilesView: View {
             if !updatingIDs.contains(profile.id) && !isUpdatingAll {
                 Button { navPath.append(.edit(profile.id)) } label: {
                     Label("编辑", systemImage: "square.and.pencil")
-                        .font(.system(size: 15))
+                        .font(.subheadline)
                 }
                 Button { navPath.append(.extend(profile.id)) } label: {
                     Label("扩展", systemImage: "plus.square.on.square")
-                        .font(.system(size: 15))
+                        .font(.subheadline)
                 }
                 if profile.kind == .url {
                     Button { Task { await sync(profile) } } label: {
                         Label("同步", systemImage: "arrow.clockwise")
-                            .font(.system(size: 15))
+                            .font(.subheadline)
                     }
                 }
                 Menu("更多") {
@@ -469,26 +470,26 @@ struct ProfilesView: View {
                         previewProfile = profile
                     } label: {
                         Label("运行时配置", systemImage: "eye")
-                            .font(.system(size: 15))
+                            .font(.subheadline)
                     }
                     if profile.kind == .url {
                         Button { copyLink(profile) } label: {
                             Label("复制链接", systemImage: "doc.on.doc")
-                                .font(.system(size: 15))
+                                .font(.subheadline)
                         }
                         Button { qrProfile = profile } label: {
                             Label("二维码", systemImage: "qrcode")
-                                .font(.system(size: 15))
+                                .font(.subheadline)
                         }
                     }
                     Button { export(profile) } label: {
                         Label("导出文件", systemImage: "square.and.arrow.up")
-                            .font(.system(size: 15))
+                            .font(.subheadline)
                     }
                 }
                 Button(role: .destructive) { deleteTarget = profile } label: {
                     Label("删除", systemImage: "trash")
-                        .font(.system(size: 15))
+                        .font(.subheadline)
                 }
             }
         }
@@ -501,7 +502,7 @@ struct ProfilesView: View {
             List {
                 ForEach(reorderDraft) { profile in
                     Text(profile.name)
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.headline)
                 }
                 .onMove { from, to in
                     reorderDraft.move(fromOffsets: from, toOffset: to)
@@ -664,18 +665,18 @@ private struct ProfileQRCodeView: View {
                         .frame(width: 240, height: 240)
                 } else {
                     Text("无法生成二维码：该订阅没有链接")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 if let urlString = profile.urlString {
                     Text(urlString)
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(3)
                         .multilineTextAlignment(.center)
                 }
                 Text("在另一台设备上用 FlClash 扫码即可导入此配置。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 Spacer()
@@ -715,7 +716,7 @@ struct ProfilePreviewView: View {
         NavigationStack {
             ScrollView {
                 if let error = previewError {
-                    Text(error).font(.system(size: 13)).foregroundStyle(.red).padding()
+                    Text(error).font(.footnote).foregroundStyle(.red).padding()
                 } else if let built = builtText {
                     Text(built)
                         .font(.system(.caption, design: .monospaced))

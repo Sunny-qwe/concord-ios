@@ -16,6 +16,11 @@ struct LogsView: View {
     @State private var exportError: String?
     @State private var showExportError = false
     @State private var showCopiedAlert = false
+    /// Search is a magnifier button in the bar (upstream
+    /// AppBarSearchState), not a permanent row: the field only
+    /// appears while isSearching is true.
+    @State private var isSearching = false
+    @Environment(\.dismiss) private var dismiss
     @State private var tab = LogsTab.logs
     /// The log row tapped for its detail sheet (C8).
     @State private var selectedEntry: ConcordLogEntry?
@@ -34,7 +39,7 @@ struct LogsView: View {
                     HStack {
                         SampleDataBadge()
                         Text(tab == .logs ? "日志为示例数据" : "事件为示例数据")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
@@ -51,22 +56,37 @@ struct LogsView: View {
                 .padding(.vertical, 4)
 
                 if tab == .logs {
-                    Picker("级别", selection: $logStore.levelFilter) {
-                        ForEach(LogLevelFilter.allCases) { level in
-                            Text(level.rawValue).tag(level)
+                    // Upstream (logs.dart, mobile): no permanent level
+                    // row — the filter lives in the bar menu and only
+                    // an ACTIVE filter shows as a removable chip under
+                    // the bar (Scaffold keywords strip).
+                    if logStore.levelFilter != .all {
+                        HStack {
+                            HStack(spacing: 4) {
+                                Text(logStore.levelFilter.rawValue)
+                                Button { logStore.levelFilter = .all } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .font(.footnote)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.secondary.opacity(0.15), in: Capsule())
+                            Spacer()
                         }
+                        .padding(.horizontal)
+                        .padding(.vertical, 4)
                     }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal)
-                    .padding(.vertical, 4)
 
                     if !logStore.warnings.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("核心警告（core.lastWarnings）")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                             ForEach(logStore.warnings, id: \.message) { warning in
-                                Text(warning.message).font(.system(size: 10)).foregroundStyle(.orange)
+                                Text(warning.message).font(.caption2).foregroundStyle(.orange)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -101,18 +121,18 @@ struct LogsView: View {
                                 } label: {
                                     HStack(alignment: .top, spacing: 8) {
                                         Text(ConcordFormat.time(entry.time))
-                                            .font(.system(size: 10))
+                                            .font(.caption2)
                                             .foregroundStyle(.secondary)
                                             .frame(width: 64, alignment: .leading)
                                         Text(entry.level.uppercased())
-                                            .font(.system(size: 10))
+                                            .font(.caption2)
                                             .fontWeight(.semibold)
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 2)
                                             .background(levelColor(entry.level).opacity(0.15), in: Capsule())
                                             .foregroundStyle(levelColor(entry.level))
                                         Text(entry.text)
-                                            .font(.system(size: 10))
+                                            .font(.caption2)
                                             .lineLimit(3)
                                     }
                                 }
@@ -149,7 +169,7 @@ struct LogsView: View {
                             Text("暂无事件")
                                 .font(.headline)
                             Text("核心事件（提供方更新、测速、致命错误、状态变化）会显示在这里")
-                                .font(.system(size: 12))
+                                .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity)
@@ -159,19 +179,19 @@ struct LogsView: View {
                             List(eventStore.filtered) { entry in
                                 HStack(alignment: .top, spacing: 8) {
                                     Text(ConcordFormat.time(entry.receivedAtMillis))
-                                        .font(.system(size: 10))
+                                        .font(.caption2)
                                         .foregroundStyle(.secondary)
                                         .frame(width: 64, alignment: .leading)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(entry.event.type)
-                                            .font(.system(size: 10))
+                                            .font(.caption2)
                                             .fontWeight(.semibold)
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 2)
                                             .background(eventColor(entry.event.type).opacity(0.15), in: Capsule())
                                             .foregroundStyle(eventColor(entry.event.type))
                                         Text(entry.event.summary)
-                                            .font(.system(size: 10))
+                                            .font(.caption2)
                                             .lineLimit(3)
                                     }
                                 }
@@ -188,14 +208,14 @@ struct LogsView: View {
                     }
                     if let updated = eventStore.lastUpdated {
                         Text("上次更新：\(updated.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal)
                     }
                     if let error = eventStore.lastError {
                         Text(error)
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.red)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal)
@@ -205,13 +225,35 @@ struct LogsView: View {
             .background(ConcordTheme.pageBackground)
             .navigationTitle("日志")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: tab == .logs ? $logStore.searchText : $eventStore.searchText, prompt: tab == .logs ? "搜索日志" : "搜索事件")
+            // Upstream has no "返回" text: the leading slot holds a
+            // back chevron glyph only (scaffold.dart _buildPopButton).
+            .navigationBarBackButtonHidden(true)
+            .searchable(text: tab == .logs ? $logStore.searchText : $eventStore.searchText, isPresented: $isSearching, prompt: tab == .logs ? "搜索日志" : "搜索事件")
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                }
+            }
                 if tab == .logs {
                     ToolbarItem(placement: .topBarTrailing) {
                         Toggle("自动滚动", isOn: $logStore.autoScroll)
                             .toggleStyle(.switch)
                             .labelsHidden()
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        // Level filter (upstream: the filter lives in
+                        // the bar's overflow menu, not a permanent row;
+                        // a Picker inside a Menu renders checkmarks).
+                        Menu {
+                            Picker("级别", selection: $logStore.levelFilter) {
+                                ForEach(LogLevelFilter.allCases) { level in
+                                    Text(level.rawValue).tag(level)
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "line.3.horizontal.decrease.circle")
+                        }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         // Export (v0.2.35): the share icon now offers
@@ -322,7 +364,7 @@ struct LogsView: View {
             Text("暂无日志")
                 .font(.headline)
             Text("日志级别或搜索条件可能过滤掉了全部条目")
-                .font(.system(size: 12))
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -350,17 +392,17 @@ struct LogsView: View {
     private func diagnosticsBlock(title: String, text: String?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.system(size: 10))
+                .font(.caption2)
                 .foregroundStyle(.secondary)
             if let text = text, !text.isEmpty {
                 Text(text)
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.system(.caption2, design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                     .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 8))
             } else {
                 Text("暂无记录")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
@@ -426,10 +468,10 @@ private struct LogEntryDetailView: View {
             List {
                 Section {
                     Text("\(ConcordFormat.time(entry.time)) · \(entry.level.uppercased())")
-                        .font(.system(size: 12))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(entry.text)
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                 }
                 Section {

@@ -61,7 +61,7 @@ struct FiltersView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("过滤器")
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }

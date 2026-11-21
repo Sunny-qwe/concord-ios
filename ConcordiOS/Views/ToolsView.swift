@@ -111,14 +111,14 @@ struct ToolsView: View {
                                     .foregroundStyle(Color(.label))
                                     .frame(width: 24, height: 24)
                                 Text("tools.language".l10n)
-                                    .font(.system(size: 13, weight: .semibold))
+                                    .font(.footnote.weight(.semibold))
                                     .foregroundStyle(Color(.label))
                                 Spacer()
                                 Text(languageDisplayName)
-                                    .font(.system(size: 13))
+                                    .font(.footnote)
                                     .foregroundStyle(Color(.label))
                                 Image(systemName: "chevron.up.chevron.down")
-                                    .font(.system(size: 13, weight: .semibold))
+                                    .font(.footnote.weight(.semibold))
                                     .foregroundStyle(.tertiary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -213,7 +213,7 @@ struct ToolsView: View {
         VStack(alignment: .leading, spacing: 8) {
             if let header {
                 Text(header)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .padding(.leading, 4)
             }
@@ -247,11 +247,11 @@ private struct ToolRow: View {
                     .foregroundStyle(Color(.label))
                     .frame(width: 24, height: 24)
                 Text(title)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(Color(.label))
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -305,11 +305,11 @@ private struct LanguageView: View {
                 .pickerStyle(.inline)
             } footer: {
                 Text("切换语言后需要重启应用才会生效。重启后底部标签栏、工具页标题与常用按钮会按所选语言显示；页面内的其他文字仍为中文（只本地化了主要界面文字）。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("语言")
         .navigationBarTitleDisplayMode(.inline)
@@ -367,19 +367,19 @@ private struct DisclaimerView: View {
                     ForEach(DisclaimerView.terms, id: \.0) { title, body in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(title)
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.footnote.weight(.semibold))
                             Text(body)
                         }
                     }
                     Text(DisclaimerView.restatement)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.footnote.weight(.semibold))
                     if let disagreeMessage {
                         Text(disagreeMessage)
-                            .font(.system(size: 12))
+                            .font(.caption)
                             .foregroundStyle(.red)
                     }
                 }
-                .font(.system(size: 13))
+                .font(.footnote)
                 .padding(16)
             }
             _ConsentBar(
@@ -425,16 +425,16 @@ private struct _ConsentBar: View {
                         .foregroundStyle(.green)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("已同意免责声明")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.footnote.weight(.semibold))
                         if let date = consentedDate {
                             Text(date.formatted(date: .abbreviated, time: .shortened))
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
                     Spacer()
                     Button("撤回同意", role: .destructive, action: onWithdraw)
-                        .font(.system(size: 13))
+                        .font(.footnote)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -483,23 +483,23 @@ private struct _RestateDialog: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
                 Text("请复述以下声明，以确认您已阅读并同意免责声明。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 Text(statement)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
                 TextField("请逐字输入上方声明", text: $typed, axis: .vertical)
                     .lineLimit(3...)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .padding(12)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                 if restatement == .diverged {
                     Text("输入与声明不一致，请对照上方文字重新输入。")
-                        .font(.system(size: 12))
+                        .font(.caption)
                         .foregroundStyle(.red)
                 }
                 Spacer()

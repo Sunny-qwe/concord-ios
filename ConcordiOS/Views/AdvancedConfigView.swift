@@ -28,7 +28,7 @@ struct AdvancedConfigView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("进阶配置")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -50,7 +50,7 @@ struct AdvancedConfigView: View {
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
         }

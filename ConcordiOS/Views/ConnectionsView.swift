@@ -43,7 +43,7 @@ struct ConnectionsView: View {
                     HStack {
                         SampleDataBadge()
                         Text("连接为示例数据")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
@@ -56,13 +56,13 @@ struct ConnectionsView: View {
                     Text("下行 \(ConcordFormat.bytes(connectionStore.totalDownload))")
                     Spacer()
                 }
-                .font(.system(size: 10))
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
                 .padding(.bottom, 4)
                 if let message = connectionStore.networkUpdateMessage {
                     Text(message)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
@@ -70,7 +70,7 @@ struct ConnectionsView: View {
                 }
                 if let error = connectionStore.lastError {
                     Text(error)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
@@ -132,6 +132,7 @@ struct ConnectionsView: View {
             }
             .background(ConcordTheme.pageBackground)
             .navigationTitle("连接")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $connectionStore.searchText, prompt: "搜索域名、代理或规则")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -190,23 +191,23 @@ struct ConnectionsView: View {
     private func connectionRow(_ connection: LiveConnection) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text(ConcordFormat.time(Int64(connection.start.timeIntervalSince1970 * 1000)))
-                .font(.system(size: 10))
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .frame(width: 64, alignment: .leading)
             VStack(alignment: .leading, spacing: 2) {
                 Text(connection.host ?? connection.destination)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .lineLimit(1)
                 Text("\(connection.network.uppercased()) · \(connection.rule ?? "—") · \(connection.proxy ?? "—")")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 Text("持续 \(ConcordFormat.duration(seconds: connection.durationSeconds)) · ↑ \(ConcordFormat.bytes(connection.upload)) ↓ \(ConcordFormat.bytes(connection.download))")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Spacer()
             Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(.tertiary)
         }
     }
@@ -253,12 +254,12 @@ struct ConnectionDetailView: View {
                         MitmView(initialConnectionId: connection.id)
                     }
                     Text("断开调用 connection.close；拦截记录调用 mitm.exchanges，需要 MITM 已开启并正在捕获。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("连接详情")
             .navigationBarTitleDisplayMode(.inline)

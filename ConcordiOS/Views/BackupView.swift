@@ -14,6 +14,7 @@ import UniformTypeIdentifiers
 
 struct BackupView: View {
     @EnvironmentObject private var profileStore: ProfileStore
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var mitmModuleStore: MitmModuleStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -48,7 +49,7 @@ struct BackupView: View {
         List {
             Section("导出备份") {
                 Text("备份包含：全部订阅配置、设置（通用 / TUN / DNS / MITM）、MITM 模块、主题和核心模式。实时快照（流量、连接、日志）不备份，下次打开 App 时会自动重新生成。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 Button {
                     Task { await createBackup() }
@@ -61,14 +62,14 @@ struct BackupView: View {
                         Label("分享备份文件", systemImage: "square.and.arrow.up")
                     }
                     Text("备份文件：\(backupURL.lastPathComponent)")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
 
             Section("导入备份") {
                 Text("导入会替换当前全部订阅、设置和 MITM 模块。恢复前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 Picker("恢复选项", selection: $restoreScope) {
                     ForEach(BackupStore.RestoreScope.allCases) { scope in
@@ -79,7 +80,7 @@ struct BackupView: View {
                 Text(restoreScope == .all
                      ? "恢复全部数据：所有文件与设置都被备份里的内容替换。"
                      : "仅恢复配置：只恢复订阅与配置，设置、主题、MITM 模块保持不变。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 Button {
                     showImporter = true
@@ -95,7 +96,7 @@ struct BackupView: View {
                         .fill(webdavConnected == nil ? Color.gray : (webdavConnected! ? Color.green : Color.red))
                         .frame(width: 10, height: 10)
                     Text(webdavConnected == nil ? "未测试" : (webdavConnected! ? "已连接" : "连接失败"))
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
@@ -124,7 +125,7 @@ struct BackupView: View {
                 .disabled(webdavURL.trimmingCharacters(in: .whitespaces).isEmpty || backupStore.isWorking)
                 if let webdavStatus {
                     Text(webdavStatus)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -137,23 +138,31 @@ struct BackupView: View {
             if let message {
                 Section {
                     Text(message)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
             if let errorMessage {
                 Section {
                     Text(errorMessage)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.red)
                 }
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("备份与恢复")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                }
+            }
+        }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.zip], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):

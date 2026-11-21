@@ -10,6 +10,7 @@ import SwiftUI
 
 struct ThemePickerView: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.dismiss) private var dismiss
     /// The preview toggle is a live miniature, not a real switch:
     /// it used to be bound to `.constant(true)`, so tapping it did
     /// nothing and looked dead. It now flips local state.
@@ -55,7 +56,7 @@ struct ThemePickerView: View {
                 Toggle("纯黑模式", isOn: $themeStore.pureBlack)
                     .onChange(of: themeStore.pureBlack) { _, _ in themeStore.save() }
                 Text("「跟随系统」时 App 跟随 iPhone 的深色 / 浅色设置自动切换。纯黑模式只在深色下生效：页面背景变纯黑，卡片变深灰。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
@@ -74,13 +75,13 @@ struct ThemePickerView: View {
                                         .frame(width: 44, height: 44)
                                     if themeStore.customAccentHex == nil && themeStore.accent == accent {
                                         Image(systemName: "checkmark")
-                                            .font(.system(size: 16, weight: .semibold))
+                                            .font(.callout.weight(.semibold))
                                             .fontWeight(.bold)
                                             .foregroundStyle(.white)
                                     }
                                 }
                                 Text(accent.label)
-                                    .font(.system(size: 10))
+                                    .font(.caption2)
                                     .foregroundStyle(themeStore.customAccentHex == nil && themeStore.accent == accent ? Color(.label) : .secondary)
                             }
                         }
@@ -101,13 +102,13 @@ struct ThemePickerView: View {
                                         .frame(width: 44, height: 44)
                                     if themeStore.customAccentHex == preset.hex {
                                         Image(systemName: "checkmark")
-                                            .font(.system(size: 16, weight: .semibold))
+                                            .font(.callout.weight(.semibold))
                                             .fontWeight(.bold)
                                             .foregroundStyle(.white)
                                     }
                                 }
                                 Text(preset.label)
-                                    .font(.system(size: 10))
+                                    .font(.caption2)
                                     .foregroundStyle(themeStore.customAccentHex == preset.hex ? Color(.label) : .secondary)
                             }
                         }
@@ -129,7 +130,7 @@ struct ThemePickerView: View {
                                             .frame(width: 44, height: 44)
                                         if themeStore.customAccentHex == hex {
                                             Image(systemName: "checkmark")
-                                                .font(.system(size: 16, weight: .semibold))
+                                                .font(.callout.weight(.semibold))
                                                 .fontWeight(.bold)
                                                 .foregroundStyle(.white)
                                         }
@@ -169,11 +170,11 @@ struct ThemePickerView: View {
                 }
                 if let customColorMessage {
                     Text(customColorMessage)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
                 Text("主题色会用在按钮、开关、选中状态和进度条上。长按自定义颜色可删除。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                 // FlClash theme.dart:109-135 _PrimaryColorItem reset:
                 // confirm, then back to the default blue + vivid
@@ -205,7 +206,7 @@ struct ThemePickerView: View {
                 .pickerStyle(.segmented)
                 .onChange(of: themeStore.colorStyle) { _, _ in themeStore.save() }
                 Text("生动：原样；柔和：降低饱和度；单色：灰色主题色。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
@@ -218,7 +219,7 @@ struct ThemePickerView: View {
                 .pickerStyle(.segmented)
                 .onChange(of: themeStore.navBarStyle) { _, _ in themeStore.save() }
                 Text("悬浮：底部悬浮胶囊栏；停靠：系统自带底部标签栏。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
@@ -228,16 +229,16 @@ struct ThemePickerView: View {
                 if themeStore.textScaleEnabled {
                     HStack {
                         Text("小")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                         Slider(value: $themeStore.textScale, in: 0.8...1.3, step: 0.1)
                             .onChange(of: themeStore.textScale) { _, _ in themeStore.save() }
                         Text("大")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Text("当前 \(Int(themeStore.textScale * 100))%")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -247,7 +248,7 @@ struct ThemePickerView: View {
                     FontPickerView()
                 }
                 Text("系统默认字体，或已安装的任意字体。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
@@ -257,9 +258,9 @@ struct ThemePickerView: View {
                         BlobIcon(systemName: "globe", iconColor: .white, blobColor: themeStore.accentColor, size: 56)
                         VStack(alignment: .leading, spacing: 4) {
                             Text("仪表盘")
-                                .font(.system(size: 12, weight: .semibold))
+                                .font(.caption.weight(.semibold))
                             Text("这就是换主题后的样子")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -269,7 +270,7 @@ struct ThemePickerView: View {
                     HStack(spacing: 8) {
                         ForEach(["规则", "全局", "直连"], id: \.self) { mode in
                             Text(mode)
-                                .font(.system(size: 13))
+                                .font(.footnote)
                                 .fontWeight(.semibold)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 6)
@@ -301,7 +302,7 @@ struct ThemePickerView: View {
                             Text("VPN")
                                 .font(.system(size: 14, weight: .semibold))
                             Text("已连接")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -314,10 +315,18 @@ struct ThemePickerView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("主题")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                }
+            }
+        }
     }
 
     /// "#RRGGBB" for a picked colour.

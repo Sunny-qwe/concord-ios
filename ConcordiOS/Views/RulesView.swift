@@ -37,7 +37,7 @@ struct RulesView: View {
                     HStack {
                         SampleDataBadge()
                         Text("规则为示例数据")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     .listRowBackground(Color.clear)
@@ -46,7 +46,7 @@ struct RulesView: View {
                 Section("规则集提供方（provider.list）") {
                     if ruleStore.ruleProviders.isEmpty {
                         Text("暂无规则提供方")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(ruleStore.ruleProviders) { provider in
@@ -56,17 +56,17 @@ struct RulesView: View {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(provider.name)
-                                            .font(.system(size: 13))
+                                            .font(.footnote)
                                         Text("\(provider.behavior ?? provider.format ?? "") · \(provider.count) 条")
-                                            .font(.system(size: 10))
+                                            .font(.caption2)
                                             .foregroundStyle(.secondary)
                                     }
                                     Spacer()
                                     Text(provider.vehicleType)
-                                        .font(.system(size: 10))
+                                        .font(.caption2)
                                         .foregroundStyle(.secondary)
                                     Image(systemName: "chevron.right")
-                                        .font(.system(size: 13, weight: .semibold))
+                                        .font(.footnote.weight(.semibold))
                                         .foregroundStyle(.tertiary)
                                 }
                             }
@@ -88,7 +88,7 @@ struct RulesView: View {
                         }
                     }
                     if let message = ruleStore.providerActionMessage {
-                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(message).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
 
@@ -102,7 +102,7 @@ struct RulesView: View {
                         .padding(8)
                         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
                     Text("每行一条过滤表达式：代理组 filter: 用的反引号分隔正则列表，例如 (?i)港|hk 或 hk`jp。空行会被忽略。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     HStack {
                         Button("从当前配置提取") {
@@ -126,15 +126,15 @@ struct RulesView: View {
                         .disabled(filterLines.isEmpty)
                     }
                     if let message = filterExtractMessage {
-                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(message).font(.caption2).foregroundStyle(.secondary)
                     }
                     if let message = ruleStore.filterCheckMessage {
-                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(message).font(.caption2).foregroundStyle(.secondary)
                     }
                     if !ruleStore.filterIssues.isEmpty {
                         ForEach(ruleStore.filterIssues, id: \.message) { issue in
                             Text("第 \(issue.index.map { "\($0 + 1)" } ?? "？") 条：\(issue.message)")
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .foregroundStyle(.orange)
                         }
                     }
@@ -143,7 +143,7 @@ struct RulesView: View {
                 Section("路由复核（route.check）") {
                     if routedServices.isEmpty {
                         Text("暂无可复核的路由：先在仪表盘运行服务检测（probe.services），探测会记录路由命中；之后回来点「重新验证」。")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(routedServices) { service in
@@ -151,7 +151,7 @@ struct RulesView: View {
                                 Text(service.name)
                                 Spacer()
                                 Text("\(service.hits?.count ?? 0) 条命中")
-                                    .font(.system(size: 10))
+                                    .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -170,19 +170,19 @@ struct RulesView: View {
                                 Text(label)
                                 Spacer()
                                 Text(held ? "仍有效" : "已变化")
-                                    .font(.system(size: 10))
+                                    .font(.caption2)
                                     .foregroundStyle(held ? .green : .orange)
                             }
                         }
                         Text("epoch \(result.epoch) / version \(result.version)")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     if let message = ruleStore.routeCheckMessage {
-                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(message).font(.caption2).foregroundStyle(.secondary)
                     }
                     Text("route.check 不是测网址的工具：它复核的是上一次探测记录的路由命中（host → 代理 → 出口），看配置变化后这些路由是否还走原来的出口。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -193,17 +193,17 @@ struct RulesView: View {
                         LabeledContent("监听器", value: stamp.running ? "运行中" : "未运行")
                     } else {
                         Text("尚未读取路由状态")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Button("刷新路由状态") {
                         Task { await ruleStore.refreshRouteStamp() }
                     }
                     if let message = ruleStore.routeStampMessage {
-                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(message).font(.caption2).foregroundStyle(.secondary)
                     }
                     Text("路由表每次变化时 epoch / version 都会推进；监听器状态表示路由监听是否在运行。")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
 
@@ -216,29 +216,29 @@ struct RulesView: View {
                     .pickerStyle(.menu)
                     if ruleStore.filtered.isEmpty {
                         Text("没有匹配的规则")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(Array(ruleStore.filtered.enumerated()), id: \.element.id) { index, rule in
                             HStack(alignment: .top, spacing: 8) {
                                 Text("\(index + 1)")
-                                    .font(.system(size: 10))
+                                    .font(.caption2)
                                     .foregroundStyle(.secondary)
                                     .frame(width: 24, alignment: .trailing)
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack {
                                         Text(rule.type)
-                                            .font(.system(size: 10))
+                                            .font(.caption2)
                                             .fontWeight(.semibold)
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 2)
                                             .background(Color.blue.opacity(0.12), in: Capsule())
                                         Text(rule.payload.isEmpty ? "—" : rule.payload)
-                                            .font(.system(size: 13))
+                                            .font(.footnote)
                                             .lineLimit(2)
                                     }
                                     Text("→ \(rule.target)")
-                                        .font(.system(size: 10))
+                                        .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }
                             }
@@ -249,19 +249,20 @@ struct RulesView: View {
                 Section {
                     if let updated = ruleStore.lastUpdated {
                         Text("上次更新：\(updated.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.system(size: 10))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     if let error = ruleStore.lastError {
-                        Text(error).font(.system(size: 10)).foregroundStyle(.red)
+                        Text(error).font(.caption2).foregroundStyle(.red)
                     }
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .listStyle(.insetGrouped)
             .navigationTitle("规则")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $ruleStore.searchText, prompt: "搜索规则内容或目标")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -366,15 +367,15 @@ struct ProviderDetailView: View {
                     // refresh, but the core never returns provider
                     // health state, so no refresh can show one.
                     Text("健康检查已触发，但核心不返回提供方健康状态，无法显示结果")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     if let message = ruleStore.providerActionMessage {
-                        Text(message).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(message).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle(provider.name)
             .navigationBarTitleDisplayMode(.inline)

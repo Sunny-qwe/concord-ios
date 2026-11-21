@@ -72,7 +72,7 @@ struct DiagnosticsView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("可靠性中心")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -120,7 +120,7 @@ struct DiagnosticsView: View {
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
         }
@@ -237,7 +237,7 @@ struct NetworkHealthView: View {
                 .disabled(isChecking)
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("网络健康")
         .navigationBarTitleDisplayMode(.inline)
         .task { await check() }
@@ -380,7 +380,7 @@ struct ModuleAuditView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("模块审计")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -448,7 +448,7 @@ struct ConfigPreflightView: View {
                 .disabled(isRunning)
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("配置预检")
         .navigationBarTitleDisplayMode(.inline)
         .task { await run() }

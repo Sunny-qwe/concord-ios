@@ -72,7 +72,7 @@ struct DeveloperView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("开发者模式")
         .navigationBarTitleDisplayMode(.inline)
         .alert("清除全部数据？", isPresented: $showingClearConfirm) {

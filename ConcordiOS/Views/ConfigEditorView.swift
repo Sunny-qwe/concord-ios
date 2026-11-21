@@ -80,7 +80,7 @@ struct ConfigEditorView: View {
                 ContentUnavailableView("打不开配置", systemImage: "doc.text.magnifyingglass", description: Text(loadError))
             } else if !isLoaded {
                 ProgressView("正在读取配置…")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 editorHeader
@@ -158,7 +158,7 @@ struct ConfigEditorView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(editedProfile?.name ?? "当前配置")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                 Spacer()
                 if isDirty {
                     PillBadge(text: "未保存", tint: .orange)
@@ -168,7 +168,7 @@ struct ConfigEditorView: View {
             }
             if !isTargetActive, targetProfile != nil {
                 Text("正在编辑未激活的订阅：保存只写它自己的文件，不会改动当前已激活的订阅。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Text(client.mode == .live
@@ -176,7 +176,7 @@ struct ConfigEditorView: View {
                     ? "保存前会先用核心校验（config.validate），有问题就不会覆盖。"
                     : "VPN 未运行：保存前只能做本地检查，核心会在下次启动 VPN 时再校验一次。")
                  : "示例模式：保存只做本地检查，不会发给核心。")
-                .font(.system(size: 13))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
         }
         .padding(12)
@@ -187,29 +187,29 @@ struct ConfigEditorView: View {
         VStack(alignment: .leading, spacing: 8) {
             if isWorking {
                 ProgressView("正在校验…")
-                    .font(.system(size: 13))
+                    .font(.footnote)
             }
             if !validationIssues.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("校验发现 \(validationIssues.count) 个问题，未保存：")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .fontWeight(.semibold)
                         .foregroundStyle(.red)
                     ForEach(Array(validationIssues.enumerated()), id: \.offset) { _, issue in
                         Text("· \(issue.message)")
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .foregroundStyle(.red)
                     }
                 }
             }
             if let errorMessage {
                 Text(errorMessage)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.red)
             }
             if let message {
                 Text(message)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }

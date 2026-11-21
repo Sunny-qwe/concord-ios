@@ -151,7 +151,7 @@ struct OnDemandView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("按需连接")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

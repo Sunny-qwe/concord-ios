@@ -117,21 +117,21 @@ struct EditProfileView: View {
             if let validationError {
                 Section {
                     Text(validationError)
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.red)
                 }
             }
             Section {
                 fieldRow(label: "名称", invalid: isNameInvalid, error: isNameInvalid ? "请填写名称" : nil) {
                     TextField("必填", text: $name)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.footnote.weight(.semibold))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 }
                 if isURLProfile {
                     fieldRow(label: "链接", invalid: isURLInvalid, error: isURLInvalid ? "订阅链接无效，应为 http(s) 链接" : nil) {
                         TextField("必填", text: $urlString)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.footnote.weight(.semibold))
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.URL)
@@ -139,42 +139,42 @@ struct EditProfileView: View {
                 }
                 fieldRow(label: "age 私钥") {
                     SecureField("可选", text: $ageSecretKey)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.footnote.weight(.semibold))
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
                 Text("私钥仅保存在本机，不会被记录到日志。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             if isURLProfile {
                 Section {
                     Toggle("自动更新", isOn: $autoUpdate)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.footnote.weight(.semibold))
                     if autoUpdate {
                         HStack(spacing: 8) {
                             Text("更新间隔")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.footnote.weight(.semibold))
                                 .foregroundStyle(isIntervalInvalid ? .red : .primary)
                             Spacer()
                             TextField("必填", text: $intervalText)
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.footnote.weight(.semibold))
                                 .keyboardType(.numberPad)
                                 .multilineTextAlignment(.trailing)
                                 .frame(width: 100)
                                 .foregroundStyle(isIntervalInvalid ? .red : .primary)
                             Text("分钟")
-                                .font(.system(size: 13))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
                         if isIntervalInvalid {
                             Text("请填写有效的自动更新间隔（分钟）")
-                                .font(.system(size: 13))
+                                .font(.footnote)
                                 .foregroundStyle(.red)
                         }
                     }
                     Text("开启后应用会每 20 分钟检查一次，到期的订阅会自动更新；也可随时手动点「更新」立即同步订阅。")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -183,18 +183,18 @@ struct EditProfileView: View {
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("配置文件")
-                                .font(.system(size: 17, weight: .semibold))
+                                .font(.headline)
                                 .foregroundStyle(.primary)
                             Text(fileSubtitle)
-                                .font(.system(size: 13))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
                         Text(formattedFileSize)
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                         Image(systemName: "chevron.right")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.footnote.weight(.semibold))
                             .foregroundStyle(.tertiary)
                     }
                     .padding(.vertical, 4)
@@ -203,16 +203,16 @@ struct EditProfileView: View {
                 .contextMenu {
                     Button { showEditor = true } label: {
                         Label("编辑", systemImage: "square.and.pencil")
-                            .font(.system(size: 15))
+                            .font(.subheadline)
                     }
                     Button { showFileImporter = true } label: {
                         Label("上传", systemImage: "square.and.arrow.up")
-                            .font(.system(size: 15))
+                            .font(.subheadline)
                     }
                 }
                 if pendingFileData != nil {
                     Text("已选择新文件，保存后才会替换原配置文件。")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(ConcordTheme.accent)
                 }
             }
@@ -302,12 +302,12 @@ struct EditProfileView: View {
     private func fieldRow<Content: View>(label: String, invalid: Bool = false, error: String? = nil, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(invalid ? .red : .secondary)
             content()
             if let error {
                 Text(error)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.red)
             }
         }

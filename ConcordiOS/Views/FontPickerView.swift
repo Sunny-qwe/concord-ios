@@ -38,7 +38,7 @@ struct FontPickerView: View {
                 .buttonStyle(.plain)
             } footer: {
                 Text("默认使用 iOS 系统字体。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
             }
 
             Section {
@@ -63,12 +63,12 @@ struct FontPickerView: View {
                 Text("已安装字体")
             } footer: {
                 Text("iOS 自带字体大多只含拉丁字母，中文仍会用系统字体显示；英文与数字会按所选字体显示。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
             }
         }
         .searchable(text: $searchText, prompt: "搜索字体")
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("字体")
         .navigationBarTitleDisplayMode(.inline)

@@ -60,7 +60,7 @@ struct OverrideView: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle("覆盖")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -137,7 +137,7 @@ private struct OverrideAddSheet: View {
                     .buttonStyle(.plain)
                 }
             }
-            .font(.system(size: 13, weight: .semibold))
+            .font(.footnote.weight(.semibold))
             .navigationTitle("添加\(section.label)覆盖项")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -367,7 +367,7 @@ private struct OverrideStringListPage: View {
                 StringListEditor(items: $items, placeholder: "添加一项")
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -414,7 +414,7 @@ private struct OverrideNumberListPage: View {
                 }
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -430,7 +430,7 @@ private struct OverrideStringMapPage: View {
                 KeyValueListEditor(items: $items, keyPlaceholder: "匹配", valuePlaceholder: "服务器")
             }
         }
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
     }

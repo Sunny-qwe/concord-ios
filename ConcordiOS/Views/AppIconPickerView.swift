@@ -24,6 +24,8 @@ struct AppIconOption: Identifiable {
 }
 
 struct AppIconPickerView: View {
+    @Environment(\.dismiss) private var dismiss
+
     private static let options: [AppIconOption] = [
         AppIconOption(iconName: nil, title: "经典原版", subtitle: "蓝紫渐变 · 当前主图标", previewResource: "AppIcon-Default@3x"),
         AppIconOption(iconName: "Dark", title: "黑曜暗金", subtitle: "近黑底 · 金 C", previewResource: "AppIcon-Dark@3x"),
@@ -44,7 +46,7 @@ struct AppIconPickerView: View {
         List {
             if !UIApplication.shared.supportsAlternateIcons {
                 Text("当前设备不支持切换图标（supportsAlternateIcons 为 false）。自签安装也可能被系统拒绝，见下方错误信息。")
-                    .font(.system(size: 10))
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Section {
@@ -57,8 +59,8 @@ struct AppIconPickerView: View {
                                 .frame(width: 56, height: 56)
                                 .clipShape(RoundedRectangle(cornerRadius: 13))
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(option.title).font(.system(size: 13, weight: .semibold))
-                                Text(option.subtitle).font(.system(size: 10)).foregroundStyle(.secondary)
+                                Text(option.title).font(.footnote.weight(.semibold))
+                                Text(option.subtitle).font(.caption2).foregroundStyle(.secondary)
                             }
                             Spacer()
                             if currentIconName == option.iconName {
@@ -71,7 +73,7 @@ struct AppIconPickerView: View {
                 }
             } footer: {
                 Text("切换后系统会弹出确认框，确认后主屏幕图标立即更换。图标文件都在 App 里，不联网。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
             }
             if isChanging {
                 Section {
@@ -81,18 +83,26 @@ struct AppIconPickerView: View {
             if let message = statusMessage {
                 Section {
                     Text(message)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundStyle(statusIsError ? .red : .secondary)
                         .textSelection(.enabled)
                 }
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("App 图标")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                }
+            }
+        }
     }
 
     private func select(_ option: AppIconOption) {

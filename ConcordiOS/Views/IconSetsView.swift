@@ -160,10 +160,10 @@ struct IconSetsView: View {
                             }
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(pack.name)
-                                    .font(.system(size: 13, weight: .semibold))
+                                    .font(.footnote.weight(.semibold))
                                     .foregroundStyle(Color(.label))
                                 Text(pack.description)
-                                    .font(.system(size: 10))
+                                    .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -177,7 +177,7 @@ struct IconSetsView: View {
                 }
             } footer: {
                 Text("图标集只影响本 App 内代理列表里节点类型旁的小图标。核心没有图标集接口，所以这里是纯客户端设置，不支持 FlClash 的从链接或文件导入图标包、也不做同步。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
             }
 
             Section("预览：\(iconSetStore.selectedPack.name)") {
@@ -197,7 +197,7 @@ struct IconSetsView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.system(size: 13, weight: .semibold))
+        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("图标集")
         .navigationBarTitleDisplayMode(.inline)

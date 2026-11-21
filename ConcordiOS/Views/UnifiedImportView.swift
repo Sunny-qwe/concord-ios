@@ -60,7 +60,7 @@ struct UnifiedImportView: View {
                     }
                     if let summary = importer.summaryText {
                         Text(summary)
-                            .font(.system(size: 13))
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -100,14 +100,14 @@ struct UnifiedImportView: View {
                     .fill(ConcordTheme.accent.opacity(0.12))
                     .frame(width: 52, height: 52)
                 Image(systemName: "square.and.arrow.down")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.title2.weight(.semibold))
                     .foregroundStyle(ConcordTheme.accent)
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text("导入订阅或节点")
-                    .font(.system(size: 17, weight: .bold))
+                    .font(.body.weight(.bold))
                 Text("一次导入一个：粘贴一条订阅链接或节点链接，点导入就行。")
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -121,7 +121,7 @@ struct UnifiedImportView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("链接")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
                 if !importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -130,7 +130,7 @@ struct UnifiedImportView: View {
             }
             HStack(spacing: 8) {
                 TextField("粘贴订阅链接或节点链接", text: $importText)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.footnote.weight(.semibold))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .lineLimit(1)
@@ -153,7 +153,7 @@ struct UnifiedImportView: View {
                     }
                 } label: {
                     Label("粘贴", systemImage: "doc.on.clipboard")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.footnote.weight(.semibold))
                 }
                 .buttonStyle(.bordered)
                 .tint(ConcordTheme.accent)
@@ -163,11 +163,11 @@ struct UnifiedImportView: View {
             .padding(.vertical, 10)
             .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 14))
             Text("支持订阅链接（http / https）、ss / vmess / trojan / vless 等节点链接，或整段 YAML 配置。")
-                .font(.system(size: 13))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
             if let notice = clipboardNotice {
                 Text(notice)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(ConcordTheme.accent)
             }
         }
@@ -176,7 +176,7 @@ struct UnifiedImportView: View {
 
     private var kindChip: some View {
         Text(detectedKind.rawValue)
-            .font(.system(size: 11, weight: .semibold))
+            .font(.caption2.weight(.semibold))
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(
@@ -191,17 +191,17 @@ struct UnifiedImportView: View {
     private var nameCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("名称（可选）")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(.secondary)
             TextField("例如：我的订阅", text: $profileName)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 14))
             Text("不填就用链接的域名当名字；节点链接会生成「我的节点」。")
-                .font(.system(size: 13))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
         }
         .concordCard()
@@ -247,7 +247,7 @@ struct UnifiedImportView: View {
     private var resultsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("导入结果")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(.secondary)
             ForEach(importer.results) { result in
                 HStack(alignment: .top, spacing: 10) {
@@ -256,20 +256,20 @@ struct UnifiedImportView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(result.kind.rawValue)
-                                .font(.system(size: 10))
+                                .font(.caption2)
                                 .fontWeight(.semibold)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(ConcordTheme.accent.opacity(0.12), in: Capsule())
                                 .foregroundStyle(ConcordTheme.accent)
                             Text(result.line)
-                                .font(.system(size: 13))
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                         }
                         Text(result.message)
-                            .font(.system(size: 13))
+                            .font(.footnote)
                     }
                     Spacer()
                 }
@@ -282,7 +282,7 @@ struct UnifiedImportView: View {
 
     private var tipText: some View {
         Text("导入成功后会自动切换到这个配置，去仪表盘点播放键启动即可；首次安装需先在系统设置里信任开发者证书。")
-            .font(.system(size: 13))
+            .font(.footnote)
             .foregroundStyle(.secondary)
     }
 }

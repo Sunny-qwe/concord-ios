@@ -19,8 +19,10 @@ import Darwin
 // Text without an explicit font renders at 17pt regular — that is
 // why sub-pages built from plain List/Form/Section looked bigger
 // than the first-level pages. Sub-pages fix it with a container
-// font on their outermost List/Form — .font(.system(size: 13,
-// weight: .semibold)) — which propagates to rows, Toggles, Pickers,
+// font on their outermost List/Form — .font(.footnote.weight(.semibold))
+// (v0.2.50: was .font(.system(size: 13, weight: .semibold)); the fixed
+// size ignored the global text size, the footnote token is the same
+// 13pt at default scale and scales with it) — which propagates to rows,
 // TextFields, Buttons and section headers, while explicit fonts on
 // individual elements override it:
 //   - Pushed-page nav title: system .inline (17 semibold, default);
@@ -121,10 +123,10 @@ struct CardTitleRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: icon)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.callout.weight(.semibold))
                 .foregroundStyle(Color(.label))
             Text(title)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.caption.weight(.semibold))
             Spacer()
         }
     }
@@ -147,7 +149,7 @@ struct PillBadge: View {
                     .frame(width: 6, height: 6)
             }
             Text(text)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.caption2.weight(.semibold))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)

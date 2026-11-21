@@ -39,13 +39,35 @@ struct ExtendSettings: Codable, Equatable {
     var matchTarget: String
     var scriptText: String
     var scriptEnabled: Bool
+    /// Per-profile rules (FlClash extend/standard.dart
+    /// profileRulesProvider): rules that belong to THIS profile
+    /// only, stored as raw rule strings (validated on entry by
+    /// AddedRulesStore.validationError). Baked into the profile's
+    /// `rules:` section by bakeProfileRules, ahead of the match
+    /// target. Empty by default; old files decode with [].
+    var profileRules: [String]
 
     init(mode: ExtendMode = .standard, matchTarget: String = "",
-         scriptText: String = "", scriptEnabled: Bool = false) {
+         scriptText: String = "", scriptEnabled: Bool = false,
+         profileRules: [String] = []) {
         self.mode = mode
         self.matchTarget = matchTarget
         self.scriptText = scriptText
         self.scriptEnabled = scriptEnabled
+        self.profileRules = profileRules
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case mode, matchTarget, scriptText, scriptEnabled, profileRules
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try c.decodeIfPresent(ExtendMode.self, forKey: .mode) ?? .standard
+        matchTarget = try c.decodeIfPresent(String.self, forKey: .matchTarget) ?? ""
+        scriptText = try c.decodeIfPresent(String.self, forKey: .scriptText) ?? ""
+        scriptEnabled = try c.decodeIfPresent(Bool.self, forKey: .scriptEnabled) ?? false
+        profileRules = try c.decodeIfPresent([String].self, forKey: .profileRules) ?? []
     }
 
     static let defaultScript = """
@@ -87,6 +109,51 @@ final class ExtendConfigStore: ObservableObject {
     func update(_ settings: ExtendSettings, for profileID: UUID) {
         settingsByProfile[profileID.uuidString] = settings
         save()
+    }
+
+    // MARK: - Per-profile rules
+
+    static let profileRulesBegin = "# concord-ios 扩展附加规则 开始"
+    static let profileRulesEnd = "# concord-ios 扩展附加规则 结束"
+
+    /// Bake the per-profile rules into the profile's `rules:`
+    /// section (marker-delimited, so re-applying replaces them).
+    /// They go at the END of the section, after the profile's own
+    /// rules but BEFORE the baked MATCH target (the match target
+    /// must stay last — see bakeMatchTarget).
+    static func bakeProfileRules(_ rules: [String], into text: String) -> String {
+        var lines = text.components(separatedBy: "\n")
+        if let begin = lines.firstIndex(of: profileRulesBegin),
+           let end = lines.firstIndex(of: profileRulesEnd), end >= begin {
+            lines.removeSubrange(begin...end)
+        }
+        let cleaned = rules.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else { return lines.joined(separator: "\n") }
+        var block = [profileRulesBegin]
+        block.append(contentsOf: cleaned.map { "  - \($0)" })
+        block.append(profileRulesEnd)
+        guard let keyIndex = lines.firstIndex(where: { $0 == "rules:" || $0.hasPrefix("rules: ") }) else {
+            if let last = lines.last, !last.isEmpty { lines.append("") }
+            lines.append("rules:")
+            lines.append(contentsOf: block)
+            return lines.joined(separator: "\n")
+        }
+        guard lines[keyIndex] == "rules:" else { return lines.joined(separator: "\n") }
+        // Insert before the baked MATCH block when present, else at
+        // the end of the rules section.
+        var insertAt = lines.count
+        var i = keyIndex + 1
+        while i < lines.count {
+            let line = lines[i]
+            if line == matchTargetBegin { insertAt = i; break }
+            if !line.hasPrefix(" ") && !line.hasPrefix("\t") && !line.isEmpty && line.contains(":") {
+                insertAt = i
+                break
+            }
+            i += 1
+        }
+        lines.insert(contentsOf: block, at: insertAt)
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Match target

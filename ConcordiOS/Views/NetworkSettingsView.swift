@@ -35,20 +35,30 @@ struct NetworkSettingsView: View {
                 Picker("协议栈", selection: $settingsStore.tunStack) {
                     Text("gVisor").tag("gvisor")
                     Text("系统").tag("system")
+                    Text("Lwip").tag("lwip")
                 }
-                HStack {
-                    Text("MTU")
-                    Spacer()
-                    TextField("1500", value: $settingsStore.tunMtu, format: .number)
-                        .keyboardType(.numberPad)
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: 100)
-                }
+                // FlClash network.dart:350-356: MTU is a number item
+                // bounded by minTunMtu/maxTunMtu (1280–65535). The
+                // Settings TUN page uses the same Stepper range, so
+                // both pages now agree (they disagreed before:
+                // stepper 1280–9000 there, free field here).
+                Stepper("MTU：\(settingsStore.tunMtu)", value: $settingsStore.tunMtu, in: 1280...65535, step: 100)
                 TextField("DNS 服务器，逗号分隔", text: $settingsStore.tunDns)
                     .autocapitalization(.none)
                     .disableAutocorrection(true)
             }
             Section("网络") {
+                // FlClash VpnSections (network.dart:474-524, iOS):
+                // system proxy, bypass-domain, IPv6, DNS hijacking,
+                // in that order. The switch + list write to
+                // tunnel.json (SettingsStore); the list is only
+                // passed to the VPN setup while the switch is on
+                // (FlClash core.dart:247).
+                Toggle("系统代理", isOn: $settingsStore.systemProxy)
+                BypassDomainEditorView()
+                Text("系统代理：上游 iOS 版提供的开关，随隧道设置保存；它是否影响 iOS 的系统代理行为尚未验证——iOS 的包隧道主要靠接口路由接管流量。绕过域名只在系统代理打开时传给 VPN 设置，开关关闭不会丢掉列表。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Toggle("IPv6", isOn: $settingsStore.ipv6)
                 Toggle("DNS 劫持", isOn: $settingsStore.dnsHijack)
                 Text("关闭后隧道不再设置 DNS 服务器，系统 DNS 保持原样，DNS 请求不走代理。")
@@ -190,5 +200,81 @@ struct NetworkSettingsView: View {
             return !parts[0].isEmpty
         }
         return SettingsStore.isValidIPv4CIDR(value)
+    }
+}
+
+/// The bypass-domain list editor (FlClash network.dart
+/// BypassDomainItem, in VpnSections and in LocalNetwork's
+/// system-proxy section). Shared by NetworkSettingsView and
+/// LocalNetworkView: the list lives in SettingsStore.bypassDomain
+/// and is written to tunnel.json (only passed to the VPN setup
+/// while the system-proxy switch is on).
+struct BypassDomainEditorView: View {
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @State private var newDomain = ""
+    @State private var domainError: String?
+
+    var body: some View {
+        Text("绕过域名")
+            .font(.footnote.weight(.semibold))
+        ForEach(settingsStore.bypassDomain, id: \.self) { domain in
+            HStack {
+                Text(domain)
+                    .font(.system(.body, design: .monospaced))
+                Spacer()
+                Button {
+                    settingsStore.bypassDomain.removeAll { $0 == domain }
+                    settingsStore.save()
+                } label: {
+                    Image(systemName: "minus.circle")
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        HStack {
+            TextField("域名，如 example.com", text: $newDomain)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("添加") {
+                addDomain()
+            }
+            .disabled(newDomain.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        if let domainError {
+            Text(domainError)
+                .font(.footnote)
+                .foregroundStyle(.red)
+        }
+    }
+
+    private func addDomain() {
+        let value = newDomain.trimmingCharacters(in: .whitespaces).lowercased()
+        guard Self.isValidDomain(value) else {
+            domainError = "格式不对，应为域名，如 example.com"
+            return
+        }
+        guard !settingsStore.bypassDomain.contains(value) else {
+            domainError = "这个域名已存在"
+            return
+        }
+        domainError = nil
+        settingsStore.bypassDomain.append(value)
+        settingsStore.save()
+        newDomain = ""
+    }
+
+    /// A bare domain: labels of letters/digits/hyphens separated
+    /// by dots, no leading/trailing dot or hyphen, no whitespace.
+    /// Wildcards ("*.example.com") are rejected — FlClash's list
+    /// holds plain domains.
+    static func isValidDomain(_ value: String) -> Bool {
+        guard !value.isEmpty, !value.contains(" "), !value.contains("*"),
+              !value.hasPrefix("."), !value.hasSuffix("."),
+              !value.hasPrefix("-"), !value.hasSuffix("-") else { return false }
+        return value.split(separator: ".").allSatisfy { label in
+            !label.isEmpty && label.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" }
+                && !label.hasPrefix("-") && !label.hasSuffix("-")
+        }
     }
 }

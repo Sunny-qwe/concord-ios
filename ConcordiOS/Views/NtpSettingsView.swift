@@ -31,6 +31,16 @@ struct NtpSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            // FlClash ntp.dart: per-profile NTP overrides live in
+            // the override editor, not on this global page.
+            Section("按订阅覆盖") {
+                NavigationLink("按订阅覆盖 NTP 设置") {
+                    OverrideView()
+                }
+                Text("每个订阅可以在这里单独覆盖 NTP；没有覆盖的订阅用上面的全局设置。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 Button("保存并应用") {
                     Task { await ntpStore.applyNtpSettings() }

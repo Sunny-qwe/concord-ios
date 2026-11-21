@@ -31,12 +31,29 @@ struct CustomGroup: Codable, Equatable, Identifiable {
     var filter: String
     var excludeFilter: String
     var strategy: String
+    /// Group icon URL (FlClash custom/icon.dart IconPickerView):
+    /// baked as `icon:` on the group. Empty = no icon (the group's
+    /// icon then comes from the profile icon / icon pack).
+    var icon: String
+    /// Upstream _GroupOption extras (custom/groups.dart:30-56):
+    /// maxFailedTimes (default 5), expectedStatus (default ''),
+    /// emptyFallback (default 'COMPATIBLE'), defaultSelected
+    /// (default '', selector only), hashKey (default '', load-balance
+    /// non-round-robin only). Stored as optionals so "unset" (nil)
+    /// bakes nothing and round-trips old files.
+    var maxFailedTimes: Int?
+    var expectedStatus: String?
+    var emptyFallback: String?
+    var defaultSelected: String?
+    var hashKey: String?
 
     init(id: String = UUID().uuidString, name: String = "", type: String = "select",
          members: [String] = [], useProviders: [String] = [],
          url: String = "", interval: Int = 0, timeout: Int = 0, tolerance: Int = 0,
          lazy: Bool = false, hidden: Bool = false, disableUDP: Bool = false,
-         filter: String = "", excludeFilter: String = "", strategy: String = "") {
+         filter: String = "", excludeFilter: String = "", strategy: String = "",
+         icon: String = "", maxFailedTimes: Int? = nil, expectedStatus: String? = nil,
+         emptyFallback: String? = nil, defaultSelected: String? = nil, hashKey: String? = nil) {
         self.id = id
         self.name = name
         self.type = type
@@ -52,6 +69,47 @@ struct CustomGroup: Codable, Equatable, Identifiable {
         self.filter = filter
         self.excludeFilter = excludeFilter
         self.strategy = strategy
+        self.icon = icon
+        self.maxFailedTimes = maxFailedTimes
+        self.expectedStatus = expectedStatus
+        self.emptyFallback = emptyFallback
+        self.defaultSelected = defaultSelected
+        self.hashKey = hashKey
+    }
+
+    // Tolerant decode: files saved before v0.2.54 have no `icon`
+    // key (and no option keys); decodeIfPresent keeps them loading
+    // instead of dropping the whole subscription list.
+    enum CodingKeys: String, CodingKey {
+        case id, name, type, members, useProviders, url, interval, timeout,
+             tolerance, lazy, hidden, disableUDP, filter, excludeFilter,
+             strategy, icon, maxFailedTimes, expectedStatus, emptyFallback,
+             defaultSelected, hashKey
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        type = try c.decodeIfPresent(String.self, forKey: .type) ?? "select"
+        members = try c.decodeIfPresent([String].self, forKey: .members) ?? []
+        useProviders = try c.decodeIfPresent([String].self, forKey: .useProviders) ?? []
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        interval = try c.decodeIfPresent(Int.self, forKey: .interval) ?? 0
+        timeout = try c.decodeIfPresent(Int.self, forKey: .timeout) ?? 0
+        tolerance = try c.decodeIfPresent(Int.self, forKey: .tolerance) ?? 0
+        lazy = try c.decodeIfPresent(Bool.self, forKey: .lazy) ?? false
+        hidden = try c.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+        disableUDP = try c.decodeIfPresent(Bool.self, forKey: .disableUDP) ?? false
+        filter = try c.decodeIfPresent(String.self, forKey: .filter) ?? ""
+        excludeFilter = try c.decodeIfPresent(String.self, forKey: .excludeFilter) ?? ""
+        strategy = try c.decodeIfPresent(String.self, forKey: .strategy) ?? ""
+        icon = try c.decodeIfPresent(String.self, forKey: .icon) ?? ""
+        maxFailedTimes = try c.decodeIfPresent(Int.self, forKey: .maxFailedTimes)
+        expectedStatus = try c.decodeIfPresent(String.self, forKey: .expectedStatus)
+        emptyFallback = try c.decodeIfPresent(String.self, forKey: .emptyFallback)
+        defaultSelected = try c.decodeIfPresent(String.self, forKey: .defaultSelected)
+        hashKey = try c.decodeIfPresent(String.self, forKey: .hashKey)
     }
 
     static let types = ["select", "url-test", "fallback", "load-balance", "relay", "direct", "reject"]
@@ -86,10 +144,30 @@ struct CustomProvider: Codable, Equatable, Identifiable {
     var healthCheck: Bool
     var filter: String
     var excludeFilter: String
+    /// Upstream _ProviderOption extras (custom/providers.dart:257-291):
+    /// health-check url / timeout / lazy / expectedStatus, and proxy
+    /// overrides udp / skip-cert-verify / ip-version /
+    /// additional-prefix / additional-suffix. Nil = unset (bakes
+    /// nothing); healthCheckURL etc. only bake inside the
+    /// `health-check:` map, the overrides only under
+    /// `proxy-override:` — both standard mihomo provider keys.
+    var healthCheckURL: String?
+    var healthCheckTimeout: Int?
+    var healthCheckLazy: Bool?
+    var expectedStatus: String?
+    var udp: Bool?
+    var skipCertVerify: Bool?
+    var ipVersion: String?
+    var additionalPrefix: String?
+    var additionalSuffix: String?
 
     init(id: String = UUID().uuidString, name: String = "", kind: String = "http",
          url: String = "", path: String = "", interval: Int = 0,
-         healthCheck: Bool = false, filter: String = "", excludeFilter: String = "") {
+         healthCheck: Bool = false, filter: String = "", excludeFilter: String = "",
+         healthCheckURL: String? = nil, healthCheckTimeout: Int? = nil,
+         healthCheckLazy: Bool? = nil, expectedStatus: String? = nil,
+         udp: Bool? = nil, skipCertVerify: Bool? = nil, ipVersion: String? = nil,
+         additionalPrefix: String? = nil, additionalSuffix: String? = nil) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -99,6 +177,15 @@ struct CustomProvider: Codable, Equatable, Identifiable {
         self.healthCheck = healthCheck
         self.filter = filter
         self.excludeFilter = excludeFilter
+        self.healthCheckURL = healthCheckURL
+        self.healthCheckTimeout = healthCheckTimeout
+        self.healthCheckLazy = healthCheckLazy
+        self.expectedStatus = expectedStatus
+        self.udp = udp
+        self.skipCertVerify = skipCertVerify
+        self.ipVersion = ipVersion
+        self.additionalPrefix = additionalPrefix
+        self.additionalSuffix = additionalSuffix
     }
 
     static let kinds = ["http", "file"]
@@ -441,6 +528,12 @@ final class CustomSubscriptionStore: ObservableObject {
         if group.lazy { lines.append("    lazy: true") }
         if group.hidden { lines.append("    hidden: true") }
         if group.disableUDP { lines.append("    disable-udp: true") }
+        if !group.icon.isEmpty { lines.append("    icon: \(CustomProxy.quote(group.icon))") }
+        if let maxFailedTimes = group.maxFailedTimes { lines.append("    max-failed-times: \(maxFailedTimes)") }
+        if let expectedStatus = group.expectedStatus, !expectedStatus.isEmpty { lines.append("    expected-status: \(CustomProxy.quote(expectedStatus))") }
+        if let emptyFallback = group.emptyFallback, !emptyFallback.isEmpty { lines.append("    empty-fallback: \(CustomProxy.quote(emptyFallback))") }
+        if let defaultSelected = group.defaultSelected, !defaultSelected.isEmpty { lines.append("    default-selected: \(CustomProxy.quote(defaultSelected))") }
+        if let hashKey = group.hashKey, !hashKey.isEmpty { lines.append("    hash-key: \(CustomProxy.quote(hashKey))") }
         if !group.filter.isEmpty { lines.append("    filter: \(CustomProxy.quote(group.filter))") }
         if !group.excludeFilter.isEmpty { lines.append("    exclude-filter: \(CustomProxy.quote(group.excludeFilter))") }
         return lines
@@ -454,7 +547,25 @@ final class CustomSubscriptionStore: ObservableObject {
             lines.append("    path: \(CustomProxy.quote(provider.path))")
         }
         if provider.interval > 0 { lines.append("    interval: \(provider.interval)") }
-        if provider.healthCheck { lines.append("    health-check: {enable: true}") }
+        if provider.healthCheck || provider.healthCheckURL != nil || provider.healthCheckTimeout != nil
+            || provider.healthCheckLazy != nil || provider.expectedStatus != nil {
+            var parts: [String] = []
+            if provider.healthCheck { parts.append("enable: true") }
+            if let url = provider.healthCheckURL, !url.isEmpty { parts.append("url: \(CustomProxy.quote(url))") }
+            if let timeout = provider.healthCheckTimeout { parts.append("timeout: \(timeout)") }
+            if let lazy = provider.healthCheckLazy { parts.append("lazy: \(lazy)") }
+            if let expected = provider.expectedStatus, !expected.isEmpty { parts.append("expected-status: \(CustomProxy.quote(expected))") }
+            lines.append("    health-check: {\(parts.joined(separator: ", "))}")
+        }
+        if provider.udp != nil || provider.skipCertVerify != nil || provider.ipVersion != nil
+            || provider.additionalPrefix != nil || provider.additionalSuffix != nil {
+            lines.append("    proxy-override:")
+            if let udp = provider.udp { lines.append("      udp: \(udp)") }
+            if let skip = provider.skipCertVerify { lines.append("      skip-cert-verify: \(skip)") }
+            if let version = provider.ipVersion, !version.isEmpty { lines.append("      ip-version: \(CustomProxy.quote(version))") }
+            if let prefix = provider.additionalPrefix, !prefix.isEmpty { lines.append("      additional-prefix: \(CustomProxy.quote(prefix))") }
+            if let suffix = provider.additionalSuffix, !suffix.isEmpty { lines.append("      additional-suffix: \(CustomProxy.quote(suffix))") }
+        }
         if !provider.filter.isEmpty { lines.append("    filter: \(CustomProxy.quote(provider.filter))") }
         if !provider.excludeFilter.isEmpty { lines.append("    exclude-filter: \(CustomProxy.quote(provider.excludeFilter))") }
         return lines

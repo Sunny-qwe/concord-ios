@@ -104,12 +104,76 @@ final class LogStore: ObservableObject {
         return formatter.string(from: date)
     }
 
+    /// Native iOS VPN diagnostic logs (upstream logs.dart
+    /// readVpnDiagnosticLogs + the iOS-only sync button): rows read
+    /// from the extension's diagnostic files in the App Group —
+    /// vpn-diagnostics.json (stage / packets / times, written at
+    /// "running", refreshed on the watchdog tick) and
+    /// vpn-startup.json (the startup record). Upstream also reads
+    /// vpn-memory.json(.previous); our extension writes no such
+    /// file, so there is nothing to read for it. Replaced wholesale
+    /// on every refresh (the files are snapshots, not a history —
+    /// merging them into `entries` would grow a new row on every
+    /// watchdog tick as updatedAt moves). The Logs page renders them
+    /// above the core log list, like upstream prepends them.
+    @Published var vpnDiagnosticEntries: [ConcordLogEntry] = []
+
+    /// Reads the extension's diagnostic files into log rows.
+    /// Returns [] when neither file exists or neither parses.
+    static func readVpnDiagnosticLogs() -> [ConcordLogEntry] {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID) else { return [] }
+        var rows: [ConcordLogEntry] = []
+        // vpn-startup.json: {id, stage, detail?, date} — the record
+        // TunnelManager.lastStartupDiagnostic() reads.
+        if let data = try? Data(contentsOf: container.appendingPathComponent("vpn-startup.json")),
+           let record = try? JSONDecoder().decode(TunnelStartupDiagnosticRecord.self, from: data) {
+            var selected: [String: Any] = ["id": record.id, "stage": record.stage]
+            if let detail = record.detail, !detail.isEmpty { selected["detail"] = detail }
+            if let json = Self.compactJSON(selected) {
+                rows.append(ConcordLogEntry(
+                    level: "info",
+                    time: Int64(record.date.timeIntervalSince1970 * 1000),
+                    text: "[VPN][vpn-startup.json] \(json)"))
+            }
+        }
+        // vpn-diagnostics.json: {stage, pid, startedAt, updatedAt,
+        // packetsIn, packetsOut, packetsDroppedFull,
+        // lastCoreMessageAt} — written by PacketTunnelProvider.
+        if let data = try? Data(contentsOf: container.appendingPathComponent("vpn-diagnostics.json")),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            var selected: [String: Any] = [:]
+            for key in ["stage", "pid", "startedAt", "updatedAt", "packetsIn", "packetsOut", "packetsDroppedFull", "lastCoreMessageAt"] {
+                if let value = json[key] { selected[key] = value }
+            }
+            let time = (json["updatedAt"] as? Int64) ?? (json["startedAt"] as? Int64) ?? Int64(Date().timeIntervalSince1970 * 1000)
+            if let text = Self.compactJSON(selected) {
+                rows.append(ConcordLogEntry(
+                    level: "info",
+                    time: time,
+                    text: "[VPN][vpn-diagnostics.json] \(text)"))
+            }
+        }
+        return rows
+    }
+
+    /// One-line JSON for a VPN diagnostic row, redacted like the
+    /// export (no subscription URLs or tokens ever leave the device
+    /// inside these rows).
+    private static func compactJSON(_ object: [String: Any]) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              var text = String(data: data, encoding: .utf8) else { return nil }
+        text = redactForExport(text)
+        return text
+    }
     /// Hides credential-looking values before a log leaves the
     /// device: query/form values after token/secret/password/auth/
     /// api-key names, and the password part of user:password@ in
     /// URLs (subscription links). Everything else is left verbatim
-    /// — the point of the export is the real error text.
-    private static func redactForExport(_ text: String) -> String {
+    /// — the point of the export is the real error text. Internal
+    /// (not private): DiagnosticsView reuses it for its redacted
+    /// recent-issues rows (upstream diagnostics.dart redactDiagnostic).
+    static func redactForExport(_ text: String) -> String {
         let patterns = [
             "([?&](token|secret|password|passwd|auth|api[-_]?key|access[-_]?key)[=:])[^&\\s]*",
             "(://[^/\\s:]+:)[^@\\s]*(@)",
@@ -140,6 +204,12 @@ final class LogStore: ObservableObject {
     /// page show the persisted diagnostics.
     @MainActor
     func refresh() async {
+        // Native iOS VPN diagnostic logs (L-M1): re-read on every
+        // refresh — the files are snapshots the extension rewrites,
+        // and the Logs page's 1 s poll + refresh button are the
+        // reload path (upstream reloads them on resume and via its
+        // iOS-only sync button; the refresh button here does both).
+        vpnDiagnosticEntries = Self.readVpnDiagnosticLogs()
         do {
             let fresh: [ConcordLogEntry]
             if TunnelManager.shared.isRunning {

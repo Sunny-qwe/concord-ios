@@ -14,10 +14,10 @@ import SwiftUI
 // the core's mode itself. Every change saves immediately.
 //
 // The fork shows the actions as swipe-left = direct / swipe-right =
-// disconnect cards; SwiftUI's List has no equivalent swipe-card
-// widget, so each row carries a menu for its action instead — same
-// three actions, same defaults (a newly added SSID defaults to
-// direct, renaming keeps the action).
+// disconnect cards; the same three actions are offered here as
+// native SwiftUI swipe actions (right swipe = direct, left swipe =
+// disconnect / delete) plus the per-row menu — same defaults (a
+// newly added SSID defaults to direct, renaming keeps the action).
 //
 // Reading the current Wi-Fi name needs the wifi-info entitlement
 // plus location permission (fork: "根据系统要求，获取Wi-Fi名称需要
@@ -104,6 +104,24 @@ struct OnDemandView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    // FlClash on_demand.dart swipe cards: right
+                    // swipe = direct, left swipe = disconnect /
+                    // delete. The … menu stays for the same actions.
+                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                        Button("直连") {
+                            store.setAction(ssid: ssid, direct: true)
+                        }
+                        .tint(.green)
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button("不自动连接") {
+                            store.setAction(ssid: ssid, direct: false)
+                        }
+                        .tint(.orange)
+                        Button("删除", role: .destructive) {
+                            store.removeSSID(ssid)
+                        }
+                    }
                 }
                 .onDelete { offsets in
                     // Collect first: removing one shifts the later indices.
@@ -136,7 +154,7 @@ struct OnDemandView: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
-                Text("新加入的 Wi-Fi 默认动作为直连；点按列表里的 SSID 可以改名，改名后动作不变；左滑或用菜单删除后恢复默认（自动连接）。直连的 Wi-Fi 上隧道保持运行、核心切换为直连；不自动连接的 Wi-Fi 只影响自动连接，正在运行的隧道不会因此断开。")
+                Text("新加入的 Wi-Fi 默认动作为直连；点按列表里的 SSID 可以改名，改名后动作不变；向右滑设为直连，向左滑设为不自动连接或删除（也可用每行右边的 … 菜单）。删除后恢复默认（自动连接）。直连的 Wi-Fi 上隧道保持运行、核心切换为直连；不自动连接的 Wi-Fi 只影响自动连接，正在运行的隧道不会因此断开。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

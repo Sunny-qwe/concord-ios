@@ -17,11 +17,19 @@ struct OverrideView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @State private var scope: String? = nil
     @State private var copied = false
+    /// YAML at page entry, for the apply-on-leave check (FlClash
+    /// edits update the target live; ours applies when leaving
+    /// with changes, or on 应用覆盖）.
+    @State private var baselineYAML: String?
+
+    init(scope: String? = nil) {
+        _scope = State(initialValue: scope)
+    }
 
     var body: some View {
         List {
             Section {
-                Text("覆盖只对启用的项生效：没启用的项用订阅自己的值。全局覆盖对所有订阅生效，单个订阅的覆盖优先于全局。保存后点「应用覆盖」，VPN 运行时立即生效，否则下次启动 VPN 时生效。")
+                Text("覆盖只对启用的项生效：没启用的项用订阅自己的值。全局覆盖对所有订阅生效，单个订阅的覆盖优先于全局。改动在离开本页时自动应用（VPN 运行时立即生效，否则下次启动 VPN 时生效），也可以点「应用覆盖」立即应用。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -34,8 +42,24 @@ struct OverrideView: View {
                 }
                 .pickerStyle(.menu)
             }
-            ForEach(OverrideSection.allCases) { section in
-                OverrideSectionEditor(section: section, scope: $scope)
+            // One page per section (FlClash DnsView / NtpView /
+            // SnifferView / TunView + general overrides, each its
+            // own OverrideView with its own title and app-bar add
+            // button). Tapping a row pushes that section's editor.
+            Section("覆盖分组") {
+                ForEach(OverrideSection.allCases) { section in
+                    NavigationLink {
+                        OverrideSectionPage(section: section, scope: scope)
+                    } label: {
+                        HStack {
+                            Text(section.label)
+                            Spacer()
+                            Text("\(store.state(scope: scope, section: section).count) 项已启用")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
             Section("YAML 预览") {
                 Text(store.yamlText(scope: scope))
@@ -62,6 +86,43 @@ struct OverrideView: View {
         }
         .font(.footnote.weight(.semibold))
         .navigationTitle("覆盖")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            baselineYAML = store.yamlText(scope: scope)
+        }
+        .onChange(of: scope) { _, newScope in
+            baselineYAML = store.yamlText(scope: newScope)
+        }
+        .onDisappear {
+            // FlClash applies override edits live; ours applies on
+            // leaving when anything changed (the explicit 应用覆盖
+            // button below does the same on demand).
+            if baselineYAML != store.yamlText(scope: scope) {
+                Task { await store.applyOverrides() }
+            }
+        }
+    }
+}
+
+/// One section on its own page (FlClash override.dart: one
+/// OverrideView per section).
+private struct OverrideSectionPage: View {
+    let section: OverrideSection
+    let scope: String?
+    @State private var editableScope: String?
+
+    init(section: OverrideSection, scope: String?) {
+        self.section = section
+        self.scope = scope
+        _editableScope = State(initialValue: scope)
+    }
+
+    var body: some View {
+        List {
+            OverrideSectionEditor(section: section, scope: $editableScope)
+        }
+        .font(.footnote.weight(.semibold))
+        .navigationTitle(section.label)
         .navigationBarTitleDisplayMode(.inline)
     }
 }

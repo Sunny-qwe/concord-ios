@@ -151,13 +151,20 @@ final class MitmScriptStore: ObservableObject {
 
     /// Saves content for a script (new or existing): writes the
     /// `<id>.js` file and its content-hash copy in resources, so the
-    /// core script line names a file that exists.
+    /// core script line names a file that exists. The resource copy
+    /// is written FIRST: a failed copy must not leave the registry
+    /// naming a copy older than `<id>.js` (audit B44) — on failure
+    /// nothing is saved at all.
     @MainActor
     func save(_ script: MitmScript, content: String) async {
         lastError = nil
         guard let dir = scriptsDirectoryURL, let url = fileURL(for: script),
               let data = content.data(using: .utf8) else {
             lastError = "App Group 容器不可用"
+            return
+        }
+        guard let resourceName = writeResourceCopy(data: data, source: script.fileName) else {
+            lastError = "保存失败：无法写入核心资源副本，内容未改动"
             return
         }
         do {
@@ -167,17 +174,37 @@ final class MitmScriptStore: ObservableObject {
             lastError = "保存失败：\(error.localizedDescription)"
             return
         }
+        // Only now, with both files written, drop the previous
+        // resource copy — deleting it earlier would leave the
+        // registry naming a file that no longer exists.
+        if let previous = script.resourceName, previous != resourceName,
+           let resourcesDir = resourcesDirectoryURL {
+            try? FileManager.default.removeItem(at: resourcesDir.appendingPathComponent(previous))
+        }
         var updated = script
         updated.lastUpdateTime = Date()
-        updated.resourceName = writeResourceCopy(data: data, source: script.fileName, previous: script.resourceName)
+        updated.resourceName = resourceName
         upsert(updated)
         statusMessage = "已保存“\(updated.label)”"
     }
 
+    /// Creates a script with this label. A label already in use is
+    /// rejected with an error instead of silently renamed (upstream
+    /// scripts.dart `_validateName`): imports pass a unique label
+    /// from `uniqueLabel` first, so they still land.
     @MainActor
     func create(label: String, url: String?, content: String) async {
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty else {
+            lastError = "名字不能为空"
+            return
+        }
+        guard !hasLabel(label) else {
+            lastError = "已存在同名脚本"
+            return
+        }
         let script = MitmScript(
-            id: UUID().uuidString, label: uniqueLabel(label),
+            id: UUID().uuidString, label: label,
             url: url?.isEmpty == true ? nil : url,
             lastUpdateTime: Date(), order: (scripts.map(\.order).max() ?? -1) + 1)
         await save(script, content: content)
@@ -272,19 +299,19 @@ final class MitmScriptStore: ObservableObject {
     }
 
     /// Writes the content-hash copy in the core's resources
-    /// directory, removing the previous copy when the content
-    /// changed. Returns the file name the core script line names.
-    private func writeResourceCopy(data: Data, source: String, previous: String?) -> String? {
-        guard let dir = resourcesDirectoryURL else { return previous }
+    /// directory and returns the file name the core script line
+    /// names, or nil when the copy could not be written — the
+    /// caller then saves nothing, so the registry never names a
+    /// stale copy (audit B44). The previous copy is removed by the
+    /// caller, only after the `<id>.js` write succeeds.
+    private func writeResourceCopy(data: Data, source: String) -> String? {
+        guard let dir = resourcesDirectoryURL else { return nil }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let name = mitmResourceName(source: source, bytes: data)
         do {
             try data.write(to: dir.appendingPathComponent(name), options: .atomic)
         } catch {
-            return previous
-        }
-        if let previous, previous != name {
-            try? FileManager.default.removeItem(at: dir.appendingPathComponent(previous))
+            return nil
         }
         return name
     }

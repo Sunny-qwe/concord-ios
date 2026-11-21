@@ -104,6 +104,46 @@ enum ThemeNavBarStyle: String, CaseIterable, Identifiable {
     }
 }
 
+/// FlClash's tab-switch animation (theme.dart _TabAnimationItem,
+/// enum.dart:825): slide or fade. Upstream default is fade
+/// (config defaults). Stored here; the tab container that applies
+/// it lives in ContentView, which reads this value.
+enum ThemeTabAnimation: String, CaseIterable, Identifiable {
+    case slide = "slide"
+    case fade = "fade"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .slide: return "滑动"
+        case .fade: return "淡入"
+        }
+    }
+}
+
+/// FlClash's liquid-glass mode (theme.dart _LiquidGlassItem,
+/// enum.dart:827): none / standard / ultra. Upstream default is
+/// none. Stored here; applying it needs iOS 26 glass rendering in
+/// the tab bar, which the current iOS 17 target does not do — the
+/// picker says so instead of pretending the choice takes effect
+/// today.
+enum ThemeLiquidGlassMode: String, CaseIterable, Identifiable {
+    case none = "none"
+    case standard = "standard"
+    case ultra = "ultra"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .none: return "无"
+        case .standard: return "标准"
+        case .ultra: return "超强"
+        }
+    }
+}
+
 final class ThemeStore: ObservableObject {
     static let shared = ThemeStore()
     static let storageKey = "ConcordiOS.theme.v1"
@@ -124,6 +164,11 @@ final class ThemeStore: ObservableObject {
     /// follow the system size; on = the slider's DynamicTypeSize.
     @Published var textScaleEnabled: Bool = false
     @Published var textScale: Double = 1.0
+    /// Tab-switch animation (FlClash: slide / fade, default fade).
+    @Published var tabAnimation: ThemeTabAnimation = .fade
+    /// Liquid-glass mode (FlClash: none / standard / ultra,
+    /// default none).
+    @Published var liquidGlass: ThemeLiquidGlassMode = .none
 
     /// nil = follow the system (SwiftUI decides).
     var colorScheme: ColorScheme? {
@@ -190,6 +235,8 @@ final class ThemeStore: ObservableObject {
         var navBarStyle: String
         var textScaleEnabled: Bool
         var textScale: Double
+        var tabAnimation: String
+        var liquidGlass: String
 
         // The post-0.2.17 fields are decoded leniently so themes
         // saved by earlier versions still load.
@@ -204,9 +251,11 @@ final class ThemeStore: ObservableObject {
             navBarStyle = try c.decodeIfPresent(String.self, forKey: .navBarStyle) ?? "floating"
             textScaleEnabled = try c.decodeIfPresent(Bool.self, forKey: .textScaleEnabled) ?? false
             textScale = try c.decodeIfPresent(Double.self, forKey: .textScale) ?? 1.0
+            tabAnimation = try c.decodeIfPresent(String.self, forKey: .tabAnimation) ?? "fade"
+            liquidGlass = try c.decodeIfPresent(String.self, forKey: .liquidGlass) ?? "none"
         }
 
-        init(appearance: String, accent: String, customAccentHex: String?, customColors: [String], pureBlack: Bool, colorStyle: String, navBarStyle: String, textScaleEnabled: Bool, textScale: Double) {
+        init(appearance: String, accent: String, customAccentHex: String?, customColors: [String], pureBlack: Bool, colorStyle: String, navBarStyle: String, textScaleEnabled: Bool, textScale: Double, tabAnimation: String = "fade", liquidGlass: String = "none") {
             self.appearance = appearance
             self.accent = accent
             self.customAccentHex = customAccentHex
@@ -216,6 +265,8 @@ final class ThemeStore: ObservableObject {
             self.navBarStyle = navBarStyle
             self.textScaleEnabled = textScaleEnabled
             self.textScale = textScale
+            self.tabAnimation = tabAnimation
+            self.liquidGlass = liquidGlass
         }
     }
 
@@ -236,10 +287,12 @@ final class ThemeStore: ObservableObject {
         navBarStyle = ThemeNavBarStyle(rawValue: saved.navBarStyle) ?? .floating
         textScaleEnabled = saved.textScaleEnabled
         textScale = saved.textScale
+        tabAnimation = ThemeTabAnimation(rawValue: saved.tabAnimation) ?? .fade
+        liquidGlass = ThemeLiquidGlassMode(rawValue: saved.liquidGlass) ?? .none
     }
 
     func save() {
-        let saved = Saved(appearance: appearance.rawValue, accent: accent.rawValue, customAccentHex: customAccentHex, customColors: customColors, pureBlack: pureBlack, colorStyle: colorStyle.rawValue, navBarStyle: navBarStyle.rawValue, textScaleEnabled: textScaleEnabled, textScale: textScale)
+        let saved = Saved(appearance: appearance.rawValue, accent: accent.rawValue, customAccentHex: customAccentHex, customColors: customColors, pureBlack: pureBlack, colorStyle: colorStyle.rawValue, navBarStyle: navBarStyle.rawValue, textScaleEnabled: textScaleEnabled, textScale: textScale, tabAnimation: tabAnimation.rawValue, liquidGlass: liquidGlass.rawValue)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: Self.storageKey)
     }

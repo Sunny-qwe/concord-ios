@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Custom subscription editor (FlClash: lib/views/profiles/custom/)
 // Full editor for one custom subscription: groups (+ members),
@@ -17,7 +18,19 @@ struct CustomSubscriptionEditorView: View {
     @State private var editingGroup: CustomGroup?
     @State private var editingDialer: CustomDialer?
     @State private var editingProxyProvider: CustomProvider?
+    @State private var editingRuleProvider: CustomProvider?
     @State private var editingRule: CustomRule?
+    /// Overview / menu state (FlClash custom.dart:147-221): rename,
+    /// delete and runtime-config preview from inside the editor.
+    @Environment(\.dismiss) private var dismiss
+    @State private var showRenameAlert = false
+    @State private var renameText = ""
+    @State private var showDeleteConfirm = false
+    @State private var showPreview = false
+    /// Rules multi-select batch delete (FlClash custom/rules.dart).
+    @State private var ruleSelectionMode = false
+    @State private var selectedRuleIDs: Set<String> = []
+    @State private var showRulePresets = false
     @State private var showProxyProviderPicker = false
     @State private var showRuleProviderPicker = false
     /// Rule providers defined in the active profile's YAML, loaded
@@ -65,8 +78,78 @@ struct CustomSubscriptionEditorView: View {
             .map { CustomProvider(name: $0.name, kind: "http", url: $0.urlString ?? "") }
     }
 
+    /// Validation issues (FlClash customProfileIssuesProvider):
+    /// counted per section and shown in the overview banner.
+    private var validationIssues: [String] {
+        var issues: [String] = []
+        let groupNames = sub.groups.map { $0.name }
+        if Set(groupNames).count != groupNames.count { issues.append("有重名的代理组") }
+        for group in sub.groups {
+            if group.members.isEmpty && group.useProviders.isEmpty {
+                issues.append("分组「\(group.name)」没有成员也没有提供方")
+            }
+            for provider in group.useProviders where !sub.proxyProviders.contains(where: { $0.name == provider }) {
+                issues.append("分组「\(group.name)」引用的提供方「\(provider)」不存在")
+            }
+        }
+        let validTargets = Set(groupNames + CustomGroup.reservedTargets + ["GLOBAL", "COMPATIBLE"])
+        for rule in sub.rules where !validTargets.contains(rule.target) {
+            issues.append("规则「\(rule.text)」的目标「\(rule.target)」不是分组或内置策略")
+        }
+        for rule in sub.rules where rule.type == "RULE-SET" && !rule.content.isEmpty
+            && !sub.ruleProviders.contains(where: { $0.name == rule.content }) {
+            issues.append("规则集「\(rule.content)」没有对应的规则提供方")
+        }
+        for dialer in sub.dialers where dialer.proxy.isEmpty || dialer.dialer.isEmpty || dialer.proxy == dialer.dialer {
+            issues.append("拨号器配置不完整或指向自己")
+        }
+        for provider in sub.proxyProviders where provider.kind == "http" && provider.url.isEmpty {
+            issues.append("代理提供方「\(provider.name)」没有链接")
+        }
+        return issues
+    }
+
+    private var missingProviderCount: Int {
+        sub.groups.flatMap { $0.useProviders }.filter { name in
+            !sub.proxyProviders.contains(where: { $0.name == name })
+        }.count
+        + sub.rules.filter { rule in rule.type == "RULE-SET" && !rule.content.isEmpty
+            && !sub.ruleProviders.contains(where: { $0.name == rule.content }) }.count
+    }
+
     var body: some View {
         List {
+            // Overview (FlClash custom.dart _Overview): issue banner
+            // + per-section counts (validation = M13).
+            Section("总览") {
+                if !validationIssues.isEmpty {
+                    Text("发现 \(validationIssues.count) 个问题：\n" + validationIssues.joined(separator: "\n"))
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+                overviewRow("代理组", count: sub.groups.count, issueCount: validationIssues.filter { $0.contains("分组") }.count)
+                overviewRow("规则", count: sub.rules.count, issueCount: validationIssues.filter { $0.contains("规则") }.count)
+                overviewRow("提供方", count: sub.proxyProviders.count + sub.ruleProviders.count, issueCount: missingProviderCount)
+                HStack {
+                    Text("拨号器").font(.headline)
+                    Spacer()
+                    Text("\(sub.dialers.count) 个")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("更多（DNS / NTP / 嗅探 / TUN）").font(.headline)
+                    Spacer()
+                    Text("见「覆盖」页，按订阅设置")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                NavigationLink {
+                    OverrideView()
+                } label: {
+                    Label("打开覆盖设置", systemImage: "slider.horizontal.3")
+                }
+            }
             Section {
                 TextField("订阅名称", text: Binding(
                     get: { sub.name },
@@ -161,16 +244,19 @@ struct CustomSubscriptionEditorView: View {
 
             Section("规则提供方（\(sub.ruleProviders.count) 个）") {
                 ForEach(sub.ruleProviders) { provider in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(provider.name).font(.headline)
-                            Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                    Button { editingRuleProvider = provider } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(provider.name).font(.headline)
+                                Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
                         }
-                        Spacer()
                     }
+                    .buttonStyle(.plain)
                 }
                 .onDelete { offsets in
                     var copy = sub
@@ -184,8 +270,18 @@ struct CustomSubscriptionEditorView: View {
 
             Section("规则（\(sub.rules.count) 条）") {
                 ForEach(sub.rules) { rule in
-                    Button { editingRule = rule } label: {
-                        HStack {
+                    Button {
+                        if ruleSelectionMode {
+                            if selectedRuleIDs.contains(rule.id) { selectedRuleIDs.remove(rule.id) } else { selectedRuleIDs.insert(rule.id) }
+                        } else {
+                            editingRule = rule
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            if ruleSelectionMode {
+                                Image(systemName: selectedRuleIDs.contains(rule.id) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedRuleIDs.contains(rule.id) ? ConcordTheme.accent : .secondary)
+                            }
                             Text(rule.text)
                                 .font(.system(.caption, design: .monospaced))
                                 .lineLimit(2)
@@ -193,6 +289,20 @@ struct CustomSubscriptionEditorView: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .swipeActions(edge: .trailing) {
+                        Button("复制一份") {
+                            var copy = sub
+                            var duplicated = rule
+                            duplicated.id = UUID().uuidString
+                            if let index = copy.rules.firstIndex(where: { $0.id == rule.id }) {
+                                copy.rules.insert(duplicated, at: index + 1)
+                            } else {
+                                copy.rules.append(duplicated)
+                            }
+                            draft = copy
+                        }
+                        .tint(ConcordTheme.accent)
+                    }
                 }
                 .onDelete { offsets in
                     var copy = sub
@@ -207,6 +317,23 @@ struct CustomSubscriptionEditorView: View {
                 Button { editingRule = CustomRule() } label: {
                     Label("添加规则", systemImage: "plus")
                 }
+                Button { showRulePresets = true } label: {
+                    Label("快捷操作", systemImage: "bolt.circle")
+                }
+                Button { ruleSelectionMode.toggle(); selectedRuleIDs.removeAll() } label: {
+                    Label(ruleSelectionMode ? "完成选择" : "多选删除", systemImage: "checkmark.circle")
+                }
+                if ruleSelectionMode && !selectedRuleIDs.isEmpty {
+                    Button(role: .destructive) {
+                        var copy = sub
+                        copy.rules.removeAll { selectedRuleIDs.contains($0.id) }
+                        draft = copy
+                        selectedRuleIDs.removeAll()
+                        ruleSelectionMode = false
+                    } label: {
+                        Label("删除所选（\(selectedRuleIDs.count) 条）", systemImage: "trash")
+                    }
+                }
             }
         }
         .font(.footnote.weight(.semibold))
@@ -217,8 +344,54 @@ struct CustomSubscriptionEditorView: View {
                 EditButton()
             }
             ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        renameText = sub.name
+                        showRenameAlert = true
+                    } label: {
+                        Label("重命名", systemImage: "pencil")
+                    }
+                    Button { showPreview = true } label: {
+                        Label("运行时配置", systemImage: "eye")
+                    }
+                    Button(role: .destructive) { showDeleteConfirm = true } label: {
+                        Label("删除", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("更多")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Button("保存") { saveDraft() }
             }
+        }
+        .alert("重命名", isPresented: $showRenameAlert) {
+            TextField("订阅名称", text: $renameText)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            Button("保存") {
+                let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty {
+                    var copy = sub
+                    copy.name = name
+                    draft = copy
+                }
+                showRenameAlert = false
+            }
+            Button("取消", role: .cancel) { showRenameAlert = false }
+        }
+        .alert("删除这个自定义订阅？", isPresented: $showDeleteConfirm) {
+            Button("删除", role: .destructive) {
+                store.delete(sub)
+                dismiss()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("「\(sub.name)」里的分组、提供方和规则都会被删除。")
+        }
+        .sheet(isPresented: $showPreview) {
+            CustomSubscriptionPreviewSheet(subscription: sub)
         }
         .task {
             if let yaml = profileStore.activeProfileYAML() {
@@ -310,8 +483,32 @@ struct CustomSubscriptionEditorView: View {
                 draft = copy
             }
         }
+        .sheet(item: $editingRuleProvider) { provider in
+            CustomProviderOptionsView(provider: provider) { saved in
+                var copy = sub
+                if let index = copy.ruleProviders.firstIndex(where: { $0.id == saved.id }) {
+                    copy.ruleProviders[index] = saved
+                } else {
+                    copy.ruleProviders.append(saved)
+                }
+                draft = copy
+            }
+        }
+        .sheet(isPresented: $showRulePresets) {
+            RulePresetSheetView { preset in
+                var copy = sub
+                for raw in preset.rawRules {
+                    guard let parsed = RuleFormDraft.parse(raw) else { continue }
+                    let rule = CustomRule(type: parsed.type, content: parsed.content, target: parsed.target, noResolve: parsed.noResolve, src: parsed.src)
+                    if !copy.rules.contains(where: { $0.text == rule.text }) {
+                        copy.rules.append(rule)
+                    }
+                }
+                draft = copy
+            }
+        }
         .sheet(item: $editingRule) { rule in
-            CustomRuleFormView(rule: rule, targets: targetCandidates) { saved in
+            CustomRuleFormView(rule: rule, targets: targetCandidates, ruleProviderNames: ruleProviderCandidates.map { $0.name }) { saved in
                 var copy = sub
                 if let index = copy.rules.firstIndex(where: { $0.id == saved.id }) {
                     copy.rules[index] = saved
@@ -323,9 +520,72 @@ struct CustomSubscriptionEditorView: View {
         }
     }
 
+    private func overviewRow(_ title: String, count: Int, issueCount: Int) -> some View {
+        HStack {
+            Text(title).font(.headline)
+            Spacer()
+            Text("\(count) 个")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            if issueCount > 0 {
+                Text("\(issueCount) 个问题")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.red.opacity(0.12), in: Capsule())
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
     private func saveDraft() {
         guard let draft else { return }
         store.update(draft)
+    }
+}
+
+// MARK: - Runtime-config preview (FlClash custom.dart:215-221)
+
+/// The custom subscription baked into the active profile's YAML
+/// (or a minimal template when there is no active profile),
+/// read-only text with copy — the same preview surface as
+/// ProfilePreviewView.
+private struct CustomSubscriptionPreviewSheet: View {
+    let subscription: CustomSubscription
+    @EnvironmentObject private var profileStore: ProfileStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var copied = false
+
+    private var bakedText: String {
+        let base = profileStore.activeProfileYAML()
+            ?? "mode: rule\nproxies: []\nproxy-groups: []\nproxy-providers: {}\nrule-providers: {}\nrules: []\n"
+        return CustomSubscriptionStore.bake(subscription, into: base)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(bakedText)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .background(ConcordTheme.pageBackground)
+            .navigationTitle("运行时配置")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(copied ? "已复制" : "复制") {
+                        UIPasteboard.general.string = bakedText
+                        copied = true
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
     }
 }
 
@@ -339,6 +599,14 @@ private struct CustomGroupFormView: View {
     var onSave: (CustomGroup) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var customMember = ""
+    /// Member search (FlClash custom/members.dart: search appears
+    /// once the list reaches sheetSearchMinItemCount).
+    @State private var memberSearch = ""
+
+    private var visibleCandidates: [String] {
+        guard !memberSearch.isEmpty else { return candidates }
+        return candidates.filter { $0.localizedCaseInsensitiveContains(memberSearch) }
+    }
 
     init(group: CustomGroup, candidates: [String], providerNames: [String], isNew: Bool, onSave: @escaping (CustomGroup) -> Void) {
         _group = State(initialValue: group)
@@ -353,6 +621,38 @@ private struct CustomGroupFormView: View {
             Form {
                 Section("基本信息") {
                     TextField("分组名称", text: $group.name)
+                    // Group icon (FlClash custom/icon.dart
+                    // IconPickerView): a URL, or a scored match from
+                    // the user's imported icon pack for this name.
+                    TextField("图标链接（可选）", text: $group.icon)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    HStack {
+                        if let iconURL = URL(string: group.icon), !group.icon.isEmpty {
+                            AsyncImage(url: iconURL) { image in
+                                image.resizable().scaledToFit()
+                            } placeholder: {
+                                ProgressView()
+                            }
+                            .frame(width: 28, height: 28)
+                        }
+                        Button("从图标源匹配") {
+                            if let url = IconPackStore.shared.iconURL(for: group.name) {
+                                group.icon = url.absoluteString
+                            }
+                        }
+                        .disabled(group.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || IconPackStore.shared.iconURL(for: group.name) == nil)
+                        Spacer()
+                        if !group.icon.isEmpty {
+                            Button("清除") { group.icon = "" }
+                        }
+                    }
+                    .font(.footnote)
+                    Text("没有图标时用订阅图标 / 图标源 / 首字。图标源在「设置 → 图标源」导入。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                     Picker("类型", selection: $group.type) {
                         ForEach(CustomGroup.types, id: \.self) { type in
                             Text(type).tag(type)
@@ -368,7 +668,12 @@ private struct CustomGroupFormView: View {
                     }
                 }
                 Section("成员（\(group.members.count) 个）") {
-                    ForEach(candidates, id: \.self) { name in
+                    if candidates.count >= 10 {
+                        TextField("搜索成员", text: $memberSearch)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    ForEach(visibleCandidates, id: \.self) { name in
                         Toggle(name, isOn: Binding(
                             get: { group.members.contains(name) },
                             set: { on in
@@ -460,6 +765,73 @@ private struct CustomGroupFormView: View {
                     TextField("排除表达式 exclude-filter", text: $group.excludeFilter)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
+                }
+                // Named-filter presets (FlClash members.dart:112-143):
+                // tap to fill the group's filter / exclude-filter
+                // from the global named-filter list.
+                if !NamedFilterStore.shared.filters.isEmpty {
+                    Section("过滤器预设") {
+                        ForEach(NamedFilterStore.shared.filters) { preset in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(preset.label).font(.headline)
+                                    Text(preset.regex)
+                                        .font(.system(.footnote, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Button("用作 filter") { group.filter = preset.regex }
+                                    .font(.footnote.weight(.semibold))
+                                Button("用作排除") { group.excludeFilter = preset.regex }
+                                    .font(.footnote.weight(.semibold))
+                            }
+                        }
+                    }
+                }
+                // More group options (FlClash custom/groups.dart
+                // _GroupOption): maxFailedTimes (default 5),
+                // expectedStatus (default ''), emptyFallback
+                // (default 'COMPATIBLE'), defaultSelected (selector
+                // only), hashKey (load-balance, non-round-robin).
+                Section("更多选项") {
+                    HStack {
+                        Text("最大失败次数")
+                        Spacer()
+                        TextField("默认 5", value: $group.maxFailedTimes, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 80)
+                    }
+                    TextField("期望状态码（expected-status）", text: Binding(
+                        get: { group.expectedStatus ?? "" },
+                        set: { group.expectedStatus = $0.isEmpty ? nil : $0 }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    TextField("空组回落（empty-fallback，默认 COMPATIBLE）", text: Binding(
+                        get: { group.emptyFallback ?? "" },
+                        set: { group.emptyFallback = $0.isEmpty ? nil : $0 }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    if group.type == "select" {
+                        TextField("默认选中节点（default-selected）", text: Binding(
+                            get: { group.defaultSelected ?? "" },
+                            set: { group.defaultSelected = $0.isEmpty ? nil : $0 }
+                        ))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    }
+                    if group.type == "load-balance" && group.strategy != "round-robin" {
+                        Picker("哈希键（hash-key）", selection: Binding(
+                            get: { group.hashKey ?? "" },
+                            set: { group.hashKey = $0.isEmpty ? nil : $0 }
+                        )) {
+                            Text("默认").tag("")
+                            Text("按用户（in-user）").tag("in-user")
+                        }
+                    }
                 }
             }
             .font(.footnote.weight(.semibold))
@@ -585,6 +957,69 @@ private struct CustomProviderOptionsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
+                // Health-check extras (FlClash custom/providers.dart
+                // _ProviderOption: url / timeout / lazy /
+                // expectedStatus) and proxy overrides (udp /
+                // skip-cert-verify / ip-version / additional-prefix /
+                // additional-suffix).
+                Section("健康检查") {
+                    TextField("测速地址", text: Binding(
+                        get: { provider.healthCheckURL ?? "" },
+                        set: { provider.healthCheckURL = $0.isEmpty ? nil : $0 }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    HStack {
+                        Text("超时（毫秒）")
+                        Spacer()
+                        TextField("默认", value: $provider.healthCheckTimeout, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 80)
+                    }
+                    Toggle("用时才测速（lazy）", isOn: Binding(
+                        get: { provider.healthCheckLazy ?? false },
+                        set: { provider.healthCheckLazy = $0 ? true : nil }
+                    ))
+                    TextField("期望状态码（expected-status）", text: Binding(
+                        get: { provider.expectedStatus ?? "" },
+                        set: { provider.expectedStatus = $0.isEmpty ? nil : $0 }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                }
+                Section("代理覆盖") {
+                    Toggle("UDP", isOn: Binding(
+                        get: { provider.udp ?? false },
+                        set: { provider.udp = $0 ? true : nil }
+                    ))
+                    Toggle("跳过证书验证", isOn: Binding(
+                        get: { provider.skipCertVerify ?? false },
+                        set: { provider.skipCertVerify = $0 ? true : nil }
+                    ))
+                    Picker("IP 版本", selection: Binding(
+                        get: { provider.ipVersion ?? "" },
+                        set: { provider.ipVersion = $0.isEmpty ? nil : $0 }
+                    )) {
+                        Text("跟随").tag("")
+                        Text("双栈（dual）").tag("dual")
+                        Text("IPv4").tag("ipv4")
+                        Text("IPv6").tag("ipv6")
+                    }
+                    TextField("名称前缀（additional-prefix）", text: Binding(
+                        get: { provider.additionalPrefix ?? "" },
+                        set: { provider.additionalPrefix = $0.isEmpty ? nil : $0 }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    TextField("名称后缀（additional-suffix）", text: Binding(
+                        get: { provider.additionalSuffix ?? "" },
+                        set: { provider.additionalSuffix = $0.isEmpty ? nil : $0 }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                }
             }
             .font(.footnote.weight(.semibold))
             .navigationTitle(provider.name)
@@ -698,13 +1133,21 @@ private func yamlUnquote(_ value: String) -> String {
 private struct CustomRuleFormView: View {
     @State private var rule: CustomRule
     let targets: [String]
+    /// Rule-provider names for the RULE-SET picker (FlClash
+    /// rules.dart:312 customProfileRuleProviderIsValidProvider).
+    let ruleProviderNames: [String]
     var onSave: (CustomRule) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    init(rule: CustomRule, targets: [String], onSave: @escaping (CustomRule) -> Void) {
+    init(rule: CustomRule, targets: [String], ruleProviderNames: [String] = [], onSave: @escaping (CustomRule) -> Void) {
         _rule = State(initialValue: rule)
         self.targets = targets
+        self.ruleProviderNames = ruleProviderNames
         self.onSave = onSave
+    }
+
+    private var isRuleSetProviderInvalid: Bool {
+        rule.type == "RULE-SET" && !ruleProviderNames.isEmpty && !ruleProviderNames.contains(rule.content)
     }
 
     var body: some View {
@@ -717,9 +1160,23 @@ private struct CustomRuleFormView: View {
                         }
                     }
                     if rule.type != "MATCH" && rule.type != "FINAL" {
-                        TextField(rule.type == "RULE-SET" ? "规则集名称" : "规则内容", text: $rule.content)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                        if rule.type == "RULE-SET" && !ruleProviderNames.isEmpty {
+                            Picker("规则集", selection: $rule.content) {
+                                Text("选择规则集").tag("")
+                                ForEach(ruleProviderNames, id: \.self) { name in
+                                    Text(name).tag(name)
+                                }
+                            }
+                        } else {
+                            TextField(rule.type == "RULE-SET" ? "规则集名称" : "规则内容", text: $rule.content)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                        if isRuleSetProviderInvalid {
+                            Text("规则集「\(rule.content)」不存在于当前配置的规则提供方里。")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
                     }
                     Picker("策略", selection: $rule.target) {
                         ForEach(targets, id: \.self) { target in
@@ -749,7 +1206,7 @@ private struct CustomRuleFormView: View {
                         onSave(rule)
                         dismiss()
                     }
-                    .disabled(rule.type != "MATCH" && rule.type != "FINAL" && rule.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled((rule.type != "MATCH" && rule.type != "FINAL" && rule.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || isRuleSetProviderInvalid)
                 }
             }
         }

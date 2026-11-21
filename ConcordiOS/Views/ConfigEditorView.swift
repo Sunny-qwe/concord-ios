@@ -63,8 +63,19 @@ struct ConfigEditorView: View {
     /// controller the completion row uses to insert at the caret.
     @State private var selectedRange = NSRange(location: 0, length: 0)
     @StateObject private var yamlController = YamlEditorController()
+    /// Find + find-and-replace bar (FlClash editor.dart:340-341,406,
+    /// 593-594 FindController).
+    @State private var showFind = false
+    @State private var findText = ""
+    @State private var replaceText = ""
+    @State private var findIndex = 0
+    /// Editable title (FlClash editor.dart:99-101,185 titleEditable):
+    /// the profile name, edited here and saved with the file.
+    @State private var editorTitle = 
 
-    private var isDirty: Bool { isLoaded && text != originalText }
+    private var isDirty: Bool {
+        isLoaded && (text != originalText || editorTitle != editedProfile?.name)
+    }
 
     /// A draft per edited profile, so drafts for different
     /// profiles never overwrite each other.
@@ -84,6 +95,9 @@ struct ConfigEditorView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 editorHeader
+                if showFind {
+                    findBar
+                }
                 YamlEditorView(text: $text, selectedRange: $selectedRange, controller: yamlController)
                     .onChange(of: text) { _, _ in saveDraft() }
                 if !completionSuggestions.isEmpty {
@@ -98,6 +112,12 @@ struct ConfigEditorView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("保存") { Task { await validateBeforeSave() } }
                     .disabled(!isDirty || isWorking)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showFind.toggle() } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+                .accessibilityLabel("查找与替换")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { yamlController.undo() } label: {
@@ -157,8 +177,10 @@ struct ConfigEditorView: View {
     private var editorHeader: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(editedProfile?.name ?? "当前配置")
+                TextField("标题", text: $editorTitle)
                     .font(.footnote.weight(.semibold))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
                 Spacer()
                 if isDirty {
                     PillBadge(text: "未保存", tint: .orange)
@@ -218,6 +240,84 @@ struct ConfigEditorView: View {
         .background(ConcordTheme.cardBackground)
     }
 
+    // MARK: - Find + replace
+
+    /// All matches of the find text (case-insensitive, literal).
+    private var findMatches: [NSRange] {
+        guard !findText.isEmpty else { return [] }
+        var out: [NSRange] = []
+        var searchFrom = text.startIndex
+        while searchFrom < text.endIndex,
+              let range = text.range(of: findText, options: [.caseInsensitive], range: searchFrom..<text.endIndex) {
+            out.append(NSRange(range, in: text))
+            searchFrom = range.upperBound
+        }
+        return out
+    }
+
+    private var findBar: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                TextField("查找", text: $findText)
+                    .font(.footnote.weight(.semibold))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .onChange(of: findText) { _, _ in findIndex = 0; jumpToFindMatch() }
+                if !findText.isEmpty {
+                    Text(findMatches.isEmpty ? "无匹配" : "\(findIndex + 1)/\(findMatches.count)")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Button { stepFind(by: -1) } label: {
+                    Image(systemName: "chevron.up")
+                }
+                .disabled(findMatches.isEmpty)
+                Button { stepFind(by: 1) } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .disabled(findMatches.isEmpty)
+            }
+            HStack(spacing: 8) {
+                TextField("替换为", text: $replaceText)
+                    .font(.footnote.weight(.semibold))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("替换") { replaceCurrentMatch() }
+                    .disabled(findMatches.isEmpty)
+                Button("全部替换") { replaceAllMatches() }
+                    .disabled(findText.isEmpty || findMatches.isEmpty)
+            }
+        }
+        .padding(12)
+        .background(ConcordTheme.cardBackground)
+    }
+
+    private func jumpToFindMatch() {
+        let matches = findMatches
+        guard !matches.isEmpty else { return }
+        findIndex = min(max(findIndex, 0), matches.count - 1)
+        yamlController.select(matches[findIndex])
+    }
+
+    private func stepFind(by delta: Int) {
+        let matches = findMatches
+        guard !matches.isEmpty else { return }
+        findIndex = (findIndex + delta + matches.count) % matches.count
+        yamlController.select(matches[findIndex])
+    }
+
+    private func replaceCurrentMatch() {
+        let matches = findMatches
+        guard !matches.isEmpty else { return }
+        let range = matches[min(max(findIndex, 0), matches.count - 1)]
+        yamlController.insert(replaceText, replacing: range)
+    }
+
+    private func replaceAllMatches() {
+        guard !findText.isEmpty else { return }
+        text = text.replacingOccurrences(of: findText, with: replaceText, options: [.caseInsensitive])
+    }
+
     // MARK: - Key completion (FlClash clash_completion.dart,
     // top-level keys only — a full schema engine is out of scope)
 
@@ -243,6 +343,17 @@ struct ConfigEditorView: View {
     }
 
     private var completionSuggestions: [String] {
+        // Indented line: suggest the parent section's keys
+        // (FlClash clash_schema.dart — schema-driven completion;
+        // ours covers the common sections' keys, not the full
+        // schema). The parent is the nearest indent-0 `key:` line
+        // above the caret.
+        if let nested = nestedKeyPrefix {
+            let matches = (YamlClashKeys.nested[nested.parent] ?? []).filter {
+                $0.hasPrefix(nested.word) && $0 != nested.word
+            }
+            return Array(matches.prefix(12))
+        }
         guard let (word, _) = currentKeyPrefix else { return [] }
         let matches = YamlClashKeys.topLevel.filter {
             $0.hasPrefix(word) && $0 != word
@@ -250,14 +361,40 @@ struct ConfigEditorView: View {
         return Array(matches.prefix(12))
     }
 
+    /// (parent section, typed word) when the caret is on an
+    /// indented key line under a top-level section.
+    private var nestedKeyPrefix: (parent: String, word: String)? {
+        let nsText = text as NSString
+        guard selectedRange.location <= nsText.length else { return nil }
+        let lineRange = nsText.lineRange(for: NSRange(location: selectedRange.location, length: 0))
+        let line = nsText.substring(with: lineRange)
+        let caretInLine = selectedRange.location - lineRange.location
+        let beforeCaret = String(line.prefix(caretInLine))
+        guard beforeCaret.hasPrefix(" "), !beforeCaret.contains(":") else { return nil }
+        let word = beforeCaret.trimmingCharacters(in: .whitespaces)
+        guard word.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }) else { return nil }
+        // Walk up for the nearest indent-0 `key:` line.
+        let lines = (text as NSString).substring(to: lineRange.location).components(separatedBy: "\n")
+        for raw in lines.reversed() {
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            if raw.hasPrefix(" ") || raw.hasPrefix("\t") || trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            guard let colon = trimmed.firstIndex(of: ":") else { continue }
+            let parent = String(trimmed[..<colon])
+            if YamlClashKeys.nested[parent] != nil { return (parent, word) }
+            return nil
+        }
+        return nil
+    }
+
     /// Suggestion row above the keyboard: tapping a key inserts
-    /// it plus ": " at the caret, replacing the typed prefix.
+    /// it plus ": " at the caret, replacing the typed prefix (works
+    /// for top-level and nested-section keys alike).
     private var completionRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(completionSuggestions, id: \.self) { key in
                     Button(key) {
-                        guard let (_, range) = currentKeyPrefix else { return }
+                        guard let range = completionWordRange else { return }
                         yamlController.insert("\(key): ", replacing: range)
                     }
                     .buttonStyle(.bordered)
@@ -271,11 +408,27 @@ struct ConfigEditorView: View {
         .background(ConcordTheme.cardBackground)
     }
 
+    /// The typed word's range at the caret — top-level or
+    /// nested — for the completion row to replace.
+    private var completionWordRange: NSRange? {
+        if let (_, range) = currentKeyPrefix { return range }
+        let nsText = text as NSString
+        guard selectedRange.location <= nsText.length else { return nil }
+        let lineRange = nsText.lineRange(for: NSRange(location: selectedRange.location, length: 0))
+        let line = nsText.substring(with: lineRange)
+        let caretInLine = selectedRange.location - lineRange.location
+        let beforeCaret = String(line.prefix(caretInLine))
+        let word = beforeCaret.trimmingCharacters(in: .whitespaces)
+        guard !word.isEmpty else { return nil }
+        return NSRange(location: lineRange.location + (beforeCaret.count - word.count), length: word.count)
+    }
+
     private func load() {
         guard let profile = editedProfile else {
             loadError = "没有已激活的订阅，或者它的配置文件找不到了"
             return
         }
+        editorTitle = profile.name
         let yaml: String?
         if isTargetActive || targetProfile == nil {
             yaml = profileStore.activeProfileYAML()
@@ -296,10 +449,20 @@ struct ConfigEditorView: View {
         text = yaml
         isLoaded = true
         // A draft from a previous interrupted edit session wins a
-        // prompt — it is never silently applied or discarded.
+        // prompt — it is never silently applied or discarded — unless
+        // the file on disk is NEWER than the draft (FlClash
+        // edit.dart:242-290: a stale draft is discarded when the
+        // original was modified after it). Compare mtimes: a draft
+        // older than the file is dropped silently.
         if let draft = try? String(contentsOf: draftURL, encoding: .utf8),
            draft != yaml {
-            showDraftAlert = true
+            let draftDate = (try? FileManager.default.attributesOfItem(atPath: draftURL.path)[.modificationDate] as? Date) ?? .distantPast
+            let fileDate = profileStore.profileFileInfo(profile)?.lastModified ?? .distantPast
+            if fileDate > draftDate {
+                try? FileManager.default.removeItem(at: draftURL)
+            } else {
+                showDraftAlert = true
+            }
         }
     }
 
@@ -345,6 +508,18 @@ struct ConfigEditorView: View {
     private func save() async {
         isWorking = true
         defer { isWorking = false }
+        // Editable title: a renamed profile keeps its other meta
+        // (FlClash editor.dart titleEditable).
+        if let profile = editedProfile {
+            let newTitle = editorTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !newTitle.isEmpty, newTitle != profile.name {
+                _ = profileStore.updateProfileMeta(
+                    profile, name: newTitle, urlString: profile.urlString,
+                    ageSecretKey: profile.ageSecretKey, autoUpdate: profile.autoUpdate,
+                    autoUpdateIntervalMinutes: profile.autoUpdateIntervalMinutes
+                )
+            }
+        }
         let result: String
         if isTargetActive || targetProfile == nil {
             result = await profileStore.saveActiveProfileYAML(text)
@@ -380,6 +555,28 @@ struct ConfigEditorView: View {
 /// Common top-level Clash / mihomo config keys (FlClash
 /// clash_schema.dart `clashConfigSchema`).
 enum YamlClashKeys {
+    /// Nested keys per top-level section (FlClash clash_schema.dart
+    /// subset — the common sections; not the full schema).
+    static let nested: [String: [String]] = [
+        "dns": ["enable", "ipv6", "listen", "enhanced-mode", "fake-ip-range",
+                "fake-ip-filter", "nameserver", "fallback", "fallback-filter",
+                "default-nameserver", "nameserver-policy", "proxy-server-nameserver",
+                "direct-nameserver", "direct-nameserver-follow-policy",
+                "use-hosts", "respect-rules", "cache-algorithm"],
+        "tun": ["enable", "device", "stack", "dns-hijack", "auto-route",
+                "auto-detect-interface", "mtu", "inet4-route-address",
+                "inet6-route-address", "strict-route", "endpoint-independent-nat",
+                "route-exclude-address", "include-interface", "exclude-interface"],
+        "sniffer": ["enable", "force-dns-mapping", "parse-pure-ip", "skip-domain",
+                    "override-destination", "sniff", "force-domain"],
+        "sniff": ["TLS", "HTTP", "QUIC"],
+        "ntp": ["enable", "server", "port", "interval", "dial-proxy"],
+        "profile": ["store-selected", "store-fake-ip"],
+        "tls": ["certificate", "private-key"],
+        "listeners": ["name", "type", "port", "listen", "proxy", "udp"],
+        "experimental": ["sniffer", "quic-go"],
+    ]
+
     static let topLevel: [String] = [
         "mixed-port", "port", "socks-port", "redir-port", "tproxy-port",
         "allow-lan", "bind-address", "lan-allowed-ips", "lan-disallowed-ips",
@@ -472,11 +669,18 @@ final class YamlEditorController: ObservableObject {
     var insertHandler: ((NSRange, String) -> Void)?
     var undoHandler: (() -> Void)?
     var redoHandler: (() -> Void)?
+    var selectHandler: ((NSRange) -> Void)?
     @Published var canUndo = false
     @Published var canRedo = false
 
     func insert(_ text: String, replacing range: NSRange) {
         insertHandler?(range, text)
+    }
+
+    /// Select a range in the text view (find jumps) and scroll it
+    /// into view.
+    func select(_ range: NSRange) {
+        selectHandler?(range)
     }
 
     func undo() { undoHandler?() }
@@ -522,6 +726,12 @@ struct YamlEditorView: UIViewRepresentable {
         controller.redoHandler = { [weak textView] in
             guard let textView else { return }
             textView.undoManager?.redo()
+            context.coordinator.refreshUndoState(textView)
+        }
+        controller.selectHandler = { [weak textView] range in
+            guard let textView else { return }
+            textView.selectedRange = range
+            textView.scrollRangeToVisible(range)
             context.coordinator.refreshUndoState(textView)
         }
         context.coordinator.refreshUndoState(textView)

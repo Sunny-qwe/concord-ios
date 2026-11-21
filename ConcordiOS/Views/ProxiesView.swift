@@ -94,6 +94,16 @@ private struct SectionHeaderPositionKey: PreferenceKey {
 }
 
 struct ProxiesView: View {
+    /// Picker mode (FlClash proxies.dart:14-18,157,165,174):
+    /// as a dashboard sheet the page keeps only search + delay
+    /// test — the ⋯ menu is stripped and the locate button hidden.
+    /// Default false (the tab page). No in-repo caller yet (the
+    /// picker instance actually used upstream is ProfilesView),
+    /// but the component API now exists.
+    let picker: Bool
+
+    init(picker: Bool = false) { self.picker = picker }
+
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var client: ConcordClient
@@ -552,13 +562,15 @@ struct ProxiesView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     topBarPill
                 }
-                if styleStore.style == .tab {
+                if styleStore.style == .tab && !picker {
                     ToolbarItem(placement: .topBarTrailing) {
                         locateButton
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    moreButton
+                if !picker {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        moreButton
+                    }
                 }
             }
             .sheet(item: $detailNode) { node in
@@ -590,6 +602,13 @@ struct ProxiesView: View {
                 // (a new test started, or a banner retry seeded
                 // the files) dismisses the banner.
                 if let new { notice = new } else { notice = nil }
+            }
+            .onChange(of: groupSearchFocus) { _, focused in
+                if focused == nil {
+                    for name in groupSearchOpen where (groupSearchKeywords[name] ?? "").isEmpty {
+                        groupSearchOpen.remove(name)
+                    }
+                }
             }
             .onChange(of: proxyStore.testErrorNonce) { _, _ in
                 // The same failure twice in a row does not change
@@ -1086,7 +1105,7 @@ struct ProxiesView: View {
                 }
             }
         }
-        .frame(minWidth: 160, maxWidth: 280, maxHeight: 308)
+        .frame(minWidth: 160, maxWidth: 280, maxHeight: 338)
         .font(.subheadline)
         .presentationCompactAdaptation(.popover)
     }
@@ -1778,6 +1797,7 @@ private struct SelectedNodeSpeedsView: View {
             cardHeight: cardHeight,
             iconSymbol: iconSetStore.symbol(for: node.type),
             iconColor: iconSetStore.color(for: node.type),
+            remoteIconURL: iconSetStore.remoteIconURL(for: node.type),
             memberIcon: memberIcon(for: node),
             onTest: { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } }
         )
@@ -2032,6 +2052,11 @@ private struct ProxyNodeCard: View, Equatable {
     let cardHeight: CGFloat
     let iconSymbol: String
     let iconColor: Color
+    /// Remote type icon from the selected imported icon set
+    /// (IconSetStore, C17): nil when the pack has no remote image
+    /// for this type — the SF Symbol above is the fallback. A plain
+    /// URL value, so the Equatable row is unaffected.
+    let remoteIconURL: URL? = nil
     /// The nested group's profile icon, for nodes that are
     /// themselves groups (MuYu card.dart member icon, 16pt).
     /// Nil for leaf nodes — the core exposes no per-node icon.
@@ -2052,7 +2077,33 @@ private struct ProxyNodeCard: View, Equatable {
             && lhs.cardHeight == rhs.cardHeight
             && lhs.iconSymbol == rhs.iconSymbol
             && lhs.iconColor == rhs.iconColor
+            && lhs.remoteIconURL == rhs.remoteIconURL
             && lhs.memberIcon == rhs.memberIcon
+    }
+
+    /// The proxy-type glyph: the selected icon set's remote image
+    /// when it has one for this type, else the SF Symbol. Both
+    /// branches share an 18pt frame so the row never shifts when
+    /// the image loads (IconSetStore.iconView uses the same size).
+    private var typeIcon: some View {
+        Group {
+            if let remoteIconURL {
+                AsyncImage(url: remoteIconURL) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                    } else {
+                        Image(systemName: iconSymbol)
+                            .font(.system(size: 10))
+                            .foregroundStyle(iconColor)
+                    }
+                }
+            } else {
+                Image(systemName: iconSymbol)
+                    .font(.system(size: 10))
+                    .foregroundStyle(iconColor)
+            }
+        }
+        .frame(width: 18, height: 18)
     }
 
     var body: some View {
@@ -2103,9 +2154,7 @@ private struct ProxyNodeCard: View, Equatable {
             if cardType == .loose {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 4) {
-                        Image(systemName: iconSymbol)
-                            .font(.system(size: 10))
-                            .foregroundStyle(iconColor)
+                        typeIcon
                         Text(description)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
@@ -2118,9 +2167,7 @@ private struct ProxyNodeCard: View, Equatable {
                 }
             } else {
                 HStack {
-                    Image(systemName: iconSymbol)
-                        .font(.system(size: 10))
-                        .foregroundStyle(iconColor)
+                    typeIcon
                     Text(type)
                         .font(.footnote)
                         .foregroundStyle(.secondary)

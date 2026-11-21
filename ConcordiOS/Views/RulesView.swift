@@ -75,15 +75,19 @@ struct RulesView: View {
                                 Button("详情") {
                                     Task { await ruleStore.loadProviderDetail(provider) }
                                 }
-                                .tint(.blue)
+                                .tint(ConcordTheme.accent)
+                                Button("更新") {
+                                    Task { await ruleStore.updateProvider(provider) }
+                                }
+                                .tint(ConcordTheme.accent)
                                 Button("健康检查") {
                                     Task { await ruleStore.healthCheckProvider(provider) }
                                 }
-                                .tint(.green)
+                                .tint(ConcordTheme.accent)
                                 Button("重新编译") {
                                     Task { await ruleStore.compileRuleSet(provider) }
                                 }
-                                .tint(.orange)
+                                .tint(ConcordTheme.accent)
                             }
                         }
                     }

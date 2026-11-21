@@ -84,12 +84,10 @@ struct DnsSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Section("DNS") {
+            // FlClash dns.dart grouping: options first, then the
+            // Fake-IP block, then the nameserver block.
+            Section("选项") {
                 Toggle("启用 DNS", isOn: $settingsStore.dnsEnabled)
-                TextField("上游 DoH 地址", text: $settingsStore.dnsNameserver)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
-                    .keyboardType(.URL)
                 Picker("增强模式", selection: $settingsStore.dnsEnhancedMode) {
                     Text("普通").tag("normal")
                     Text("Fake-IP").tag("fake-ip")
@@ -106,6 +104,35 @@ struct DnsSettingsView: View {
                         settingsStore.dnsEnhancedMode = value ? "fake-ip" : "normal"
                         settingsStore.save()
                     }
+                TextField("监听地址，如 127.0.0.1:1053（留空为默认）", text: $settingsStore.dnsListen)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                if let listenIssue {
+                    Text(listenIssue)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+                Stepper("监听路由标记：\(listenRoutingMark == 0 ? "默认" : "\(listenRoutingMark)")", value: $listenRoutingMark, in: 0...65535)
+                    .onChange(of: listenRoutingMark) { _, _ in settingsStore.save() }
+                Text("监听路由标记（listen-routing-mark）：DNS 监听套接字用的路由标记，0 为默认。改动随 DNS 设置保存，下次启动 VPN 或重载配置后生效。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Toggle("使用 Hosts", isOn: $settingsStore.dnsUseHosts)
+                Toggle("使用系统 Hosts", isOn: $settingsStore.dnsUseSystemHosts)
+                Toggle("DNS 用 IPv6", isOn: $settingsStore.dnsIpv6)
+                Text("只控制 DNS 解析是否用 IPv6（核心 dns.ipv6，默认关），不影响通用里的 IPv6 开关。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Stepper("IPv6 超时：\(settingsStore.dnsIpv6Timeout) ms", value: $settingsStore.dnsIpv6Timeout, in: 0...10000, step: 10)
+                Toggle("遵循规则", isOn: $settingsStore.dnsRespectRules)
+                Toggle("优先 HTTP/3", isOn: $settingsStore.dnsPreferH3)
+                Picker("缓存算法", selection: $settingsStore.dnsCacheAlgorithm) {
+                    Text("LRU").tag("lru")
+                    Text("ARC").tag("arc")
+                }
+                Stepper("缓存上限：\(settingsStore.dnsCacheMaxSize) 条", value: $settingsStore.dnsCacheMaxSize, in: 0...65536, step: 256)
+            }
+            Section("Fake-IP") {
                 TextField("Fake-IP 段，如 198.18.0.1/16", text: $settingsStore.dnsFakeIpRange)
                     .autocapitalization(.none)
                     .disableAutocorrection(true)
@@ -122,48 +149,6 @@ struct DnsSettingsView: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
-                TextField("监听地址，如 127.0.0.1:1053（留空为默认）", text: $settingsStore.dnsListen)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
-                if let listenIssue {
-                    Text(listenIssue)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-                Stepper("监听路由标记：\(listenRoutingMark == 0 ? "默认" : "\(listenRoutingMark)")", value: $listenRoutingMark, in: 0...65535)
-                    .onChange(of: listenRoutingMark) { _, _ in settingsStore.save() }
-                Text("监听路由标记（listen-routing-mark）：DNS 监听套接字用的路由标记，0 为默认。改动随 DNS 设置保存，下次启动 VPN 或重载配置后生效。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Toggle("使用 Hosts", isOn: $settingsStore.dnsUseHosts)
-                Toggle("使用系统 Hosts", isOn: $settingsStore.dnsUseSystemHosts)
-                Toggle("遵循规则", isOn: $settingsStore.dnsRespectRules)
-                Toggle("优先 HTTP/3", isOn: $settingsStore.dnsPreferH3)
-                Toggle("DNS 用 IPv6", isOn: $settingsStore.dnsIpv6)
-                Text("只控制 DNS 解析是否用 IPv6（核心 dns.ipv6，默认关），不影响通用里的 IPv6 开关。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Stepper("IPv6 超时：\(settingsStore.dnsIpv6Timeout) ms", value: $settingsStore.dnsIpv6Timeout, in: 0...10000, step: 10)
-            }
-            Section("上游与备用") {
-                StringListEditor(items: $settingsStore.dnsExtraNameservers, placeholder: "其它解析服务器，如 tls://1.1.1.1:853")
-                Text("主上游在上面；这里的会追加到 nameserver 列表里。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                StringListEditor(items: $settingsStore.dnsFallback, placeholder: "备用解析服务器")
-                Toggle("备用懒查询", isOn: $settingsStore.dnsFallbackLazyQuery)
-                KeyValueListEditor(items: $settingsStore.dnsNameserverPolicy, keyPlaceholder: "域名 / 规则集", valuePlaceholder: "服务器")
-                Text("解析策略：键是域名或规则集（如 geosite:cn），值是解析服务器。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section("代理与直连解析") {
-                StringListEditor(items: $settingsStore.dnsProxyServerNameserver, placeholder: "代理节点解析服务器")
-                KeyValueListEditor(items: $settingsStore.dnsProxyServerNameserverPolicy, keyPlaceholder: "域名 / 规则集", valuePlaceholder: "服务器")
-                StringListEditor(items: $settingsStore.dnsDirectNameserver, placeholder: "直连解析服务器")
-                Toggle("直连跟随解析策略", isOn: $settingsStore.dnsDirectNameserverFollowPolicy)
-            }
-            Section("Fake-IP") {
                 Picker("Fake-IP 过滤模式", selection: $settingsStore.dnsFakeIpFilterMode) {
                     Text("黑名单").tag("blacklist")
                     Text("白名单").tag("whitelist")
@@ -171,10 +156,30 @@ struct DnsSettingsView: View {
                 }
                 Stepper("Fake-IP TTL：\(settingsStore.dnsFakeIpTtl)", value: $settingsStore.dnsFakeIpTtl, in: 0...86400)
                 StringListEditor(items: $settingsStore.dnsFakeIpFilter, placeholder: "域名，如 example.com")
+            }
+            Section("解析服务器") {
+                TextField("上游 DoH 地址", text: $settingsStore.dnsNameserver)
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                    .keyboardType(.URL)
+                StringListEditor(items: $settingsStore.dnsExtraNameservers, placeholder: "其它解析服务器，如 tls://1.1.1.1:853")
+                Text("主上游在上面；这里的会追加到 nameserver 列表里。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 StringListEditor(items: $settingsStore.dnsDefaultNameserver, placeholder: "默认解析服务器 IP")
                 Text("默认解析服务器：解析 Fake-IP 过滤域名和 nameserver 自身域名时用。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                KeyValueListEditor(items: $settingsStore.dnsNameserverPolicy, keyPlaceholder: "域名 / 规则集", valuePlaceholder: "服务器")
+                Text("解析策略：键是域名或规则集（如 geosite:cn），值是解析服务器。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                StringListEditor(items: $settingsStore.dnsFallback, placeholder: "备用解析服务器")
+                Toggle("备用懒查询", isOn: $settingsStore.dnsFallbackLazyQuery)
+                StringListEditor(items: $settingsStore.dnsProxyServerNameserver, placeholder: "代理节点解析服务器")
+                KeyValueListEditor(items: $settingsStore.dnsProxyServerNameserverPolicy, keyPlaceholder: "域名 / 规则集", valuePlaceholder: "服务器")
+                StringListEditor(items: $settingsStore.dnsDirectNameserver, placeholder: "直连解析服务器")
+                Toggle("直连跟随解析策略", isOn: $settingsStore.dnsDirectNameserverFollowPolicy)
             }
             Section("备用过滤（fallback-filter）") {
                 Toggle("GeoIP 过滤", isOn: $settingsStore.dnsFallbackFilterGeoip)
@@ -190,12 +195,15 @@ struct DnsSettingsView: View {
                 }
                 StringListEditor(items: $settingsStore.dnsFallbackFilterDomain, placeholder: "域名")
             }
-            Section("缓存") {
-                Picker("缓存算法", selection: $settingsStore.dnsCacheAlgorithm) {
-                    Text("LRU").tag("lru")
-                    Text("ARC").tag("arc")
+            // FlClash dns.dart: per-profile DNS overrides live in
+            // the override editor, not on this global page.
+            Section("按订阅覆盖") {
+                NavigationLink("按订阅覆盖 DNS 设置") {
+                    OverrideView()
                 }
-                Stepper("缓存上限：\(settingsStore.dnsCacheMaxSize) 条", value: $settingsStore.dnsCacheMaxSize, in: 0...65536, step: 256)
+                Text("每个订阅可以在这里单独覆盖 DNS；没有覆盖的订阅用上面的全局设置。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             Section {
                 Button("保存并应用") {

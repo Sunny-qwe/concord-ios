@@ -27,6 +27,7 @@ import SwiftUI
 struct TunOverrideView: View {
     @ObservedObject private var store = OverrideStore.shared
     @EnvironmentObject private var profileStore: ProfileStore
+    @EnvironmentObject private var settingsStore: SettingsStore
     @State private var scope: String? = nil
     @State private var copied = false
 
@@ -48,6 +49,30 @@ struct TunOverrideView: View {
                     }
                 }
                 .pickerStyle(.menu)
+            }
+            // MuYu gates the congestion-controller field on the
+            // core's capability (tunCongestionAvailable): the check
+            // lives here on the TUN page; full per-field gating is
+            // in OverrideStore / OverrideView.
+            Section("拥塞控制支持") {
+                Button("检查核心是否支持拥塞控制") {
+                    Task { await settingsStore.refreshDeveloperInfo() }
+                }
+                if let capabilities = settingsStore.capabilities {
+                    if capabilities.congestionControllers.isEmpty {
+                        Text("核心没有报告可用的拥塞控制算法：这里的拥塞控制覆盖可能不会生效。")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("核心支持的拥塞控制算法：\(capabilities.congestionControllers.joined(separator: "、"))。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("点上面按钮向核心查询支持的拥塞控制算法。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             OverrideSectionEditor(section: .tun, scope: $scope)
             Section("YAML 预览") {

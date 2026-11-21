@@ -34,6 +34,103 @@ final class TrafficStore: ObservableObject {
     @Published var services: [ConcordServiceItem] = []
     @Published var isProbingServices = false
     @Published var servicesError: String?
+    /// Probe-start hold (upstream probe_start_hold.dart): a
+    /// service/IP-probe result held through a start reads as
+    /// still-checking, without showing the result it replaced. The
+    /// dashboard sets this when the VPN starts; the next probe
+    /// clears it when it lands, so a stale pre-start result never
+    /// flashes after a restart.
+    @Published var servicesHeld = false
+
+    func holdServices() {
+        servicesHeld = true
+    }
+
+    // MARK: - Service order + disabled (upstream
+    // serviceOrder / disabledServices, providers/service_status.dart)
+    //
+    // The service targets are the core's registry
+    // (concordProbeServiceNames). The order and the disabled set
+    // are UI-side settings persisted here; an empty enabled list
+    // means "all enabled" (upstream enabledServiceTargets falls
+    // back to all targets when everything is disabled).
+
+    private static let serviceOrderKey = "ConcordiOS.serviceOrder.v1"
+    private static let disabledServicesKey = "ConcordiOS.serviceDisabled.v1"
+
+    /// The stored order, repaired: unknown names dropped, names
+    /// added by later versions appended at the end.
+    var orderedServiceNames: [String] {
+        var order = UserDefaults.standard.stringArray(forKey: Self.serviceOrderKey) ?? []
+        if order.isEmpty { order = concordProbeServiceNames }
+        order = order.filter { concordProbeServiceNames.contains($0) }
+        for name in concordProbeServiceNames where !order.contains(name) {
+            order.append(name)
+        }
+        return order
+    }
+
+    func setServiceOrder(_ order: [String]) {
+        UserDefaults.standard.set(order, forKey: Self.serviceOrderKey)
+        objectWillChange.send()
+    }
+
+    var disabledServices: Set<String> {
+        Set(UserDefaults.standard.stringArray(forKey: Self.disabledServicesKey) ?? [])
+    }
+
+    func setServiceDisabled(_ name: String, disabled: Bool) {
+        var set = disabledServices
+        if disabled { set.insert(name) } else { set.remove(name) }
+        UserDefaults.standard.set(Array(set), forKey: Self.disabledServicesKey)
+        objectWillChange.send()
+    }
+
+    var enabledServiceNames: [String] {
+        let enabled = orderedServiceNames.filter { !disabledServices.contains($0) }
+        return enabled.isEmpty ? orderedServiceNames : enabled
+    }
+
+    // MARK: - Today traffic (MuYu TrafficStatisticsCard)
+    //
+    // The core's totals are cumulative since the core started, so
+    // "today" is current totals minus a day-start baseline kept in
+    // UserDefaults. The baseline resets at midnight and whenever
+    // the totals drop below it (core restart / traffic.reset).
+
+    private static let todayDateKey = "ConcordiOS.traffic.today.date.v1"
+    private static let todayUpKey = "ConcordiOS.traffic.today.up.v1"
+    private static let todayDownKey = "ConcordiOS.traffic.today.down.v1"
+
+    private static func todayString() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
+    }
+
+    private func maintainTodayBaseline() {
+        let today = Self.todayString()
+        let storedDate = UserDefaults.standard.string(forKey: Self.todayDateKey)
+        let storedUp = UserDefaults.standard.integer(forKey: Self.todayUpKey)
+        let storedDown = UserDefaults.standard.integer(forKey: Self.todayDownKey)
+        if storedDate != today
+            || current.totalUp < storedUp
+            || current.totalDown < storedDown {
+            UserDefaults.standard.set(today, forKey: Self.todayDateKey)
+            UserDefaults.standard.set(current.totalUp, forKey: Self.todayUpKey)
+            UserDefaults.standard.set(current.totalDown, forKey: Self.todayDownKey)
+        }
+    }
+
+    var todayUp: Int64 {
+        guard UserDefaults.standard.string(forKey: Self.todayDateKey) == Self.todayString() else { return 0 }
+        return max(0, current.totalUp - UserDefaults.standard.integer(forKey: Self.todayUpKey))
+    }
+
+    var todayDown: Int64 {
+        guard UserDefaults.standard.string(forKey: Self.todayDateKey) == Self.todayString() else { return 0 }
+        return max(0, current.totalDown - UserDefaults.standard.integer(forKey: Self.todayDownKey))
+    }
     /// Live up/down per proxy and group name (MuYu
     /// nodeSpeedsProvider), from the same snapshots as the
     /// dashboard speeds. A reader takes the selected node's entry,
@@ -115,6 +212,7 @@ final class TrafficStore: ObservableObject {
             current = traffic
             history.append(TrafficPoint(date: Date(), up: traffic.up, down: traffic.down))
             if history.count > maxHistory { history.removeFirst(history.count - maxHistory) }
+            maintainTodayBaseline()
             consecutiveRefreshFailures = 0
             lastError = nil
         } catch {
@@ -232,13 +330,38 @@ final class TrafficStore: ObservableObject {
     /// one proxy (probe.services). The status strings are the core's
     /// contract ("available", "blocked", "restricted", "timeout",
     /// "failed", … — upstream crates/engine/src/probe/services.rs).
+    /// `names` defaults to the enabled services in the user's order
+    /// (TrafficStore.enabledServiceNames); pass an explicit list to
+    /// check a subset. A finished probe clears the probe-start hold.
     @MainActor
-    func probeServices(proxy: String) async {
+    func probeServices(proxy: String, names: [String]? = nil) async {
         guard !isProbingServices else { return }
         isProbingServices = true
-        defer { isProbingServices = false }
+        defer {
+            isProbingServices = false
+            servicesHeld = false
+        }
         do {
-            services = try await client.probeServices(proxy: proxy)
+            services = try await client.probeServices(proxy: proxy, names: names ?? enabledServiceNames)
+            servicesError = nil
+        } catch {
+            servicesError = error.localizedDescription
+        }
+    }
+
+    /// Re-checks one service and merges the result into the current
+    /// list by name (the service sheet's per-row check): the full
+    /// list is not replaced by a single item.
+    @MainActor
+    func probeService(proxy: String, name: String) async {
+        do {
+            let fresh = try await client.probeServices(proxy: proxy, names: [name])
+            guard let item = fresh.first else { return }
+            if let index = services.firstIndex(where: { $0.name == name }) {
+                services[index] = item
+            } else {
+                services.append(item)
+            }
             servicesError = nil
         } catch {
             servicesError = error.localizedDescription

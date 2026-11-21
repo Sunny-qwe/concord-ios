@@ -46,9 +46,18 @@ enum ProfileNavDestination: Hashable {
     case customSubscription(UUID)
     case extend(UUID)
     case edit(UUID)
+    case preview(UUID)
 }
 
 struct ProfilesView: View {
+    /// Picker mode (FlClash profiles.dart:32-38,108-131): as a
+    /// dashboard sheet the page hides all bar actions and the add
+    /// menu and skips reveal-selected. Used from the dashboard
+    /// profile detail (dashboard/widgets/profile_detail.dart:36).
+    let picker: Bool
+
+    init(picker: Bool = false) { self.picker = picker }
+
     @EnvironmentObject private var profileStore: ProfileStore
     @StateObject private var customStore = CustomSubscriptionStore()
     @State private var navPath: [ProfileNavDestination] = []
@@ -58,8 +67,9 @@ struct ProfilesView: View {
     @State private var showFileImporter = false
     @State private var showReorder = false
     @State private var reorderDraft: [Profile] = []
-    @State private var previewProfile: Profile?
     @State private var qrProfile: Profile?
+    @State private var renameTarget: CustomSubscription?
+    @State private var renameText = 
     @State private var exportURL: URL?
     @State private var deleteTarget: Profile?
     @State private var updatingIDs: Set<UUID> = []
@@ -93,7 +103,7 @@ struct ProfilesView: View {
                     .padding(16)
                 }
                 .onAppear {
-                    if let active = profileStore.activeProfile {
+                    if !picker, let active = profileStore.activeProfile {
                         scrollProxy.scrollTo(active.id, anchor: .center)
                     }
                 }
@@ -112,19 +122,21 @@ struct ProfilesView: View {
                     Text("title.profiles".l10n)
                         .font(.system(size: 24, weight: .semibold))
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { navPath.append(.nodeSources) } label: {
-                        Image(systemName: "globe")
+                if !picker {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { navPath.append(.nodeSources) } label: {
+                            Image(systemName: "globe")
+                        }
+                        .accessibilityLabel("节点来源")
                     }
-                    .accessibilityLabel("节点来源")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { navPath.append(.visualConfig) } label: {
-                        Image(systemName: "slider.horizontal.3")
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { navPath.append(.visualConfig) } label: {
+                            Image(systemName: "slider.horizontal.3")
+                        }
+                        .accessibilityLabel("可视化配置")
                     }
-                    .accessibilityLabel("可视化配置")
                 }
-                if hasProfiles {
+                if hasProfiles && !picker {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { Task { await updateAll() } } label: {
                             Image(systemName: "arrow.clockwise")
@@ -171,6 +183,12 @@ struct ProfilesView: View {
                     } else {
                         ContentUnavailableView("订阅已删除", systemImage: "trash")
                     }
+                case .preview(let id):
+                    if let profile = profileStore.profiles.first(where: { $0.id == id }) {
+                        ProfilePreviewView(profile: profile)
+                    } else {
+                        ContentUnavailableView("订阅已删除", systemImage: "trash")
+                    }
                 }
             }
             .sheet(isPresented: $showUnifiedImport, onDismiss: { scannedText = nil }) {
@@ -184,9 +202,6 @@ struct ProfilesView: View {
             }
             .sheet(isPresented: $showReorder) {
                 reorderSheet
-            }
-            .sheet(item: $previewProfile) { profile in
-                ProfilePreviewView(profile: profile)
             }
             .sheet(item: $qrProfile) { profile in
                 ProfileQRCodeView(profile: profile)
@@ -225,6 +240,28 @@ struct ProfilesView: View {
             .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.yaml, UTType.plainText]) { result in
                 handlePickedFile(result)
             }
+            .alert("重命名", isPresented: Binding(
+                get: { renameTarget != nil },
+                set: { if !$0 { renameTarget = nil } }
+            )) {
+                TextField("订阅名称", text: $renameText)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("保存") {
+                    if let target = renameTarget {
+                        let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !name.isEmpty {
+                            var copy = target
+                            copy.name = name
+                            customStore.update(copy)
+                        }
+                    }
+                    renameTarget = nil
+                }
+                Button("取消", role: .cancel) { renameTarget = nil }
+            } message: {
+                Text("为自定义订阅改一个名字。")
+            }
             // One alert for the whole page (two .alert modifiers on
             // the same view fight each other): it shows either the
             // delete confirmation or a plain message alert.
@@ -257,7 +294,7 @@ struct ProfilesView: View {
                 }
             } message: {
                 if let profile = deleteTarget {
-                    Text("确定删除当前\(profile.name)吗？")
+                    Text(deleteMessage(for: profile))
                 } else {
                     Text(alertMessage ?? "")
                 }
@@ -395,6 +432,13 @@ struct ProfilesView: View {
                 Label("编辑", systemImage: "square.and.pencil")
                     .font(.subheadline)
             }
+            Button {
+                renameTarget = sub
+                renameText = sub.name
+            } label: {
+                Label("重命名", systemImage: "pencil")
+                    .font(.subheadline)
+            }
             Button(role: .destructive) { customStore.delete(sub) } label: {
                 Label("删除", systemImage: "trash")
                     .font(.subheadline)
@@ -408,10 +452,23 @@ struct ProfilesView: View {
         } label: {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(profile.name)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
+                    // FlClash ChipTitle (profiles.dart:562-567):
+                    // expiry renders inline with the title, not as
+                    // a separate line under the subtitle.
+                    HStack(spacing: 6) {
+                        Text(profile.name)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        if let info = profile.subscriptionInfo,
+                           profile.kind == .url,
+                           let expiry = info.expiryLine() {
+                            Text(expiry.text)
+                                .font(.footnote)
+                                .foregroundStyle(expiry.warning ? .red : .secondary)
+                                .lineLimit(1)
+                        }
+                    }
                     // FlClash card subtitle: the usage line when
                     // the provider sent subscription-userinfo, else
                     // the 远程 / 本地 fallback.
@@ -419,14 +476,6 @@ struct ProfilesView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    if let info = profile.subscriptionInfo,
-                       profile.kind == .url,
-                       let expiry = info.expiryLine() {
-                        Text(expiry.text)
-                            .font(.footnote)
-                            .foregroundStyle(expiry.warning ? .red : .secondary)
-                            .lineLimit(1)
-                    }
                     // FlClash _GroupsCountChip (profiles.dart:585)
                     // shows ONLY on custom-type profile cards, and
                     // this app has no custom ProfileKind — so no
@@ -476,7 +525,7 @@ struct ProfilesView: View {
                     // FlClash profiles.dart:532-540: 运行时配置 opens
                     // the merged-config preview (the 生效配置 tab).
                     Button {
-                        previewProfile = profile
+                        navPath.append(.preview(profile.id))
                     } label: {
                         Label("运行时配置", systemImage: "eye")
                             .font(.subheadline)
@@ -510,8 +559,13 @@ struct ProfilesView: View {
         NavigationStack {
             List {
                 ForEach(reorderDraft) { profile in
-                    Text(profile.name)
-                        .font(.headline)
+                    HStack {
+                        Text(profile.name)
+                            .font(.headline)
+                        Spacer()
+                        Image(systemName: "line.3.horizontal")
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .onMove { from, to in
                     reorderDraft.move(fromOffsets: from, toOffset: to)
@@ -578,6 +632,22 @@ struct ProfilesView: View {
             alertMessage = "更新失败（\(failures.count) 个）：\n"
                 + failures.map { "· \($0.name)：\($0.error)" }.joined(separator: "\n")
         }
+    }
+
+    /// Custom subscriptions that use this profile as a proxy
+    /// provider (FlClash profilesAction.providerUsers): deleting
+    /// the profile breaks their provider reference, so the confirm
+    /// names them (profiles.dart:288-310 providerInUse).
+    private func providerUsers(of profile: Profile) -> [String] {
+        customStore.subscriptions
+            .filter { $0.proxyProviders.contains(where: { $0.name == profile.name }) }
+            .map { $0.name }
+    }
+
+    private func deleteMessage(for profile: Profile) -> String {
+        let users = providerUsers(of: profile)
+        guard !users.isEmpty else { return "确定删除当前\(profile.name)吗？" }
+        return "「\(profile.name)」正被以下自定义订阅用作提供方：\(users.joined(separator: "、"))。删除后这些订阅的提供方引用会失效。确定删除当前\(profile.name)吗？"
     }
 
     /// Card subtitle for one profile: "已用 X / 共 Y" when the
@@ -720,25 +790,70 @@ struct ProfilePreviewView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var builtText: String?
     @State private var previewError: String?
+    /// Find + copy affordances (FlClash preview IS an EditorPage,
+    /// preview.dart:12-21 — read-only in practice, but with the
+    /// editor's find/selection/copy surface; ours was a bare Text).
+    @State private var findText = ""
+    @State private var copied = false
+
+    private var matchCount: Int {
+        guard let built = builtText, !findText.isEmpty else { return 0 }
+        return built.components(separatedBy: findText).count - 1
+    }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                if let error = previewError {
-                    Text(error).font(.footnote).foregroundStyle(.red).padding()
-                } else if let built = builtText {
-                    Text(built)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                } else {
-                    ProgressView().padding()
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("在配置中查找", text: $findText)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                    if !findText.isEmpty {
+                        Text(matchCount > 0 ? "\(matchCount) 处" : "无匹配")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Button { findText = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .font(.footnote.weight(.semibold))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                ScrollView {
+                    if let error = previewError {
+                        Text(error).font(.footnote).foregroundStyle(.red).padding()
+                    } else if let built = builtText {
+                        Text(built)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                    } else {
+                        ProgressView().padding()
+                    }
                 }
             }
             .background(ConcordTheme.pageBackground)
             .navigationTitle(profile.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(copied ? "已复制" : "复制") {
+                        if let built = builtText {
+                            UIPasteboard.general.string = built
+                            copied = true
+                        }
+                    }
+                    .disabled(builtText == nil)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }
                 }

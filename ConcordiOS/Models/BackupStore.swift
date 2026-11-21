@@ -388,6 +388,10 @@ final class BackupStore: ObservableObject {
         "ConcordiOS.proxies.hideTimeout",
         // User-imported group icon pack (Settings → 图标源, v0.2.53).
         "ConcordiOS.iconPack.v1",
+        // User-imported icon sets (Settings → 图标集, v0.2.54).
+        "ConcordiOS.iconSet.imported.v1",
+        // Restore strategy chosen on the backup page (v0.2.54).
+        "ConcordiOS.backup.restoreStrategy",
     ]
 
     /// Keys whose UserDefaults value is a String (the rest are Data
@@ -414,6 +418,7 @@ final class BackupStore: ObservableObject {
         "ConcordiOS.proxies.layout",
         "ConcordiOS.proxies.cardType",
         "ConcordiOS.proxies.iconStyle",
+        "ConcordiOS.backup.restoreStrategy",
     ]
 
     /// Keys whose value is a Data blob (Codable store snapshots).
@@ -425,11 +430,51 @@ final class BackupStore: ObservableObject {
         "ConcordiOS.ntp.v1",
         "ConcordiOS.overrides.v1",
         "ConcordiOS.ondemand.v1",
+        "ConcordiOS.iconSet.imported.v1",
     ]
 
     @Published var statusMessage: String?
     @Published var lastError: String?
     @Published var isWorking = false
+
+    /// How a restore treats data the backup does not contain
+    /// (FlClash: 备份与恢复 -> 恢复选项；lib/database/database.dart
+    /// setAllWithBatch = replace, putAll = merge).
+    enum RestoreStrategy: String, CaseIterable, Identifiable {
+        /// Merge: files and settings not in the backup are kept.
+        case compatible
+        /// Replace: the backup replaces everything in scope.
+        case override
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .compatible: return "兼容模式"
+            case .override: return "覆盖"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .compatible: return "合并：备份里没有的配置和设置保留原样。"
+            case .override: return "替换：按备份内容完全替换恢复范围里的数据。"
+            }
+        }
+    }
+
+    static let restoreStrategyKey = "ConcordiOS.backup.restoreStrategy"
+
+    /// The restore strategy chosen on the backup page; persisted so
+    /// the choice (and the backup itself) survives reinstalls.
+    @Published var restoreStrategy: RestoreStrategy {
+        didSet { UserDefaults.standard.set(restoreStrategy.rawValue, forKey: Self.restoreStrategyKey) }
+    }
+
+    init() {
+        let raw = UserDefaults.standard.string(forKey: Self.restoreStrategyKey)
+        self.restoreStrategy = RestoreStrategy(rawValue: raw ?? "") ?? .compatible
+    }
 
     struct Manifest: Codable {
         let format: String
@@ -555,7 +600,7 @@ final class BackupStore: ObservableObject {
         var id: String { rawValue }
     }
 
-    func restore(from pickedURL: URL, scope: RestoreScope = .all) async throws -> String {
+    func restore(from pickedURL: URL, scope: RestoreScope = .all, strategy: RestoreStrategy = .compatible) async throws -> String {
         let accessing = pickedURL.startAccessingSecurityScopedResource()
         defer { if accessing { pickedURL.stopAccessingSecurityScopedResource() } }
         let zipData: Data
@@ -630,17 +675,25 @@ final class BackupStore: ObservableObject {
         }
         do {
             // Replace the container contents with the staged files.
+            // Override wipes the scope first (the old behaviour);
+            // compatible merges — backup files are written over the
+            // existing ones and anything the backup does not contain
+            // is kept (FlClash putAll).
             switch scope {
             case .all:
-                let contents = try FileManager.default.contentsOfDirectory(atPath: container.path)
-                for item in contents {
-                    try FileManager.default.removeItem(at: container.appendingPathComponent(item))
+                if strategy == .override {
+                    let contents = try FileManager.default.contentsOfDirectory(atPath: container.path)
+                    for item in contents {
+                        try FileManager.default.removeItem(at: container.appendingPathComponent(item))
+                    }
                 }
             case .profilesOnly:
-                for item in ["profiles", ConfigStore.configFileName] {
-                    let target = container.appendingPathComponent(item)
-                    if FileManager.default.fileExists(atPath: target.path) {
-                        try FileManager.default.removeItem(at: target)
+                if strategy == .override {
+                    for item in ["profiles", ConfigStore.configFileName] {
+                        let target = container.appendingPathComponent(item)
+                        if FileManager.default.fileExists(atPath: target.path) {
+                            try FileManager.default.removeItem(at: target)
+                        }
                     }
                 }
             }
@@ -653,20 +706,22 @@ final class BackupStore: ObservableObject {
             }
             // Restore the UserDefaults blobs (profiles-only restores
             // just the profile list). Keys missing from the backup
-            // are removed ONLY for the original four keys: older
-            // backups predate the other keys, and deleting them on
-            // a restore from an old backup would wipe settings the
-            // user still has.
+            // are removed ONLY for the original four keys and ONLY
+            // under the override strategy: older backups predate the
+            // other keys, and deleting them on a restore from an old
+            // backup would wipe settings the user still has — and a
+            // compatible restore keeps everything the backup does
+            // not contain by definition.
             let defaultsKeys: [String] = {
                 switch scope {
                 case .all: return Self.backupUserDefaultsKeys
                 case .profilesOnly: return ["ConcordiOS.profiles.v1"]
                 }
             }()
-            let removableKeys: Set<String> = [
+            let removableKeys: Set<String> = strategy == .override ? [
                 "ConcordiOS.profiles.v1", "ConcordiOS.settings.v1",
                 "ConcordiOS.theme.v1", "ConcordiOS.mode.v1",
-            ]
+            ] : []
             for key in defaultsKeys {
                 if let base64 = defaultsBackup.plistValues[key],
                    let plistData = Data(base64Encoded: base64),
@@ -699,11 +754,12 @@ final class BackupStore: ObservableObject {
                 NSLocalizedDescriptionKey: "恢复中途失败，已恢复到恢复前状态：\(error.localizedDescription)"])
         }
         try? FileManager.default.removeItem(at: safetyDir)
+        let strategyNote = strategy == .compatible ? "备份里没有的数据保留原样。" : "恢复范围里的数据已按备份完全替换。"
         switch scope {
         case .all:
-            return "已恢复 \(filesToRestore.count) 个文件（备份于 \(Self.backupDateString(manifest.createdAt))）。各页面会自动重新加载；VPN 正在运行时建议重启一次 VPN，让核心用恢复后的配置重新启动。"
+            return "已恢复 \(filesToRestore.count) 个文件（备份于 \(Self.backupDateString(manifest.createdAt))）。\(strategyNote)各页面会自动重新加载；VPN 正在运行时建议重启一次 VPN，让核心用恢复后的配置重新启动。"
         case .profilesOnly:
-            return "已恢复配置：\(filesToRestore.count) 个配置文件（备份于 \(Self.backupDateString(manifest.createdAt))）。设置、主题、MITM 模块等未动；VPN 正在运行时建议重启一次 VPN。"
+            return "已恢复配置：\(filesToRestore.count) 个配置文件（备份于 \(Self.backupDateString(manifest.createdAt))）。\(strategyNote)设置、主题、MITM 模块等未动；VPN 正在运行时建议重启一次 VPN。"
         }
     }
 

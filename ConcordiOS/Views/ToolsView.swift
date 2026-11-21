@@ -61,6 +61,13 @@ enum ToolsDestination: Hashable {
     case about
 }
 
+/// Posted when the Tools tab is re-tapped while already selected:
+/// upstream ToolsView jumps its scroll controller to 0 on
+/// re-selection (tools.dart:41-48).
+extension Notification.Name {
+    static let toolsScrollToTop = Notification.Name("ConcordiOS.toolsScrollToTop")
+}
+
 struct ToolsView: View {
     @AppStorage("ConcordiOS.appLanguage") private var appLanguage = ""
     @EnvironmentObject private var settingsStore: SettingsStore
@@ -90,8 +97,9 @@ struct ToolsView: View {
 
     var body: some View {
         NavigationStack(path: $navPath) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 28) {
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 28) {
                     // FlClash pageTitle is 24pt semibold on a tab
                     // page (scaffold.dart:780); the 18pt bold here
                     // was the v0.2.50-era guess.
@@ -168,9 +176,16 @@ struct ToolsView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 20)
                 .padding(.bottom, 12)
+                .id("toolsTop")
+                }
+                .background(ConcordTheme.pageBackground)
+                .toolbar(.hidden, for: .navigationBar)
+                .onReceive(NotificationCenter.default.publisher(for: .toolsScrollToTop)) { _ in
+                    // Re-tap on the Tools tab (M0-1/T-M1): jump back
+                    // to the top of the page.
+                    withAnimation { scrollProxy.scrollTo("toolsTop", anchor: .top) }
+                }
             }
-            .background(ConcordTheme.pageBackground)
-            .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: ToolsDestination.self) { destination in
                 switch destination {
                 case .requests: ConnectionsView()
@@ -185,8 +200,8 @@ struct ToolsView: View {
                 case .backup: BackupView()
                 case .diagnostics: DiagnosticsView(navigate: { navPath.append($0) })
                 case .diagnosticsHealth: NetworkHealthView()
-                case .diagnosticsAudit: ModuleAuditView()
-                case .diagnosticsPreflight: ConfigPreflightView()
+                case .diagnosticsAudit: ModuleAuditView(navigate: { navPath.append($0) })
+                case .diagnosticsPreflight: ConfigPreflightView(navigate: { navPath.append($0) })
                 case .config: AdvancedConfigView(navigate: { navPath.append($0) })
                 case .advancedNetwork: NetworkSettingsView()
                 case .advancedDns: DnsSettingsView()

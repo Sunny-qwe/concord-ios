@@ -45,9 +45,37 @@ struct MitmModulesView: View {
     @State private var refetchingNames: Set<String> = []
     /// Per-module re-fetch failure, shown inline in the expanded row.
     @State private var refetchErrorByName: [String: String] = [:]
+    /// MuYu's restart tip (showMitmRestartTip): a module was
+    /// switched while the VPN runs with MITM on — the change is
+    /// re-applied live, but restarting the tunnel is the sure path.
+    /// Dismissed with ×, or by restarting.
+    @State private var showRestartTip = false
+    @State private var isRestartingVpn = false
 
     var body: some View {
         List {
+            if showRestartTip {
+                Section {
+                    HStack {
+                        Text("VPN 相关配置已改动，点击重启")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
+                            Task { await restartVpn() }
+                        }
+                        .font(.caption2)
+                        .disabled(isRestartingVpn)
+                        Button(action: { showRestartTip = false }) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .foregroundStyle(.secondary)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("不再提示")
+                    }
+                }
+            }
             Section {
                 Text("模块把一组规则、重写、脚本和解密域名打包在一起，整体开关、整体更新。支持 Surge 模块、Loon 插件、Quantumult X 片段和 Stash 覆写。模块内容会在下次启动 VPN 时生效；VPN 运行时改动会立即重新应用。")
                     .font(.caption2)
@@ -254,7 +282,31 @@ struct MitmModulesView: View {
             showConsentAlert = true
             return
         }
-        Task { await moduleStore.setEnabled(module, on: on) }
+        Task {
+            await moduleStore.setEnabled(module, on: on)
+            showRestartTipIfNeeded()
+        }
+    }
+
+    /// MuYu showMitmRestartTip's gate, on iOS: only when the VPN
+    /// is running and MITM is on (the tip's tap restarts it).
+    private func showRestartTipIfNeeded() {
+        if tunnelManager.isRunning && settingsStore.mitmEnabled {
+            showRestartTip = true
+        }
+    }
+
+    /// Restarts the tunnel (stop, then start) and clears the tip.
+    private func restartVpn() async {
+        isRestartingVpn = true
+        defer { isRestartingVpn = false }
+        await tunnelManager.stop()
+        do {
+            try await tunnelManager.start()
+            showRestartTip = false
+        } catch {
+            moduleStore.lastError = "重启 VPN 失败：\(error.localizedDescription)"
+        }
     }
 
     /// Reads the core's per-module status (mitm.moduleStatus). The
@@ -334,10 +386,14 @@ struct MitmModulesView: View {
         guard !lines.isEmpty else { return }
         urlText = ""
         let beforeIDs = Set(moduleStore.modules.map(\.id))
+        // Audit B41: dedup on the URL the link names, not the raw
+        // line — an install link (surge://…) never equals the
+        // http(s) URL the import stores, so it imported twice.
         let existingURLs = Set(moduleStore.modules.compactMap(\.url))
         var imported = 0
         for line in lines {
-            guard !existingURLs.contains(line) else { continue }
+            let extracted = mitmModuleUrls(line).first ?? line
+            guard !existingURLs.contains(extracted) else { continue }
             await moduleStore.addFromURL(line)
             if moduleStore.lastError == nil { imported += 1 }
         }
@@ -673,6 +729,15 @@ struct MitmModuleDetailView: View {
     @State private var validateIssues: [String: [ConcordMitmIssue]]?
     @State private var isValidating = false
     @State private var coreContent: MitmModuleContent?
+    /// MuYu's restart tip (see the list view): shown after the
+    /// module is switched while the VPN runs with MITM on.
+    @State private var showRestartTip = false
+    @State private var isRestartingVpn = false
+    /// Attachments (local modules only): file import + detach
+    /// confirm state.
+    @State private var showAttachmentImporter = false
+    @State private var detachAttachment: String?
+    @State private var showDetachConfirm = false
 
     private var module: MitmModule? {
         moduleStore.modules.first { $0.id == moduleId }
@@ -690,6 +755,28 @@ struct MitmModuleDetailView: View {
 
     var body: some View {
         List {
+            if showRestartTip {
+                Section {
+                    HStack {
+                        Text("VPN 相关配置已改动，点击重启")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
+                            Task { await restartVpn() }
+                        }
+                        .font(.caption2)
+                        .disabled(isRestartingVpn)
+                        Button(action: { showRestartTip = false }) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .foregroundStyle(.secondary)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("不再提示")
+                    }
+                }
+            }
             if let module {
                 Section {
                     // FlClash mitm_modules.dart detail build: the
@@ -710,22 +797,58 @@ struct MitmModuleDetailView: View {
                     }
                 }
 
+                // FlClash mitm_modules.dart:629-633: local-file
+                // attachments, local modules only.
+                if module.url == nil {
+                    Section("本地附件") {
+                        let attachments = moduleStore.attachments(of: module)
+                        if attachments.isEmpty {
+                            Text("还没有本地附件。Map Local 行里 data=引用的文件可以先贴在这里，模块会用它。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(attachments, id: \.self) { name in
+                            HStack {
+                                Text(name)
+                                    .font(.system(.caption, design: .monospaced))
+                                Spacer()
+                                Button(role: .destructive) {
+                                    detachAttachment = name
+                                    showDetachConfirm = true
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundStyle(.red)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("移除附件 \(name)")
+                            }
+                        }
+                        Button("添加本地文件") { showAttachmentImporter = true }
+                        Text("附件按内容命名存在核心资源目录；Map Local 行用 data=文件名引用它。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if let error = moduleStore.lastError {
+                            Text(error).font(.caption2).foregroundStyle(.red)
+                        }
+                    }
+                }
+
                 if let content = shownContent {
                     Section("解析出的内容") {
                         if content.coreParsed {
                             coreNote(content: content)
                         }
-                        countRow("解密域名", content.insertedHostname.count + content.hostname.count)
-                        countRow("URL 重写", content.urlRewrite.count)
-                        countRow("头重写", content.headerRewrite.count)
-                        countRow("正文重写", content.bodyRewrite.count)
-                        countRow("本地映射", content.mapLocal.count)
-                        countRow("请求体模拟", content.requestBodyMock.count)
-                        countRow("跳过验证域名", content.skipVerifyHostname.count)
-                        countRow("客户端来源", content.clientSourceAddress.count)
-                        countRow("脚本", content.script.count)
-                        countRow("规则", content.rules.count)
-                        countRow("待下载资源", content.resourceUrls.count)
+                        linesRow(title: "解密域名", key: "hostname", section: "mitm", lines: content.insertedHostname + content.hostname, content: content)
+                        linesRow(title: "URL 重写", key: "url-rewrite", section: "url rewrite", lines: content.urlRewrite, content: content)
+                        linesRow(title: "头重写", key: "header-rewrite", section: "header rewrite", lines: content.headerRewrite, content: content)
+                        linesRow(title: "正文重写", key: "body-rewrite", section: "body rewrite", lines: content.bodyRewrite, content: content)
+                        linesRow(title: "本地映射", key: "map-local", section: "map local", lines: content.mapLocal, content: content)
+                        linesRow(title: "请求体模拟", key: "request-body-mock", section: "request body mock", lines: content.requestBodyMock, content: content)
+                        linesRow(title: "跳过验证域名", key: nil, section: "mitm", lines: content.skipVerifyHostname, content: content)
+                        linesRow(title: "客户端来源", key: nil, section: "mitm", lines: content.clientSourceAddress, content: content)
+                        linesRow(title: "脚本", key: "script", section: "script", lines: content.script, content: content)
+                        linesRow(title: "规则", key: "rules", section: "rule", lines: content.rules, content: content)
+                        linesRow(title: "待下载资源", key: nil, section: "", lines: content.resourceUrls.sorted(), content: content)
                         if !content.skipped.isEmpty {
                             NavigationLink("跳过的行（\(content.skipped.count)）") {
                                 MitmModuleSkippedView(skipped: content.skipped)
@@ -861,6 +984,31 @@ struct MitmModuleDetailView: View {
                 )
             }
         }
+        .fileImporter(isPresented: $showAttachmentImporter, allowedContentTypes: [UTType.data]) { result in
+            switch result {
+            case .success(let url):
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                guard let module, let data = try? Data(contentsOf: url) else {
+                    moduleStore.lastError = "读取附件失败：不是可读文件"
+                    return
+                }
+                Task { await moduleStore.attachFile(module, fileName: url.lastPathComponent, data: data) }
+            case .failure(let error):
+                moduleStore.lastError = "选择文件失败：\(error.localizedDescription)"
+            }
+        }
+        .alert("移除附件", isPresented: $showDetachConfirm) {
+            Button("取消", role: .cancel) { detachAttachment = nil }
+            Button("移除", role: .destructive) {
+                if let module, let name = detachAttachment {
+                    detachAttachment = nil
+                    Task { await moduleStore.detachAttachment(module, name: name) }
+                }
+            }
+        } message: {
+            Text("移除附件“\(detachAttachment ?? "")”？引用它的 Map Local 行会失效。")
+        }
         .alert("删除模块", isPresented: $showDeleteConfirm) {
             Button("取消", role: .cancel) {}
             Button("删除", role: .destructive) {
@@ -877,12 +1025,12 @@ struct MitmModuleDetailView: View {
         .alert(detailConsentTitle, isPresented: $showConsent) {
             Button("取消", role: .cancel) {
                 if let module {
-                    Task { await moduleStore.answerConsent(module, agreed: false) }
+                    Task { await moduleStore.answerConsent(module, agreed: false, content: shownContent) }
                 }
             }
             Button("启用") {
                 if let module {
-                    Task { await moduleStore.answerConsent(module, agreed: true) }
+                    Task { await moduleStore.answerConsent(module, agreed: true, content: shownContent) }
                 }
             }
         } message: {
@@ -890,23 +1038,116 @@ struct MitmModuleDetailView: View {
         }
     }
 
-    /// The prompt for this module (title / message), like the list's.
+    /// The prompt for this module (title / message), like the
+    /// list's — but from the core's parse when the tunnel is
+    /// running, so the declared-script count is the core's (audit
+    /// B42; the list keeps the Swift parser's).
     private var detailConsentTitle: String {
-        module.flatMap { moduleStore.consentPrompt(for: $0)?.title } ?? "启用此模块？"
+        module.flatMap { moduleStore.consentPrompt(for: $0, content: shownContent)?.title } ?? "启用此模块？"
     }
 
     private var detailConsentMessage: String {
-        module.flatMap { moduleStore.consentPrompt(for: $0)?.message } ?? ""
+        module.flatMap { moduleStore.consentPrompt(for: $0, content: shownContent)?.message } ?? ""
     }
 
     /// The detail page's own enable toggle, with the same consent
     /// gate as the list row.
     private func toggleDetail(_ module: MitmModule, on: Bool) {
-        if on, moduleStore.consentPrompt(for: module) != nil {
+        if on, moduleStore.consentPrompt(for: module, content: shownContent) != nil {
             showConsent = true
             return
         }
-        Task { await moduleStore.setEnabled(module, on: on) }
+        Task {
+            await moduleStore.setEnabled(module, on: on)
+            showRestartTipIfNeeded()
+        }
+    }
+
+    /// MuYu showMitmRestartTip's gate, on iOS: only when the VPN
+    /// is running and MITM is on (the tip's tap restarts it).
+    private func showRestartTipIfNeeded() {
+        if tunnelManager.isRunning && settingsStore.mitmEnabled {
+            showRestartTip = true
+        }
+    }
+
+    /// Restarts the tunnel (stop, then start) and clears the tip.
+    private func restartVpn() async {
+        isRestartingVpn = true
+        defer { isRestartingVpn = false }
+        await tunnelManager.stop()
+        do {
+            try await tunnelManager.start()
+            showRestartTip = false
+        } catch {
+            moduleStore.lastError = "重启 VPN 失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// One MITM list as an openable row (upstream _linesItem):
+    /// the count, or how many lines are flagged invalid out of the
+    /// count, opening the list's lines. Empty lists stay a plain
+    /// count row. The script list's lines get a run button, like
+    /// upstream's per-line run menu.
+    @ViewBuilder
+    private func linesRow(title: String, key: String?, section: String, lines: [String], content: MitmModuleContent) -> some View {
+        let issues = lineIssues(for: key, section: section, lines: lines, content: content)
+        let invalid = lines.filter { issues[$0] != nil }.count
+        if lines.isEmpty {
+            LabeledContent(title, value: "0")
+        } else {
+            NavigationLink {
+                MitmModuleLinesView(
+                    title: title,
+                    lines: lines,
+                    issues: issues,
+                    onRun: key == "script" ? { line in Task { await runScriptLine(line) } } : nil,
+                    runningScript: runningScript,
+                    canRun: module?.enabled == true && settingsStore.mitmEnabled
+                )
+            } label: {
+                HStack {
+                    Text(title)
+                    Spacer()
+                    Text(invalid == 0 ? "\(lines.count) 条" : "\(invalid) 条无效 · 共 \(lines.count) 条")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// Per-line issue flags for one list (upstream _linesItem
+    /// `issues`, keyed by line text): the core's issues for this
+    /// list, matched to lines by the raw module line they name
+    /// (an issue's `index` is the module line), plus the Swift
+    /// parser's skipped lines in this section, by line text. A
+    /// rendered line that differs from its raw line (a map-local
+    /// line whose file resolved to a content-hash name, a script
+    /// line whose path resolved) matches neither — the flag then
+    /// stays on the core note / validate output instead.
+    private func lineIssues(for key: String?, section: String, lines: [String], content: MitmModuleContent) -> [String: String] {
+        var out: [String: String] = [:]
+        if let key,
+           let rawText = module.flatMap({ moduleStore.text(of: $0) }),
+           let issues = content.coreIssuesByList[key] {
+            let rawLines = rawText.components(separatedBy: .newlines)
+            for issue in issues {
+                guard rawLines.indices.contains(issue.index) else { continue }
+                let raw = rawLines[issue.index].trimmingCharacters(in: .whitespaces)
+                for line in lines where line.trimmingCharacters(in: .whitespaces) == raw {
+                    out[line] = issue.message
+                }
+            }
+        }
+        if !section.isEmpty {
+            for skip in content.skipped where skip.section.lowercased() == section.lowercased() {
+                let raw = skip.line.trimmingCharacters(in: .whitespaces)
+                for line in lines where line.trimmingCharacters(in: .whitespaces) == raw {
+                    out[line] = "\(skip.section) · \(skip.reason.label)"
+                }
+            }
+        }
+        return out
     }
 
     /// A script line's label: the name before the first "=".
@@ -931,10 +1172,6 @@ struct MitmModuleDetailView: View {
             runResult = nil
             runMessage = "运行失败：\(error.localizedDescription)"
         }
-    }
-
-    private func countRow(_ title: String, _ count: Int) -> some View {
-        LabeledContent(title, value: "\(count)")
     }
 
     /// The core's report for this module (mitm.readModule): what
@@ -1078,6 +1315,64 @@ private struct MitmModuleArgumentsSection: View {
     }
 }
 
+// MARK: - One MITM list's lines
+
+/// One MITM list's lines, each with why the core or the parser
+/// flags it, and a run button on script lines (upstream
+/// _MitmModuleLinesView + _linesItem: `issues` keyed by line text,
+/// `MitmTaskRunning` spinner on the line being run).
+struct MitmModuleLinesView: View {
+    let title: String
+    let lines: [String]
+    /// line text → issue.
+    let issues: [String: String]
+    /// Script lists only: runs one line (the module must be
+    /// enabled and MITM on — `canRun`); `runningScript` is the
+    /// name of the line currently running, if any.
+    var onRun: ((String) -> Void)? = nil
+    var runningScript: String? = nil
+    var canRun: Bool = false
+
+    var body: some View {
+        List {
+            if lines.isEmpty {
+                Text("没有内容")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(line)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                        Spacer()
+                        if let onRun, canRun {
+                            let name = MitmModuleDetailView.scriptName(of: line)
+                            Button(runningScript == name ? "运行中…" : "运行") {
+                                onRun(line)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(runningScript != nil)
+                        }
+                    }
+                    if let issue = issues[line] {
+                        Text(issue)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
+        .listStyle(.insetGrouped)
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 // MARK: - Skipped lines
 
 struct MitmModuleSkippedView: View {
@@ -1168,8 +1463,12 @@ private struct MitmModulePasteImportView: View {
 }
 
 // MARK: - Text editor (new blank / edit existing)
+//
+// Not private: the exchange detail page (MitmView) opens it with
+// a REJECT / map-local line already added (upstream
+// openMitmModuleEditor with `edit`).
 
-private struct MitmModuleTextEditorView: View {
+struct MitmModuleTextEditorView: View {
     let module: MitmModule?
     let initialText: String
     /// Called with the saved module after a successful save, so the
@@ -1199,6 +1498,11 @@ private struct MitmModuleTextEditorView: View {
                     Text("支持 Surge、Loon、Quantumult X 和 Stash 覆写语法。保存后会重新解析、重新下载资源；带新脚本的模块会先暂停。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    if module == nil {
+                        Text("空白模板本身还不是一个模块：先加一行规则、重写或域名再保存。")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
                 }
                 Section {
                     Button("保存") {

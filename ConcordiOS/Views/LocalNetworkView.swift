@@ -4,9 +4,10 @@ import SwiftUI
 // 网络设置， iOS only)
 // Route exclusions and private-route bypass, applied by the
 // PacketTunnel extension when it sets up the interface. The
-// 系统代理 section is display-only: a packet-tunnel app has no
-// system proxy to configure on iOS — traffic enters the tunnel
-// through the interface routes, not through a proxy setting.
+// 系统代理 section holds FlClash's system-proxy switch and
+// bypass-domain list (local_network.dart:68-73); the switch is
+// stored in tunnel.json, and whether iOS honours it is unverified
+// (see the section footnote).
 
 struct LocalNetworkView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
@@ -64,8 +65,17 @@ struct LocalNetworkView: View {
                         .foregroundStyle(.red)
                 }
             }
+            // FlClash local_network.dart:68-73: the system-proxy
+            // section holds the system-proxy switch and the
+            // bypass-domain list (footer: bypassDomainDesc). The
+            // switch is stored in tunnel.json; whether iOS honours
+            // it is unverified (the packet tunnel works through
+            // interface routes), so the footnote says so instead of
+            // claiming an effect.
             Section("系统代理") {
-                Text("iOS 上不可用：数据包隧道通过接口路由接管流量，不经过系统代理设置。")
+                Toggle("系统代理", isOn: $settingsStore.systemProxy)
+                BypassDomainEditorView()
+                Text("系统代理：上游 iOS 版提供的开关，随隧道设置保存；它是否影响 iOS 的系统代理行为尚未验证——iOS 的包隧道主要靠接口路由接管流量。绕过域名只在系统代理打开时传给 VPN 设置，开关关闭不会丢掉列表。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -75,6 +85,7 @@ struct LocalNetworkView: View {
                 Picker("TUN 协议栈", selection: $settingsStore.tunStack) {
                     Text("gVisor").tag("gvisor")
                     Text("系统").tag("system")
+                    Text("Lwip").tag("lwip")
                 }
                 Text("修改后保存，下次启动 VPN 时生效。")
                     .font(.footnote)

@@ -691,7 +691,7 @@ final class ProfileStore: ObservableObject {
     }
 
     @MainActor
-    func addFromURL(name: String, urlString: String) async {
+    func addFromURL(name: String, urlString: String, ageSecretKey: String? = nil) async {
         // Telegram links are not subscriptions (FIX 3a): a t.me
         // bot / channel link serves a Telegram web page, never
         // Clash YAML. Intercept before any download: on-device the
@@ -721,25 +721,38 @@ final class ProfileStore: ObservableObject {
         }
         do {
             let downloaded = try await downloadSubscription(from: url)
-            // Age-encrypted body (FlClash validateProfile): a fresh
-            // add has no stored key yet, so it cannot be decrypted
-            // here. Save the ciphertext as-is — the user fills the
-            // age key in 编辑 and 更新 decrypts it with the stored
-            // key (see update()). Activating before that fails with
-            // the age-specific message in applyProfile, never with a
-            // generic parse error. (FlClash's Profile model has no
-            // note field, so no note is stored on the card.)
-            if Self.looksAgeEncrypted(downloaded.data) {
-                let profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), subscriptionInfo: downloaded.info)
+            // Age-encrypted body (FlClash validateProfile): when the
+            // import carried an age key (UnifiedImportView age field,
+            // FlClash add.dart withAgeSecretKey), decrypt in this one
+            // step when the core is reachable; otherwise save the
+            // ciphertext as-is WITH the key stored on the profile, so
+            // 更新 decrypts it with the stored key (see update()).
+            // Activating before that fails with the age-specific
+            // message in applyProfile, never with a generic parse
+            // error. (FlClash's Profile model has no note field, so
+            // no note is stored on the card.)
+            let trimmedKey = ageSecretKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+            var downloadedData = downloaded.data
+            if Self.looksAgeEncrypted(downloadedData), let key = trimmedKey, !key.isEmpty {
+                switch await decryptAgeDataIfNeeded(downloadedData, key: key) {
+                case .success(let plain):
+                    downloadedData = plain
+                case .failure:
+                    break // keep ciphertext; the stored key decrypts it on update
+                }
+            }
+            if Self.looksAgeEncrypted(downloadedData) {
+                var profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), subscriptionInfo: downloaded.info)
+                profile.ageSecretKey = (trimmedKey?.isEmpty == false) ? trimmedKey : nil
                 profiles.append(profile)
-                try saveProfileFile(profile: profile, data: downloaded.data)
+                try saveProfileFile(profile: profile, data: downloadedData)
                 statusMessage = "已导入订阅 \(profile.name)（age 加密，待填写私钥后更新解密）"
                 save()
                 lastError = nil
                 return
             }
             let normalized: (data: Data, note: String?)
-            switch await normalizedSubscriptionData(downloaded.data) {
+            switch await normalizedSubscriptionData(downloadedData) {
             case .success(let value):
                 normalized = value
             case .failure(let reason):
@@ -747,6 +760,7 @@ final class ProfileStore: ObservableObject {
                 return
             }
             var profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), subscriptionInfo: downloaded.info)
+            profile.ageSecretKey = (trimmedKey?.isEmpty == false) ? trimmedKey : nil
             profiles.append(profile)
             try saveProfileFile(profile: profile, data: normalized.data)
             statusMessage = "已导入订阅 \(profile.name)" + (normalized.note.map { "（\($0)）" } ?? "")

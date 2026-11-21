@@ -92,6 +92,21 @@ final class RuleStore: ObservableObject {
         }
     }
 
+    /// Updates one rule provider from its source
+    /// (provider.update), then refreshes the list so the new
+    /// count / time shows.
+    @MainActor
+    func updateProvider(_ provider: ConcordProviderInfo) async {
+        do {
+            try await client.providerUpdate(name: provider.name)
+            providerActionMessage = "已更新提供方 \(provider.name)"
+            lastError = nil
+            await refresh()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     /// Recompiles a stored rule-set (ruleSet.compile).
     @MainActor
     func compileRuleSet(_ provider: ConcordProviderInfo) async {

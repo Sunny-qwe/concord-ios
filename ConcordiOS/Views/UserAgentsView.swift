@@ -50,6 +50,24 @@ struct UserAgentsView: View {
                     showAddSheet = true
                 }
             }
+            // FlClash user_agents.dart: changing the selection only
+            // saves it; the core picks it up at the next VPN start.
+            // This button re-applies the general settings to the
+            // running core now, so the new UA takes effect at once.
+            Section {
+                Button("应用（重新应用配置）") {
+                    settingsStore.save()
+                    Task { await settingsStore.applyGeneralToCore() }
+                }
+                Text("改了 User-Agent 后点这里立即发给核心；否则等下次启动 VPN 时生效。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if let message = settingsStore.generalApplyMessage {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .font(.footnote.weight(.semibold))
         .navigationTitle("User-Agent")

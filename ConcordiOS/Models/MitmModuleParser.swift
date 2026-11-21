@@ -227,6 +227,12 @@ struct MitmModuleContent {
     var coreIgnored: [String] = []
     /// How many lines the core could not read.
     var coreIssueCount: Int = 0
+    /// The lines the core could not read, by list (the core's
+    /// mitm.readModule `issues`, keyed like mitm.validate:
+    /// hostname, url-rewrite, header-rewrite, body-rewrite,
+    /// map-local, script, rules). An issue's `index` is the module
+    /// line; the detail page's line lists match it to the raw text.
+    var coreIssuesByList: [String: [ConcordMitmIssue]] = [:]
 
     var isEmpty: Bool {
         hostname.isEmpty && insertedHostname.isEmpty && hostnameDisabled.isEmpty
@@ -4257,6 +4263,7 @@ enum MitmModuleParser {
         content.coreOffReason = view.off?.reason
         content.coreAsksConsent = view.asksConsent
         content.coreIssueCount = view.issues.values.reduce(0) { $0 + $1.count }
+        content.coreIssuesByList = view.issues
         content.coreIgnored = view.ignored.map { ignored in
             var line = "第 \(ignored.line) 行（\(coreIgnoreLabel(ignored.reason))）"
             if let detail = ignored.detail, !detail.isEmpty { line += "：\(detail)" }
@@ -4297,6 +4304,95 @@ enum MitmModuleParser {
         }
         content.resourceUrls.formUnion(view.resources.map(\.url))
         return content
+    }
+
+    // MARK: - Add-a-rule helpers (upstream mitm_module.dart:
+    // mitmUrlPattern / mitmRejectLine / mitmAttachmentName /
+    // mitmMapLocalLine / mitmAddLine). The exchange detail page
+    // uses them to write a REJECT or map-local rule for a captured
+    // request into one of the user's own modules, or a new one.
+
+    /// A URL as a regex matching itself, with or without a query
+    /// (upstream mitmUrlPattern: the query and fragment are cut,
+    /// regex characters escaped, `^…(\?|$)` appended).
+    static func mitmUrlPattern(_ url: String) -> String {
+        let end = url.firstIndex { $0 == "?" || $0 == "#" } ?? url.endIndex
+        let base = String(url[..<end])
+        let special: Set<Character> = [".", "*", "+", "?", "^", "$", "{", "}", "(", ")", "|", "[", "]", "\\"]
+        var escaped = ""
+        for ch in base {
+            if special.contains(ch) { escaped.append("\\") }
+            escaped.append(ch)
+        }
+        return "^\(escaped)(\\?|$)"
+    }
+
+    /// A URL Rewrite line rejecting this URL.
+    static func mitmRejectLine(_ url: String) -> String {
+        "\(field(mitmUrlPattern(url))) reject"
+    }
+
+    /// A file name for a captured response body: the URL's last
+    /// path segment, sanitised, de-duplicated against `taken`
+    /// (upstream mitmAttachmentName).
+    static func mitmAttachmentName(_ url: String, taken: [String]) -> String {
+        let segment = URL(string: url)?.pathComponents.last(where: { !$0.isEmpty && $0 != "/" }) ?? ""
+        let base = segment.unicodeScalars.map { scalar in
+            let ch = Character(scalar)
+            return ch.isLetter || ch.isNumber || ch == "." || ch == "_" || ch == "-" ? String(ch) : "_"
+        }.joined()
+        let name = base.isEmpty || base.hasPrefix(".") ? "response\(base)" : base
+        let used = Set(taken)
+        let ext = (name as NSString).pathExtension
+        let stem = ext.isEmpty ? name : String(name.dropLast(ext.count + 1))
+        var candidate = name
+        var i = 2
+        while used.contains(candidate) {
+            candidate = ext.isEmpty ? "\(stem)-\(i)" : "\(stem)-\(i).\(ext)"
+            i += 1
+        }
+        return candidate
+    }
+
+    /// A Map Local line serving `file` (or an empty body when nil)
+    /// for this URL, with its status and content type.
+    static func mitmMapLocalLine(_ url: String, file: String?, status: Int = 200, contentType: String = "") -> String {
+        var params: [(String, String)] = [
+            ("data-type", file == nil ? "text" : "file"),
+            ("data", file ?? ""),
+        ]
+        if status > 200 && status <= 999 { params.append(("status-code", "\(status)")) }
+        if !contentType.isEmpty { params.append(("header", "Content-Type:\(contentType)")) }
+        return ([field(mitmUrlPattern(url))] + params.map { "\($0.0)=\(field($0.1))" }).joined(separator: " ")
+    }
+
+    /// `text` with `line` at the end of its `section`, added after
+    /// the others when missing; nil for a Stash override, which has
+    /// no sections (upstream mitmAddLine — the caller then copies
+    /// the line to the clipboard instead).
+    static func mitmAddLine(_ text: String, section: String, line: String) -> String? {
+        if stashOverride(text) != nil { return nil }
+        let lines = text.components(separatedBy: .newlines)
+        func isHeader(_ line: String, _ name: String? = nil) -> Bool {
+            guard let title = RX.match(sectionPattern, line.trimmingCharacters(in: .whitespaces))?[1] else { return false }
+            guard let title else { return false }
+            if let name { return title.trimmingCharacters(in: .whitespaces).lowercased() == name.lowercased() }
+            return true
+        }
+        guard let header = lines.firstIndex(where: { isHeader($0, section) }) else {
+            let head = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let prefix = head.isEmpty ? "" : head + "\n\n"
+            return prefix + "[\(section)]\n\(line)\n"
+        }
+        var end = header + 1
+        var i = end
+        while i < lines.count && !isHeader(lines[i]) {
+            if !lines[i].trimmingCharacters(in: .whitespaces).isEmpty { end = i + 1 }
+            i += 1
+        }
+        var out = lines
+        out.insert(line, at: end)
+        return out.joined(separator: "\n")
     }
 
     /// The core's ignore reasons, in the user's words (upstream

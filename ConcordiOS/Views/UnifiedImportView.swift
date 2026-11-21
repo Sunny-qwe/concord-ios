@@ -20,6 +20,11 @@ struct UnifiedImportView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var importText = ""
     @State private var profileName = ""
+    /// Age secret key (FlClash add.dart withAgeSecretKey: true):
+    /// carried into addProfileFromLink so an age-encrypted
+    /// subscription imports in one step instead of needing a second
+    /// visit to 编辑. Only used for subscription links.
+    @State private var ageSecretKey = ""
     @State private var clipboardNotice: String?
     /// Text handed in by the QR scanner (ProfilesView): filled into
     /// the field and imported automatically when `autoImport` is set.
@@ -47,6 +52,27 @@ struct UnifiedImportView: View {
         !importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !importer.isImporting
     }
 
+    /// The existing profile using this exact subscription URL, if
+    /// any (FlClash add.dart:60-62 existingUrls — the store also
+    /// guards in addFromURL, this surfaces it before downloading).
+    private var duplicateProfile: Profile? {
+        guard detectedKind == .subscription else { return nil }
+        let url = importText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return profileStore.profiles.first {
+            $0.kind == .url && $0.urlString?.trimmingCharacters(in: .whitespaces) == url
+        }
+    }
+
+    /// Link validation (FlClash add.dart:54-59 urlValidator with
+    /// unwrapInstallConfigUrl: must be a URL or share link, else
+    /// invalidLinkTip). The kind chip already shows 未知; this is
+    /// the matching inline error text.
+    private var linkValidationError: String? {
+        let text = importText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, detectedKind == .unknown else { return nil }
+        return "链接无效：不是订阅链接、节点链接或 YAML 配置"
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -54,6 +80,19 @@ struct UnifiedImportView: View {
                     heroCard
                     linkCard
                     nameCard
+                    ageKeyCard
+                    if let duplicate = duplicateProfile {
+                        Text("该订阅链接已存在（「\(duplicate.name)」）：请直接更新该订阅，或先删除它再导入。")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if let error = linkValidationError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     importButton
                     if !importer.results.isEmpty {
                         resultsSection
@@ -207,6 +246,27 @@ struct UnifiedImportView: View {
         .concordCard()
     }
 
+    // MARK: - Age key field
+
+    private var ageKeyCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("age 私钥（可选，仅订阅链接）")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+            SecureField("age 加密订阅的私钥", text: $ageSecretKey)
+                .font(.footnote.weight(.semibold))
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 14))
+            Text("age 加密的订阅填了私钥才能一次导入成功；不填会先存密文，去编辑页填私钥后再更新解密。私钥仅保存在本机。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .concordCard()
+    }
+
     // MARK: - Import button
 
     private var importButton: some View {
@@ -231,13 +291,15 @@ struct UnifiedImportView: View {
     /// Import the field's content through UnifiedImporter (also
     /// used by the QR scanner, which fills the field first).
     private func performImport() async {
-        await importer.importText(importText, name: profileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : profileName.trimmingCharacters(in: .whitespacesAndNewlines))
+        let key = ageSecretKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        await importer.importText(importText, name: profileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : profileName.trimmingCharacters(in: .whitespacesAndNewlines), ageSecretKey: key.isEmpty ? nil : key)
         // Success: clear the field so the next link can be pasted
         // straight away. Failure: keep the text so the user can
         // fix it.
         if importer.activatedName != nil {
             importText = ""
             profileName = ""
+            ageSecretKey = ""
             clipboardNotice = nil
         }
     }

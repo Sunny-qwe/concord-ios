@@ -388,6 +388,10 @@ struct EditProfileView: View {
         // URL; the auto-update prompt above already warned about
         // that when auto-update is on.
         guard pendingFileData == nil else {
+            // FlClash edit.dart dispose(): saving auto-applies the
+            // profile — a saved edit to the ACTIVE profile takes
+            // effect without a manual re-apply.
+            await applyIfActive()
             dismiss()
             return
         }
@@ -402,6 +406,16 @@ struct EditProfileView: View {
                 return
             }
         }
+        await applyIfActive()
         dismiss()
+    }
+
+    /// FlClash edit.dart dispose() autoApplyProfile: after a
+    /// successful save, re-apply the profile when it is the active
+    /// one, so the edit takes effect live (or at next start when
+    /// the VPN is off — reapplyActive handles that).
+    private func applyIfActive() async {
+        guard profile.id == profileStore.activeProfile?.id else { return }
+        _ = await profileStore.reapplyActive()
     }
 }

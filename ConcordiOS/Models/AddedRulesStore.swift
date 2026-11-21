@@ -10,20 +10,65 @@ import Combine
 // crates/config/src/merge.rs), so they take effect at the next VPN
 // start or live re-apply, without touching the profile YAML.
 
+/// Rule presets (FlClash features/form/rule_preset.dart):
+/// the same seven quick actions, same raw rule strings.
+enum RulePreset: String, CaseIterable {
+    case blockQuic = "拦截 QUIC"
+    case blockStun = "拦截 STUN"
+    case blockDot = "拦截 DoT (853)"
+    case blockLoopback = "防止代理回环"
+    case lanDirect = "局域网直连"
+    case systemServicesDirect = "系统服务直连"
+    case bittorrentDirect = "BT 直连"
+
+    var rawRules: [String] {
+        switch self {
+        case .blockQuic: return ["AND,((NETWORK,UDP),(DST-PORT,443)),REJECT-DROP"]
+        case .blockStun: return ["AND,((NETWORK,UDP),(DST-PORT,3478/19302)),REJECT-DROP"]
+        case .blockDot: return ["DST-PORT,853,REJECT"]
+        case .blockLoopback: return AddedRulesStore.loopbackPresetRules
+        case .lanDirect: return ["GEOSITE,private,DIRECT", "GEOIP,LAN,DIRECT,no-resolve"]
+        case .systemServicesDirect: return ["GEOSITE,apple,DIRECT", "GEOSITE,microsoft,DIRECT"]
+        case .bittorrentDirect: return [
+            "GEOSITE,category-public-tracker,DIRECT",
+            "GEOSITE,category-pt,DIRECT",
+            "PROCESS-NAME-REGEX,(?i)^(qbittorrent|transmission.*|deluge.*|aria2c|motrix|utorrent|bitcomet)(\\.exe)?$,DIRECT",
+        ]
+        }
+    }
+}
+
 final class AddedRulesStore: ObservableObject {
     @Published var rules: [String] = []
+    /// Global rules disabled per profile (FlClash
+    /// profileDisabledRuleIdsProvider / _EditGlobalAddedRules):
+    /// a disabled rule is moved OUT of the active list into this
+    /// persisted list, so the tunnel overlay (which reads only
+    /// `rules`) never sees it — disabling is real, not a UI flag.
+    /// Stored in added-rules-disabled.json next to added-rules.json.
+    @Published var disabledRules: [String] = []
 
     private var fileURL: URL? {
         ConfigStore.sharedFileURL(name: ConfigStore.addedRulesFileName)
     }
 
+    private var disabledFileURL: URL? {
+        ConfigStore.sharedFileURL(name: "added-rules-disabled.json")
+    }
+
     init() { load() }
 
     func load() {
-        guard let url = fileURL,
-              let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode([String].self, from: data) else { return }
-        rules = decoded
+        if let url = fileURL,
+           let data = try? Data(contentsOf: url),
+           let decoded = try? JSONDecoder().decode([String].self, from: data) {
+            rules = decoded
+        }
+        if let url = disabledFileURL,
+           let data = try? Data(contentsOf: url),
+           let decoded = try? JSONDecoder().decode([String].self, from: data) {
+            disabledRules = decoded
+        }
     }
 
     func save() {
@@ -31,7 +76,25 @@ final class AddedRulesStore: ObservableObject {
               let data = try? JSONEncoder().encode(rules) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
+        if let disabledURL = disabledFileURL,
+           let disabledData = try? JSONEncoder().encode(disabledRules) {
+            try? disabledData.write(to: disabledURL, options: .atomic)
+        }
     }
+
+    /// Move a rule between the active list and the disabled list.
+    func setRule(_ rule: String, disabled: Bool) {
+        if disabled {
+            rules.removeAll { $0 == rule }
+            if !disabledRules.contains(rule) { disabledRules.append(rule) }
+        } else {
+            disabledRules.removeAll { $0 == rule }
+            if !rules.contains(rule) { rules.append(rule) }
+        }
+        save()
+    }
+
+    func isRuleDisabled(_ rule: String) -> Bool { disabledRules.contains(rule) }
 
     // MARK: - Loopback protection (FlClash rule preset "防止代理回环")
 

@@ -70,6 +70,20 @@ final class SettingsStore: ObservableObject {
     @Published var routeExcludeAddress: [String] = []
     @Published var bypassPrivateRoute: Bool = false
     @Published var dnsHijack: Bool = true
+    /// FlClash network.dart VpnSystemProxyItem: the system-proxy
+    /// switch (a NetworkSetting in FlClash). Stored here and written
+    /// to tunnel.json ("system-proxy") for the extension's VPN
+    /// setup; whether iOS honours it is unverified (the packet
+    /// tunnel works through interface routes), so the toggle's
+    /// footnote says so instead of promising an effect.
+    @Published var systemProxy: Bool = false
+    /// FlClash network.dart BypassDomainItem: domains that bypass
+    /// the proxy. Written to tunnel.json ("bypass-domain") only
+    /// while systemProxy is on (FlClash core.dart:247 passes
+    /// `systemProxy ? bypassDomain : []` to the VPN setup); the
+    /// list itself is kept here regardless, so turning the switch
+    /// off does not lose it.
+    @Published var bypassDomain: [String] = []
     // System VPN switches (NETunnelProviderProtocol, iOS-only):
     // include-all-networks routes ALL traffic through the tunnel;
     // the excludes keep local networks / APNs / cellular services /
@@ -92,6 +106,13 @@ final class SettingsStore: ObservableObject {
     // whether the log page appears on the Tools page.
     @Published var autoRun: Bool = false
     @Published var autoCloseConnections: Bool = false
+    /// FlClash general.dart:337 _connectionItems: only count proxy
+    /// traffic in the traffic stats (FlClash passes it to
+    /// getTraffic / getTotalTraffic). Stored here; the traffic feed
+    /// itself (traffic.watch, ConcordClient/TrafficStore) takes no
+    /// such parameter yet, so the switch only records the preference
+    /// until that call is wired — the Settings footnote says so.
+    @Published var onlyStatisticsProxy: Bool = false
     @Published var checkCertificate: Bool = true
     @Published var autoCheckUpdate: Bool = false
     @Published var openLogs: Bool = false
@@ -121,6 +142,13 @@ final class SettingsStore: ObservableObject {
 
     // DNS
     @Published var dnsEnabled: Bool = true
+    /// FlClash general.dart:360 _coreItems: append the system DNS
+    /// servers to dns.nameserver at config build (FlClash
+    /// task.dart:314). Implemented in saveSharedFiles: the system
+    /// servers are read from /etc/resolv.conf (the same source
+    /// ConnectionStore.systemDnsServers() uses for network.update)
+    /// and appended to the nameserver list when this is on.
+    @Published var appendSystemDns: Bool = false
     @Published var dnsNameserver: String = "https://dns.alidns.com/dns-query"
     @Published var dnsFakeIpEnabled: Bool = true
     @Published var dnsFakeIpRange: String = "198.18.0.1/16"
@@ -383,10 +411,14 @@ final class SettingsStore: ObservableObject {
         var excludeCellularServices: Bool
         var enforceRoutes: Bool
         var excludeDeviceCommunication: Bool
+        var onlyStatisticsProxy: Bool
+        var appendSystemDns: Bool
+        var systemProxy: Bool
+        var bypassDomain: [String]
 
         // The MITM fields are new: decode them leniently so settings
         // saved before they existed still load.
-        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, openLogs: Bool = false, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftnsci.com", "www.msftnsci.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 64, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict", keepAliveIdle: Int = 0, keepAliveInterval: Int = 0, disableKeepAlive: Bool = false, includeAllNetworks: Bool = false, excludeLocalNetworks: Bool = true, excludeAPNs: Bool = true, excludeCellularServices: Bool = true, enforceRoutes: Bool = false, excludeDeviceCommunication: Bool = true) {
+        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, openLogs: Bool = false, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftnsci.com", "www.msftnsci.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 64, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict", keepAliveIdle: Int = 0, keepAliveInterval: Int = 0, disableKeepAlive: Bool = false, includeAllNetworks: Bool = false, excludeLocalNetworks: Bool = true, excludeAPNs: Bool = true, excludeCellularServices: Bool = true, enforceRoutes: Bool = false, excludeDeviceCommunication: Bool = true, onlyStatisticsProxy: Bool = false, appendSystemDns: Bool = false, systemProxy: Bool = false, bypassDomain: [String] = []) {
             self.mode = mode
             self.logLevel = logLevel
             self.mixedPort = mixedPort
@@ -437,6 +469,10 @@ final class SettingsStore: ObservableObject {
             self.excludeCellularServices = excludeCellularServices
             self.enforceRoutes = enforceRoutes
             self.excludeDeviceCommunication = excludeDeviceCommunication
+            self.onlyStatisticsProxy = onlyStatisticsProxy
+            self.appendSystemDns = appendSystemDns
+            self.systemProxy = systemProxy
+            self.bypassDomain = bypassDomain
             self.dnsListen = dnsListen
             self.dnsPreferH3 = dnsPreferH3
             self.dnsUseHosts = dnsUseHosts
@@ -560,6 +596,10 @@ final class SettingsStore: ObservableObject {
             excludeCellularServices = try c.decodeIfPresent(Bool.self, forKey: .excludeCellularServices) ?? true
             enforceRoutes = try c.decodeIfPresent(Bool.self, forKey: .enforceRoutes) ?? false
             excludeDeviceCommunication = try c.decodeIfPresent(Bool.self, forKey: .excludeDeviceCommunication) ?? true
+            onlyStatisticsProxy = try c.decodeIfPresent(Bool.self, forKey: .onlyStatisticsProxy) ?? false
+            appendSystemDns = try c.decodeIfPresent(Bool.self, forKey: .appendSystemDns) ?? false
+            systemProxy = try c.decodeIfPresent(Bool.self, forKey: .systemProxy) ?? false
+            bypassDomain = try c.decodeIfPresent([String].self, forKey: .bypassDomain) ?? []
             // Pre-tri-state installs only had the always/off bool:
             // on = "always", anything else = the core default
             // "strict" (the old "off" was the B4 bug — it forced
@@ -572,7 +612,7 @@ final class SettingsStore: ObservableObject {
     }
 
     func save() {
-        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, openLogs: openLogs, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, dnsListen: dnsListen, dnsPreferH3: dnsPreferH3, dnsUseHosts: dnsUseHosts, dnsUseSystemHosts: dnsUseSystemHosts, dnsRespectRules: dnsRespectRules, dnsIpv6Timeout: dnsIpv6Timeout, dnsCacheAlgorithm: dnsCacheAlgorithm, dnsCacheMaxSize: dnsCacheMaxSize, dnsEnhancedMode: dnsEnhancedMode, dnsFakeIpRange6: dnsFakeIpRange6, dnsFakeIpFilter: dnsFakeIpFilter, dnsFakeIpFilterMode: dnsFakeIpFilterMode, dnsFakeIpTtl: dnsFakeIpTtl, dnsDefaultNameserver: dnsDefaultNameserver, dnsNameserverPolicy: dnsNameserverPolicy, dnsExtraNameservers: dnsExtraNameservers, dnsFallback: dnsFallback, dnsFallbackLazyQuery: dnsFallbackLazyQuery, dnsProxyServerNameserver: dnsProxyServerNameserver, dnsProxyServerNameserverPolicy: dnsProxyServerNameserverPolicy, dnsDirectNameserver: dnsDirectNameserver, dnsDirectNameserverFollowPolicy: dnsDirectNameserverFollowPolicy, dnsFallbackFilterGeoip: dnsFallbackFilterGeoip, dnsFallbackFilterGeoipCode: dnsFallbackFilterGeoipCode, dnsFallbackFilterGeosite: dnsFallbackFilterGeosite, dnsFallbackFilterIpcidr: dnsFallbackFilterIpcidr, dnsFallbackFilterDomain: dnsFallbackFilterDomain, interfaceName: interfaceName, interfaceNameMode: interfaceNameMode, userAgents: userAgents, authEnabled: authEnabled, authUsername: authUsername, authPassword: authPassword, externalControllerSecret: externalControllerSecret, externalControllerEnabled: externalControllerEnabled, mitmSkipServerCertVerify: mitmSkipServerCertVerify, mitmAutoQuicBlock: mitmAutoQuicBlock, mitmTrustedFingerprint: mitmTrustedFingerprint, mitmCapture: mitmCapture, mitmCaptureEntries: mitmCaptureEntries, hideIp: hideIp, dnsIpv6: dnsIpv6, findProcessModeSetting: findProcessModeSetting, keepAliveIdle: keepAliveIdle, keepAliveInterval: keepAliveInterval, disableKeepAlive: disableKeepAlive, includeAllNetworks: includeAllNetworks, excludeLocalNetworks: excludeLocalNetworks, excludeAPNs: excludeAPNs, excludeCellularServices: excludeCellularServices, enforceRoutes: enforceRoutes, excludeDeviceCommunication: excludeDeviceCommunication)
+        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, openLogs: openLogs, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, dnsListen: dnsListen, dnsPreferH3: dnsPreferH3, dnsUseHosts: dnsUseHosts, dnsUseSystemHosts: dnsUseSystemHosts, dnsRespectRules: dnsRespectRules, dnsIpv6Timeout: dnsIpv6Timeout, dnsCacheAlgorithm: dnsCacheAlgorithm, dnsCacheMaxSize: dnsCacheMaxSize, dnsEnhancedMode: dnsEnhancedMode, dnsFakeIpRange6: dnsFakeIpRange6, dnsFakeIpFilter: dnsFakeIpFilter, dnsFakeIpFilterMode: dnsFakeIpFilterMode, dnsFakeIpTtl: dnsFakeIpTtl, dnsDefaultNameserver: dnsDefaultNameserver, dnsNameserverPolicy: dnsNameserverPolicy, dnsExtraNameservers: dnsExtraNameservers, dnsFallback: dnsFallback, dnsFallbackLazyQuery: dnsFallbackLazyQuery, dnsProxyServerNameserver: dnsProxyServerNameserver, dnsProxyServerNameserverPolicy: dnsProxyServerNameserverPolicy, dnsDirectNameserver: dnsDirectNameserver, dnsDirectNameserverFollowPolicy: dnsDirectNameserverFollowPolicy, dnsFallbackFilterGeoip: dnsFallbackFilterGeoip, dnsFallbackFilterGeoipCode: dnsFallbackFilterGeoipCode, dnsFallbackFilterGeosite: dnsFallbackFilterGeosite, dnsFallbackFilterIpcidr: dnsFallbackFilterIpcidr, dnsFallbackFilterDomain: dnsFallbackFilterDomain, interfaceName: interfaceName, interfaceNameMode: interfaceNameMode, userAgents: userAgents, authEnabled: authEnabled, authUsername: authUsername, authPassword: authPassword, externalControllerSecret: externalControllerSecret, externalControllerEnabled: externalControllerEnabled, mitmSkipServerCertVerify: mitmSkipServerCertVerify, mitmAutoQuicBlock: mitmAutoQuicBlock, mitmTrustedFingerprint: mitmTrustedFingerprint, mitmCapture: mitmCapture, mitmCaptureEntries: mitmCaptureEntries, hideIp: hideIp, dnsIpv6: dnsIpv6, findProcessModeSetting: findProcessModeSetting, keepAliveIdle: keepAliveIdle, keepAliveInterval: keepAliveInterval, disableKeepAlive: disableKeepAlive, includeAllNetworks: includeAllNetworks, excludeLocalNetworks: excludeLocalNetworks, excludeAPNs: excludeAPNs, excludeCellularServices: excludeCellularServices, enforceRoutes: enforceRoutes, excludeDeviceCommunication: excludeDeviceCommunication, onlyStatisticsProxy: onlyStatisticsProxy, appendSystemDns: appendSystemDns, systemProxy: systemProxy, bypassDomain: bypassDomain)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
         saveSharedFiles()
@@ -741,6 +781,15 @@ final class SettingsStore: ObservableObject {
             "exclude-cellular-services": excludeCellularServices,
             "enforce-routes": enforceRoutes,
             "exclude-device-communication": excludeDeviceCommunication,
+            // C5/C16: FlClash's system-proxy switch + bypass-domain
+            // list (network.dart VpnSystemProxyItem /
+            // BypassDomainItem). The list is passed to the VPN setup
+            // only while the switch is on (FlClash core.dart:247);
+            // the extension reads both keys from here. Whether iOS
+            // honours the switch is unverified — the toggle's
+            // footnote says so.
+            "system-proxy": systemProxy,
+            "bypass-domain": systemProxy ? bypassDomain : [],
         ]
         // E6: preserve the Loopback 10.7.0.1 switch ("loopback-device",
         // written by LoopbackView's own read-modify-write). This dict
@@ -806,6 +855,18 @@ final class SettingsStore: ObservableObject {
         var nameservers: [String] = []
         if !nameserver.isEmpty { nameservers.append(nameserver) }
         nameservers.append(contentsOf: dnsExtraNameservers)
+        // C1: 追加系统 DNS (FlClash task.dart:314 — append the
+        // system DNS to dns.nameserver at config build). The system
+        // servers come from /etc/resolv.conf via
+        // ConnectionStore.systemDnsServers() ("ip:53" socket
+        // addresses, the same source network.update uses); they are
+        // appended after the user's own servers, deduplicated, so
+        // the profile's nameservers keep priority.
+        if appendSystemDns, let systemServers = ConnectionStore.systemDnsServers() {
+            for server in systemServers where !nameservers.contains(server) {
+                nameservers.append(server)
+            }
+        }
         if !nameservers.isEmpty {
             dns["nameserver"] = nameservers
         }
@@ -1084,6 +1145,10 @@ final class SettingsStore: ObservableObject {
         excludeCellularServices = saved.excludeCellularServices
         enforceRoutes = saved.enforceRoutes
         excludeDeviceCommunication = saved.excludeDeviceCommunication
+        onlyStatisticsProxy = saved.onlyStatisticsProxy
+        appendSystemDns = saved.appendSystemDns
+        systemProxy = saved.systemProxy
+        bypassDomain = saved.bypassDomain
     }
 
     /// Pull the general config from the core (config.general) into the UI.

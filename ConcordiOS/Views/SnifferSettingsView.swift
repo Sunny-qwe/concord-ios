@@ -15,6 +15,35 @@ struct SnifferSettingsView: View {
     @ObservedObject private var snifferStore = SnifferStore.shared
     @EnvironmentObject private var settingsStore: SettingsStore
 
+    /// Skip-address entries the core will ignore: valid entries are
+    /// a plain IP or a CIDR (FlClash sniffer.dart validates the skip
+    /// lists the same way; an invalid entry is silently skipped by
+    /// the core, so it is flagged here instead).
+    private var invalidSkipSrc: [String] {
+        snifferStore.skipSrcAddress.filter { !Self.isValidSkipAddress($0) }
+    }
+
+    private var invalidSkipDst: [String] {
+        snifferStore.skipDstAddress.filter { !Self.isValidSkipAddress($0) }
+    }
+
+    private static func isValidSkipAddress(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed.contains("/") { return NetworkSettingsView.isValidCIDR(trimmed) }
+        return isValidIP(trimmed)
+    }
+
+    private static func isValidIP(_ host: String) -> Bool {
+        if host.contains(":") { return !host.isEmpty }
+        let octets = host.split(separator: ".")
+        guard octets.count == 4 else { return false }
+        return octets.allSatisfy { octet in
+            !octet.isEmpty && octet.count <= 3 && octet.allSatisfy(\.isNumber)
+                && (Int(octet).map { (0...255).contains($0) } ?? false)
+        }
+    }
+
     var body: some View {
         List {
             Section {
@@ -44,15 +73,35 @@ struct SnifferSettingsView: View {
             }
             Section("跳过源地址") {
                 StringListEditor(items: $snifferStore.skipSrcAddress, placeholder: "IP 或 CIDR，如 192.168.1.0/24")
+                if !invalidSkipSrc.isEmpty {
+                    Text("以下地址格式不对（应为 IP 或 IP 段），核心会忽略：\(invalidSkipSrc.prefix(3).joined(separator: "、"))\(invalidSkipSrc.count > 3 ? " 等 \(invalidSkipSrc.count) 条" : "")")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
             }
             Section("跳过目标地址") {
                 StringListEditor(items: $snifferStore.skipDstAddress, placeholder: "IP 或 CIDR，如 10.0.0.0/8")
+                if !invalidSkipDst.isEmpty {
+                    Text("以下地址格式不对（应为 IP 或 IP 段），核心会忽略：\(invalidSkipDst.prefix(3).joined(separator: "、"))\(invalidSkipDst.count > 3 ? " 等 \(invalidSkipDst.count) 条" : "")")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
             }
             Section("嗅探协议") {
                 SniffProtocolRow(title: "HTTP", config: $snifferStore.sniffHttp)
                 SniffProtocolRow(title: "TLS", config: $snifferStore.sniffTls)
                 SniffProtocolRow(title: "QUIC", config: $snifferStore.sniffQuic)
                 Text("端口为空时按协议默认端口嗅探。覆盖目标地址选「跟随」时用上面总开关的值。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            // FlClash sniffer.dart: per-profile sniffer overrides
+            // live in the override editor, not on this global page.
+            Section("按订阅覆盖") {
+                NavigationLink("按订阅覆盖嗅探设置") {
+                    OverrideView()
+                }
+                Text("每个订阅可以在这里单独覆盖嗅探；没有覆盖的订阅用上面的全局设置。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

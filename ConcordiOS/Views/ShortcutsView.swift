@@ -28,7 +28,7 @@ struct ShortcutsView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 shortcutRow(icon: "power", title: "开启 VPN", subtitle: "启动 VPN 隧道")
-                shortcutRow(icon: "poweroff", title: "关闭 VPN", subtitle: "停止 VPN 隧道")
+                shortcutRow(icon: "power.circle", title: "关闭 VPN", subtitle: "停止 VPN 隧道")
                 shortcutRow(icon: "repeat", title: "切换 VPN 开关", subtitle: "开着就关闭，关着就开启")
                 shortcutRow(icon: "arrow.triangle.2.circlepath", title: "切换出站模式", subtitle: "规则 / 全局 / 直连，选一个")
             }

@@ -31,6 +31,16 @@ struct BackupView: View {
     @State private var backupURL: URL?
     @State private var showImporter = false
     @State private var showRestoreConfirm = false
+    @State private var showScopeSheet = false
+    /// What happens after the restore-options sheet is dismissed:
+    /// pick a local file, or confirm restoring a file just
+    /// downloaded from WebDAV (FlClash: 备份与恢复 -> 恢复选项 is
+    /// chosen before the file is picked).
+    private enum PendingAfterScope {
+        case pickFile
+        case confirmDownload
+    }
+    @State private var pendingAfterScope: PendingAfterScope?
     @State private var pickedURL: URL?
     @State private var message: String?
     @State private var errorMessage: String?
@@ -68,7 +78,9 @@ struct BackupView: View {
             }
 
             Section("导入备份") {
-                Text("导入会替换当前全部订阅、设置和 MITM 模块。恢复前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。")
+                Text(backupStore.restoreStrategy == .compatible
+                     ? "导入会把备份里的内容合并到当前数据：备份里没有的订阅、设置和 MITM 模块保留原样。恢复前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。"
+                     : "导入会按备份内容完全替换恢复范围里的数据。恢复前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Picker("恢复选项", selection: $restoreScope) {
@@ -78,12 +90,22 @@ struct BackupView: View {
                 }
                 .pickerStyle(.segmented)
                 Text(restoreScope == .all
-                     ? "恢复全部数据：所有文件与设置都被备份里的内容替换。"
+                     ? "恢复全部数据：所有文件与设置都在恢复范围内。"
                      : "仅恢复配置：只恢复订阅与配置，设置、主题、MITM 模块保持不变。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                Picker("恢复策略", selection: $backupStore.restoreStrategy) {
+                    ForEach(BackupStore.RestoreStrategy.allCases) { strategy in
+                        Text(strategy.label).tag(strategy)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(backupStore.restoreStrategy.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 Button {
-                    showImporter = true
+                    pendingAfterScope = .pickFile
+                    showScopeSheet = true
                 } label: {
                     Label("选择备份文件…", systemImage: "square.and.arrow.down")
                 }
@@ -104,6 +126,7 @@ struct BackupView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
+                    .onSubmit { Task { await testWebDAV() } }
                 TextField("用户名", text: $webdavUsername)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -174,15 +197,84 @@ struct BackupView: View {
                 errorMessage = "选择文件失败：\(error.localizedDescription)"
             }
         }
+        // FlClash: the restore options are chosen before the file is
+        // picked. The sheet is dismissed first, then the pending
+        // step runs — a fileImporter presented while the sheet is
+        // still up would be swallowed.
+        .sheet(isPresented: $showScopeSheet) {
+            NavigationStack {
+                Form {
+                    Section("恢复选项") {
+                        Picker("恢复选项", selection: $restoreScope) {
+                            ForEach(BackupStore.RestoreScope.allCases) { scope in
+                                Text(scope.rawValue).tag(scope)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        Text(restoreScope == .all
+                             ? "恢复全部数据：所有文件与设置都在恢复范围内。"
+                             : "仅恢复配置：只恢复订阅与配置，设置、主题、MITM 模块保持不变。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Section("恢复策略") {
+                        Picker("恢复策略", selection: $backupStore.restoreStrategy) {
+                            ForEach(BackupStore.RestoreStrategy.allCases) { strategy in
+                                Text(strategy.label).tag(strategy)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        Text(backupStore.restoreStrategy.detail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.footnote.weight(.semibold))
+                .navigationTitle("恢复备份")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") {
+                            pendingAfterScope = nil
+                            showScopeSheet = false
+                        }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("继续") { showScopeSheet = false }
+                    }
+                }
+            }
+        }
+        .onChange(of: showScopeSheet) { _, isShown in
+            guard !isShown, let pending = pendingAfterScope else { return }
+            pendingAfterScope = nil
+            switch pending {
+            case .pickFile:
+                showImporter = true
+            case .confirmDownload:
+                showRestoreConfirm = true
+            }
+        }
+        .task {
+            // Live WebDAV indicator (FlClash shows the account state
+            // on the page): test once on appear when an address is
+            // already filled in; the manual button stays.
+            if !webdavURL.trimmingCharacters(in: .whitespaces).isEmpty {
+                await testWebDAV()
+            }
+        }
         .alert("确定要恢复这个备份吗？", isPresented: $showRestoreConfirm) {
             Button("恢复", role: .destructive) {
                 Task { await restoreBackup() }
             }
             Button("取消", role: .cancel) { pickedURL = nil }
         } message: {
-            Text(restoreScope == .all
-                 ? "当前全部订阅、设置和 MITM 模块会被备份里的内容替换。"
-                 : "只恢复备份里的订阅与配置，设置、主题、MITM 模块保持不变。")
+            Text((restoreScope == .all
+                  ? "当前全部订阅、设置和 MITM 模块都在恢复范围内。"
+                  : "只恢复备份里的订阅与配置，设置、主题、MITM 模块保持不变。")
+                 + (backupStore.restoreStrategy == .compatible
+                    ? "备份里没有的数据保留原样。"
+                    : "恢复范围里的数据会被备份完全替换。"))
         }
     }
 
@@ -227,8 +319,11 @@ struct BackupView: View {
                 .appendingPathComponent(webdavFileName.isEmpty ? "concord-ios-backup.zip" : webdavFileName)
             try data.write(to: tempURL, options: .atomic)
             pickedURL = tempURL
-            showRestoreConfirm = true
-            webdavStatus = "已下载备份，请确认恢复"
+            webdavStatus = "已下载备份，请选择恢复选项"
+            // Same order as a local file: options first, then the
+            // confirm alert (via .onChange of showScopeSheet).
+            pendingAfterScope = .confirmDownload
+            showScopeSheet = true
         } catch {
             webdavStatus = "下载失败：\(error.localizedDescription)"
         }
@@ -257,7 +352,7 @@ struct BackupView: View {
             self.pickedURL = nil
         }
         do {
-            let summary = try await backupStore.restore(from: pickedURL, scope: restoreScope)
+            let summary = try await backupStore.restore(from: pickedURL, scope: restoreScope, strategy: backupStore.restoreStrategy)
             // Reload every store that keeps its state on disk, so the
             // pages show the restored data without restarting the app
             // (audit B8): the UserDefaults-backed ones re-read their

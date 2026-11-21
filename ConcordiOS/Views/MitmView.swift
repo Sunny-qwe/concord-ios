@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - MITM capture (FlClash: MITM requests page)
 // Two real functions, both backed by ConcordClient:
@@ -9,6 +10,9 @@ import SwiftUI
 // There is no list-scripts API, so the script name is typed in. The
 // connection id comes from the Connections page (tap a connection ->
 // "MITM 拦截记录") or is typed in here.
+// The exchange context menu (copy / export / add-rule) is
+// MitmExchangeMenuButtons at the bottom of this file (upstream
+// lib/features/connection/mitm_exchange_menu.dart).
 
 /// Renders open JSON (proxy definitions, exchange details, script
 /// results) as pretty-printed monospaced text.
@@ -29,7 +33,11 @@ struct JSONValueView: View {
 struct MitmView: View {
     @EnvironmentObject private var mitmStore: MitmStore
     @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var moduleStore: MitmModuleStore
     @EnvironmentObject private var client: ConcordClient
+    /// The exchange context menu's state (privacy warning, HAR
+    /// share, add-rule editor) — one model for this page's rows.
+    @StateObject private var menuModel = MitmExchangeMenuModel()
 
     let initialConnectionId: UInt64?
     @State private var connectionIdText: String
@@ -136,6 +144,9 @@ struct MitmView: View {
                             exchangeRow(exchange)
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            MitmExchangeMenuButtons(summary: exchange, model: menuModel)
+                        }
                     }
                 }
             }
@@ -162,6 +173,13 @@ struct MitmView: View {
                 if let message = mitmStore.exchangesMessage {
                     Text(message).font(.caption2).foregroundStyle(.secondary)
                 }
+                // Upstream `missing`: this connection began before
+                // capture started, so requests from before `since`
+                // are not in this list (see MitmStore).
+                if mitmStore.exchangesMissingNotice {
+                    Text("抓包开启前发出或已被清除的请求不在列表中。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
                 // Capture off (audit B46): the switch lives on the
                 // settings page — offer it right here instead of a
                 // dead end.
@@ -173,9 +191,13 @@ struct MitmView: View {
                         exchangeRow(exchange)
                     }
                     .buttonStyle(.plain)
+                    .contextMenu {
+                        MitmExchangeMenuButtons(summary: exchange, model: menuModel)
+                    }
                 }
             }
         }
+        .mitmExchangeMenuOverlays(menuModel, moduleStore: moduleStore)
         .scrollContentBackground(.hidden)
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
@@ -324,8 +346,13 @@ struct MitmView: View {
 struct MitmExchangeDetailView: View {
     let summary: MitmExchangeSummary
     @EnvironmentObject private var mitmStore: MitmStore
+    @EnvironmentObject private var moduleStore: MitmModuleStore
+    @EnvironmentObject private var client: ConcordClient
     @Environment(\.dismiss) private var dismiss
     @State private var bodyKind: BodyKind = .request
+    /// The exchange context menu's state (privacy warning, HAR
+    /// share, add-rule editor) for this detail page.
+    @StateObject private var menuModel = MitmExchangeMenuModel()
 
     enum BodyKind: String, CaseIterable, Identifiable {
         case request = "请求正文"
@@ -333,11 +360,41 @@ struct MitmExchangeDetailView: View {
         var id: String { rawValue }
     }
 
-    private var bodyText: String {
-        guard let body = mitmStore.exchangeBody else { return "尚未加载正文" }
-        if let text = body.text { return text }
-        let bytes = Data(base64Encoded: body.data)?.count ?? 0
-        return "正文不是 UTF-8 文本（\(bytes) 字节\(body.truncated == true ? "，已截断" : "")）"
+    /// The full exchange when mitm.exchange answered (headers,
+    /// original URL, protocol, TTFB, matched actions); nil while
+    /// it loads or when the open JSON does not decode as one.
+    private var detail: MitmExchangeDetail? { mitmStore.exchangeDetailTyped }
+
+    /// The loaded side's Content-Type, for body rendering.
+    private var bodyContentType: String {
+        detail?.headerValue("Content-Type", response: bodyKind == .response) ?? ""
+    }
+
+    /// The body, rendered by its content type (upstream
+    /// MitmBodySection / readMitmBody): JSON is pretty-printed,
+    /// images preview, anything that is not UTF-8 text gets the
+    /// honest note it used to get. The footer names an encoding
+    /// the core could not undo, or that only the start was kept.
+    private var bodyDisplay: (text: String, imageData: Data?, footer: String?) {
+        guard let body = mitmStore.exchangeBody else { return ("尚未加载正文", nil, nil) }
+        let bytes = Data(base64Encoded: body.data) ?? Data()
+        var footer: [String] = []
+        if let encoding = body.encoding, !encoding.isEmpty {
+            footer.append("正文是 \(encoding) 编码，未解码")
+        } else if body.truncated == true {
+            footer.append("只记录了这段内容的开头部分。")
+        }
+        let footerText = footer.isEmpty ? nil : footer.joined(separator: "\n")
+        let mime = bodyContentType.split(separator: ";").first?
+            .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        if mime.hasPrefix("image/") && !mime.contains("svg") {
+            return ("", bytes, footerText)
+        }
+        if let text = mitmBodyText(bytes, truncated: body.truncated == true) {
+            let shown = mime.contains("json") ? prettyJSON(text) : text
+            return (shown, nil, footerText)
+        }
+        return ("正文不是 UTF-8 文本（\(bytes.count) 字节\(body.truncated == true ? "，已截断" : "")）", nil, footerText)
     }
 
     var body: some View {
@@ -347,13 +404,50 @@ struct MitmExchangeDetailView: View {
                     LabeledContent("开始时间", value: ConcordFormat.time(rfc3339: summary.start))
                     LabeledContent("方法", value: summary.method)
                     LabeledContent("URL", value: summary.url)
+                    if let original = detail?.originalUrl, !original.isEmpty, original != summary.url {
+                        LabeledContent("原始 URL", value: original)
+                    }
+                    if let proto = detail?.proto, !proto.isEmpty {
+                        LabeledContent("协议", value: proto)
+                    }
                     LabeledContent("状态", value: (summary.pending ?? false) ? "进行中" : "\(summary.status)")
+                    if summary.status != 0, let ttfb = detail?.ttfb {
+                        LabeledContent("首字节时间", value: "\(ttfb) ms")
+                    }
                     LabeledContent("耗时", value: "\(summary.duration) ms")
                     LabeledContent("上行", value: ConcordFormat.bytes(summary.requestSize))
                     LabeledContent("下行", value: ConcordFormat.bytes(summary.responseSize))
                     if let error = summary.error, !error.isEmpty {
                         LabeledContent("错误", value: error)
                     }
+                }
+                // Upstream DetailTabs `matchedRules`: which
+                // rewrite / script / map-local acted, per phase.
+                if let actions = detail?.actions, !actions.isEmpty {
+                    Section("匹配的规则") {
+                        ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+                            HStack {
+                                Text(action.kindLabel)
+                                Spacer()
+                                if let phase = action.phaseLabel {
+                                    Text(phase)
+                                        .font(.caption2)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.blue.opacity(0.12), in: Capsule())
+                                }
+                                if let text = action.detail, !text.isEmpty {
+                                    Text(text)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+                if let detail {
+                    headerSection(title: "请求头", headers: detail.sortedHeaders(response: false))
+                    headerSection(title: "响应头", headers: detail.sortedHeaders(response: true))
                 }
                 Section("正文（mitm.body）") {
                     Picker("正文", selection: $bodyKind) {
@@ -365,9 +459,21 @@ struct MitmExchangeDetailView: View {
                     Button("加载\(bodyKind.rawValue)") {
                         Task { await mitmStore.loadBody(id: summary.exchangeId, response: bodyKind == .response) }
                     }
-                    Text(bodyText)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
+                    if let imageData = bodyDisplay.imageData, let image = UIImage(data: imageData) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(maxHeight: 240)
+                    } else {
+                        Text(bodyDisplay.text)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    if let footer = bodyDisplay.footer {
+                        Text(footer)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 if let detail = mitmStore.exchangeDetail {
                     Section("完整详情（mitm.exchange）") {
@@ -388,12 +494,554 @@ struct MitmExchangeDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        MitmExchangeMenuButtons(summary: summary, detail: detail, model: menuModel)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }
                 }
             }
             .task {
                 await mitmStore.loadExchangeDetail(summary)
             }
+            .mitmExchangeMenuOverlays(menuModel, moduleStore: moduleStore)
         }
     }
+
+    /// One side's headers, sorted by name (upstream
+    /// _MitmSideView); an empty side says so instead of vanishing.
+    private func headerSection(title: String, headers: [(String, [String])]) -> some View {
+        Section(title) {
+            if headers.isEmpty {
+                Text("无")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(headers, id: \.0) { name, values in
+                    ForEach(values, id: \.self) { value in
+                        HStack(alignment: .top) {
+                            Text(name)
+                                .font(.system(.caption, design: .monospaced))
+                            Spacer()
+                            Text(value)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.trailing)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Pretty-printed JSON when the text parses as JSON, else the
+/// text itself (upstream MitmBodyContent `_indented`).
+private func prettyJSON(_ text: String) -> String {
+    guard let data = text.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data),
+          let pretty = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+          let out = String(data: pretty, encoding: .utf8) else { return text }
+    return out
+}
+
+// MARK: - Exchange context menu (upstream
+// lib/features/connection/mitm_exchange_menu.dart)
+//
+// Copy link / as cURL / raw request / raw response / response
+// body, export HAR, add a REJECT or map-local rule into one of the
+// user's own modules or a new one. A list row knows only the
+// summary, so the full exchange is loaded on demand when an item
+// is picked (upstream `withExchange`); the detail page passes the
+// exchange it already loaded. Copy/export warn once that the
+// traffic may hold private data (upstream `_warned`).
+
+/// One context-menu action on a captured exchange.
+enum MitmExchangeMenuAction: Equatable {
+    case copyLink
+    case copyCurl
+    case copyRequest
+    case copyResponse
+    case copyResponseBody
+    case exportHar
+    case addRejectRule(target: MitmModule?)
+    case addMapLocalRule(target: MitmModule?)
+
+    /// Copy/export actions warn once that the traffic may hold
+    /// private data; adding a rule does not.
+    var needsWarning: Bool {
+        switch self {
+        case .copyLink, .addRejectRule, .addMapLocalRule: return false
+        default: return true
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .copyLink: return "复制链接"
+        case .copyCurl: return "复制为 cURL"
+        case .copyRequest: return "复制请求"
+        case .copyResponse: return "复制响应"
+        case .copyResponseBody: return "复制响应体"
+        case .exportHar: return "导出 HAR"
+        case .addRejectRule: return "添加拒绝规则"
+        case .addMapLocalRule: return "添加本地映射规则"
+        }
+    }
+}
+
+private struct MitmMenuNotice: Identifiable {
+    let id = UUID()
+    let text: String
+}
+
+private struct MitmShareFile: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct MitmRuleEditorRequest: Identifiable {
+    let id = UUID()
+    let module: MitmModule?
+    let initialText: String
+    let attachmentName: String?
+    let attachmentData: Data?
+}
+
+/// The menu's UI state (privacy warning, copy notice, HAR share,
+/// add-rule editor), one per menu host. The stores are passed per
+/// call so the model itself holds no environment.
+@MainActor
+final class MitmExchangeMenuModel: ObservableObject {
+    @Published var warningAction: MitmExchangeMenuAction?
+    @Published var warningSummary: MitmExchangeSummary?
+    @Published var warningDetail: MitmExchangeDetail?
+    @Published var notice: MitmMenuNotice?
+    @Published var shareFile: MitmShareFile?
+    @Published var ruleEditor: MitmRuleEditorRequest?
+
+    private var client: ConcordClient?
+    private var mitmStore: MitmStore?
+    private var moduleStore: MitmModuleStore?
+
+    func request(_ action: MitmExchangeMenuAction, summary: MitmExchangeSummary, detail: MitmExchangeDetail? = nil, client: ConcordClient, mitmStore: MitmStore, moduleStore: MitmModuleStore) {
+        self.client = client
+        self.mitmStore = mitmStore
+        self.moduleStore = moduleStore
+        if action.needsWarning && !mitmStore.exportWarned {
+            warningAction = action
+            warningSummary = summary
+            warningDetail = detail
+            return
+        }
+        Task { await perform(action, summary: summary, detail: detail) }
+    }
+
+    func confirmWarning() {
+        guard let action = warningAction, let summary = warningSummary else { return }
+        let detail = warningDetail
+        warningAction = nil
+        warningSummary = nil
+        warningDetail = nil
+        mitmStore?.exportWarned = true
+        Task { await perform(action, summary: summary, detail: detail) }
+    }
+
+    func dismissWarning() {
+        warningAction = nil
+        warningSummary = nil
+        warningDetail = nil
+    }
+
+    private func perform(_ action: MitmExchangeMenuAction, summary: MitmExchangeSummary, detail: MitmExchangeDetail?) async {
+        guard let client, let mitmStore, let moduleStore else { return }
+        switch action {
+        case .copyLink:
+            UIPasteboard.general.string = summary.url
+            notice = MitmMenuNotice(text: "已复制链接")
+        case .copyCurl, .copyRequest, .copyResponse, .copyResponseBody, .exportHar:
+            guard let full = detail ?? (try? await client.mitmExchange(id: summary.exchangeId).result.decoded(as: MitmExchangeDetail.self)) else {
+                notice = MitmMenuNotice(text: "读取详情失败：这条请求的记录已清除")
+                return
+            }
+            switch action {
+            case .copyCurl:
+                let body = await requestBody(summary: summary, mitmStore: mitmStore)
+                UIPasteboard.general.string = mitmCurl(full, body: body)
+                notice = MitmMenuNotice(text: "复制成功")
+            case .copyRequest:
+                let body = await requestBody(summary: summary, mitmStore: mitmStore)
+                UIPasteboard.general.string = mitmRawRequest(full, body: body)
+                notice = MitmMenuNotice(text: "复制成功")
+            case .copyResponse:
+                let body = await responseBody(summary: summary, mitmStore: mitmStore)
+                UIPasteboard.general.string = mitmRawResponse(full, body: body)
+                notice = MitmMenuNotice(text: "复制成功")
+            case .copyResponseBody:
+                guard let body = await responseBody(summary: summary, mitmStore: mitmStore) else {
+                    notice = MitmMenuNotice(text: "读取响应正文失败")
+                    return
+                }
+                UIPasteboard.general.string = mitmBodyCopyText(body)
+                notice = MitmMenuNotice(text: "复制成功")
+            case .exportHar:
+                let request = await requestBody(summary: summary, mitmStore: mitmStore)
+                let response = await responseBody(summary: summary, mitmStore: mitmStore)
+                let har = mitmHar(full, request: request, response: response)
+                let host = URL(string: full.url)?.host ?? "concord"
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("\(host)-\(full.exchangeId).har")
+                do {
+                    try har.data(using: .utf8)?.write(to: url)
+                    shareFile = MitmShareFile(url: url)
+                } catch {
+                    notice = MitmMenuNotice(text: "导出失败：\(error.localizedDescription)")
+                }
+            default:
+                break
+            }
+        case .addRejectRule(let target), .addMapLocalRule(let target):
+            guard let full = detail ?? (try? await client.mitmExchange(id: summary.exchangeId).result.decoded(as: MitmExchangeDetail.self)) else {
+                notice = MitmMenuNotice(text: "读取详情失败：这条请求的记录已清除")
+                return
+            }
+            let effectiveURL = (full.originalUrl ?? "").isEmpty ? full.url : full.originalUrl!
+            let isReject = {
+                if case .addRejectRule = action { return true }
+                return false
+            }()
+            let section = isReject ? "URL Rewrite" : "Map Local"
+            var line: String
+            var attachmentName: String?
+            var attachmentData: Data?
+            if isReject {
+                line = MitmModuleParser.mitmRejectLine(effectiveURL)
+            } else {
+                let body = await responseBody(summary: summary, mitmStore: mitmStore)
+                let bytes: Data? = {
+                    guard let body, body.truncated != true, (body.encoding ?? "").isEmpty else { return nil }
+                    return Data(base64Encoded: body.data)
+                }()
+                if let bytes, !bytes.isEmpty {
+                    let taken = target.map { moduleStore.attachments(of: $0) } ?? []
+                    attachmentName = MitmModuleParser.mitmAttachmentName(full.url, taken: taken)
+                    attachmentData = bytes
+                }
+                line = MitmModuleParser.mitmMapLocalLine(
+                    full.url,
+                    file: attachmentName,
+                    status: Int(full.status),
+                    contentType: full.headerValue("Content-Type", response: true))
+            }
+            let baseText = target.flatMap { moduleStore.text(of: $0) }
+                ?? MitmModuleStore.blankTemplate(name: "新模块")
+            guard let edited = MitmModuleParser.mitmAddLine(baseText, section: section, line: line) else {
+                UIPasteboard.general.string = line
+                notice = MitmMenuNotice(text: "这个模块是 Stash 覆写，规则已复制，请手动添加。")
+                return
+            }
+            ruleEditor = MitmRuleEditorRequest(
+                module: target, initialText: edited,
+                attachmentName: attachmentName, attachmentData: attachmentData)
+        }
+    }
+
+    /// The request body, when one was kept (upstream `_body`).
+    private func requestBody(summary: MitmExchangeSummary, mitmStore: MitmStore) async -> MitmBody? {
+        guard summary.requestSize > 0, !(summary.pending ?? false) else { return nil }
+        return await mitmStore.loadBodyData(id: summary.exchangeId, response: false)
+    }
+
+    /// The response body, when one was kept.
+    private func responseBody(summary: MitmExchangeSummary, mitmStore: MitmStore) async -> MitmBody? {
+        guard summary.responseSize > 0, !(summary.pending ?? false) else { return nil }
+        return await mitmStore.loadBodyData(id: summary.exchangeId, response: true)
+    }
+}
+
+/// The menu items for one captured exchange, for a context menu or
+/// a toolbar Menu (upstream mitmExchangeMenuItems).
+struct MitmExchangeMenuButtons: View {
+    let summary: MitmExchangeSummary
+    var detail: MitmExchangeDetail? = nil
+    @ObservedObject var model: MitmExchangeMenuModel
+    @EnvironmentObject private var client: ConcordClient
+    @EnvironmentObject private var mitmStore: MitmStore
+    @EnvironmentObject private var moduleStore: MitmModuleStore
+
+    private var localModules: [MitmModule] {
+        moduleStore.modules.filter { $0.url == nil }
+    }
+
+    private func request(_ action: MitmExchangeMenuAction) {
+        model.request(action, summary: summary, detail: detail, client: client, mitmStore: mitmStore, moduleStore: moduleStore)
+    }
+
+    var body: some View {
+        Button("复制链接") { request(.copyLink) }
+        Button("复制为 cURL") { request(.copyCurl) }
+        Button("复制请求") { request(.copyRequest) }
+        if summary.status != 0 {
+            Button("复制响应") { request(.copyResponse) }
+        }
+        if !(summary.pending ?? false) && summary.responseSize > 0 {
+            Button("复制响应体") { request(.copyResponseBody) }
+        }
+        Button("导出 HAR") { request(.exportHar) }
+        Menu("添加拒绝规则") {
+            Button("新建模块") { request(.addRejectRule(target: nil)) }
+            ForEach(localModules) { module in
+                Button(module.name) { request(.addRejectRule(target: module)) }
+            }
+        }
+        if !(summary.pending ?? false) && summary.status != 0 {
+            Menu("添加本地映射规则") {
+                Button("新建模块") { request(.addMapLocalRule(target: nil)) }
+                ForEach(localModules) { module in
+                    Button(module.name) { request(.addMapLocalRule(target: module)) }
+                }
+            }
+        }
+    }
+}
+
+extension View {
+    /// The context-menu model's alert + sheets: the privacy
+    /// warning, the copy notice, the HAR share sheet and the
+    /// add-rule editor sheet.
+    func mitmExchangeMenuOverlays(_ model: MitmExchangeMenuModel, moduleStore: MitmModuleStore) -> some View {
+        self
+            .alert("包含隐私信息", isPresented: Binding(
+                get: { model.warningAction != nil },
+                set: { if !$0 { model.dismissWarning() } }
+            )) {
+                Button("取消", role: .cancel) { model.dismissWarning() }
+                Button(model.warningAction?.title ?? "继续") { model.confirmWarning() }
+            } message: {
+                Text("请求里可能有 Cookie、令牌、密码和表单内容，分享前请确认内容和对象。")
+            }
+            .alert("提示", isPresented: Binding(
+                get: { model.notice != nil },
+                set: { if !$0 { model.notice = nil } }
+            ), presenting: model.notice) { _ in
+                Button("好") { model.notice = nil }
+            } message: { notice in
+                Text(notice.text)
+            }
+            .sheet(item: $model.shareFile) { file in
+                ShareSheet(items: [file.url])
+            }
+            .sheet(item: $model.ruleEditor) { request in
+                MitmModuleTextEditorView(module: request.module, initialText: request.initialText, onSaved: { saved in
+                    if let saved, let name = request.attachmentName, let data = request.attachmentData {
+                        Task { await moduleStore.attachFile(saved, fileName: name, data: data) }
+                    }
+                })
+            }
+    }
+}
+
+// MARK: - Exchange export formats (upstream mitm_export.dart /
+// mitm_body.dart)
+
+private func mitmShellQuoted(_ text: String) -> String {
+    "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+/// A body as text when it is valid UTF-8 without a dense run of
+/// control characters (upstream mitmBodyText); nil otherwise. A
+/// body cut at the limit may end inside a character, so a
+/// truncated body is decoded tolerantly.
+func mitmBodyText(_ bytes: Data, truncated: Bool = false) -> String? {
+    let text: String?
+    if truncated {
+        text = String(decoding: bytes, as: UTF8.self)
+    } else {
+        text = String(data: bytes, encoding: .utf8)
+    }
+    guard let text else { return nil }
+    var controls = 0
+    var count = 0
+    for scalar in text.unicodeScalars {
+        count += 1
+        if scalar.value == 0 { return nil }
+        if scalar.value < 0x20 && scalar.value != 0x09 && scalar.value != 0x0A && scalar.value != 0x0D {
+            controls += 1
+        }
+    }
+    if count > 0 && controls * 100 > count { return nil }
+    return text
+}
+
+/// A body for copying: its text, or its Base64 when it is not
+/// text (upstream mitmBodyCopyText).
+private func mitmBodyCopyText(_ body: MitmBody) -> String {
+    if !(body.encoding ?? "").isEmpty { return body.data }
+    let bytes = Data(base64Encoded: body.data) ?? Data()
+    return mitmBodyText(bytes, truncated: body.truncated == true) ?? body.data
+}
+
+/// A POSIX shell command that sends `exchange` again, with `body`
+/// as the request body; a body that is not text is piped in from
+/// Base64 (upstream mitmCurl).
+private func mitmCurl(_ exchange: MitmExchangeDetail, body: MitmBody?) -> String {
+    let bytes = body.flatMap { Data(base64Encoded: $0.data) } ?? Data()
+    let url = URL(string: exchange.url)
+    let authority: String? = {
+        guard let host = url?.host else { return nil }
+        if let port = url?.port { return "\(host):\(port)" }
+        return host
+    }()
+    let method = exchange.method
+    let hasBody = !bytes.isEmpty
+    var arguments = [mitmShellQuoted(exchange.url)]
+    if method == "HEAD" {
+        arguments.append("--head")
+    } else if method != (hasBody ? "POST" : "GET") {
+        arguments.append("-X \(mitmShellQuoted(method))")
+    }
+    var compressed = false
+    for (name, values) in exchange.sortedHeaders(response: false) {
+        let lower = name.lowercased()
+        for value in values {
+            if lower == "content-length" { continue }
+            if lower == "host", value == authority { continue }
+            if lower == "content-encoding", hasBody, (body?.encoding ?? "").isEmpty { continue }
+            if lower == "accept-encoding" { compressed = true }
+            arguments.append("-H \(mitmShellQuoted("\(name): \(value)"))")
+        }
+    }
+    if compressed { arguments.append("--compressed") }
+    var input = ""
+    if hasBody {
+        if let text = mitmBodyText(bytes, truncated: body?.truncated == true) {
+            arguments.append("--data-raw \(mitmShellQuoted(text))")
+        } else {
+            input = "printf '%s' '\(bytes.base64EncodedString())' | base64 --decode | "
+            arguments.append("--data-binary @-")
+        }
+    }
+    return "\(input)curl \(arguments.joined(separator: " \\\n  "))"
+}
+
+private func mitmRawMessage(startLine: String, headers: [(String, [String])], body: MitmBody?) -> String {
+    var out = startLine
+    for (name, values) in headers {
+        for value in values { out += "\n\(name): \(value)" }
+    }
+    if let body, !body.data.isEmpty { out += "\n\n\(mitmBodyCopyText(body))" }
+    return out
+}
+
+/// `exchange`'s request as HTTP/1 text; a body that is not text
+/// is Base64 (upstream mitmRawRequest).
+private func mitmRawRequest(_ exchange: MitmExchangeDetail, body: MitmBody?) -> String {
+    let url = URL(string: exchange.url)
+    let target: String
+    if let url, url.host != nil {
+        let path = url.path.isEmpty ? "/" : url.path
+        target = url.query.map { "\(path)?\($0)" } ?? path
+    } else {
+        target = exchange.url
+    }
+    return mitmRawMessage(
+        startLine: "\(exchange.method) \(target) \(exchange.proto ?? "")",
+        headers: exchange.sortedHeaders(response: false), body: body)
+}
+
+/// `exchange`'s response as HTTP/1 text (upstream mitmRawResponse).
+private func mitmRawResponse(_ exchange: MitmExchangeDetail, body: MitmBody?) -> String {
+    mitmRawMessage(
+        startLine: "\(exchange.proto ?? "") \(exchange.status)",
+        headers: exchange.sortedHeaders(response: true), body: body)
+}
+
+private func mitmHarHeaders(_ headers: [(String, [String])]) -> [[String: String]] {
+    headers.flatMap { name, values in values.map { ["name": name, "value": $0] } }
+}
+
+private func mitmHarText(_ body: MitmBody) -> [String: Any] {
+    let bytes = Data(base64Encoded: body.data) ?? Data()
+    let text = (body.encoding ?? "").isEmpty ? mitmBodyText(bytes, truncated: body.truncated == true) : nil
+    var out: [String: Any] = ["text": text ?? body.data]
+    if text == nil { out["encoding"] = "base64" }
+    if body.truncated == true { out["comment"] = "truncated" }
+    return out
+}
+
+/// `exchange` with its bodies as an HTTP Archive 1.2 log, which
+/// browser developer tools import (upstream mitmHar).
+private func mitmHar(_ exchange: MitmExchangeDetail, request: MitmBody?, response: MitmBody?) -> String {
+    let requestType = exchange.headerValue("Content-Type", response: false)
+    let responseType = exchange.headerValue("Content-Type", response: true)
+    let ttfb = (exchange.ttfb ?? 0) > 0 ? (exchange.ttfb ?? 0) : exchange.duration
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    let started = ISO8601DateFormatter().date(from: exchange.start)
+        .map { ISO8601DateFormatter().string(from: $0) } ?? exchange.start
+    var queryString: [[String: String]] = []
+    if let components = URLComponents(string: exchange.url), let items = components.queryItems {
+        queryString = items.map { ["name": $0.name, "value": $0.value ?? ""] }
+    }
+    var requestDict: [String: Any] = [
+        "method": exchange.method,
+        "url": exchange.url,
+        "httpVersion": exchange.proto ?? "",
+        "cookies": [],
+        "headers": mitmHarHeaders(exchange.sortedHeaders(response: false)),
+        "queryString": queryString,
+        "headersSize": -1,
+        "bodySize": exchange.requestSize,
+    ]
+    if let request, !request.data.isEmpty {
+        let requestText = mitmHarText(request)
+        var postData: [String: Any] = ["mimeType": requestType]
+        if let text = requestText["text"] as? String { postData["text"] = text }
+        if let encoding = requestText["encoding"] as? String { postData["_encoding"] = encoding }
+        requestDict["postData"] = postData
+    }
+    var content: [String: Any] = [
+        "size": response.map { Data(base64Encoded: $0.data)?.count ?? Int(exchange.responseSize) } ?? Int(exchange.responseSize),
+        "mimeType": responseType.isEmpty ? "x-unknown" : responseType,
+    ]
+    if let response { content.merge(mitmHarText(response)) { _, new in new } }
+    let entry: [String: Any] = [
+        "startedDateTime": started,
+        "time": exchange.duration,
+        "request": requestDict,
+        "response": [
+            "status": exchange.status,
+            "statusText": "",
+            "httpVersion": exchange.proto ?? "",
+            "cookies": [],
+            "headers": mitmHarHeaders(exchange.sortedHeaders(response: true)),
+            "content": content,
+            "redirectURL": exchange.headerValue("Location", response: true),
+            "headersSize": -1,
+            "bodySize": exchange.responseSize,
+        ],
+        "cache": [:],
+        "timings": [
+            "send": 0,
+            "wait": ttfb,
+            "receive": exchange.duration > ttfb ? exchange.duration - ttfb : 0,
+        ],
+    ]
+    var logEntry = entry
+    if let connection = exchange.connection, !connection.isEmpty {
+        logEntry["connection"] = connection
+    }
+    let log: [String: Any] = [
+        "log": [
+            "version": "1.2",
+            "creator": ["name": "Concord", "version": version],
+            "entries": [logEntry],
+        ],
+    ]
+    guard let data = try? JSONSerialization.data(withJSONObject: log, options: [.prettyPrinted]),
+          let text = String(data: data, encoding: .utf8) else { return "{}" }
+    return text
 }

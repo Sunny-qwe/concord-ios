@@ -103,7 +103,7 @@ struct LogsView: View {
                         .padding(.vertical, 4)
                     }
 
-                    if logStore.filtered.isEmpty {
+                    if logStore.filtered.isEmpty && logStore.vpnDiagnosticEntries.isEmpty {
                         // The user asked for this order explicitly
                         // (v0.2.49, IMG_1165): the diagnostic cards
                         // sit right under the filters and the
@@ -120,35 +120,22 @@ struct LogsView: View {
                         }
                     } else {
                         ScrollViewReader { proxy in
-                            List(logStore.filtered) { entry in
-                                // C8: a row opens its detail sheet
-                                // (full text, selectable, with copy);
-                                // the list itself still truncates to
-                                // 3 lines.
-                                Button {
-                                    selectedEntry = entry
-                                } label: {
-                                    HStack(alignment: .top, spacing: 8) {
-                                        Text(ConcordFormat.time(entry.time))
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .frame(width: 64, alignment: .leading)
-                                        Text(entry.level.uppercased())
-                                            .font(.caption2)
-                                            .fontWeight(.semibold)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(levelColor(entry.level).opacity(0.15), in: Capsule())
-                                            .foregroundStyle(levelColor(entry.level))
-                                        Text(entry.text)
-                                            .font(.caption2)
-                                            .lineLimit(3)
+                            List {
+                                // Native iOS VPN diagnostic logs
+                                // (L-M1): the extension's own
+                                // diagnostic files, prepended to the
+                                // core logs like upstream prepends its
+                                // native logs (logs.dart _setLogs).
+                                if !logStore.vpnDiagnosticEntries.isEmpty {
+                                    Section("VPN 诊断日志") {
+                                        ForEach(logStore.vpnDiagnosticEntries) { entry in
+                                            logRow(entry, selectedEntry: $selectedEntry)
+                                        }
                                     }
                                 }
-                                .buttonStyle(.plain)
-                                .id(entry.id)
-                                .onAppear { if entry.id == logStore.filtered.last?.id { followingLogs = true } }
-                                .onDisappear { if entry.id == logStore.filtered.last?.id { followingLogs = false } }
+                                ForEach(logStore.filtered) { entry in
+                                    logRow(entry, selectedEntry: $selectedEntry)
+                                }
                             }
                             .listStyle(.insetGrouped)
                             .scrollContentBackground(.hidden)
@@ -442,6 +429,104 @@ struct LogsView: View {
         showCopiedAlert = true
     }
 
+    /// One log row (shared by the core list and the VPN diagnostic
+    /// section). C8: a row opens its detail sheet (full text,
+    /// selectable, with copy); the list itself still truncates.
+    /// L-D3: the level pill is tappable and adds a level filter,
+    /// like upstream (logs.dart:256-259); tapping the rest of the
+    /// row opens the detail sheet.
+    private func logRow(_ entry: ConcordLogEntry, selectedEntry: Binding<ConcordLogEntry?>) -> some View {
+        Button {
+            selectedEntry.wrappedValue = entry
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Text(ConcordFormat.time(entry.time))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 64, alignment: .leading)
+                Button {
+                    // "WARN" and "WARNING" are the same level.
+                    let level = entry.level.uppercased() == "WARN" ? "WARNING" : entry.level.uppercased()
+                    if let filter = LogLevelFilter(rawValue: level) {
+                        logStore.levelFilter = filter
+                    }
+                } label: {
+                    Text(entry.level.uppercased())
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(levelColor(entry.level).opacity(0.15), in: Capsule())
+                        .foregroundStyle(levelColor(entry.level))
+                }
+                .buttonStyle(.plain)
+                logBody(entry)
+            }
+        }
+        .buttonStyle(.plain)
+        .id(entry.id)
+        .onAppear { if entry.id == logStore.filtered.last?.id { followingLogs = true } }
+        .onDisappear { if entry.id == logStore.filtered.last?.id { followingLogs = false } }
+    }
+
+    /// Parsed route body (L-M2, upstream logs.dart _LogBody):
+    /// destination as the title, the error in the error colour,
+    /// `rule → proxy`, and the tag/source line. A line that does not
+    /// match the route/dial patterns falls back to the raw text.
+    @ViewBuilder
+    private func logBody(_ entry: ConcordLogEntry) -> some View {
+        let payload = LogPayload.parse(entry.text)
+        if let route = payload.route {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(route.destination)
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                if !route.error.isEmpty {
+                    Text(route.error)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+                HStack(spacing: 0) {
+                    if !route.rule.isEmpty {
+                        Text(route.rule)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(" → ")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(route.proxy)
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(ConcordTheme.accent)
+                }
+                .lineLimit(1)
+                let sourceText = [payload.tag, route.source, route.sourceDetail]
+                    .filter { !$0.isEmpty }.joined(separator: "  ·  ")
+                if !sourceText.isEmpty {
+                    Text(sourceText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(payload.message)
+                    .font(.caption2)
+                    .lineLimit(3)
+                if !payload.tag.isEmpty {
+                    Text(payload.tag)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
     private func levelColor(_ level: String) -> Color {
         switch level.uppercased() {
         case "ERROR": return .red
@@ -514,4 +599,93 @@ struct ShareSheet: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+// Minimal share sheet (UIActivityViewController wrapper).
+struct ShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}
+
+/// Parsed log line (upstream lib/common/log_payload.dart, mirroring
+/// the wording of the routing and dial-failure lines in mihomo's
+/// tunnel/tunnel.go): a `[TAG] message` line whose message matches a
+/// route or dial pattern yields destination / rule → proxy / error /
+/// source; a line that stops matching falls back to plain text.
+private struct LogPayload {
+    struct Route {
+        let source: String
+        let sourceDetail: String
+        let destination: String
+        let rule: String
+        let proxy: String
+        let error: String
+    }
+
+    let tag: String
+    let message: String
+    let route: Route?
+
+    private static let endpoint = #"((?:\[[^\]]+\]|[^\s\[\]()]+):\d+|mihomo)(?:\((.*)\))?"#
+
+    private static func regex(_ pattern: String, dotAll: Bool = false) -> NSRegularExpression? {
+        try? NSRegularExpression(
+            pattern: pattern,
+            options: dotAll ? [.dotMatchesLineSeparators] : [])
+    }
+
+    private static let tagRegex = regex(#"^\[([^\]]+)\] (.+)$"#, dotAll: true)
+
+    private static var routeRegex: NSRegularExpression? {
+        regex("^" + endpoint + #" --> (\S+) (?:(?:match (.+?)|(doesn't match any rule)) )?using (.+)$"#)
+    }
+
+    private static var dialRegex: NSRegularExpression? {
+        regex(#"^dial (.+?) (?:\(match (.+?)\) )?"# + endpoint + #" --> (\S+) error: (.+)$"#, dotAll: true)
+    }
+
+    private static func group(_ match: NSTextCheckingResult, _ index: Int, in text: String) -> String {
+        let range = match.range(at: index)
+        guard range.location != NSNotFound, let swiftRange = Range(range, in: text) else { return "" }
+        return String(text[swiftRange])
+    }
+
+    static func parse(_ payload: String) -> LogPayload {
+        let fullRange = NSRange(payload.startIndex..., in: payload)
+        guard let tagMatch = tagRegex?.firstMatch(in: payload, range: fullRange) else {
+            return LogPayload(tag: "", message: payload, route: nil)
+        }
+        let tag = group(tagMatch, 1, in: payload)
+        let message = group(tagMatch, 2, in: payload)
+        return LogPayload(tag: tag, message: message, route: parseRoute(message))
+    }
+
+    private static func parseRoute(_ message: String) -> Route? {
+        let range = NSRange(message.startIndex..., in: message)
+        if let match = routeRegex?.firstMatch(in: message, range: range) {
+            let rule = group(match, 4, in: message)
+            return Route(
+                source: group(match, 1, in: message),
+                sourceDetail: group(match, 2, in: message),
+                destination: group(match, 3, in: message),
+                rule: rule.isEmpty ? group(match, 5, in: message) : rule,
+                proxy: group(match, 6, in: message),
+                error: "")
+        }
+        if let match = dialRegex?.firstMatch(in: message, range: range) {
+            return Route(
+                proxy: group(match, 1, in: message),
+                rule: group(match, 2, in: message),
+                source: group(match, 3, in: message),
+                sourceDetail: group(match, 4, in: message),
+                destination: group(match, 5, in: message),
+                error: group(match, 6, in: message))
+        }
+        return nil
+    }
 }

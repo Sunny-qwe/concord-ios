@@ -1,6 +1,8 @@
 import SwiftUI
 import AVFoundation
 import UIKit
+import PhotosUI
+import CoreImage
 
 // MARK: - Scan import (FlClash: lib/pages/scan.dart)
 // Camera QR scanner for subscription / node-link import. A scanned
@@ -20,6 +22,11 @@ struct ScanImportView: View {
     @State private var invalidHint = false
     @State private var torchOn = false
     @State private var didScan = false
+    /// Pick-from-album (FlClash scan.dart _pickFromAlbum): scan a QR
+    /// code from a saved image instead of the camera.
+    @State private var albumItem: PhotosPickerItem?
+    @State private var albumError: String?
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -58,6 +65,20 @@ struct ScanImportView: View {
                     authorization = granted ? .authorized : .denied
                 }
             }
+            .onChange(of: scenePhase) { _, phase in
+                // Returning from Settings after granting the camera:
+                // re-read the status so the camera starts without
+                // leaving and re-entering the page. A denied status
+                // is never re-requested here (that would re-open the
+                // system dialog as soon as the user dismisses it).
+                if phase == .active {
+                    authorization = AVCaptureDevice.authorizationStatus(for: .video)
+                }
+            }
+            .onChange(of: albumItem) { _, item in
+                guard let item else { return }
+                Task { await scanAlbumItem(item) }
+            }
         }
     }
 
@@ -74,18 +95,65 @@ struct ScanImportView: View {
                 .font(.footnote)
                 .foregroundStyle(invalidHint ? .red : .white)
                 .padding(.top, 20)
-            Button {
-                torchOn.toggle()
-            } label: {
-                Image(systemName: torchOn ? "flashlight.on.fill" : "flashlight.off.fill")
-                    .font(.title2)
-                    .foregroundStyle(.white)
-                    .frame(width: 56, height: 56)
-                    .background(Color.white.opacity(0.2), in: Circle())
+            if let albumError {
+                Text(albumError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
             }
-            .padding(.top, 28)
             Spacer()
+            HStack {
+                PhotosPicker(selection: $albumItem, matching: .images) {
+                    Label("从相册选择", systemImage: "photo.on.rectangle")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(Color.white.opacity(0.2), in: Capsule())
+                }
+                Spacer()
+                // FlClash scan.dart:454-456: torch is 64pt,
+                // bottom-right (beside the scan window on wide
+                // screens). Ours was a 56pt circle centred below
+                // the frame.
+                Button {
+                    torchOn.toggle()
+                } label: {
+                    Image(systemName: torchOn ? "flashlight.on.fill" : "flashlight.off.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .frame(width: 64, height: 64)
+                        .background(Color.white.opacity(0.2), in: Circle())
+                }
+                .accessibilityLabel("手电筒")
+                .disabled(!(AVCaptureDevice.default(for: .video)?.hasTorch ?? false))
+            }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 32)
         }
+    }
+
+    /// Decode a QR code from a picked album image (CIDetector) and
+    /// feed it through the same handleCode path as a camera scan.
+    private func scanAlbumItem(_ item: PhotosPickerItem) async {
+        albumError = nil
+        guard let data = try? await item.loadTransferable(type: Data.self),
+              let image = UIImage(data: data),
+              let cgImage = image.cgImage else {
+            albumError = "读取图片失败"
+            return
+        }
+        let code = await Task.detached(priority: .userInitiated) {
+            let ciImage = CIImage(cgImage: cgImage)
+            let options = [CIDetectorAccuracy: CIDetectorAccuracyHigh]
+            guard let detector = CIDetector(ofType: CIDetectorTypeQRCode, context: nil, options: options) else { return nil as String? }
+            let features = detector.features(in: ciImage)
+            return (features.first as? CIQRCodeFeature)?.messageString
+        }.value
+        guard let code else {
+            albumError = "图片里没有可识别的二维码"
+            return
+        }
+        handleCode(code)
     }
 
     private static let cornerAlignments: [Alignment] = [.topLeading, .topTrailing, .bottomLeading, .bottomTrailing]

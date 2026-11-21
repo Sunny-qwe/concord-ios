@@ -2,11 +2,11 @@ import SwiftUI
 
 // MARK: - Theme picker (Settings -> 主题)
 // Appearance (follow system / light / dark) + accent colour, from
-// ThemeStore. The preview card below the pickers is a live miniature
-// of the app's own design language, so the change is visible before
-// leaving the page. Changing either control saves immediately
-// (ThemeStore.save) and the app root re-renders with the new scheme
-// and tint.
+// ThemeStore. The preview card at the top is a live miniature of
+// the app's own design language (FlClash puts its live preview
+// first too), so the change is visible before leaving the page.
+// Changing either control saves immediately (ThemeStore.save) and
+// the app root re-renders with the new scheme and tint.
 
 struct ThemePickerView: View {
     @EnvironmentObject private var themeStore: ThemeStore
@@ -20,17 +20,81 @@ struct ThemePickerView: View {
     @State private var showResetConfirm = false
 
     /// FlClash defaultPrimaryColors (common/constant.dart:196-205)
-    /// not covered by the 5 ThemeAccent presets: pink, red, yellow.
-    /// They are applied as a custom hex (ThemeStore's accent enum
-    /// is owned by the store file), bringing the preset total to 8.
+    /// not covered by the 5 ThemeAccent presets: pink, red, yellow,
+    /// grey. They are applied as a custom hex (ThemeStore's accent
+    /// enum is owned by the store file), bringing the preset total
+    /// to 9 — upstream's 8 plus the teal preset this app already
+    /// shipped (kept, not removed).
     private static let extraPresets: [(label: String, hex: String)] = [
         ("粉色", "#FF2D55"),
         ("红色", "#FF383C"),
         ("黄色", "#FFCC00"),
+        ("灰色", "#8E8E93"),
     ]
 
     var body: some View {
         List {
+            Section("预览") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        BlobIcon(systemName: "globe", iconColor: .white, blobColor: themeStore.accentColor, size: 56)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("仪表盘")
+                                .font(.caption.weight(.semibold))
+                            Text("这就是换主题后的样子")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        PillBadge(text: "运行中", tint: .green)
+                    }
+                    CapsuleProgressBar(fraction: 0.62)
+                    HStack(spacing: 8) {
+                        ForEach(["规则", "全局", "直连"], id: \.self) { mode in
+                            Text(mode)
+                                .font(.footnote)
+                                .fontWeight(.semibold)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 6)
+                                .background(mode == "规则" ? themeStore.accentColor : ConcordTheme.softFill, in: Capsule())
+                                .foregroundStyle(mode == "规则" ? .white : Color(.label))
+                        }
+                    }
+                    // NAGRAM-style VPN row (v0.2.46 ITEM 2): the
+                    // preview depicts the running state (its header
+                    // pill says 运行中), so it shows the blue shield
+                    // + "已连接" + an ON toggle. The toggle stays
+                    // decorative — bound to local $previewVpnOn
+                    // only, never wired to start/stop the VPN.
+                    // (VpnGlyphIcon is file-private to
+                    // DashboardView, so the preview uses the SF
+                    // shield.fill glyph: white shield on the same
+                    // blue flower badge.)
+                    HStack(spacing: 12) {
+                        ZStack {
+                            FlowerBadgeShape()
+                                .fill(Color.blue)
+                                .frame(width: 40, height: 40)
+                            Image(systemName: "shield.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                        .frame(width: 40, height: 40)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("VPN")
+                                .font(.system(size: 14, weight: .semibold))
+                            Text("已连接")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Toggle("", isOn: $previewVpnOn)
+                            .labelsHidden()
+                            .tint(.blue)
+                    }
+                }
+                .concordCard()
+            }
             Section("外观") {
                 ForEach(ThemeAppearance.allCases) { appearance in
                     Button {
@@ -223,6 +287,44 @@ struct ThemePickerView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // FlClash theme.dart _TabAnimationItem (enum.dart:825):
+            // slide / fade, default fade. The choice is stored in
+            // ThemeStore; the bottom-tab container that applies it
+            // lives in ContentView (not this file), which reads
+            // themeStore.tabAnimation.
+            Section("标签页切换动画") {
+                Picker("标签页切换动画", selection: $themeStore.tabAnimation) {
+                    ForEach(ThemeTabAnimation.allCases) { animation in
+                        Text(animation.label).tag(animation)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: themeStore.tabAnimation) { _, _ in themeStore.save() }
+                Text("滑动：页面左右滑动切换；淡入：页面淡入淡出切换。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            // FlClash theme.dart _LiquidGlassItem (enum.dart:827):
+            // none / standard / ultra, default none. Stored in
+            // ThemeStore; liquid glass needs iOS 26 glass rendering
+            // in the tab bar, which this iOS 17-target build does
+            // not do — the choice is saved and takes effect once
+            // the tab bar renders glass, it does nothing visible
+            // today.
+            Section("液态玻璃") {
+                Picker("液态玻璃", selection: $themeStore.liquidGlass) {
+                    ForEach(ThemeLiquidGlassMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: themeStore.liquidGlass) { _, _ in themeStore.save() }
+                Text("液态玻璃需要 iOS 26 及支持玻璃材质的界面；当前版本只保存你的选择，界面暂无可见变化。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("文字大小") {
                 Toggle("自定义文字大小", isOn: $themeStore.textScaleEnabled)
                     .onChange(of: themeStore.textScaleEnabled) { _, _ in themeStore.save() }
@@ -231,7 +333,7 @@ struct ThemePickerView: View {
                         Text("小")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        Slider(value: $themeStore.textScale, in: 0.8...1.3, step: 0.1)
+                        Slider(value: $themeStore.textScale, in: 0.8...1.4, step: 0.05)
                             .onChange(of: themeStore.textScale) { _, _ in themeStore.save() }
                         Text("大")
                             .font(.caption2)
@@ -252,67 +354,6 @@ struct ThemePickerView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("预览") {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        BlobIcon(systemName: "globe", iconColor: .white, blobColor: themeStore.accentColor, size: 56)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("仪表盘")
-                                .font(.caption.weight(.semibold))
-                            Text("这就是换主题后的样子")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        PillBadge(text: "运行中", tint: .green)
-                    }
-                    CapsuleProgressBar(fraction: 0.62)
-                    HStack(spacing: 8) {
-                        ForEach(["规则", "全局", "直连"], id: \.self) { mode in
-                            Text(mode)
-                                .font(.footnote)
-                                .fontWeight(.semibold)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 6)
-                                .background(mode == "规则" ? themeStore.accentColor : ConcordTheme.softFill, in: Capsule())
-                                .foregroundStyle(mode == "规则" ? .white : Color(.label))
-                        }
-                    }
-                    // NAGRAM-style VPN row (v0.2.46 ITEM 2): the
-                    // preview depicts the running state (its header
-                    // pill says 运行中), so it shows the blue shield
-                    // + "已连接" + an ON toggle. The toggle stays
-                    // decorative — bound to local $previewVpnOn
-                    // only, never wired to start/stop the VPN.
-                    // (VpnGlyphIcon is file-private to
-                    // DashboardView, so the preview uses the SF
-                    // shield.fill glyph: white shield on the same
-                    // blue flower badge.)
-                    HStack(spacing: 12) {
-                        ZStack {
-                            FlowerBadgeShape()
-                                .fill(Color.blue)
-                                .frame(width: 40, height: 40)
-                            Image(systemName: "shield.fill")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.white)
-                        }
-                        .frame(width: 40, height: 40)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("VPN")
-                                .font(.system(size: 14, weight: .semibold))
-                            Text("已连接")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Toggle("", isOn: $previewVpnOn)
-                            .labelsHidden()
-                            .tint(.blue)
-                    }
-                }
-                .concordCard()
-            }
         }
         .scrollContentBackground(.hidden)
         .font(.footnote.weight(.semibold))

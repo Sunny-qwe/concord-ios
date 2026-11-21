@@ -49,6 +49,10 @@ struct DashboardView: View {
     @AppStorage("ConcordiOS.dashboard.show.stats") private var showStats = true
     @AppStorage("ConcordiOS.dashboard.show.memory") private var showMemory = true
     @AppStorage("ConcordiOS.dashboard.show.update") private var showUpdate = true
+    /// Traffic statistics card (MuYu TrafficStatisticsCard, D-M8):
+    /// today's up/down + uptime. Week/month ranges are not recorded
+    /// yet — the detail sheet says so honestly.
+    @AppStorage("ConcordiOS.dashboard.show.traffic") private var showTraffic = true
     /// Compact density (FlClash layout.dart DashboardDensity.compact):
     /// smaller type, smaller start button and tiles, subtitles dropped.
     @AppStorage("ConcordiOS.dashboard.densityCompact") private var densityCompact = false
@@ -59,11 +63,21 @@ struct DashboardView: View {
 
     @State private var showEditSheet = false
     @State private var servicesExpanded = false
+    /// IP quality sheet (D-M4): the status card's IP opens the
+    /// IP-quality page for that exact IP.
+    @State private var showIPQualitySheet = false
+    /// Service management sheet (D-M3): reorder + enable/disable
+    /// the probe-service targets.
+    @State private var showServiceManageSheet = false
+    /// Stat-cell destination sheet (D-M6): live / recent
+    /// connections, or the DNS queries page.
+    @State private var statsDestination: StatsDestination?
+    /// Traffic statistics detail sheet (D-M8).
+    @State private var showTrafficDetail = false
     @State private var tunnelStartedAt: Date?
     @State private var subscription: ConcordSubscriptionInfo?
     @State private var intranetIp: String?
     @State private var ipInfo: IPQualityInfo?
-    @State private var ipLatencyMs: Int?
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
     @State private var ipFetchFailed = false
@@ -381,10 +395,9 @@ struct DashboardView: View {
     /// follows the tunnel, so the answer is the proxy egress IP;
     /// when it is off, it is the phone's direct IP.
     private func fetchIPInfo() async {
-        guard let url = URL(string: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon") else { return }
+        guard let url = URL(string: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting") else { return }
         ipChecking = true
         defer { ipChecking = false }
-        let started = Date()
         do {
             // Interface B3 (DashboardView part): a stalled ip-api.com
             // used to hang this lookup forever (URLSession.shared
@@ -395,7 +408,6 @@ struct DashboardView: View {
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { ipFetchFailed = true; return }
             let decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
             guard decoded.status == "success" else { ipFetchFailed = true; return }
-            ipLatencyMs = Int(Date().timeIntervalSince(started) * 1000)
             ipInfo = decoded
             ipAsn = (try? JSONDecoder().decode(IPApiAsField.self, from: data))?.asNumber
             ipFetchFailed = false
@@ -408,16 +420,18 @@ struct DashboardView: View {
         }
     }
 
-    /// Quality pill from the lookup latency (FlClash shows "质量 优"
-    /// next to the IP; the thresholds are ours — the reference only
-    /// shows the 优 state).
-    private enum IPQualityLevel { case good, fair, poor }
-
-    private var ipQuality: (text: String, level: IPQualityLevel)? {
-        guard let ms = ipLatencyMs else { return nil }
-        if ms <= 500 { return ("质量 优", .good) }
-        if ms <= 1500 { return ("质量 良", .fair) }
-        return ("质量 差", .poor)
+    /// The ip-api.com answer assessed like upstream (D-D3): the
+    /// type and level come from the real hosting/mobile/proxy
+    /// flags — the old code derived "质量 优/良/差" from the
+    /// lookup latency, which says nothing about the IP. ip-api.com
+    /// states no type, so silence about hosting/mobile reads as
+    /// residential, flagged inferred (upstream _pickType fallback).
+    private var assessedIpInfo: IPQualityInfo? {
+        guard let info = ipInfo else { return nil }
+        let type: IpQualityType = info.hosting == true ? .hosting
+            : (info.mobile == true ? .mobile : .residential)
+        let inferred = info.hosting != true && info.mobile != true
+        return info.assessed(type: type, inferred: inferred, isProxy: info.proxyFlag == true)
     }
 
     private func refreshAll() async {
@@ -499,6 +513,12 @@ struct DashboardView: View {
             // only the fallback when the extension has not written
             // the file yet.
             tunnelStartedAt = running ? (tunnelStartedAt ?? tunnelManager.readTunnelStartedAt() ?? Date()) : nil
+            // D-M7: hold the service/IP-probe results through the
+            // start — a stale pre-start result must not flash as
+            // current. The next services probe clears the hold
+            // (TrafficStore.probeServices), and the services card
+            // shows the held state until then.
+            if running { trafficStore.holdServices() }
             // Morph circle -> cookie9 over 450ms (easeOutBack, the
             // forward curve of FlClash's _StartToggle).
             withAnimation(.timingCurve(0.34, 1.56, 0.64, 1, duration: 0.45)) {
@@ -510,7 +530,6 @@ struct DashboardView: View {
             // so the status card shows the current proxy egress IP.
             if running {
                 ipInfo = nil
-                ipLatencyMs = nil
                 ipAsn = nil
                 ipFetchFailed = false
             }
@@ -539,6 +558,7 @@ struct DashboardView: View {
             DashboardEditSheet(
                 showStatus: $showStatus,
                 showSpeed: $showSpeed,
+                showTraffic: $showTraffic,
                 showMode: $showMode,
                 showVpn: $showVpn,
                 showIntranet: $showIntranet,
@@ -573,6 +593,49 @@ struct DashboardView: View {
                     }
                 }
             )
+        }
+        .sheet(isPresented: $showTrafficDetail) {
+            TrafficStatsDetailSheet(
+                todayUp: trafficStore.todayUp,
+                todayDown: trafficStore.todayDown,
+                totalUp: trafficStore.current.totalUp,
+                totalDown: trafficStore.current.totalDown,
+                uptimeText: uptimeText
+            )
+        }
+        // D-M6: a stat cell opens its source page — live/recent
+        // connections, or the DNS queries page for the DNS cell.
+        .sheet(item: $statsDestination) { destination in
+            NavigationStack {
+                switch destination {
+                case .live:
+                    ConnectionsView(initialFeed: .live)
+                        .navigationTitle("连接")
+                        .navigationBarTitleDisplayMode(.inline)
+                case .recent:
+                    ConnectionsView(initialFeed: .recent)
+                        .navigationTitle("连接")
+                        .navigationBarTitleDisplayMode(.inline)
+                case .dns:
+                    DnsQueriesView()
+                }
+            }
+        }
+        // D-M4: the status card's IP opens the IP-quality page for
+        // that exact IP (upstream showIpQualitySheet is always
+        // opened for one IP).
+        .sheet(isPresented: $showIPQualitySheet) {
+            NavigationStack {
+                if let ip = displayIp {
+                    IPQualityView(ip: ip)
+                } else {
+                    IPQualityView()
+                }
+            }
+        }
+        // D-M3: manage the probe-service targets (order + enabled).
+        .sheet(isPresented: $showServiceManageSheet) {
+            ServiceManageSheet()
         }
         // The dashboard's consent prompt (fork 0a55a31): the same
         // prompt the modules page uses, asked over the dashboard
@@ -672,6 +735,7 @@ struct DashboardView: View {
                 }
             }
         case .speed: if showSpeed { speedCard }
+        case .traffic: if showTraffic { trafficCard }
         case .mode: if showMode { modeCard }
         case .vpn: if showVpn { vpnCardSection }
         case .intranet: if showIntranet { intranetCard }
@@ -680,7 +744,11 @@ struct DashboardView: View {
         case .groups: if showGroups { groupsCard }
         case .stats: if showStats { statsCard }
         case .memory: if showMemory { memoryCard }
-        case .update: if showUpdate { updateCard }
+        // D-D1: the update card only shows while a check is running
+        // or a newer commit was found — a quiet "已是最新" card is
+        // noise on every dashboard open. Checking is still offered
+        // from the About page when the card is hidden.
+        case .update: if showUpdate && (isCheckingUpdate || lastUpdateIsNew) { updateCard }
         }
     }
 
@@ -694,6 +762,24 @@ struct DashboardView: View {
             Text("tab.dashboard".l10n)
                 .font(.system(size: 24, weight: .semibold))
             Spacer()
+            // D-M2: core-status button — shown only while the VPN
+            // is off, one tap starts it (the same path as the play
+            // button). There is no separate core-restart API: the
+            // core lives in the extension and starts with the VPN.
+            if !proxyStore.isRunning {
+                Button {
+                    Task { await proxyStore.toggle() }
+                } label: {
+                    Label("启动", systemImage: "play.fill")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(ConcordTheme.accent, in: Capsule())
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("启动 VPN")
+            }
             Button { showEditSheet = true } label: {
                 ThickPencilIcon(iconColor: editButtonIconColor, bandColor: editButtonBackground)
                     .frame(width: 44, height: 44)
@@ -795,8 +881,11 @@ struct DashboardView: View {
             } else if ipInfo != nil {
                 HStack(spacing: 8) {
                     PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
-                    if let quality = ipQuality {
-                        qualityPill(text: quality.text, level: quality.level)
+                    if let assessed = assessedIpInfo, let level = assessed.qualityLevel {
+                        // D-D3: the quality pill comes from the real
+                        // IP type/level (hosting → 普通, else 优),
+                        // not from the lookup latency.
+                        qualityPill(text: "质量 \(level.label)", level: level)
                     } else {
                         // FlClash _IpChips: quality null and not
                         // loading shows a "类型未知" chip.
@@ -860,12 +949,27 @@ struct DashboardView: View {
                         CloverBadge(
                             countryCode: proxyStore.isRunning ? ipInfo?.countryCode : nil,
                             checking: ipChecking,
-                            onRefresh: { Task { await fetchIPInfo() } }
+                            // D-D9: the clover refresh re-probes the
+                            // egress IP through the core as well as
+                            // the ip-api.com lookup, so the status
+                            // card's IP and the core probe agree.
+                            onRefresh: {
+                                Task {
+                                    await fetchIPInfo()
+                                    await trafficStore.probe()
+                                }
+                            }
                         )
                         VStack(alignment: .leading, spacing: 0) {
                             ipSlot
                             Spacer().frame(height: 4)
                             chipsSlot
+                        }
+                        // D-M4: tapping the IP block opens the
+                        // IP-quality page for that exact IP.
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if displayIp != nil { showIPQualitySheet = true }
                         }
                     }
                     Spacer().frame(height: 16)
@@ -935,13 +1039,15 @@ struct DashboardView: View {
 
     /// Quality pill with the reference's solid pastel colours (the
     /// shared PillBadge is paler); 13pt like the other pills.
-    private func qualityPill(text: String, level: IPQualityLevel) -> some View {
+    /// Levels are the IP-quality ones (IPQualityView): 优 green,
+    /// 普通 amber, 风险 red.
+    private func qualityPill(text: String, level: IpQualityLevel) -> some View {
         let bg: Color
         let fg: Color
         if level == .good {
             bg = Color(red: 0.80, green: 0.95, blue: 0.74)
             fg = Color(red: 0.15, green: 0.45, blue: 0.15)
-        } else if level == .fair {
+        } else if level == .normal {
             bg = Color(red: 1.0, green: 0.92, blue: 0.75)
             fg = Color(red: 0.72, green: 0.44, blue: 0.05)
         } else {
@@ -964,6 +1070,13 @@ struct DashboardView: View {
             HStack(spacing: 12) {
                 speedPanel(isUp: true)
                 speedPanel(isUp: false)
+            }
+            // D-M5: speed sparkline from the sampled history
+            // (TrafficStore.history, one point per traffic poll) —
+            // download in accent, upload in orange.
+            if trafficStore.history.count > 1 {
+                TrafficSparkline(history: trafficStore.history)
+                    .frame(height: 44)
             }
         }
         .concordCard()
@@ -1005,6 +1118,49 @@ struct DashboardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    // MARK: - Traffic statistics card (MuYu TrafficStatisticsCard, D-M8)
+    //
+    // Today's up/down come from TrafficStore's day-start baseline
+    // (cumulative core totals minus the midnight baseline); uptime
+    // is the tunnel start time. Week/month ranges need persisted
+    // history the app does not record yet — the detail sheet says
+    // so instead of inventing numbers.
+
+    private var trafficCard: some View {
+        Button { showTrafficDetail = true } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    CardTitleRow(icon: "chart.bar", title: "流量统计")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                HStack(spacing: 0) {
+                    trafficStatCell(value: ConcordFormat.bytes(trafficStore.todayUp), label: "今日上传")
+                    trafficStatCell(value: ConcordFormat.bytes(trafficStore.todayDown), label: "今日下载")
+                    trafficStatCell(value: uptimeText, label: "运行时间")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.plain)
+        .concordCard()
+    }
+
+    private func trafficStatCell(value: String, label: String) -> some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.system(size: statNumberSize, weight: .bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Outbound mode card
@@ -1327,9 +1483,21 @@ struct DashboardView: View {
                 .foregroundStyle(Color(.label))
             }
             .buttonStyle(.plain)
+            // D-M3: the card shows the first two *enabled* services
+            // (TrafficStore.enabledServiceNames), not a hardcoded
+            // google/github pair.
             HStack(spacing: 12) {
-                servicePill(for: service(named: "google"))
-                servicePill(for: service(named: "github"))
+                ForEach(Array(trafficStore.enabledServiceNames.prefix(2)), id: \.self) { name in
+                    servicePill(for: service(named: name))
+                }
+            }
+            // D-M7: the held state after a VPN start — the pre-start
+            // results are held, not shown as current, until the
+            // next probe lands.
+            if trafficStore.servicesHeld {
+                Text("检测结果已暂停：VPN 刚启动，等待下次检测刷新。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             if servicesExpanded {
                 expandedServices
@@ -1385,10 +1553,18 @@ struct DashboardView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
+                // D-M3: each row shows region + proxy chains + status
+                // + delay (ConcordServiceItem carries all four).
                 ForEach(trafficStore.services) { service in
                     HStack {
                         Text(service.name).font(.footnote)
                         Spacer()
+                        if let chains = service.chains, !chains.isEmpty {
+                            Text(chains.joined(separator: " → "))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                         if let region = service.region, !region.isEmpty {
                             Text(region).font(.caption2).foregroundStyle(.secondary)
                         }
@@ -1400,17 +1576,36 @@ struct DashboardView: View {
                     }
                 }
             }
-            Button("检测") {
-                Task {
-                    if let proxy = proxyStore.selectedOutbound {
-                        await trafficStore.probeServices(proxy: proxy)
+            HStack(spacing: 8) {
+                Button("检测") {
+                    Task {
+                        if let proxy = proxyStore.selectedOutbound {
+                            await trafficStore.probeServices(proxy: proxy)
+                        }
                     }
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(ConcordTheme.accent)
+                .controlSize(.small)
+                .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
+                // D-M3: 全部检测 probes every registry service,
+                // including ones disabled in 管理服务 (检测 only
+                // probes the enabled ones).
+                Button("全部检测") {
+                    Task {
+                        if let proxy = proxyStore.selectedOutbound {
+                            await trafficStore.probeServices(proxy: proxy, names: trafficStore.orderedServiceNames)
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
+                Spacer()
+                Button("管理服务") { showServiceManageSheet = true }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(ConcordTheme.accent)
-            .controlSize(.small)
-            .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
             Divider()
             LabeledContent("引擎", value: trafficStore.engineStatus.map { engineStateLabel($0.state) } ?? (proxyStore.isRunning ? "已启动" : "已停止"))
                 .font(.footnote.weight(.semibold))
@@ -1646,9 +1841,9 @@ struct DashboardView: View {
                 Spacer()
             }
             HStack(spacing: 0) {
-                statCell(value: dashboardCount(connectionStore.connections.count), label: "实时连接")
-                statCell(value: dashboardCount(eventStore.entries.count), label: "最近请求")
-                statCell(value: dashboardCount(dnsStore.entries.count), label: "DNS查询")
+                statCell(value: dashboardCount(connectionStore.connections.count), label: "实时连接", destination: .live)
+                statCell(value: dashboardCount(eventStore.entries.count), label: "最近请求", destination: .recent)
+                statCell(value: dashboardCount(dnsStore.entries.count), label: "DNS查询", destination: .dns)
             }
         }
         .concordCard()
@@ -1673,15 +1868,20 @@ struct DashboardView: View {
         return "\(String(format: "%.1f", millions))M"
     }
 
-    private func statCell(value: String, label: String) -> some View {
-        VStack(spacing: 4) {
-            Text(value)
-                .font(.system(size: statNumberSize, weight: .bold))
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+    /// D-M6: a stat cell opens its source page — live/recent
+    /// connections, or the DNS queries page for the DNS cell.
+    private func statCell(value: String, label: String, destination: StatsDestination) -> some View {
+        Button { statsDestination = destination } label: {
+            VStack(spacing: 4) {
+                Text(value)
+                    .font(.system(size: statNumberSize, weight: .bold))
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
+        .buttonStyle(.plain)
     }
 
     // MARK: - Memory card (FlClash memory_info.dart)
@@ -1819,6 +2019,184 @@ struct DashboardView: View {
             }
         }
         .concordCard()
+    }
+}
+
+/// A dashboard stat cell's destination sheet (D-M6).
+private enum StatsDestination: String, Identifiable {
+    case live, recent, dns
+
+    var id: String { rawValue }
+}
+
+/// Speed sparkline (D-M5): the sampled traffic history as two
+/// polylines — download in accent, upload in orange — normalized
+/// to the largest sample so a flat line still reads.
+private struct TrafficSparkline: View {
+    let history: [TrafficPoint]
+
+    var body: some View {
+        GeometryReader { geo in
+            let points = history.suffix(120)
+            let maxValue = max(1, points.map { max($0.up, $0.down) }.max() ?? 1)
+            ZStack {
+                sparkline(points: points, value: \.down, maxValue: maxValue, in: geo.size)
+                    .stroke(ConcordTheme.accent, lineWidth: 1.5)
+                sparkline(points: points, value: \.up, maxValue: maxValue, in: geo.size)
+                    .stroke(Color.orange, lineWidth: 1.5)
+            }
+        }
+        .accessibilityLabel("最近速度变化：下载蓝线，上传橙线")
+    }
+
+    private func sparkline(points: ArraySlice<TrafficPoint>, value: KeyPath<TrafficPoint, Int64>, maxValue: Int64, in size: CGSize) -> Path {
+        var path = Path()
+        guard points.count > 1 else { return path }
+        let step = size.width / CGFloat(points.count - 1)
+        for (index, point) in points.enumerated() {
+            let x = CGFloat(index) * step
+            let y = size.height - (CGFloat(point[keyPath: value]) / CGFloat(maxValue)) * size.height
+            if index == 0 {
+                path.move(to: CGPoint(x: x, y: y))
+            } else {
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+        return path
+    }
+}
+
+/// Service management sheet (D-M3): reorder the probe-service
+/// targets and enable/disable them. The last enabled service
+/// cannot be disabled (upstream falls back to all-enabled when
+/// everything is disabled, so the lock keeps the intent explicit).
+private struct ServiceManageSheet: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var order: [String] = []
+
+    private var enabledCount: Int {
+        order.filter { !trafficStore.disabledServices.contains($0) }.count
+    }
+
+    private func isEnabled(_ name: String) -> Bool {
+        !trafficStore.disabledServices.contains(name)
+    }
+
+    private func toggleBinding(for name: String) -> Binding<Bool> {
+        Binding(
+            get: { isEnabled(name) },
+            set: { enabled in
+                // Refuse to disable the last enabled service.
+                if !enabled, enabledCount <= 1 { return }
+                trafficStore.setServiceDisabled(name, disabled: !enabled)
+            }
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("服务顺序") {
+                    ForEach(order, id: \.self) { name in
+                        HStack(spacing: 8) {
+                            Text(name)
+                            Spacer()
+                            if let service = trafficStore.services.first(where: { $0.name.lowercased() == name.lowercased() }) {
+                                Text(serviceStatusText(service.status))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            // The last enabled service's toggle is
+                            // locked (see toggleBinding's guard).
+                            Toggle("", isOn: toggleBinding(for: name))
+                                .labelsHidden()
+                                .disabled(isEnabled(name) && enabledCount <= 1)
+                        }
+                    }
+                    .onMove { from, to in
+                        order.move(fromOffsets: from, toOffset: to)
+                        trafficStore.setServiceOrder(order)
+                    }
+                }
+                Section {
+                    Text("拖动右侧手柄调整检测顺序；关闭的服务不参与「检测」，「全部检测」仍会检测全部服务。至少保留 1 个启用服务。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .environment(\.editMode, .constant(.active))
+            .scrollContentBackground(.hidden)
+            .font(.footnote.weight(.semibold))
+            .background(ConcordTheme.pageBackground)
+            .navigationTitle("管理服务")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            .onAppear { order = trafficStore.orderedServiceNames }
+        }
+    }
+
+    private func serviceStatusText(_ status: String) -> String {
+        switch status {
+        case "available": return "可用"
+        case "unavailable": return "不可用"
+        case "blocked": return "被墙"
+        case "timeout": return "超时"
+        case "failed": return "失败"
+        case "": return "未判断"
+        default: return status
+        }
+    }
+}
+
+/// Traffic statistics detail sheet (D-M8): today's figures plus
+/// the cumulative totals since the core started. Week/month
+/// ranges are honestly unavailable — the app records no
+/// persisted traffic history yet.
+private struct TrafficStatsDetailSheet: View {
+    let todayUp: Int64
+    let todayDown: Int64
+    let totalUp: Int64
+    let totalDown: Int64
+    let uptimeText: String
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("今日") {
+                    LabeledContent("今日上传", value: ConcordFormat.bytes(todayUp))
+                    LabeledContent("今日下载", value: ConcordFormat.bytes(todayDown))
+                    LabeledContent("运行时间", value: uptimeText)
+                    Text("今日流量 = 核心累计流量减去今日零点时的基线；核心重启或流量清零后基线会重新校准。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Section("累计（核心启动以来）") {
+                    LabeledContent("累计上传", value: ConcordFormat.bytes(totalUp))
+                    LabeledContent("累计下载", value: ConcordFormat.bytes(totalDown))
+                }
+                Section {
+                    Text("周 / 月统计暂不支持：需要持续记录每日流量历史，当前版本只保存今日基线。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.footnote.weight(.semibold))
+            .navigationTitle("流量统计")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
     }
 }
 
@@ -2056,10 +2434,10 @@ private struct CloverBadge: View {
 /// Dashboard card identities (FlClash DashboardWidget): the order
 /// is user-editable, the visibility is the show/hide toggles.
 private enum DashboardCardID: String, CaseIterable {
-    case status, speed, mode, vpn, intranet, services, profile, groups, stats, memory, update
+    case status, speed, traffic, mode, vpn, intranet, services, profile, groups, stats, memory, update
 
     static let defaultOrder: [DashboardCardID] = [
-        .status, .speed, .mode, .vpn, .intranet, .services,
+        .status, .speed, .traffic, .mode, .vpn, .intranet, .services,
         .profile, .groups, .stats, .memory, .update,
     ]
 
@@ -2067,6 +2445,7 @@ private enum DashboardCardID: String, CaseIterable {
         switch self {
         case .status: return "状态"
         case .speed: return "网络速度"
+        case .traffic: return "流量统计"
         case .mode: return "出站模式"
         case .vpn: return "VPN"
         case .intranet: return "内网 IP"
@@ -2174,6 +2553,7 @@ private struct DashboardEditSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var showStatus: Bool
     @Binding var showSpeed: Bool
+    @Binding var showTraffic: Bool
     @Binding var showMode: Bool
     @Binding var showVpn: Bool
     @Binding var showIntranet: Bool
@@ -2196,6 +2576,7 @@ private struct DashboardEditSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Toggle("网络速度", isOn: $showSpeed)
+                    Toggle("流量统计", isOn: $showTraffic)
                     Toggle("出站模式", isOn: $showMode)
                     Toggle("VPN", isOn: $showVpn)
                     Toggle("内网 IP", isOn: $showIntranet)

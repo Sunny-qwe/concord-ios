@@ -61,14 +61,31 @@ struct ContentView: View {
     @State private var profileUpdateTimer: AnyCancellable?
     @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = true
     @AppStorage("ConcordiOS.geoAutoUpdateHours") private var geoAutoUpdateHours = 24.0
+    /// Tab animation (upstream home.dart tabAnimation: slide/fade).
+    /// Slide is the default 0.3 s ease-out PageView; fade cross-fades
+    /// the pages instead. The picker lives in ThemePickerView and
+    /// writes themeStore.tabAnimation — read it directly here. (An
+    /// earlier @AppStorage bool in this spot was never written by
+    /// anything, so the fade setting did nothing; v0.2.54 wires it
+    /// to the theme store.) The fade duration/curve are upstream
+    /// prism_ui values and unverifiable from these checkouts, so
+    /// fade reuses the 0.3 s slide duration.
+    private var tabAnimationFade: Bool { themeStore.tabAnimation == .fade }
 
     var body: some View {
         Group {
             if themeStore.navBarStyle == .docked {
-                // Docked: the system tab bar (FlClash: 导航栏样式 ->
-                // 停靠）.
-                tabView
+                // Docked: the same sliding/fading page container as
+                // floating (upstream home.dart always slides via the
+                // same PageView regardless of bar style — a TabView
+                // here was an instant jump with no transition). The
+                // bar below is a plain system-style bar instead of
+                // the floating capsule.
+                slidingTabView
                     .tint(themeStore.accentColor)
+                    .safeAreaInset(edge: .bottom) {
+                        dockedTabBar
+                    }
             } else {
                 // Floating capsule bar (default, reference bottom bar).
                 // FlClash home.dart: a PageView (300 ms ease-out slide,
@@ -210,20 +227,17 @@ struct ContentView: View {
     }
 
     /// The four tabs (shared by the floating and docked bar styles).
-    private var tabView: some View {
-        TabView(selection: $selectedTab) {
+    @ViewBuilder
+    private func pageView(for tab: AppTab) -> some View {
+        switch tab {
+        case .dashboard:
             DashboardView(onSelectTab: { selectTab($0) })
-                .tag(AppTab.dashboard)
-                .tabItem { Label("tab.dashboard".l10n, systemImage: "square.grid.2x2.fill") }
+        case .proxies:
             ProxiesView()
-                .tag(AppTab.proxies)
-                .tabItem { Label("tab.proxies".l10n, systemImage: "globe") }
+        case .profiles:
             ProfilesView()
-                .tag(AppTab.profiles)
-                .tabItem { Label("tab.profiles".l10n, systemImage: "doc.text.fill") }
+        case .tools:
             ToolsView()
-                .tag(AppTab.tools)
-                .tabItem { Label("tab.tools".l10n, systemImage: "briefcase.fill") }
         }
     }
 
@@ -232,24 +246,30 @@ struct ContentView: View {
     /// KeepScope), so switching never rebuilds a page; the selected
     /// page slides in with a 0.3 s ease-out (FlClash kTabScrollDuration
     /// = 300 ms, Curves.easeOut), and off-screen pages are disabled
-    /// (FlClash TickerMode / ExcludeFocus on inactive pages).
+    /// (FlClash TickerMode / ExcludeFocus on inactive pages). With
+    /// the fade animation on, the pages stack and cross-fade instead
+    /// (upstream tabAnimation == fade).
     private var slidingTabView: some View {
         GeometryReader { geo in
-            HStack(spacing: 0) {
-                DashboardView(onSelectTab: { selectTab($0) })
-                    .frame(width: geo.size.width)
-                    .disabled(selectedTab != .dashboard)
-                ProxiesView()
-                    .frame(width: geo.size.width)
-                    .disabled(selectedTab != .proxies)
-                ProfilesView()
-                    .frame(width: geo.size.width)
-                    .disabled(selectedTab != .profiles)
-                ToolsView()
-                    .frame(width: geo.size.width)
-                    .disabled(selectedTab != .tools)
+            if tabAnimationFade {
+                ZStack {
+                    ForEach(AppTab.allCases, id: \.self) { tab in
+                        pageView(for: tab)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .opacity(selectedTab == tab ? 1 : 0)
+                            .disabled(selectedTab != tab)
+                    }
+                }
+            } else {
+                HStack(spacing: 0) {
+                    ForEach(AppTab.allCases, id: \.self) { tab in
+                        pageView(for: tab)
+                            .frame(width: geo.size.width)
+                            .disabled(selectedTab != tab)
+                    }
+                }
+                .offset(x: -CGFloat(selectedTab.rawValue) * geo.size.width)
             }
-            .offset(x: -CGFloat(selectedTab.rawValue) * geo.size.width)
         }
         .clipped()
     }
@@ -258,11 +278,14 @@ struct ContentView: View {
     /// ease-out. A jump of more than one page first parks (no
     /// animation) on the adjacent page so no intermediate page
     /// flashes past, then slides to the target — the async hop lets
-    /// the parked frame paint before the slide starts.
+    /// the parked frame paint before the slide starts. A fade needs
+    /// no parking: pages cross-fade in place.
     private func selectTab(_ tab: AppTab) {
         guard tab != selectedTab else { return }
-        if themeStore.navBarStyle == .docked {
-            selectedTab = tab
+        if tabAnimationFade {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                selectedTab = tab
+            }
             return
         }
         let distance = abs(tab.rawValue - selectedTab.rawValue)
@@ -286,12 +309,52 @@ struct ContentView: View {
         }
     }
 
+    /// A tap on a bar item: switch tabs, or — when the tab is already
+    /// selected — scroll it to the top. Upstream ToolsView listens
+    /// for the Tools page being re-selected and jumps its scroll
+    /// controller to 0 (tools.dart:41-48); only the Tools listener
+    /// was verified upstream, so only Tools re-taps scroll.
+    private func tapTab(_ tab: AppTab) {
+        if tab == selectedTab {
+            if tab == .tools {
+                NotificationCenter.default.post(name: .toolsScrollToTop, object: nil)
+            }
+            return
+        }
+        selectTab(tab)
+    }
+
+    /// Docked system-style bar (FlClash 导航栏样式 -> 停靠）: plain
+    /// icons + labels on the system background with a top hairline,
+    /// driving the same sliding container as the floating bar.
+    private var dockedTabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(AppTab.allCases, id: \.self) { tab in
+                Button { tapTab(tab) } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 20, weight: .semibold))
+                        Text(tab.title)
+                            .font(.system(size: 8, weight: .semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .foregroundStyle(selectedTab == tab ? ConcordTheme.accent : ConcordTheme.tabUnselected)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 2)
+        .background(Color(.systemBackground))
+        .overlay(Divider(), alignment: .top)
+    }
+
     /// Floating white capsule bar (reference bottom bar): the selected
     /// tab gets a pale capsule behind a blue icon + label.
     private var floatingTabBar: some View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.self) { tab in
-                Button { selectTab(tab) } label: {
+                Button { tapTab(tab) } label: {
                     VStack(spacing: 3) {
                         Image(systemName: tab.icon)
                             .font(.system(size: 20, weight: .semibold))

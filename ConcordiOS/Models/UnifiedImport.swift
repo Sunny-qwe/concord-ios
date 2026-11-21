@@ -131,7 +131,7 @@ final class UnifiedImporter: ObservableObject {
     // MARK: - Entry points
 
     @MainActor
-    func importText(_ text: String, name: String? = nil, yamlName: String? = nil) async {
+    func importText(_ text: String, name: String? = nil, yamlName: String? = nil, ageSecretKey: String? = nil) async {
         guard !isImporting else { return }
         isImporting = true
         defer { isImporting = false }
@@ -149,7 +149,7 @@ final class UnifiedImporter: ObservableObject {
         if Self.looksLikeYamlDocument(trimmed) {
             await importYamlDocument(trimmed, yamlName: yamlName ?? name)
         } else {
-            ignoredLines = await importFirstLine(trimmed, name: name)
+            ignoredLines = await importFirstLine(trimmed, name: name, ageSecretKey: ageSecretKey)
         }
         results.sort { $0.order < $1.order }
         // Activate the imported profile once at the end.
@@ -190,9 +190,9 @@ final class UnifiedImporter: ObservableObject {
     // MARK: - Single subscription (reuses addFromURL)
 
     @MainActor
-    private func importSubscriptionURL(_ urlString: String, name: String? = nil) async -> Result<Profile, NodeLinkError> {
+    private func importSubscriptionURL(_ urlString: String, name: String? = nil, ageSecretKey: String? = nil) async -> Result<Profile, NodeLinkError> {
         let beforeCount = profileStore.profiles.count
-        await profileStore.addFromURL(name: name ?? "", urlString: urlString)
+        await profileStore.addFromURL(name: name ?? "", urlString: urlString, ageSecretKey: ageSecretKey)
         if profileStore.profiles.count > beforeCount,
            profileStore.lastError == nil,
            let created = profileStore.profiles.last {
@@ -223,7 +223,7 @@ final class UnifiedImporter: ObservableObject {
     /// Imports only the first importable line; returns how many
     /// further lines were ignored (the user pastes them separately).
     @MainActor
-    private func importFirstLine(_ text: String, name: String?) async -> Int {
+    private func importFirstLine(_ text: String, name: String?, ageSecretKey: String? = nil) async -> Int {
         let lines = Self.nonEmptyLines(text)
         guard let firstIndex = lines.firstIndex(where: { Self.kind(of: $0) != .unknown }) else {
             results.append(ImportLineResult(order: 0, line: lines.first ?? text, kind: .unknown, succeeded: false, message: "无法识别：不是订阅链接、节点链接或 YAML（整段 YAML 请单独粘贴导入）"))
@@ -232,7 +232,7 @@ final class UnifiedImporter: ObservableObject {
         let line = lines[firstIndex]
         switch Self.kind(of: line) {
         case .subscription:
-            switch await importSubscriptionURL(line, name: name) {
+            switch await importSubscriptionURL(line, name: name, ageSecretKey: ageSecretKey) {
             case .success(let profile):
                 results.append(ImportLineResult(order: firstIndex, line: line, kind: .subscription, succeeded: true, message: "已导入订阅「\(profile.name)」"))
                 successProfiles.append((order: firstIndex, profile: profile))

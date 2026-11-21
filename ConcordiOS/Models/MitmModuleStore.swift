@@ -269,8 +269,14 @@ final class MitmModuleStore: ObservableObject {
     /// fork says an agreed module's later updates take effect
     /// without asking again, but this build keeps pausing on new
     /// scripts (see save()), so the prompt says so instead.
-    func consentPrompt(for module: MitmModule) -> (title: String, message: String)? {
-        let content = parsedContent(for: module)
+    ///
+    /// Pass the core's parse when the caller already has it (the
+    /// module detail page loads mitm.readModule while the tunnel
+    /// runs): the declared-script count then comes from the core
+    /// instead of the Swift parser (audit B42). The list has no
+    /// core parse, so it keeps the Swift one.
+    func consentPrompt(for module: MitmModule, content: MitmModuleContent? = nil) -> (title: String, message: String)? {
+        let content = content ?? parsedContent(for: module)
         let declared = content?.declaredScripts ?? 0
         let asks = content.map { asksConsent(of: $0) } ?? true
         let unreadable = content == nil
@@ -320,10 +326,13 @@ final class MitmModuleStore: ObservableObject {
     /// `recordConsent`): agreeing enables the module and accepts
     /// the scripts it declares now; declining leaves it off and
     /// records the decline, so it stops awaiting consent.
+    /// `content` is the core's parse when the caller has it (see
+    /// consentPrompt): the accepted script count then comes from
+    /// the core instead of the Swift parser (audit B42).
     @MainActor
-    func answerConsent(_ module: MitmModule, agreed: Bool) async {
+    func answerConsent(_ module: MitmModule, agreed: Bool, content: MitmModuleContent? = nil) async {
         guard let index = modules.firstIndex(where: { $0.id == module.id }) else { return }
-        let content = parsedContent(for: modules[index])
+        let content = content ?? parsedContent(for: modules[index])
         modules[index].asksConsent = content.map { asksConsent(of: $0) } ?? true
         if agreed {
             modules[index].accepted = true
@@ -407,14 +416,14 @@ final class MitmModuleStore: ObservableObject {
     /// the same pattern as convert.decodeLinks: the core does it
     /// when live, the Swift parser when not. The module's own
     /// arguments are passed, so an argument left unset takes its
-    /// default; attachments are none in this build (the app has no
-    /// local-file attachments — see MitmModuleParser).
+    /// default; local-file attachments ride along as `attachments`
+    /// (name → stored file), as the core's readModule takes them.
     func coreParsedContent(for module: MitmModule) async -> MitmModuleContent? {
         guard let client, client.mode == .live, TunnelManager.shared.isRunning,
               let text = readText(module) else { return nil }
         do {
             let language = Locale.preferredLanguages.first ?? "zh-Hans"
-            let view = try await client.mitmReadModule(text: text, arguments: module.arguments, attachments: [:], language: language)
+            let view = try await client.mitmReadModule(text: text, arguments: module.arguments, attachments: attachmentsParam(for: module), language: language)
             var content = MitmModuleParser.parseWithCore(view: view, text: text, values: module.arguments, resources: module.resources)
             // The core's rules name its rule sets `mitm-<sha256[0:12]>`
             // (upstream rule.rs set_name) while the Swift parser names
@@ -1170,7 +1179,7 @@ final class MitmModuleStore: ObservableObject {
         defer { isBusy = false }
         do {
             let previousText = readText(module)
-            var updated = try await save(module, text: text, added: false, previousText: previousText)
+            var updated = try await save(module, text: text, added: false, previousText: previousText, edited: true)
             updated.lastUpdateTime = Date()
             modules[index] = updated
             persist()
@@ -1226,13 +1235,17 @@ final class MitmModuleStore: ObservableObject {
     /// The core of add/edit/update: parse, download the resources the
     /// new content names, write the text file, and decide the enabled
     /// flag by the script-consent rules. Returns the saved row.
-    private func save(_ module: MitmModule, text: String, added: Bool, previousText: String?) async throws -> MitmModule {
+    /// Upstream `_save` rejects an empty module on add but allows
+    /// editing one down to empty (`content.isEmpty && !edited`) —
+    /// the blank template still needs a line before it can be
+    /// created, exactly as upstream rejects it.
+    private func save(_ module: MitmModule, text: String, added: Bool, previousText: String?, edited: Bool = false) async throws -> MitmModule {
         let firstContent = MitmModuleParser.parse(text: text, values: module.arguments, resources: module.resources)
-        if firstContent.isEmpty {
+        if firstContent.isEmpty && !edited {
             throw MitmModuleError(message: "模块内容为空或无法识别")
         }
         let resources = await downloadResources(firstContent.resourceUrls, previous: module.resources)
-        // Non-URL resources are attachments (none in this build); the
+        // Non-URL resources are local-file attachments; the
         // downloaded ones replace the previous set for these URLs.
         var mergedResources = module.resources.filter { !isMitmResourceUrl($0.key) }
         for (url, name) in resources { mergedResources[url] = name }
@@ -1406,6 +1419,77 @@ final class MitmModuleStore: ObservableObject {
         }
         await refreshModuleFiles()
         statusMessage = "已删除模块 \(module.name)"
+    }
+
+    // MARK: - Local-file attachments (upstream mitm_modules.dart
+    // _attachmentItems / attach / detach)
+    //
+    // A local module's attachments are the non-URL entries of its
+    // `resources`: the file name the module text names → the
+    // content-hash file in the core's resources directory. The
+    // parser resolves a map-local `data=<name>` through exactly
+    // that map (see MitmModuleParser.resource), and save() already
+    // keeps non-URL resources across edits and updates — only the
+    // UI and these two calls were missing. Remote modules have no
+    // attachments (upstream mitmAttachments filters them out).
+
+    /// This module's attachments: the file name the module names,
+    /// in the order they were attached.
+    func attachments(of module: MitmModule) -> [String] {
+        module.resources.keys.filter { !isMitmResourceUrl($0) }.sorted()
+    }
+
+    /// The `attachments` map mitm.readModule takes: the file name
+    /// the module names → the stored file in the resources dir.
+    private func attachmentsParam(for module: MitmModule) -> [String: String] {
+        module.resources.filter { !isMitmResourceUrl($0.key) }
+    }
+
+    /// Attaches a local file to a local module: writes the bytes
+    /// into the resources directory under their content-hash name
+    /// and records the name the module text will use. A file the
+    /// same name was attached under is replaced, as upstream does.
+    @MainActor
+    func attachFile(_ module: MitmModule, fileName: String, data: Data) async {
+        guard let index = modules.firstIndex(where: { $0.id == module.id }) else { return }
+        guard modules[index].url == nil else {
+            lastError = "远程模块不能添加本地附件"
+            return
+        }
+        guard data.count <= maxMitmResourceSize else {
+            lastError = "文件过大（最大 \(maxMitmResourceSize / 1_048_576) MB）"
+            return
+        }
+        guard let dir = resourcesDirectoryURL else {
+            lastError = "App Group 容器不可用"
+            return
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let stored = mitmResourceName(source: fileName, bytes: data)
+            try data.write(to: dir.appendingPathComponent(stored), options: .atomic)
+            modules[index].resources[fileName] = stored
+            persist()
+            await refreshModuleFiles()
+            statusMessage = "已为模块 \(module.name) 添加附件 \(fileName)"
+            lastError = nil
+        } catch {
+            lastError = "添加附件失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Detaches a local file from a local module: drops the mapping
+    /// (the next sweep removes the stored file when nothing names
+    /// it any more) and re-applies the merged config.
+    @MainActor
+    func detachAttachment(_ module: MitmModule, name: String) async {
+        guard let index = modules.firstIndex(where: { $0.id == module.id }) else { return }
+        modules[index].resources.removeValue(forKey: name)
+        persist()
+        await refreshModuleFiles()
+        statusMessage = "已从模块 \(module.name) 移除附件 \(name)"
     }
 
     // MARK: - Helpers

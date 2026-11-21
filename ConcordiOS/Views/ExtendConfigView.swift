@@ -16,6 +16,14 @@ struct ExtendConfigView: View {
     @State private var draft: ExtendSettings?
     @State private var message: String?
     @State private var isApplying = false
+    /// Per-profile rule editing (FlClash extend/standard.dart
+    /// profileRulesProvider): structured form + presets.
+    @State private var editingProfileRule: RuleFormDraft?
+    @State private var showProfileRulePresets = false
+    /// Unapplied-on-open (FlClash extend.dart _checkUnappliedOnOpen):
+    /// the stored settings differ from what is actually baked into
+    /// the active profile's YAML.
+    @State private var unappliedOnOpen = false
     /// The library script picked for script mode (FlClash
     /// extend/script.dart picks from the stored script library;
     /// picking one selects it for script mode).
@@ -94,6 +102,19 @@ struct ExtendConfigView: View {
             if settings.mode == .standard {
                 Section("标准模式") {
                     NavigationLink {
+                        GlobalRulesToggleView()
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("全局规则开关").font(.footnote.weight(.semibold))
+                                Text("逐条启用 / 停用全局附加规则")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }
+                    NavigationLink {
                         AddedRulesView()
                     } label: {
                         HStack {
@@ -122,6 +143,36 @@ struct ExtendConfigView: View {
                             .foregroundStyle(.red)
                     }
                     Text("匹配目标会作为最后一条 MATCH 规则写进当前配置；留空则跟随配置自身的最后一条规则。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                // Per-profile rules (FlClash extend/standard.dart
+                // StandardContent): rules that belong to THIS profile
+                // only — add/edit via RuleForm, presets, reorder.
+                // They bake into this profile's `rules:` section,
+                // ahead of the match target.
+                Section("本订阅规则（\(settings.profileRules.count) 条）") {
+                    ForEach(settings.profileRules, id: \.self) { rule in
+                        Button { editingProfileRule = RuleFormDraft(from: rule) } label: {
+                            Text(rule)
+                                .font(.system(.footnote, design: .monospaced))
+                                .lineLimit(2)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .onDelete { offsets in
+                        setDraft { $0.profileRules.remove(atOffsets: offsets) }
+                    }
+                    .onMove { from, to in
+                        setDraft { $0.profileRules.move(fromOffsets: from, toOffset: to) }
+                    }
+                    Button { editingProfileRule = RuleFormDraft() } label: {
+                        Label("添加规则", systemImage: "plus")
+                    }
+                    Button { showProfileRulePresets = true } label: {
+                        Label("快捷操作", systemImage: "bolt.circle")
+                    }
+                    Text("只对当前订阅生效，写进该订阅的规则末尾、匹配目标之前。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -163,7 +214,7 @@ struct ExtendConfigView: View {
                 }
             }
 
-            if hasUnappliedChanges {
+            if hasUnappliedChanges || unappliedOnOpen {
                 Section {
                     Button {
                         Task { await applyNow() }
@@ -181,6 +232,11 @@ struct ExtendConfigView: View {
                     }
                     if profile == nil {
                         Text("没有已激活的订阅：先导入并切换一个订阅。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    if unappliedOnOpen && !hasUnappliedChanges {
+                        Text("打开时发现已保存的扩展设置还没有应用到当前配置（上次可能没点「立即应用」）。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -202,12 +258,45 @@ struct ExtendConfigView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+            ToolbarItem(placement: .topBarTrailing) {
                 Button("保存") { saveDraft() }
+            }
+        }
+        .sheet(item: $editingProfileRule) { editing in
+            RuleFormSheet(draft: editing, ruleProviderNames: []) { saved in
+                let text = saved.text
+                guard AddedRulesStore.validationError(for: text) == nil else { return }
+                setDraft { draft in
+                    if let original = editing.originalText,
+                       let index = draft.profileRules.firstIndex(of: original) {
+                        draft.profileRules[index] = text
+                    } else if !draft.profileRules.contains(text) {
+                        draft.profileRules.append(text)
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showProfileRulePresets) {
+            RulePresetSheetView { preset in
+                setDraft { draft in
+                    for rule in preset.rawRules where !draft.profileRules.contains(rule) {
+                        draft.profileRules.append(rule)
+                    }
+                }
             }
         }
         .task {
             if draft == nil, let profile {
                 draft = extendStore.settings(for: profile.id)
+            }
+            // Unapplied-on-open (FlClash _checkUnappliedOnOpen):
+            // compare the stored settings with what is actually
+            // baked into the active profile's YAML.
+            if let profile, isTargetActive, let yaml = profileStore.activeProfileYAML() {
+                let stored = extendStore.settings(for: profile.id)
+                unappliedOnOpen = Self.appliedStateDiffers(yaml: yaml, settings: stored)
             }
             // Match-target candidates need a full YAML scan; run it
             // off-thread so the first frame (static title included)
@@ -252,6 +341,38 @@ struct ExtendConfigView: View {
         return Array(NSOrderedSet(array: targets)) as? [String] ?? []
     }
 
+    /// True when the YAML baked into the active profile does
+    /// not match the stored settings (match target or per-profile
+    /// rules differ) — i.e. there are unapplied changes from an
+    /// earlier session.
+    private static func appliedStateDiffers(yaml: String, settings: ExtendSettings) -> Bool {
+        let lines = yaml.components(separatedBy: "\n")
+        // Baked MATCH target.
+        var bakedTarget = ""
+        if let begin = lines.firstIndex(of: ExtendConfigStore.matchTargetBegin),
+           begin + 1 < lines.count {
+            let line = lines[begin + 1].trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("- MATCH,") {
+                bakedTarget = String(line.dropFirst("- MATCH,".count))
+            } else if line.hasPrefix("rules:"), line.contains("MATCH,") {
+                bakedTarget = line.components(separatedBy: "MATCH,").last?
+                    .trimmingCharacters(in: .whitespaces)
+                    .replacingOccurrences(of: "]", with: "") ?? ""
+            }
+        }
+        guard bakedTarget == settings.matchTarget.trimmingCharacters(in: .whitespacesAndNewlines) else { return true }
+        // Baked per-profile rules.
+        var bakedRules: [String] = []
+        if let begin = lines.firstIndex(of: ExtendConfigStore.profileRulesBegin),
+           let end = lines.firstIndex(of: ExtendConfigStore.profileRulesEnd), end > begin {
+            bakedRules = lines[(begin + 1)..<end].map {
+                $0.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "^- ", with: "", options: .regularExpression)
+            }.filter { !$0.isEmpty }
+        }
+        let wanted = settings.profileRules.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        return bakedRules != wanted
+    }
+
     private func saveDraft() {
         guard let profile, let draft else { return }
         extendStore.update(draft, for: profile.id)
@@ -279,10 +400,75 @@ struct ExtendConfigView: View {
             message = "没有可写入的当前配置（先导入一个订阅）"
             return
         }
+        text = ExtendConfigStore.bakeProfileRules(current.profileRules, into: text)
         text = ExtendConfigStore.bakeMatchTarget(current.matchTarget, into: text)
         message = await profileStore.saveActiveProfileYAML(text)
         if let live = await profileStore.reapplyActive() {
             message = (message ?? "") + " " + live
         }
+    }
+}
+
+// MARK: - Global rules enable/disable (FlClash extend/standard.dart _EditGlobalAddedRules)
+
+/// Searchable list of the global added rules with per-rule
+/// enable/disable toggles (FlClash profileDisabledRuleIdsProvider).
+/// Disabling moves the rule to AddedRulesStore.disabledRules, so
+/// the tunnel overlay never sees it; enabling moves it back.
+private struct GlobalRulesToggleView: View {
+    @StateObject private var rulesStore = AddedRulesStore()
+    @State private var searchText = ""
+
+    private var allRules: [String] { rulesStore.rules + rulesStore.disabledRules }
+
+    private var visibleRules: [String] {
+        guard !searchText.isEmpty else { return allRules }
+        return allRules.filter { $0.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        List {
+            if allRules.isEmpty {
+                ContentUnavailableView(
+                    "暂无全局规则",
+                    systemImage: "list.bullet",
+                    description: Text("先在「附加规则」里添加全局规则")
+                )
+            } else {
+                Section("全局规则（\(allRules.count) 条）") {
+                    ForEach(visibleRules, id: \.self) { rule in
+                        let disabled = rulesStore.isRuleDisabled(rule)
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(rule)
+                                    .font(.system(.footnote, design: .monospaced))
+                                    .lineLimit(2)
+                                    .foregroundStyle(disabled ? .secondary : .primary)
+                                Text(disabled ? "已停用" : "生效中")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { !disabled },
+                                set: { on in rulesStore.setRule(rule, disabled: !on) }
+                            ))
+                            .labelsHidden()
+                        }
+                    }
+                }
+                Section {
+                    NavigationLink {
+                        AddedRulesView()
+                    } label: {
+                        Label("去配置附加规则", systemImage: "list.bullet")
+                    }
+                }
+            }
+        }
+        .font(.footnote.weight(.semibold))
+        .navigationTitle("全局规则开关")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "搜索规则")
     }
 }

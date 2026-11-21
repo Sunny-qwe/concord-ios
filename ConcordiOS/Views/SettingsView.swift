@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Settings / Tools (FlClash: ToolsView, lib/views/tools.dart)
 // FlClash's Tools page is the settings hub: locale, theme, hotkeys,
@@ -14,6 +15,15 @@ struct SettingsView: View {
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var client: ConcordClient
+    /// Needed for the MITM capture "no hosts" warning (D §4 X1):
+    /// whether any module is enabled. Injected at the app root.
+    @EnvironmentObject private var mitmModuleStore: MitmModuleStore
+    /// MuYu's restart tip after a MITM change (D §4 X4): shown
+    /// under the MITM switches once a MITM setting changes, until
+    /// dismissed. The MITM settings themselves already take effect
+    /// at the next VPN start / re-apply; the tip only says so.
+    @State private var mitmRestartTip = false
+    @State private var isRestartingVpn = false
     // User-imported group icon pack (Settings → 图标源). A shared
     // singleton, not an environment object: the Proxies page reads
     // it through its icon leaf views only, never at page level.
@@ -74,6 +84,40 @@ struct SettingsView: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }.count
         return count == 0 ? "未设置" : "\(count) 个域名"
+    }
+
+    /// FlClash mitm.dart:596-608: capture is on, but every
+    /// hostname line is `-`-prefixed (or the list is empty — Dart's
+    /// `every` is true on an empty list) and no module is enabled,
+    /// so capture will catch nothing. Shown under the capture
+    /// controls (D §4 X1).
+    private var mitmCaptureNoHosts: Bool {
+        guard settingsStore.mitmEnabled, settingsStore.mitmCapture else { return false }
+        let hostnames = settingsStore.mitmConfig.hostname
+        guard hostnames.allSatisfy({ $0.hasPrefix("-") }) else { return false }
+        return !mitmModuleStore.modules.contains(where: \.enabled)
+    }
+
+    /// Mark a MITM change for the restart tip (D §4 X4, MuYu's
+    /// showMitmRestartTip): the tip row appears under the MITM
+    /// switches until the user dismisses it.
+    private func mitmChanged() {
+        mitmRestartTip = true
+    }
+
+    /// Restart the VPN after a MITM change (MuYu tip action, same
+    /// as MitmCertificateView.restartVpn): stop then start; on
+    /// failure the error goes to mitmStatusMessage and the tip stays.
+    private func restartVpn() async {
+        isRestartingVpn = true
+        defer { isRestartingVpn = false }
+        await TunnelManager.shared.stop()
+        do {
+            try await TunnelManager.shared.start()
+            mitmRestartTip = false
+        } catch {
+            settingsStore.mitmStatusMessage = "重启 VPN 失败：\(error.localizedDescription)"
+        }
     }
 
     var body: some View {
@@ -152,6 +196,17 @@ struct SettingsView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Toggle("切换配置后自动关闭连接", isOn: $settingsStore.autoCloseConnections)
+                    // FlClash general.dart:337 _connectionItems:
+                    // only count proxy traffic in the traffic stats.
+                    // Stored in SettingsStore; the traffic feed
+                    // (traffic.watch) takes no such parameter yet,
+                    // so this only records the preference until
+                    // ConcordClient / TrafficStore wire it — it does
+                    // not change the numbers shown today.
+                    Toggle("仅统计代理流量", isOn: $settingsStore.onlyStatisticsProxy)
+                    Text("仅统计代理流量：打开后流量统计只计代理流量，直连流量不计入（上游 getTraffic 参数）。当前版本此开关只保存偏好，流量接口尚未接线，数字暂无变化。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Toggle("流量嗅探", isOn: $settingsStore.sniffing)
                         // B6: the master switch only takes effect
                         // when sniffer.json is re-saved (effective
@@ -182,7 +237,7 @@ struct SettingsView: View {
                     // v0.2.40: the "记录日志" toggle is gone — it only
                     // gated the Tools "日志" row, which is now always
                     // shown (users could not find the log page).
-                    Text("启动时自动连接：打开应用后自动启动 VPN（需已有配置）。校验订阅证书：关闭后订阅下载不再验证服务器证书（自签证书的订阅源可用）。")
+                    Text("启动时自动连接：打开应用后自动启动 VPN（需已有配置）。校验订阅证书：关闭后订阅下载不再验证服务器证书（自签证书的订阅源可用）。上游另有「退出时最小化到托盘」，iOS 没有系统托盘，退出应用即进入后台，故不设此开关。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Button("从核心读取当前配置") {
@@ -209,6 +264,16 @@ struct SettingsView: View {
                     NavigationLink("Hosts") {
                         HostsView()
                     }
+                    // FlClash general.dart:360 _coreItems:
+                    // appendSystemDns — append the system DNS
+                    // servers to dns.nameserver at config build
+                    // (task.dart:314). Wired in SettingsStore:
+                    // the servers are read from /etc/resolv.conf
+                    // and appended to dns.json's nameserver list.
+                    Toggle("追加系统 DNS", isOn: $settingsStore.appendSystemDns)
+                    Text("追加系统 DNS：打开后，系统当前用的 DNS 服务器会追加到 DNS 上游列表末尾（订阅自带的解析服务器优先）。改动随 DNS 设置保存，下次启动 VPN 或点「应用 DNS 设置」后生效。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Text("上面的 5 项是覆盖：启用后才生效，作用于全部订阅；单个订阅的覆盖（设置 → 配置 → 覆盖）优先于这里。Hosts 在这里改，核心在 DNS 查询前先查这张表。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -221,7 +286,7 @@ struct SettingsView: View {
                         Text("System").tag("system")
                         Text("Lwip").tag("lwip")
                     }
-                    Stepper("MTU：\(settingsStore.tunMtu)", value: $settingsStore.tunMtu, in: 1280...9000, step: 100)
+                    Stepper("MTU：\(settingsStore.tunMtu)", value: $settingsStore.tunMtu, in: 1280...65535, step: 100)
                     TextField("TUN DNS（逗号分隔）", text: $settingsStore.tunDns)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -326,7 +391,7 @@ struct SettingsView: View {
                         }
                     ))
                     .disabled(!settingsStore.mitmAvailable)
-                    .onChange(of: settingsStore.mitmEnabled) { _, _ in settingsStore.save() }
+                    .onChange(of: settingsStore.mitmEnabled) { _, _ in settingsStore.save(); mitmChanged() }
                     .alert("启用 HTTPS 解密吗？", isPresented: $showMitmEnableConfirm) {
                         Button("启用") {
                             settingsStore.mitmEnabled = true
@@ -341,7 +406,7 @@ struct SettingsView: View {
                     }
                     Toggle("捕获拦截记录", isOn: $settingsStore.mitmCapture)
                         .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmCapture) { _, _ in settingsStore.save() }
+                        .onChange(of: settingsStore.mitmCapture) { _, _ in settingsStore.save(); mitmChanged() }
                     Picker("最多保留条数", selection: $settingsStore.mitmCaptureEntries) {
                         Text("16").tag(16)
                         Text("32").tag(32)
@@ -349,10 +414,35 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.segmented)
                     .disabled(!settingsStore.mitmAvailable || !settingsStore.mitmCapture)
-                    .onChange(of: settingsStore.mitmCaptureEntries) { _, _ in settingsStore.save() }
+                    .onChange(of: settingsStore.mitmCaptureEntries) { _, _ in settingsStore.save(); mitmChanged() }
                     Text("开启后拦截记录才会保存；iOS 上限 64 条（1 MB）。改动下次启动 VPN 后生效。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    // D §4 X1 (FlClash mitm.dart:596-608): capture is
+                    // on but no hostname will match and no module is
+                    // enabled, so capture will catch nothing.
+                    if mitmCaptureNoHosts {
+                        Text("未列出任何主机，不会记录内容。请在下面的“解密主机名”中添加，或启用一个 MITM 模块。")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                    // D §4 X4 (MuYu showMitmRestartTip): a MITM
+                    // change needs a VPN restart to take effect.
+                    if mitmRestartTip {
+                        HStack {
+                            Text("MITM 设置已更改，下次启动 VPN 时生效。")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                            Spacer()
+                            Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
+                                Task { await restartVpn() }
+                            }
+                            .font(.caption2)
+                            .disabled(isRestartingVpn)
+                            Button("知道了") { mitmRestartTip = false }
+                                .font(.caption2)
+                        }
+                    }
                     Button("验证 MITM 配置（mitm.validate）") {
                         Task { await settingsStore.validateMitmConfig() }
                     }
@@ -390,7 +480,7 @@ struct SettingsView: View {
                         ShareLink("分享叶证书（PEM）", item: pem)
                     }
                 } footer: {
-                    Text("安装 CA 到系统信任（必须手动完成）：App 无法以编程方式安装受信任 CA。分享上面的 CA 证书，在 iPhone「设置 → 通用 → VPN 与设备管理」里安装，再到「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任。未安装时 HTTPS 只做透传，仅明文 HTTP 可改写。")
+                    Text("安装 CA 到系统信任（必须手动完成）：App 无法以编程方式安装受信任 CA。分享上面的 CA 证书，在 iPhone「设置 → 通用 → VPN 与设备管理」里安装，再到「设置 → 通用 → 关于本机 → 证书信任设置」开启完全信任。未安装时 HTTPS 只做透传，仅明文 HTTP 可改写。\n\n引擎兼容性（上游 FlClash 的说明，供参考）：支持指定域名的 HTTPS 解密、URL 跳转/拦截、请求头和正文重写、本地响应、请求/响应脚本、$httpClient、$task.fetch、计时器与持久存储。脚本有较短的运行时间和大小限制。暂不支持定时/事件脚本、二进制/完整头脚本模式，超大正文原样传输。模块为部分兼容。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -427,28 +517,28 @@ struct SettingsView: View {
                 Section {
                     Toggle("跳过服务端证书验证", isOn: $settingsStore.mitmSkipServerCertVerify)
                         .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmSkipServerCertVerify) { _, _ in settingsStore.save() }
+                        .onChange(of: settingsStore.mitmSkipServerCertVerify) { _, _ in settingsStore.save(); mitmChanged() }
                     Text("只跳过上游服务器证书的验证（测试自签服务时用）；开启后中间人可伪造服务器证书，不要长期开。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Toggle("阻止 QUIC", isOn: $settingsStore.mitmAutoQuicBlock)
                         .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmAutoQuicBlock) { _, _ in settingsStore.save() }
+                        .onChange(of: settingsStore.mitmAutoQuicBlock) { _, _ in settingsStore.save(); mitmChanged() }
                     Text("默认开启：QUIC 把 TLS 握手藏在 UDP 里，解密不了；阻止后客户端回落到 TCP + TLS 才能解密。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Toggle("启用 HTTP/2（h2）", isOn: $mitmH2)
                         .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: mitmH2) { _, _ in settingsStore.save() }
+                        .onChange(of: mitmH2) { _, _ in settingsStore.save(); mitmChanged() }
                     Text("改动随 MITM 配置保存，下次启动 VPN 或重载配置后生效。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
                         .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
+                        .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save(); mitmChanged() }
                     Toggle("解密不受信任的证书", isOn: $mitmDecryptUntrusted)
                         .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: mitmDecryptUntrusted) { _, _ in settingsStore.save() }
+                        .onChange(of: mitmDecryptUntrusted) { _, _ in settingsStore.save(); mitmChanged() }
                     Text("上游 decrypt-untrusted：打开后，即使服务器证书不受信任也解密。发给核心的 decrypt-tls = 解密不受信任的证书 || 已填受信任的服务器证书指纹（FlClash clash_config.dart:2322-2323）。改动随 MITM 配置保存，下次启动 VPN 或重载配置后生效。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -456,7 +546,7 @@ struct SettingsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save() }
+                        .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save(); mitmChanged() }
                     Text("填入某个服务器证书的 SHA-256 指纹后，只信任该指纹的证书（解密 TLS 随之开启）；留空则用本应用 CA 的指纹。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -748,12 +838,27 @@ struct DnsQueriesView: View {
     /// Record-type facet (FlClash dns_queries.dart: the type facet
     /// of dnsQueryFacets): the types present in the current list.
     @State private var selectedType: String?
+    /// Initiator + rcode facets (FlClash dnsQueryFacets,
+    /// common.dart:368-383): the initiators / response codes present
+    /// in the current list. Upstream offers type / initiator /
+    /// cache / rcode; cache is already covered by the segmented
+    /// filter above.
+    @State private var selectedInitiator: String?
+    @State private var selectedRcode: String?
+    /// Follow mode (FlClash dns_queries.dart:57-59
+    /// FollowEndScrollPhysics, autoScrollToEnd): while on, a new
+    /// record scrolls the list back to the newest row. Our list is
+    /// newest-first, so "end" here is the top. Turn it off before
+    /// scrolling down to read older rows.
+    @State private var followEnd = true
 
     /// Search text first (DnsStore.filtered), then the group filter,
-    /// then the record-type facet.
+    /// then the record-type / initiator / rcode facets.
     private var visibleEntries: [ConcordDnsEntry] {
         dnsStore.filtered.filter { recordFilter.matches($0) }
             .filter { selectedType == nil || $0.type == selectedType }
+            .filter { selectedInitiator == nil || $0.initiator == selectedInitiator }
+            .filter { selectedRcode == nil || $0.rcode == selectedRcode }
     }
 
     /// Consecutive identical rows folded for display only (C10):
@@ -784,7 +889,25 @@ struct DnsQueriesView: View {
         Array(NSOrderedSet(array: dnsStore.filtered.map { $0.type })) as? [String] ?? []
     }
 
+    private var availableInitiators: [String] {
+        Array(NSOrderedSet(array: dnsStore.filtered.map { $0.initiator }.filter { !$0.isEmpty })) as? [String] ?? []
+    }
+
+    private var availableRcodes: [String] {
+        Array(NSOrderedSet(array: dnsStore.filtered.compactMap { $0.rcode }.filter { !$0.isEmpty })) as? [String] ?? []
+    }
+
+    /// Scrolls to the newest row (the top: the list is
+    /// newest-first). Called when follow mode is on and a new
+    /// record arrives, or when follow mode is just turned on.
+    private func scrollToNewest(_ proxy: ScrollViewProxy) {
+        if let id = foldedEntries.first?.id {
+            withAnimation { proxy.scrollTo(id, anchor: .top) }
+        }
+    }
+
     var body: some View {
+        ScrollViewReader { proxy in
         List {
             if client.mode == .sample {
                 HStack {
@@ -860,6 +983,15 @@ struct DnsQueriesView: View {
                 }
                 .pickerStyle(.segmented)
                 .listRowBackground(Color.clear)
+                Toggle("跟随最新", isOn: $followEnd)
+                    .listRowBackground(Color.clear)
+                    .onChange(of: followEnd) { _, on in
+                        if on { scrollToNewest(proxy) }
+                    }
+                Text("打开后新记录出现时回到顶部；向下翻看旧记录时请先关闭。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear)
                 HStack {
                     Text("记录类型")
                     Spacer()
@@ -867,6 +999,30 @@ struct DnsQueriesView: View {
                         Text("全部").tag(nil as String?)
                         ForEach(availableTypes, id: \.self) { type in
                             Text(type).tag(type as String?)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                .listRowBackground(Color.clear)
+                HStack {
+                    Text("发起方")
+                    Spacer()
+                    Picker("发起方", selection: $selectedInitiator) {
+                        Text("全部").tag(nil as String?)
+                        ForEach(availableInitiators, id: \.self) { initiator in
+                            Text(initiator).tag(initiator as String?)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                .listRowBackground(Color.clear)
+                HStack {
+                    Text("返回码")
+                    Spacer()
+                    Picker("返回码", selection: $selectedRcode) {
+                        Text("全部").tag(nil as String?)
+                        ForEach(availableRcodes, id: \.self) { rcode in
+                            Text(rcode).tag(rcode as String?)
                         }
                     }
                     .pickerStyle(.menu)
@@ -907,7 +1063,7 @@ struct DnsQueriesView: View {
                                         .padding(.vertical, 2)
                                         .background(Color.blue.opacity(0.12), in: Capsule())
                                 }
-                                Text("上游 \(entry.upstream) · \(entry.delay) ms · \(entry.cached == true ? "缓存命中" : "实时查询")")
+                                Text("上游 \(entry.upstream) · \(entry.delay) ms · \(entry.cached == true ? "缓存命中" : "实时查询")\(entry.initiator.isEmpty ? "" : " · 发起方 \(entry.initiator)")")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                                 Text("应答：\(entry.answers.joined(separator: ", "))")
@@ -960,8 +1116,12 @@ struct DnsQueriesView: View {
         }
         .refreshable { await dnsStore.refresh() }
         .task { if dnsStore.entries.isEmpty { await dnsStore.refresh() } }
+        .onChange(of: foldedEntries.first?.id) { _, _ in
+            if followEnd { scrollToNewest(proxy) }
+        }
         .sheet(item: $selectedEntry) { entry in
             DnsEntryDetailView(entry: entry)
+        }
         }
     }
 
@@ -1106,6 +1266,11 @@ struct ProvidersView: View {
     @State private var sideLoadName = ""
     @State private var sideLoadText = ""
     @State private var editingProvider: ConcordProviderInfo?
+    /// Import from URL (FlClash providers.dart _handleImportFromUrl):
+    /// one URL per line; the provider name comes from the URL file
+    /// stem and is deduplicated against the existing names.
+    @State private var importURLs = ""
+    @State private var showProviderImporter = false
 
     var body: some View {
         List {
@@ -1164,6 +1329,23 @@ struct ProvidersView: View {
                     .tint(.orange)
                 }
             }
+            Section("从链接导入提供方") {
+                TextEditor(text: $importURLs)
+                    .frame(minHeight: 60)
+                    .font(.system(.caption, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                Button("导入") {
+                    Task { await importProvidersFromURLs() }
+                }
+                .disabled(importURLs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Text("每行一个链接；下载到的内容按链接文件名作为提供方名称（重名时自动加后缀），通过 provider.sideLoad 存到核心。只下载文本内容，失败的链接会汇总在下面。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             Section("本地载入提供方（provider.sideLoad）") {
                 TextField("提供方名称", text: $sideLoadName)
                     .textInputAutocapitalization(.never)
@@ -1180,7 +1362,13 @@ struct ProvidersView: View {
                     Task { await ruleStore.sideLoadProvider(name: sideLoadName, data: sideLoadText) }
                 }
                 .disabled(sideLoadName.trimmingCharacters(in: .whitespaces).isEmpty || sideLoadText.isEmpty)
-                Text("把提供方文件内容（YAML / MRS / 文本）直接贴进来，核心会把它存到该名称下。只处理本地内容，不联网拉取。")
+                // FlClash providers.dart _handleImportFromFile: pick
+                // a file, read its bytes, side-load under the file
+                // stem. Same core method as the paste box above.
+                Button("从文件导入…") {
+                    showProviderImporter = true
+                }
+                Text("把提供方文件内容（YAML / MRS / 文本）直接贴进来，核心会把它存到该名称下。只处理本地内容，不联网拉取；从文件导入时名称取文件主名。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -1222,25 +1410,28 @@ struct ProvidersView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Menu("地理数据库") {
-                    Button("更新 GeoIP（MMDB）") {
-                        Task { await ruleStore.geoUpdate(kind: "MMDB") }
-                    }
-                    Button("更新 ASN（ASN）") {
-                        Task { await ruleStore.geoUpdate(kind: "ASN") }
-                    }
-                    Button("更新 GeoSite（GEOSITE）") {
-                        Task { await ruleStore.geoUpdate(kind: "GEOSITE") }
-                    }
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await ruleStore.refresh() } } label: {
                     Image(systemName: "arrow.clockwise")
                 }
             }
         }
         .refreshable { await ruleStore.refresh() }
+        .fileImporter(isPresented: $showProviderImporter, allowedContentTypes: [.plainText, .data], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                guard let data = try? Data(contentsOf: url), !data.isEmpty else {
+                    ruleStore.lastError = "读取文件失败或文件为空"
+                    return
+                }
+                let name = uniqueProviderName(url.deletingPathExtension().lastPathComponent)
+                Task { await ruleStore.sideLoadProvider(name: name, data: String(decoding: data, as: UTF8.self)) }
+            case .failure(let error):
+                ruleStore.lastError = "选择文件失败：\(error.localizedDescription)"
+            }
+        }
         .sheet(isPresented: Binding(
             get: { ruleStore.providerDetail != nil },
             set: { if !$0 { ruleStore.providerDetail = nil } }
@@ -1251,6 +1442,68 @@ struct ProvidersView: View {
         }
         .sheet(item: $editingProvider) { provider in
             EditProviderView(provider: provider)
+        }
+    }
+
+    /// A provider name not already in the list (FlClash's
+    /// _uniqueLabel): the base name, or base-2, base-3, …
+    private func uniqueProviderName(_ base: String) -> String {
+        let clean = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stem = clean.isEmpty ? "provider" : clean
+        let existing = Set(ruleStore.providers.map(\.name))
+        guard existing.contains(stem) else { return stem }
+        var index = 2
+        while existing.contains("\(stem)-\(index)") { index += 1 }
+        return "\(stem)-\(index)"
+    }
+
+    /// Downloads each URL (one per line) and side-loads its content
+    /// under the URL file stem (FlClash providers.dart
+    /// _handleImportFromUrl). Non-2xx and HTML error pages are
+    /// reported as failures instead of being stored as providers;
+    /// one summary message covers the whole batch.
+    private func importProvidersFromURLs() async {
+        let lines = importURLs.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else {
+            ruleStore.providerActionMessage = "请先输入提供方链接"
+            return
+        }
+        var imported: [String] = []
+        var failures: [String] = []
+        for raw in lines {
+            guard let url = URL(string: raw),
+                  url.scheme?.hasPrefix("http") == true, url.host != nil else {
+                failures.append(raw)
+                continue
+            }
+            do {
+                let (data, response) = try await URLSession.shared.data(from: url)
+                guard let http = response as? HTTPURLResponse,
+                      (200...299).contains(http.statusCode), !data.isEmpty else {
+                    failures.append(raw)
+                    continue
+                }
+                if let contentType = http.value(forHTTPHeaderField: "Content-Type"),
+                   contentType.lowercased().contains("text/html") {
+                    failures.append(raw)
+                    continue
+                }
+                let name = uniqueProviderName(url.deletingPathExtension().lastPathComponent)
+                try await client.providerSideLoad(name: name, data: String(decoding: data, as: UTF8.self))
+                imported.append(name)
+            } catch {
+                failures.append(raw)
+            }
+        }
+        await ruleStore.refresh()
+        if failures.isEmpty {
+            ruleStore.providerActionMessage = "已导入提供方：\(imported.joined(separator: "、"))"
+        } else if imported.isEmpty {
+            ruleStore.lastError = "导入失败：\(failures.joined(separator: "、"))"
+        } else {
+            ruleStore.providerActionMessage = "已导入提供方：\(imported.joined(separator: "、"))；失败：\(failures.joined(separator: "、"))"
         }
     }
 }
@@ -1265,8 +1518,17 @@ struct ResourcesView: View {
     @EnvironmentObject private var mitmModuleStore: MitmModuleStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var settingsStore: SettingsStore
+    @ObservedObject private var iconSetStore = IconSetStore.shared
     @State private var releaseMessage: String?
     @State private var geoFiles: [GeoFileInfo] = []
+    /// Geo update interval text field (FlClash resources.dart
+    /// _updateInterval: a free number input in hours, digits only,
+    /// max 6 digits, must be > 0). Synced once from the stored
+    /// hours on appear; the stored value updates as valid text is
+    /// typed.
+    @State private var geoIntervalText = ""
+    @State private var geoIntervalIssue: String?
+    @State private var geoIntervalSynced = false
     /// Per-item update state (FlClash ResourcesView): the names of
     /// the items currently updating, plus the update-all result.
     @State private var updatingItems: Set<String> = []
@@ -1401,10 +1663,42 @@ struct ResourcesView: View {
                     .foregroundStyle(.secondary)
             }
             Section("图标集") {
-                LabeledContent("内置备用图标", value: "深色 / 青色 / 浅色")
-                Text("图标集随应用内置，没有远程更新；切换图标见 工具 → 应用图标。")
+                LabeledContent("内置图标集", value: "默认 / 彩色 / 线条")
+                Text("内置图标集没有远程更新；切换图标集见 工具 → 进阶配置 → 图标集。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                // FlClash resources.dart:238,568 _IconSetItem:
+                // imported icon sets with a per-set update. Local
+                // (file-imported) packs have no source URL and no
+                // update action, so they get a plain row.
+                ForEach(iconSetStore.importedPacks) { pack in
+                    if pack.isRemote {
+                        resourceRow(
+                            title: pack.name,
+                            subtitle: "\(pack.icons.count) 个图标 · 远程",
+                            updatedAt: Int64(pack.lastUpdate.timeIntervalSince1970),
+                            updatingKey: "iconset:\(pack.id)",
+                            onUpdate: { await iconSetStore.syncPack(pack) }
+                        )
+                    } else {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(pack.name)
+                                .font(.footnote)
+                            Text("\(pack.icons.count) 个图标 · 本地文件（无来源链接，不可同步）")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text("更新于 \(Date(timeIntervalSince1970: pack.lastUpdate.timeIntervalSince1970).formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                if let message = iconSetStore.actionMessage {
+                    Text(message).font(.caption2).foregroundStyle(.secondary)
+                }
+                if let error = iconSetStore.lastError {
+                    Text(error).font(.caption2).foregroundStyle(.red)
+                }
             }
             Section("Geo 资源") {
                 Toggle("自动更新", isOn: $geoAutoUpdate)
@@ -1419,15 +1713,39 @@ struct ResourcesView: View {
                     HStack {
                         Text("更新间隔")
                         Spacer()
-                        Picker("", selection: $geoAutoUpdateHours) {
-                            Text("12 小时").tag(12.0)
-                            Text("24 小时").tag(24.0)
-                            Text("72 小时").tag(72.0)
-                            Text("每周").tag(168.0)
-                        }
-                        .pickerStyle(.menu)
+                        TextField("24", text: $geoIntervalText)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 80)
+                            .onChange(of: geoIntervalText) { _, value in
+                                // FlClash input_limits.dart geoUpdateInterval:
+                                // digits only, max 6 chars, must be > 0.
+                                var digits = value.filter(\.isNumber)
+                                if digits.count > 6 {
+                                    digits = String(digits.prefix(6))
+                                }
+                                if digits != value {
+                                    geoIntervalText = digits
+                                    return
+                                }
+                                if digits.isEmpty {
+                                    geoIntervalIssue = "更新间隔不能为空"
+                                } else if let hours = Int(digits), hours > 0 {
+                                    geoAutoUpdateHours = Double(hours)
+                                    geoIntervalIssue = nil
+                                    settingsStore.save()
+                                } else {
+                                    geoIntervalIssue = "更新间隔应为大于 0 的小时数"
+                                }
+                            }
+                        Text("小时")
+                            .foregroundStyle(.secondary)
                     }
-                    .onChange(of: geoAutoUpdateHours) { _, _ in settingsStore.save() }
+                    if let geoIntervalIssue {
+                        Text(geoIntervalIssue)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
                 }
                 if geoFiles.isEmpty {
                     Text("容器里没有找到 Geo 文件（MMDB / ASN / GeoSite）。点下面按钮更新，核心会在后台下载。")
@@ -1493,9 +1811,29 @@ struct ResourcesView: View {
                     Image(systemName: "chevron.left")
                 }
             }
+            // FlClash puts the geo updates on the Resources page
+            // (resources.dart:507-561); the same menu used to live
+            // on the Providers toolbar.
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu("地理数据库") {
+                    Button("更新 GeoIP（MMDB）") {
+                        Task { await ruleStore.geoUpdate(kind: "MMDB") }
+                    }
+                    Button("更新 ASN（ASN）") {
+                        Task { await ruleStore.geoUpdate(kind: "ASN") }
+                    }
+                    Button("更新 GeoSite（GEOSITE）") {
+                        Task { await ruleStore.geoUpdate(kind: "GEOSITE") }
+                    }
+                }
+            }
         }
         .task {
             scanGeoFiles()
+            if !geoIntervalSynced {
+                geoIntervalText = "\(Int(geoAutoUpdateHours))"
+                geoIntervalSynced = true
+            }
         }
     }
 

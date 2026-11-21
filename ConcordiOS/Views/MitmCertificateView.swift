@@ -32,6 +32,11 @@ struct MitmCertificateView: View {
     @State private var installMessage: String?
     @State private var installFailed = false
     @State private var installHint: String?
+    /// MuYu's restart tip (showMitmRestartTip): MITM was switched
+    /// while the VPN runs — the change is re-applied live, but
+    /// restarting the tunnel is the sure path.
+    @State private var showRestartTip = false
+    @State private var isRestartingVpn = false
 
     var body: some View {
         List {
@@ -125,6 +130,11 @@ struct MitmCertificateView: View {
                         .font(.footnote)
                         .foregroundStyle(.orange)
                 }
+                // Upstream mitm.dart:441-448 (mitmEngineCompatibility):
+                // what the MITM engine does and does not do.
+                Text("支持指定域名的 HTTPS 解密、URL 跳转/拦截、请求头和正文重写、本地响应、请求/响应脚本、$httpClient、$task.fetch、计时器与持久存储。脚本有较短的运行时间和大小限制。暂不支持定时/事件脚本、二进制/完整头脚本模式，超大正文原样传输。模块为部分兼容。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             Section("信任检测") {
                 Text("检测会请核心签发一张 mitm-check.concord.invalid 的叶证书，再用系统信任库验证它（只在本地验证，不联网）。通过 = CA 已安装且已完全信任；不通过 = CA 还没装，或装了但没在「证书信任设置」里打开完全信任——本应用无法区分这两种情况。")
@@ -147,12 +157,35 @@ struct MitmCertificateView: View {
                 .disabled(isCheckingTrust || !settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
             }
             Section("MITM 配置") {
+                if showRestartTip {
+                    HStack {
+                        Text("VPN 相关配置已改动，点击重启")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
+                            Task { await restartVpn() }
+                        }
+                        .font(.caption2)
+                        .disabled(isRestartingVpn)
+                        Button(action: { showRestartTip = false }) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                        .foregroundStyle(.secondary)
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("不再提示")
+                    }
+                }
                 Toggle("启用 MITM", isOn: $settingsStore.mitmEnabled)
                     // Save on change, like the settings page's copy
                     // of this pair (audit B37): without this the
                     // switch silently reverted on leaving the page
                     // unless "保存并应用" was tapped.
-                    .onChange(of: settingsStore.mitmEnabled) { _, _ in settingsStore.save() }
+                    .onChange(of: settingsStore.mitmEnabled) { _, _ in
+                        settingsStore.save()
+                        showRestartTipIfNeeded()
+                    }
                 Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
                     .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
                 NavigationLink {
@@ -232,6 +265,27 @@ struct MitmCertificateView: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }.count
         return count == 0 ? "未设置" : "\(count) 个域名"
+    }
+
+    /// MuYu showMitmRestartTip's gate, on iOS: only when the VPN
+    /// is running and MITM is on (the tip's tap restarts it).
+    private func showRestartTipIfNeeded() {
+        if TunnelManager.shared.isRunning && settingsStore.mitmEnabled {
+            showRestartTip = true
+        }
+    }
+
+    /// Restarts the tunnel (stop, then start) and clears the tip.
+    private func restartVpn() async {
+        isRestartingVpn = true
+        defer { isRestartingVpn = false }
+        await TunnelManager.shared.stop()
+        do {
+            try await TunnelManager.shared.start()
+            showRestartTip = false
+        } catch {
+            settingsStore.mitmStatusMessage = "重启 VPN 失败：\(error.localizedDescription)"
+        }
     }
 
     /// System install flow: build a .mobileconfig with the CA and
@@ -482,37 +536,80 @@ private struct MitmTrustResult {
 
 struct MitmHostnameEditorView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var moduleStore: MitmModuleStore
     @State private var hostnames: [String] = []
     @State private var newHostname = ""
     @State private var addError: String?
     @State private var showBulkEdit = false
     @State private var bulkText = ""
+    @State private var searchText = ""
+    @State private var isSelecting = false
+    @State private var selectedIndices: Set<Int> = []
 
     private var invalidHostnames: [String] {
         hostnames.filter { !Self.isValidHostname($0) }
     }
 
+    /// The rows the search shows, as indices into `hostnames`
+    /// (selection and delete translate through them).
+    private var visibleIndices: [Int] {
+        hostnames.indices.filter {
+            searchText.isEmpty || hostnames[$0].localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    /// Upstream mitm.dart:596-608 (`noHost`): MITM on, capture on,
+    /// every hostname line `-`-prefixed (or none at all), and no
+    /// module enabled — capture will catch nothing.
+    private var showNoHostsWarning: Bool {
+        settingsStore.mitmEnabled && settingsStore.mitmCapture
+            && hostnames.allSatisfy { $0.hasPrefix("-") }
+            && !moduleStore.modules.contains(where: \.enabled)
+    }
+
     var body: some View {
         List {
             Section {
-                Text("解密这些域名的 HTTPS 流量：支持 *.example.com 这样的通配符。改动后保存，下次启动 VPN 时生效（VPN 运行时在 常规 页点「应用 MITM 设置」立即生效）。")
+                Text("解密这些域名的 HTTPS 流量：支持 *.example.com 这样的通配符。以 - 开头表示排除，第一条匹配的生效。改动后保存，下次启动 VPN 时生效（VPN 运行时在 常规 页点「应用 MITM 设置」立即生效）。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Section("解密主机名（\(hostnames.count) 个）") {
+                if showNoHostsWarning {
+                    Text("未列出任何主机，捕获不会记录内容。请在下方添加解密主机名，或启用一个 MITM 模块。")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
                 if hostnames.isEmpty {
                     Text("还没有域名：MITM 开启后只解密这里列出的域名。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                ForEach(Array(hostnames.enumerated()), id: \.offset) { index, _ in
-                    HostnameRowView(hostnames: $hostnames, index: index)
+                ForEach(visibleIndices, id: \.self) { index in
+                    HStack {
+                        if isSelecting {
+                            Button(action: { toggleSelection(index) }) {
+                                Image(systemName: selectedIndices.contains(index) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedIndices.contains(index) ? ConcordTheme.accent : .secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(selectedIndices.contains(index) ? "取消选择 \(hostnames[index])" : "选择 \(hostnames[index])")
+                        }
+                        HostnameRowView(hostnames: $hostnames, index: index)
+                    }
                 }
                 .onDelete { offsets in
-                    hostnames.remove(atOffsets: offsets)
+                    // Offsets are positions in the visible list;
+                    // translate them back to `hostnames` indices.
+                    for index in offsets.map({ visibleIndices[$0] }).sorted(by: >) {
+                        hostnames.remove(at: index)
+                    }
                     save()
                 }
                 .onMove { from, to in
+                    // A filtered move would reorder the visible
+                    // subset, not the list — only move unfiltered.
+                    guard searchText.isEmpty else { return }
                     hostnames.move(fromOffsets: from, toOffset: to)
                     save()
                 }
@@ -536,6 +633,14 @@ struct MitmHostnameEditorView: View {
                         .foregroundStyle(.red)
                 }
             }
+            if isSelecting {
+                Section {
+                    Button("删除所选（\(selectedIndices.count)）", role: .destructive) {
+                        deleteSelected()
+                    }
+                    .disabled(selectedIndices.isEmpty)
+                }
+            }
             Section {
                 Button("批量编辑（每行一个）") {
                     bulkText = hostnames.joined(separator: "\n")
@@ -546,7 +651,14 @@ struct MitmHostnameEditorView: View {
         .font(.footnote.weight(.semibold))
         .navigationTitle("解密主机名")
         .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: "搜索域名")
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(isSelecting ? "完成" : "选择") {
+                    isSelecting.toggle()
+                    if !isSelecting { selectedIndices.removeAll() }
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 EditButton()
             }
@@ -608,6 +720,25 @@ struct MitmHostnameEditorView: View {
         addError = nil
         hostnames.append(value)
         newHostname = ""
+        save()
+    }
+
+    private func toggleSelection(_ index: Int) {
+        if selectedIndices.contains(index) {
+            selectedIndices.remove(index)
+        } else {
+            selectedIndices.insert(index)
+        }
+    }
+
+    /// Deletes the selected rows (upstream ListEditorPage
+    /// multi-select delete) and leaves selection mode.
+    private func deleteSelected() {
+        for index in selectedIndices.sorted(by: >) {
+            hostnames.remove(at: index)
+        }
+        selectedIndices.removeAll()
+        isSelecting = false
         save()
     }
 

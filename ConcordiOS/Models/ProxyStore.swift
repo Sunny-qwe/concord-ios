@@ -1254,7 +1254,7 @@ final class ProxyStore: ObservableObject {
                         if useAppCore {
                             try await AppCore.shared.providerUpdate(name: provider)
                         } else {
-                            try await client.providerUpdate(name: provider)
+                            try await self.client.providerUpdate(name: provider)
                         }
                         return (provider, .success(()))
                     } catch {

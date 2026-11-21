@@ -131,9 +131,13 @@ final class LogStore: ObservableObject {
     /// or CA generation). The old code only ever read the
     /// extension's snapshot file, so with the VPN off the list was
     /// always empty even while the app core was up and logging
-    /// (IMG_1162). When neither core runs there is nothing to
-    /// read: keep the entries we have, clear any stale error, and
-    /// let the Logs page show the persisted diagnostics.
+    /// (IMG_1162). With the VPN off the app-core buffer is read
+    /// even when its session is down (v0.2.49: the buffer survives
+    /// a torn-down session, so a failed boot's logs stay readable);
+    /// the lazy subscribe only runs while a session is up. When
+    /// neither core ever ran there is nothing to read: keep the
+    /// entries we have, clear any stale error, and let the Logs
+    /// page show the persisted diagnostics.
     @MainActor
     func refresh() async {
         do {
@@ -141,16 +145,20 @@ final class LogStore: ObservableObject {
             if TunnelManager.shared.isRunning {
                 fresh = try await client.logEntries()
                 warnings = try await client.lastWarnings()
-            } else if AppCore.shared.isRunning {
+            } else {
                 // Lazily (re-)subscribe if the boot-time subscribe
                 // failed or the session restarted since; the call
-                // is a no-op when a sub already exists.
-                try? await AppCore.shared.subscribeLogWatch()
+                // is a no-op when a sub already exists — and only
+                // runs while a session is up.
+                if AppCore.shared.isRunning {
+                    try? await AppCore.shared.subscribeLogWatch()
+                }
                 fresh = await AppCore.shared.logEntries()
-                warnings = (try? await AppCore.shared.lastWarnings()) ?? []
-            } else {
-                lastError = nil
-                return
+                if AppCore.shared.isRunning {
+                    warnings = (try? await AppCore.shared.lastWarnings()) ?? []
+                } else {
+                    warnings = []
+                }
             }
             // The stream replays the buffered entries; keep the newest
             // copy of each (id = time + text) and sort oldest first.

@@ -51,6 +51,21 @@ final class ProxyStore: ObservableObject {
     @Published var latenciesByURL: [LatencyKey: Int32] = [:]
     /// Group names with a delay test in flight (per-group spinners).
     @Published var testingGroups: Set<String> = []
+    /// When each testing group started its current run (v0.2.49):
+    /// a run that never returns leaves its flag set forever, so
+    /// every later tap is refused. A run older than
+    /// staleTestRunSeconds with no result is treated as dead —
+    /// the next tap clears it and starts fresh instead of being
+    /// refused. Same for the single-node flags below.
+    private var testingGroupsStartedAt: [String: Date] = [:]
+    private var testingNodesStartedAt: [String: Date] = [:]
+    /// A delay-test run "in progress" for longer than this is
+    /// dead (the longest legitimate run — 43 nodes × 30 s guard
+    /// at parallelism 2 — is ~11 min, but a run that produced no
+    /// result at all in 5 min is grinding on a dead backend, not
+    /// testing; the next tap restarts it rather than waiting out
+    /// the full worst case).
+    private static let staleTestRunSeconds: TimeInterval = 300
     /// Node names with a single-node delay test in flight (per-node
     /// spinners — FlClash shows an ActivityIndicator while a card's
     /// test runs; without this the bolt tap shows nothing at all
@@ -342,69 +357,98 @@ final class ProxyStore: ObservableObject {
         return ProfileStore.missingRuleSetName(from: message)
     }
 
-    /// The repair plan awaiting confirmation in the sheet, if any.
-    @Published var ruleSetRepairOffer: RuleSetRepairPlan?
-    /// True while a confirmed repair is writing + re-applying.
+    /// The repair-ALL plan awaiting confirmation in the sheet, if
+    /// any (v0.2.49: every missing rule set in one plan).
+    @Published var ruleSetRepairOffer: RuleSetRepairAllPlan?
+    /// The outcome of the last confirmed repair, shown INLINE in
+    /// the same sheet (v0.2.49): success, or the remaining problem
+    /// verbatim. Never re-pops the banner as if nothing happened.
+    @Published var ruleSetRepairOutcome: String?
+    /// True when the outcome above is a success.
+    @Published var ruleSetRepairOutcomeIsSuccess = false
+    /// True while a repair plan is being collected or a confirmed
+    /// repair is writing + re-applying.
     @Published var isRepairingRuleSet = false
 
-    /// Builds the plan for the banner's error and presents the
-    /// confirmation sheet. Never writes anything.
+    /// Builds the repair-ALL plan for the banner's error and
+    /// presents the confirmation sheet. Never writes anything.
+    /// Async: collecting every missing set needs the core
+    /// (validate loop), so the banner button calls this in a Task.
     @MainActor
-    func prepareRuleSetRepair() {
-        guard let missing = missingRuleSetName else { return }
+    func prepareRuleSetRepair() async {
+        guard missingRuleSetName != nil, !isRepairingRuleSet else { return }
         guard let store = profileStore, let profile = store.activeProfile else {
-            noteTestMessage("没有已激活的订阅，无法修复缺失的规则集「\(missing)」")
+            noteTestMessage("没有已激活的订阅，无法修复缺失的规则集")
             return
         }
-        guard let plan = store.ruleSetRepairPlan(for: profile, missingName: missing) else {
-            noteTestMessage("无法读取当前订阅「\(profile.name)」的文件，无法修复缺失的规则集「\(missing)」")
+        ruleSetRepairOutcome = nil
+        ruleSetRepairOutcomeIsSuccess = false
+        isRepairingRuleSet = true
+        defer { isRepairingRuleSet = false }
+        guard let plan = await store.ruleSetRepairAllPlan(for: profile) else {
+            noteTestMessage("当前订阅「\(profile.name)」没有缺失的规则集（或文件无法读取）")
             return
         }
         ruleSetRepairOffer = plan
     }
 
-    /// Applies the confirmed plan, then re-applies + re-tests.
-    /// The sheet's confirm button calls this; the offer is
-    /// cleared first so the sheet dismisses while the work runs.
+    /// Dismisses the repair sheet (clears the offer and the inline
+    /// outcome). Called by the sheet's 取消 / 完成 buttons.
+    @MainActor
+    func dismissRuleSetRepair() {
+        ruleSetRepairOffer = nil
+        ruleSetRepairOutcome = nil
+        ruleSetRepairOutcomeIsSuccess = false
+    }
+
+    /// Applies the confirmed repair-ALL plan, then re-applies +
+    /// re-tests. The sheet stays open: the outcome is written
+    /// INLINE into the sheet (ruleSetRepairOutcome) — a remaining
+    /// problem is shown there, never as a fresh banner pop. The
+    /// offer is NOT cleared here; the sheet's 完成 button
+    /// dismisses it.
     @MainActor
     func confirmRuleSetRepair() async {
         guard let offer = ruleSetRepairOffer, !isRepairingRuleSet else { return }
-        guard offer.isRepairable else {
+        guard offer.isRepairable, let offerText = offer.newText else {
             // Unrepairable plans have no confirm button; this
             // only fires if the sheet is dismissed another way.
-            ruleSetRepairOffer = nil
             return
         }
         guard let store = profileStore, let profile = store.activeProfile else {
-            ruleSetRepairOffer = nil
-            noteTestMessage("没有已激活的订阅，无法修复")
+            ruleSetRepairOutcome = "没有已激活的订阅，无法修复"
+            ruleSetRepairOutcomeIsSuccess = false
             return
         }
-        ruleSetRepairOffer = nil
         isRepairingRuleSet = true
         defer { isRepairingRuleSet = false }
-        // Re-plan fresh: the file may have changed since the
+        // Re-collect fresh: the file may have changed since the
         // offer was built (subscription update, another edit). A
         // plan that no longer matches is refused, never written
-        // stale.
-        guard let fresh = store.ruleSetRepairPlan(for: profile, missingName: offer.missingName),
+        // stale — the refusal is shown inline in the sheet.
+        guard let fresh = await store.ruleSetRepairAllPlan(for: profile),
               fresh.isRepairable,
-              fresh.kind == offer.kind,
-              fresh.previewLines == offer.previewLines,
-              let newText = fresh.newText,
-              let newData = newText.data(using: .utf8) else {
-            noteTestMessage("配置文件在确认前已变化，请重新点「修复」再确认")
+              fresh.newText == offerText,
+              fresh.items.map({ $0.missingName }) == offer.items.map({ $0.missingName }) else {
+            ruleSetRepairOutcome = "配置文件在确认前已变化，请关闭后重新点「修复」再确认"
+            ruleSetRepairOutcomeIsSuccess = false
             return
         }
-        noteTestMessage("正在修复缺失的规则集「\(offer.missingName)」…")
+        let names = offer.items.map { "「\($0.missingName)」" }.joined(separator: "、")
+        noteTestMessage("正在修复缺失的规则集\(names)…")
+        guard let newData = offerText.data(using: .utf8) else {
+            ruleSetRepairOutcome = "修复内容不是有效的 UTF-8 文本，无法写入"
+            ruleSetRepairOutcomeIsSuccess = false
+            return
+        }
         // The normal update path: sanity check + profile file +
         // shared config.yaml + live apply when the tunnel runs.
         // lastError carries a live-apply / validate refusal
         // verbatim; nil means the write + apply succeeded.
         await store.updateProfileFile(profile, data: newData)
         if let failure = store.lastError {
-            noteTestMessage(failure)
-            offerNextRepair(from: failure, excluding: offer.missingName, profile: profile)
+            ruleSetRepairOutcome = failure
+            ruleSetRepairOutcomeIsSuccess = false
             return
         }
         if TunnelManager.shared.isRunning {
@@ -413,41 +457,34 @@ final class ProxyStore: ObservableObject {
             // that failed.
             await rerunLastTest()
             if testError == nil {
-                noteTestMessage(offer.successMessage)
+                ruleSetRepairOutcome = offer.successMessage
+                ruleSetRepairOutcomeIsSuccess = true
             } else if let error = testError {
-                offerNextRepair(from: error, excluding: offer.missingName, profile: profile)
+                ruleSetRepairOutcome = "配置已修复并应用，但测速仍有问题：\(error)"
+                ruleSetRepairOutcomeIsSuccess = false
             }
             return
         }
         // VPN off: the app-side core is the one that refused the
         // config — re-apply on it now (it restarts on the changed
-        // shared config.yaml). A refusal names the next missing
-        // set, if any; success re-runs the failed test.
+        // shared config.yaml). A refusal is shown inline;
+        // success re-runs the failed test.
         do {
             try await AppCore.shared.ensureStarted()
         } catch {
             noteTestError(error)
-            offerNextRepair(from: error.localizedDescription, excluding: offer.missingName, profile: profile)
+            ruleSetRepairOutcome = error.localizedDescription
+            ruleSetRepairOutcomeIsSuccess = false
             return
         }
         await rerunLastTest()
         if testError == nil {
-            noteTestMessage(offer.successMessage)
+            ruleSetRepairOutcome = offer.successMessage
+            ruleSetRepairOutcomeIsSuccess = true
         } else if let error = testError {
-            offerNextRepair(from: error, excluding: offer.missingName, profile: profile)
+            ruleSetRepairOutcome = "配置已修复并应用，但测速仍有问题：\(error)"
+            ruleSetRepairOutcomeIsSuccess = false
         }
-    }
-
-    /// When an error after a repair names ANOTHER missing
-    /// rule-set, offer its repair from the same banner. The same
-    /// name again means the repair did not take — reported
-    /// verbatim, not looped.
-    private func offerNextRepair(from message: String, excluding repairedName: String, profile: Profile) {
-        guard let next = ProfileStore.missingRuleSetName(from: message),
-              next != repairedName,
-              let store = profileStore,
-              let plan = store.ruleSetRepairPlan(for: profile, missingName: next) else { return }
-        ruleSetRepairOffer = plan
     }
 
     private func rerunLastTest() async {
@@ -920,6 +957,18 @@ final class ProxyStore: ObservableObject {
         latenciesByURL[LatencyKey(testUrl: url.trimmingCharacters(in: .whitespaces), name: name)] = value
     }
 
+    /// Drops the recorded latencies for `targets` (both keys), so
+    /// a new run never shows the previous run's results as its
+    /// own (v0.2.49, IMG_1163). Called after the in-flight guard
+    /// passes — never on a refused tap, so a refused tap keeps
+    /// the old results on screen.
+    private func clearLatencies(for targets: [DelayTarget]) {
+        for target in targets {
+            latencies.removeValue(forKey: target.proxyName)
+            latenciesByURL.removeValue(forKey: LatencyKey(testUrl: target.testUrl.trimmingCharacters(in: .whitespaces), name: target.proxyName))
+        }
+    }
+
     /// The delay to show for a resolved target: the
     /// (testUrl, real name) entry first, the legacy name entry as
     /// fallback (e.g. a result whose URL the core echoed
@@ -1021,6 +1070,31 @@ final class ProxyStore: ObservableObject {
         var errorDescription: String? { message }
     }
 
+    /// One-shot gate for the delay-test guard race (v0.2.49):
+    /// the RPC task and the 30 s guard task both try to resume
+    /// the same continuation; only the first wins and the loser's
+    /// result is discarded. Lets runOneDelayTest return at the
+    /// guard even if the RPC task never finishes (a
+    /// withThrowingTaskGroup would wait for that child forever).
+    private final class DelayGuardGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resumed = false
+        private var continuation: CheckedContinuation<DelayTargetOutcome, Never>?
+        func arm(_ continuation: CheckedContinuation<DelayTargetOutcome, Never>) {
+            lock.lock()
+            self.continuation = continuation
+            lock.unlock()
+        }
+        func resume(with outcome: DelayTargetOutcome) {
+            lock.lock()
+            guard !resumed, let continuation else { lock.unlock(); return }
+            resumed = true
+            self.continuation = nil
+            lock.unlock()
+            continuation.resume(returning: outcome)
+        }
+    }
+
     /// One delay.test call with the 30 s outer guard (FlClash
     /// delayTestGuardDuration, lib/common/constant.dart:62, applied
     /// to the testDelay call in lib/core/interface.dart:195). The
@@ -1032,33 +1106,41 @@ final class ProxyStore: ObservableObject {
     /// timeout is NOT a node failure: it comes back as
     /// .guardTimedOut and the caller records -1 (FlClash
     /// delayTimedOutValue, constant.dart:64).
+    ///
+    /// v0.2.49: the guard is a DETACHED-task race, not a
+    /// withThrowingTaskGroup — the group waits for every child,
+    /// so a child that never returned (lost reply, hung
+    /// transport) defeated the guard and stalled the whole run:
+    /// testingGroups never cleared and every later tap was
+    /// refused. Here the first of (RPC result, 30 s sleep) wins
+    /// and the run moves on; a late RPC result is discarded.
     private func runOneDelayTest(target: DelayTarget, useAppCore: Bool) async -> DelayTargetOutcome {
-        do {
-            return try await withThrowingTaskGroup(of: Int32?.self) { group in
-                group.addTask {
+        let gate = DelayGuardGate()
+        return await withCheckedContinuation { continuation in
+            gate.arm(continuation)
+            let proxyName = target.proxyName
+            let testUrl = target.testUrl
+            let timeoutMs = delayTimeoutMs
+            let client = self.client
+            Task.detached {
+                let outcome: DelayTargetOutcome
+                do {
                     let result: ConcordDelayResult
                     if useAppCore {
-                        result = try await AppCore.shared.delayTest(proxy: target.proxyName, url: target.testUrl, timeout: self.delayTimeoutMs)
+                        result = try await AppCore.shared.delayTest(proxy: proxyName, url: testUrl, timeout: timeoutMs)
                     } else {
-                        result = try await self.client.delayTest(proxy: target.proxyName, url: target.testUrl, timeout: self.delayTimeoutMs)
+                        result = try await client.delayTest(proxy: proxyName, url: testUrl, timeout: timeoutMs)
                     }
-                    return result.value
+                    outcome = .value(target, result.value)
+                } catch {
+                    outcome = .transportFailed(target, error.localizedDescription)
                 }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 30_000_000_000)
-                    return nil
-                }
-                let first: Int32?? = try await group.next()
-                group.cancelAll()
-                switch first {
-                case .some(.some(let value)):
-                    return .value(target, value)
-                default:
-                    return .guardTimedOut(target)
-                }
+                gate.resume(with: outcome)
             }
-        } catch {
-            return .transportFailed(target, error.localizedDescription)
+            Task.detached {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                gate.resume(with: .guardTimedOut(target))
+            }
         }
     }
 
@@ -1152,15 +1234,43 @@ final class ProxyStore: ObservableObject {
         // so those providers are kept out of updateErrors (and its
         // "提供方更新失败" banner) and retried once below.
         var notApplied: [String] = []
-        for provider in providers.sorted() {
-            do {
-                if useAppCore {
-                    try await AppCore.shared.providerUpdate(name: provider)
-                } else {
-                    try await client.providerUpdate(name: provider)
+        // v0.2.49: the updates run CONCURRENTLY (one TaskGroup
+        // child per provider), not one after another. Each
+        // provider.update carries a 60 s timeout for a slow
+        // network pull, so the sequential loop cost N×60 s for N
+        // providers — the whole preload could grind for 10 min
+        // while the delay test waited, which reads on-device as
+        // "the test never starts". Providers are independent
+        // (each pulls its own URL and swaps its own node set),
+        // and FlClash updates providers concurrently too
+        // (maxConcurrentImports). Results are collected first,
+        // then processed in sorted order, so the reporting stays
+        // deterministic. The cold-start retry below stays
+        // sequential (it is usually 0–1 providers).
+        let updateResults: [(String, Result<Void, Error>)] = await withTaskGroup(of: (String, Result<Void, Error>).self) { group in
+            for provider in providers.sorted() {
+                group.addTask {
+                    do {
+                        if useAppCore {
+                            try await AppCore.shared.providerUpdate(name: provider)
+                        } else {
+                            try await client.providerUpdate(name: provider)
+                        }
+                        return (provider, .success(()))
+                    } catch {
+                        return (provider, .failure(error))
+                    }
                 }
+            }
+            var collected: [(String, Result<Void, Error>)] = []
+            for await item in group { collected.append(item) }
+            return collected
+        }
+        for (provider, result) in updateResults.sorted(by: { $0.0 < $1.0 }) {
+            switch result {
+            case .success:
                 updated.append(provider)
-            } catch {
+            case .failure(let error):
                 if case AppCoreError.configNotApplied = error {
                     notApplied.append(provider)
                 } else if case ConcordClientError.configNotApplied = error {
@@ -1291,7 +1401,16 @@ final class ProxyStore: ObservableObject {
             ? (TunnelManager.shared.isRunning ? "隧道核心（VPN 运行中）" : "应用内核心（VPN 未运行）")
             : "示例数据"
         let timeoutMs = delayTimeoutMs
+        /// The active profile this run tests (v0.2.49): the 12:05
+        /// card did not name it, so a failure could not be tied to
+        /// a subscription.
+        let profileName = profileStore?.activeProfile?.name
         var okCount = 0, timeoutCount = 0, failedCount = 0
+        /// How many calls hit the 30 s guard / threw on transport
+        /// (v0.2.49): the 12:15 card's "0 返回，43 未返回" could not
+        /// tell grinding from stuck — these counts can.
+        var guardTimedOutCount = 0
+        var transportThrowCount = 0
         var throwError: Error?
         var preloadNote: String?
         var channelNote: String?
@@ -1302,6 +1421,16 @@ final class ProxyStore: ObservableObject {
         /// defer was installed, so a tap during an in-flight run
         /// left the 00:09:29 card untouched).
         var skippedNote: String?
+        /// Set when this tap cleared a stale in-flight run and
+        /// started fresh (v0.2.49 stale recovery, see the guard
+        /// below).
+        var supersededStaleNote: String?
+        /// Phase durations in seconds, for the report: a run that
+        /// grinds is only diagnosable when the card says WHERE the
+        /// time went (boot / preload / the test loop itself).
+        var bootSeconds: Int?
+        var preloadSeconds: Int?
+        var loopSeconds: Int?
         // The diagnostic report for the Logs export (method, params,
         // per-node outcome counts, channel diagnosis): written on
         // EVERY exit — including the early ones below — so the file
@@ -1316,7 +1445,9 @@ final class ProxyStore: ObservableObject {
             let untested = targets.count - okCount - timeoutCount - failedCount
             let urlText = Set(targets.map { $0.testUrl }).sorted().joined(separator: "、")
             let everText = everDelaySucceeded ? "是" : "否"
+            let elapsed = Int(Date().timeIntervalSince(startedAt))
             var lines = ["[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)）"]
+            if let profileName { lines.append("当前订阅：\(profileName)") }
             lines.append("方法：delay.test（逐个，并行 2 个）；超时：\(timeoutMs)ms（单次调用另有 30s 兜底）")
             lines.append("测速地址：\(urlText)")
             lines.append("目标：\(targets.count) 个节点；结果：成功 \(okCount)，超时(-1) \(timeoutCount)，失败(-2) \(failedCount)，未返回 \(untested)")
@@ -1329,16 +1460,50 @@ final class ProxyStore: ObservableObject {
                 let failedText = failedNames.prefix(8).joined(separator: "、") + (failedNames.count > 8 ? "…" : "")
                 lines.append("失败节点（前 8）：\(failedText)")
             }
+            if guardTimedOutCount > 0 {
+                lines.append("守卫超时（单次调用 30s 未返回）：\(guardTimedOutCount) 次")
+            }
+            if transportThrowCount > 0 {
+                lines.append("传输失败（调用抛错）：\(transportThrowCount) 次")
+            }
+            var phaseBits: [String] = []
+            if let bootSeconds { phaseBits.append("启动 \(bootSeconds)s") }
+            if let preloadSeconds { phaseBits.append("预加载 \(preloadSeconds)s") }
+            if let loopSeconds { phaseBits.append("测速 \(loopSeconds)s") }
+            if !phaseBits.isEmpty || elapsed > 0 {
+                lines.append("耗时：\(phaseBits.joined(separator: "，"))（本次共 \(elapsed)s）")
+            }
             if let preloadNote { lines.append("提供方预加载：\(preloadNote)") }
             if let throwError { lines.append("调用失败：\(throwError.localizedDescription)") }
             if let channelNote { lines.append("通道诊断：\(channelNote)") }
+            if let supersededStaleNote { lines.append(supersededStaleNote) }
             if let skippedNote { lines.append(skippedNote) }
             lines.append("此前是否测速成功过：\(everText)")
             AppCore.recordDelayTestReport(lines.joined(separator: "\n"))
         }
-        guard testingGroups.isDisjoint(with: groupNames) else {
-            skippedNote = "本次点击未启动新测速：同一策略组已有测速在进行中（请等它完成；若一直没有结果，说明上一次测速卡住了——请把日志导出发来定位）"
-            return
+        // Stale-run recovery (v0.2.49): a run that never returns
+        // used to lock its groups forever — every later tap was
+        // refused with no way out. A run "in progress" for over
+        // 5 min with no result is treated as dead: clear it and
+        // start fresh. A younger in-flight run still refuses the
+        // tap, but the report now says how long it has been
+        // running, so grinding and stuck are distinguishable.
+        let overlapping = testingGroups.intersection(groupNames)
+        if !overlapping.isEmpty {
+            let now = Date()
+            let stale = overlapping.filter { group in
+                guard let started = testingGroupsStartedAt[group] else { return true }
+                return now.timeIntervalSince(started) > Self.staleTestRunSeconds
+            }
+            if stale.isEmpty {
+                let oldest = overlapping.compactMap { testingGroupsStartedAt[$0] }.min() ?? now
+                let elapsed = Int(now.timeIntervalSince(oldest))
+                skippedNote = "本次点击未启动新测速：同一策略组已有测速在进行中（已进行 \(elapsed) 秒；若超过 5 分钟仍无结果，下次点击会自动清除旧测速并重新开始）"
+                return
+            }
+            testingGroups.subtract(stale)
+            for group in stale { testingGroupsStartedAt.removeValue(forKey: group) }
+            supersededStaleNote = "已清除超过 5 分钟未完成的旧测速（\(stale.sorted().joined(separator: "、"))），重新开始"
         }
         // No resolvable target (e.g. a group whose members are all
         // nested groups with no current pick): tapping the bolt
@@ -1348,7 +1513,19 @@ final class ProxyStore: ObservableObject {
             return
         }
         testingGroups.formUnion(groupNames)
-        defer { testingGroups.subtract(groupNames) }
+        for group in groupNames { testingGroupsStartedAt[group] = startedAt }
+        defer {
+            testingGroups.subtract(groupNames)
+            for group in groupNames { testingGroupsStartedAt.removeValue(forKey: group) }
+        }
+        // A new run supersedes the old results: clear the targets'
+        // recorded latencies first, so the page shows the testing
+        // state instead of stale -2s from the previous run
+        // (v0.2.49, IMG_1163: every row showed 测速失败 from an
+        // earlier completed run while a new run was still in
+        // flight). Fresh results land per batch below.
+        clearLatencies(for: targets)
+        applyLatencies()
         // A new test supersedes the old failure: clear the banner
         // now, so a stale GeoIP error does not linger while the new
         // run is in flight (a fresh failure re-sets it below).
@@ -1361,15 +1538,18 @@ final class ProxyStore: ObservableObject {
         // the test cannot run at all — leave the nodes untested
         // (no -2) and say why.
         let useAppCore = client.mode == .live && !TunnelManager.shared.isRunning
+        let bootStart = Date()
         if useAppCore {
             do {
                 try await AppCore.shared.ensureStarted()
             } catch {
+                bootSeconds = Int(Date().timeIntervalSince(bootStart))
                 throwError = error
                 noteTestError(error)
                 return
             }
         }
+        bootSeconds = Int(Date().timeIntervalSince(bootStart))
         // Provider preload (B2 second version): seedProviderCache
         // inside ensureStarted only copies the cache — when the user
         // has never started the VPN there is no cache to copy, and
@@ -1381,6 +1561,7 @@ final class ProxyStore: ObservableObject {
         // after that is a banner with the real reason, not a silent
         // wall of -2s. Sample mode skips this: its data is fake.
         let preload: ProviderPreload
+        let preloadStart = Date()
         if client.mode == .live {
             preload = await ensureProvidersLoaded(for: targets.map { $0.proxyName }, useAppCore: useAppCore)
             switch preload {
@@ -1395,13 +1576,14 @@ final class ProxyStore: ObservableObject {
         } else {
             preload = .ready(updated: [])
         }
+        preloadSeconds = Int(Date().timeIntervalSince(preloadStart))
         // One delay.test per target, at most 2 in flight (FlClash
         // TaskPool, iOS = 2). Each call carries the settings timeout
         // and the 30 s guard; see runOneDelayTest.
         var firstTransportError: Error?
-        var transportThrowCount = 0
         var cancelledByTransport = false
         var index = 0
+        let loopStart = Date()
         while index < targets.count, !cancelledByTransport {
             let batch = Array(targets[index..<min(index + 2, targets.count)])
             index += batch.count
@@ -1415,6 +1597,7 @@ final class ProxyStore: ObservableObject {
                         recordLatency(name: target.proxyName, url: target.testUrl, value: value)
                     case .guardTimedOut(let target):
                         recordLatency(name: target.proxyName, url: target.testUrl, value: -1)
+                        guardTimedOutCount += 1
                     case .transportFailed(let target, let message):
                         // A throw is a transport failure, never a
                         // dead node — but the node still shows as
@@ -1428,6 +1611,7 @@ final class ProxyStore: ObservableObject {
             }
             applyLatencies()
         }
+        loopSeconds = Int(Date().timeIntervalSince(loopStart))
         if let firstTransportError { throwError = firstTransportError }
         // Tally the run from the recorded latencies (one record per
         // target — the parallel loop records each outcome once).
@@ -1532,18 +1716,36 @@ final class ProxyStore: ObservableObject {
         let backend = client.mode == .live
             ? (TunnelManager.shared.isRunning ? "隧道核心（VPN 运行中）" : "应用内核心（VPN 未运行）")
             : "示例数据"
-        guard !testingNodes.contains(node.name) else {
-            // v0.2.48: like the group path, a tap during an
-            // in-flight test still writes a fresh report instead
-            // of leaving a stale card.
-            AppCore.recordDelayTestReport("[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)，单节点）\n方法：delay.test；节点：\(node.name)\n结果：未测速：该节点已有测速在进行中")
-            return
+        let profileName = profileStore?.activeProfile?.name
+        // Same stale-run recovery as the group path (v0.2.49): a
+        // single-node test older than 5 min is dead — clear it and
+        // start fresh instead of refusing forever.
+        if testingNodes.contains(node.name) {
+            let stale: Bool
+            if let started = testingNodesStartedAt[node.name] {
+                stale = Date().timeIntervalSince(started) > Self.staleTestRunSeconds
+            } else {
+                stale = true
+            }
+            if !stale {
+                // v0.2.48: like the group path, a tap during an
+                // in-flight test still writes a fresh report instead
+                // of leaving a stale card.
+                AppCore.recordDelayTestReport("[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)，单节点）\n方法：delay.test；节点：\(node.name)\n结果：未测速：该节点已有测速在进行中")
+                return
+            }
+            testingNodes.remove(node.name)
+            testingNodesStartedAt.removeValue(forKey: node.name)
         }
         testingNodes.insert(node.name)
+        testingNodesStartedAt[node.name] = startedAt
         testError = nil
         testErrorIsGeoSeed = false
         lastTest = .node(node, testURL: testURL)
-        defer { testingNodes.remove(node.name) }
+        defer {
+            testingNodes.remove(node.name)
+            testingNodesStartedAt.removeValue(forKey: node.name)
+        }
         let fallbackURL = firstNonEmpty(testURL, overrideTestURL(), Self.defaultTestURL) ?? Self.defaultTestURL
         guard let target = resolveDelayTarget(memberName: node.name, fallbackTestUrl: fallbackURL) else {
             let reason = "该节点当前没有可测速的真实节点（策略组未选择节点）"
@@ -1555,6 +1757,11 @@ final class ProxyStore: ObservableObject {
             AppCore.recordDelayTestReport("[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)，单节点）\n方法：delay.test；节点：\(node.name)\n结果：未测速：\(reason)")
             return
         }
+        // Clear the stale result for this node first (v0.2.49,
+        // same as the group path): the chip shows the testing
+        // state, not the previous run's -2.
+        clearLatencies(for: [target])
+        applyLatencies()
         let useAppCore = client.mode == .live && !TunnelManager.shared.isRunning
         // Writes the single-node diagnostic report (last-delay-
         // test-report.txt) for one outcome. `extra` carries the
@@ -1562,6 +1769,7 @@ final class ProxyStore: ObservableObject {
         // when the preload ran and did anything.
         func writeReport(resultLine: String, preloadNote: String?, extra: [String] = []) {
             var lines = ["[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)，单节点）"]
+            if let profileName { lines.append("当前订阅：\(profileName)") }
             lines.append("方法：delay.test；节点：\(target.proxyName)；测速地址：\(target.testUrl)；超时：\(delayTimeoutMs)ms（单次调用另有 30s 兜底）")
             lines.append("结果：\(resultLine)")
             if let preloadNote { lines.append("提供方预加载：\(preloadNote)") }

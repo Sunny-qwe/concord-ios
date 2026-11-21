@@ -75,16 +75,19 @@ struct LogsView: View {
                     }
 
                     if logStore.filtered.isEmpty {
-                        // FlClash logs.dart: the log list is a
-                        // top-aligned shrink-wrapped list and the
-                        // empty state is a bounded NullStatus — it
-                        // never expands to fill the page. The old
-                        // ContentUnavailableView greedily took all
-                        // remaining space and pushed the persisted
-                        // diagnostics ~1000pt down (IMG_1162).
+                        // The user asked for this order explicitly
+                        // (v0.2.49, IMG_1165): the diagnostic cards
+                        // sit right under the filters and the
+                        // "暂无日志" block goes at the BOTTOM, after
+                        // them — not in the middle of the page.
+                        // (Upstream FlClash logs.dart shows its empty
+                        // state where the list would be, i.e. at the
+                        // top; this order is an intentional deviation
+                        // — the diagnostics are ours-only content and
+                        // the user wants the text at the top.)
                         ScrollView {
-                            compactEmptyStateView
                             persistedDiagnosticsView
+                            compactEmptyStateView
                         }
                     } else {
                         ScrollViewReader { proxy in
@@ -201,6 +204,7 @@ struct LogsView: View {
             }
             .background(ConcordTheme.pageBackground)
             .navigationTitle("日志")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: tab == .logs ? $logStore.searchText : $eventStore.searchText, prompt: tab == .logs ? "搜索日志" : "搜索事件")
             .toolbar {
                 if tab == .logs {
@@ -328,7 +332,9 @@ struct LogsView: View {
     /// Persisted diagnostics (v0.2.40): when the live list is
     /// empty — no core running, or the level/search filter hides
     /// every row — show the reports AppCore already wrote to disk
-    /// below the compact empty state instead of a blank page.
+    /// ABOVE the compact empty state (v0.2.49: the user wants the
+    /// text right under the filters, the empty block at the
+    /// bottom), instead of a blank page.
     /// "暂无记录" when a report was never written.
     @ViewBuilder
     private var persistedDiagnosticsView: some View {

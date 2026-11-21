@@ -241,11 +241,12 @@ struct ProxiesView: View {
                             // written without confirmation.
                             if let missing = proxyStore.missingRuleSetName {
                                 Button("修复") {
-                                    proxyStore.prepareRuleSetRepair()
+                                    Task { await proxyStore.prepareRuleSetRepair() }
                                 }
                                 .buttonStyle(.plain)
                                 .font(.system(size: 12, weight: .semibold))
                                 .accessibilityLabel("修复缺失的规则集 \(missing)")
+                                .disabled(proxyStore.isRepairingRuleSet)
                             }
                             Button { self.notice = nil } label: {
                                 Image(systemName: "xmark")
@@ -1183,10 +1184,15 @@ struct NodeDetailView: View {
 /// alone. Unrepairable plans show the reason with no confirm
 /// button. While a confirmed repair is writing + re-applying,
 /// the button becomes a spinner.
+/// Repair-ALL confirmation sheet (v0.2.49): every rule set the
+/// core reported missing, each with its action and exact lines,
+/// one confirm for all of them. The sheet stays open after
+/// confirm: the outcome (success or the remaining problem) is
+/// shown INLINE here, never as a fresh banner pop.
 private struct RuleSetRepairSheet: View {
     @EnvironmentObject private var proxyStore: ProxyStore
     @Environment(\.dismiss) private var dismiss
-    let plan: RuleSetRepairPlan
+    let plan: RuleSetRepairAllPlan
 
     var body: some View {
         NavigationStack {
@@ -1194,20 +1200,51 @@ private struct RuleSetRepairSheet: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(plan.summary)
                         .font(.system(size: 14))
-                    if !plan.previewLines.isEmpty {
-                        Text(plan.previewTitle)
-                            .font(.system(size: 13, weight: .semibold))
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            Text(plan.previewLines.joined(separator: "\n"))
-                                .font(.system(size: 12, design: .monospaced))
-                                .padding(10)
+                    if let blockingIssue = plan.blockingIssue {
+                        Text(blockingIssue)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.orange)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    ForEach(plan.items) { item in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 6) {
+                                Text("「\(item.missingName)」")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text(item.actionTitle)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 2)
+                                    .background(itemActionColor(item.kind).opacity(0.15), in: Capsule())
+                                    .foregroundStyle(itemActionColor(item.kind))
+                            }
+                            if !item.previewLines.isEmpty {
+                                Text(item.previewTitle)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    Text(item.previewLines.joined(separator: "\n"))
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .padding(10)
+                                }
+                                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                            }
                         }
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
                     }
                     if plan.isRepairable {
-                        Text("确认后写入当前订阅文件并重新应用配置，然后重测一次；若核心又报出另一个缺失的规则集，会再次提示修复。")
+                        Text("确认后一次性写入当前订阅文件并重新应用配置，然后重测一次；若仍有问题，结果会直接显示在这里。")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
+                    }
+                    if let outcome = proxyStore.ruleSetRepairOutcome {
+                        Text(outcome)
+                            .font(.system(size: 13))
+                            .foregroundStyle(proxyStore.ruleSetRepairOutcomeIsSuccess ? .green : .red)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background((proxyStore.ruleSetRepairOutcomeIsSuccess ? Color.green : Color.red).opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                     }
                 }
                 .padding()
@@ -1216,9 +1253,12 @@ private struct RuleSetRepairSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button(proxyStore.ruleSetRepairOutcome == nil ? "取消" : "完成") {
+                        proxyStore.dismissRuleSetRepair()
+                        dismiss()
+                    }
                 }
-                if plan.isRepairable {
+                if plan.isRepairable && proxyStore.ruleSetRepairOutcome == nil {
                     ToolbarItem(placement: .confirmationAction) {
                         if proxyStore.isRepairingRuleSet {
                             ProgressView()
@@ -1231,6 +1271,14 @@ private struct RuleSetRepairSheet: View {
                     }
                 }
             }
+        }
+    }
+
+    private func itemActionColor(_ kind: RuleSetRepairPlan.Kind) -> Color {
+        switch kind {
+        case .complete: return .blue
+        case .delete: return .orange
+        case .unrepairable: return .red
         }
     }
 }

@@ -238,7 +238,7 @@ final class AppCore {
     /// their existing shape. `configRefreshNote` (FIX 2) is passed
     /// on every call, so a heal that precedes a failed boot is
     /// still visible.
-    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String, providerSeed: ProviderCacheSeed.Report? = nil, appliedProfileName: String? = nil, configSize: Int? = nil, configMtime: Date? = nil, loadedGroupCount: Int? = nil, loadedNodeCount: Int? = nil, configRefreshNote: String? = nil) {
+    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String, providerSeed: ProviderCacheSeed.Report? = nil, appliedProfileName: String? = nil, configSize: Int? = nil, configMtime: Date? = nil, loadedGroupCount: Int? = nil, loadedNodeCount: Int? = nil, configRefreshNote: String? = nil, logSubscribeNote: String? = nil) {
         let stamp = Self.bootReportTimestamp(Date())
         var lines = ["[\(stamp)] 应用内核心启动"]
         for spec in GeoSeed.files {
@@ -285,6 +285,9 @@ final class AppCore {
         }
         if let loadedGroupCount, let loadedNodeCount {
             lines.append("核心已加载：\(loadedGroupCount) 个策略组，\(loadedNodeCount) 个节点")
+        }
+        if let logSubscribeNote {
+            lines.append("日志流：\(logSubscribeNote)")
         }
         lines.append("启动结果：\(outcome)")
         try? lines.joined(separator: "\n").write(
@@ -485,6 +488,10 @@ final class AppCore {
         // the cache from earlier VPN starts; this home is separate
         // and starts empty, so copy it across here.
         let providerSeed = Self.seedProviderCache(appHome: home, groupHome: groupHome)
+        // v0.2.49: the log.watch subscribe outcome (for the boot
+        // report). Set after core.init below; a second attempt
+        // runs after engine.start on the success path.
+        var logSubscribeNote: String?
         let context = Unmanaged.passRetained(self).toOpaque()
         do {
             if !Self.coreStarted {
@@ -520,6 +527,18 @@ final class AppCore {
             _ = try await sendRequest(method: "core.init", params: [
                 "home": home.path,
             ], resultType: EmptyResult.self, timeoutSeconds: 60)
+            // Subscribe to the app core's log.watch stream HERE,
+            // before config.apply (v0.2.49, Issue 2): the
+            // subscribe used to happen only after engine.start,
+            // so a boot that failed on config.apply never
+            // subscribed and the Logs page stayed empty even
+            // though the session was up long enough to log the
+            // refusal. A second attempt runs after engine.start
+            // on the success path (a no-op when this one
+            // worked). The outcome is recorded in the boot
+            // report instead of swallowed, so the next export
+            // says whether the log stream is live.
+            logSubscribeNote = await trySubscribeLogWatch()
             // The profile gives proxies / proxy-groups / rules; the
             // overlay carries everything else — here the listener
             // ports, so this instance can never clash with the
@@ -593,21 +612,19 @@ final class AppCore {
                 loadedGroupCount = nil
                 loadedNodeCount = nil
             }
-            // Subscribe to the app core's log.watch stream so the
-            // Logs page has live entries while the VPN is off
-            // (Issue 2): the stream's snapshot is empty — entries
-            // only arrive as events. Best-effort; a failure leaves
-            // the page with the persisted diagnostics only.
-            try? await subscribeLogWatch()
+            // Second subscribe attempt (a no-op when the
+            // pre-apply one above worked): the stream's snapshot
+            // is empty — entries only arrive as events.
+            logSubscribeNote = await trySubscribeLogWatch()
             let configInfo = configFileInfo(for: configURL)
             recordBootReport(home: home, seed: appSeed, outcome: "成功", providerSeed: providerSeed,
                              appliedProfileName: Self.profileStore?.activeProfile?.name,
                              configSize: configInfo?.size, configMtime: configInfo?.mtime,
                              loadedGroupCount: loadedGroupCount, loadedNodeCount: loadedNodeCount,
-                             configRefreshNote: configRefreshNote)
+                             configRefreshNote: configRefreshNote, logSubscribeNote: logSubscribeNote)
             loadedConfigSignature = signature
         } catch {
-            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)", providerSeed: providerSeed, configRefreshNote: configRefreshNote)
+            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)", providerSeed: providerSeed, configRefreshNote: configRefreshNote, logSubscribeNote: logSubscribeNote)
             // Balance the passRetained above exactly once: if the
             // session was opened, tearDown() closes it and the
             // releaseCallback balances the retain (sync or async);
@@ -652,7 +669,12 @@ final class AppCore {
             delayRun = nil
             delayRunStash.removeAll()
             logSub = nil
-            logBuffer.removeAll()
+            // v0.2.49: the captured log entries SURVIVE the
+            // teardown (the old code wiped them here): a boot
+            // that failed on config.apply still logged the
+            // refusal, and the Logs page / export should show
+            // those lines instead of an empty list. The buffer
+            // stays capped at 500 (see accumulateLogItems).
             loadedConfigSignature = nil
         }
     }
@@ -884,6 +906,20 @@ final class AppCore {
         }
     }
 
+    /// Best-effort log.watch subscribe that reports its outcome
+    /// instead of swallowing it (v0.2.49): the Logs page needs to
+    /// know whether the stream is live, and a silent failure used
+    /// to leave it empty with no explanation. "已订阅" when a sub
+    /// already exists, too (subscribeLogWatch is a no-op then).
+    private func trySubscribeLogWatch() async -> String {
+        do {
+            try await subscribeLogWatch()
+            return "已订阅"
+        } catch {
+            return "订阅失败：\(error.localizedDescription)"
+        }
+    }
+
     /// The accumulated app-core log entries (empty when the session
     /// is down or the stream was never subscribed). Reads the
     /// buffer on coreQueue (it is written there).
@@ -943,9 +979,67 @@ final class AppCore {
         guard let configURL = sharedConfigURL() else {
             throw AppCoreError.noConfig
         }
+        return try await configValidate(profilePath: configURL.path)
+    }
+
+    /// Validates an arbitrary profile file with the core
+    /// (config.validate) — the repair-all loop (v0.2.49) validates
+    /// candidate configs this way instead of only the shared one.
+    /// Needs a live session; use ensureValidationSession() first
+    /// when the boot itself failed (no session). The core only
+    /// parses the file, so the result is at most one issue.
+    func configValidate(profilePath: String) async throws -> [ConcordIssue] {
         return try await sendRequest(method: "config.validate", params: [
-            "profile": ["path": configURL.path],
+            "profile": ["path": profilePath],
         ], resultType: ConcordConfigValidateResult.self, timeoutSeconds: 15).issues
+    }
+
+    /// Opens a bare app-core session (hello + init, NO
+    /// config.apply / engine.start) for config.validate calls
+    /// (v0.2.49 repair-all loop): when the active config is
+    /// broken, ensureStarted tears the session down, so there is
+    /// no session to validate with — but validate only parses a
+    /// file and never needs the broken config applied. A session
+    /// that is already up is reused; the session stays up
+    /// afterwards (the next ensureStarted sees the signature
+    /// mismatch and restarts it on the repaired config). Throws
+    /// when the core cannot start or hello/init fail.
+    @MainActor
+    func ensureValidationSession() async throws {
+        guard !TunnelManager.shared.isRunning else {
+            throw AppCoreError.tunnelRunning
+        }
+        if session != 0 { return }
+        let home = try homeDirectory()
+        let context = Unmanaged.passRetained(self).toOpaque()
+        do {
+            if !Self.coreStarted {
+                guard concord_ios_start() == 0 else {
+                    throw AppCoreError.coreStartFailed
+                }
+                Self.coreStarted = true
+            }
+            let sessionID = concord_ios_open_session(
+                Self.deliverCallback, context, Self.releaseCallback)
+            guard sessionID != 0 else {
+                throw AppCoreError.sessionFailed
+            }
+            session = sessionID
+            _ = try await sendRequest(method: "core.hello", params: [
+                "protocol": ["min": 1, "max": 1],
+                "client": ["name": "concord-ios", "version": "0.2.0"],
+            ], resultType: EmptyResult.self, timeoutSeconds: 60)
+            _ = try await sendRequest(method: "core.init", params: [
+                "home": home.path,
+            ], resultType: EmptyResult.self, timeoutSeconds: 60)
+        } catch {
+            let hadSession = session != 0
+            tearDown()
+            if !hadSession {
+                Unmanaged<AppCore>.fromOpaque(context).release()
+            }
+            throw error
+        }
     }
 
     // MARK: MITM CA (v0.2.35 Item C)

@@ -209,6 +209,69 @@ struct RuleSetRepairPlan: Identifiable {
     }
 }
 
+/// One missing rule set inside a repair-all plan: what the core
+/// reported, what will be done about it, and the exact lines.
+struct RuleSetRepairItem: Identifiable {
+    let id = UUID()
+    let missingName: String
+    let kind: RuleSetRepairPlan.Kind
+    let previewLines: [String]
+
+    var actionTitle: String {
+        switch kind {
+        case .complete: return "补全定义"
+        case .delete: return "删除引用规则"
+        case .unrepairable: return "无法处理"
+        }
+    }
+
+    var previewTitle: String {
+        switch kind {
+        case .complete: return "将追加到当前订阅的 rule-providers："
+        case .delete: return "将从当前订阅的 rules 里删除："
+        case .unrepairable: return ""
+        }
+    }
+}
+
+/// The repair-ALL plan (v0.2.49): every rule set the core
+/// reports missing, collected in one pass with the core as the
+/// oracle (see collectMissingRuleSets), each with its own
+/// action — so one confirmation fixes the whole config instead
+/// of the old one-at-a-time whack-a-mole (fix TikTok → the next
+/// error is Disney → the sheet pops again). `newText` is the
+/// full repaired file; `blockingIssue` names a non-rule-set
+/// problem found while collecting (e.g. another parse error),
+/// if any. `completedCount` / `deletedCount` summarise the
+/// actions for the sheet.
+struct RuleSetRepairAllPlan: Identifiable {
+    let id = UUID()
+    let profileName: String
+    let items: [RuleSetRepairItem]
+    let newText: String?
+    let summary: String
+    let blockingIssue: String?
+    /// True when the combined text had to fall back to
+    /// delete-everything (a completion did not validate).
+    let fellBackToDeleteAll: Bool
+
+    var isRepairable: Bool { newText != nil && !items.isEmpty && items.contains(where: { $0.kind != .unrepairable }) }
+    var confirmTitle: String { "全部修复并重新应用" }
+    var completedCount: Int { items.filter { if case .complete = $0.kind { return true }; return false }.count }
+    var deletedCount: Int { items.filter { if case .delete = $0.kind { return true }; return false }.count }
+    var unrepairableCount: Int { items.filter { if case .unrepairable = $0.kind { return true }; return false }.count }
+
+    var successMessage: String {
+        var bits: [String] = []
+        if completedCount > 0 { bits.append("补全了 \(completedCount) 个规则集的定义") }
+        if deletedCount > 0 { bits.append("删除了 \(deletedCount) 个规则集的引用规则") }
+        let done = bits.joined(separator: "，")
+        return done.isEmpty
+            ? "配置已重新应用。"
+            : "已\(done)，配置已重新应用，测速已恢复。"
+    }
+}
+
 final class ProfileStore: ObservableObject {
     @Published var profiles: [Profile] = []
     @Published var statusMessage = "尚未导入订阅"
@@ -1550,10 +1613,186 @@ final class ProfileStore: ObservableObject {
         return Self.ruleSetRepairPlan(text: text, missingName: missingName)
     }
 
+    /// Validates one candidate config text with the core
+    /// (config.validate on a temp file in the App Group — the core
+    /// reads it with a plain fs::read in the extension process, so
+    /// a path in the app's own tmp would be invisible to it; same
+    /// pattern as validateYAMLText). The candidate is baked first
+    /// (reapplyLocalOverrides), because the core applies the BAKED
+    /// bytes, not the raw profile file — validating the raw text
+    /// would miss exactly the divergence behind the TikTok
+    /// paradox. VPN on: the extension's core validates; VPN off:
+    /// the app-side core validates (ensureValidationSession
+    /// first — a broken config leaves no session behind).
+    /// Returns the core's issues (at most one: the first parse
+    /// error). Throws when no core is reachable at all.
+    @MainActor
+    func validateCandidateText(_ text: String, for profile: Profile) async throws -> [ConcordIssue] {
+        guard let dir = profilesDirectory else {
+            throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "App Group 容器不可用"])
+        }
+        let baked = reapplyLocalOverrides(to: Data(text.utf8), for: profile)
+        let bakedText = String(data: baked, encoding: .utf8) ?? text
+        let tempURL = dir.appendingPathComponent(".repair-validate.yaml")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try bakedText.write(to: tempURL, atomically: true, encoding: .utf8)
+        if TunnelManager.shared.isRunning {
+            return try await client.configValidate(profilePath: tempURL.path)
+        }
+        try await AppCore.shared.ensureValidationSession()
+        return try await AppCore.shared.configValidate(profilePath: tempURL.path)
+    }
+
+    /// Collects EVERY rule set the core reports missing for one
+    /// profile, with the core as the oracle (v0.2.49 repair-all):
+    /// validate the (baked) candidate, take the first issue,
+    /// delete the rules referencing that set from the candidate,
+    /// and re-validate until the config is clean or a non-rule-set
+    /// issue appears. The core reports only rules[0], so one
+    /// validation can never list them all — the loop is what makes
+    /// the repair one-shot instead of whack-a-mole. Returns the
+    /// missing names in discovery order, the final candidate (the
+    /// all-deleted text, proven clean by its last validation),
+    /// the rule lines deleted per name (for the all-delete
+    /// fallback preview), and a blocking issue when the loop had
+    /// to stop early (a different parse error, or a name that
+    /// reappears after its rules were deleted — e.g. the reference
+    /// lives in a re-baked block, not in the profile file itself).
+    @MainActor
+    func collectMissingRuleSets(for profile: Profile) async -> (missing: [String], finalCandidate: String, deletedLines: [String: [String]], blockingIssue: String?) {
+        guard let url = fileURL(for: profile),
+              let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return ([], "", [:], "无法读取当前订阅「\(profile.name)」的文件")
+        }
+        var candidate = text
+        var missing: [String] = []
+        var deletedLines: [String: [String]] = [:]
+        for _ in 0..<20 {
+            let issues: [ConcordIssue]
+            do {
+                issues = try await validateCandidateText(candidate, for: profile)
+            } catch {
+                return (missing, candidate, deletedLines, "校验失败：\(error.localizedDescription)")
+            }
+            guard let first = issues.first else {
+                return (missing, candidate, deletedLines, nil)
+            }
+            guard let name = Self.missingRuleSetName(from: first.message) else {
+                return (missing, candidate, deletedLines, first.message)
+            }
+            if missing.contains(name) {
+                return (missing, candidate, deletedLines, "规则集「\(name)」反复出现：它的引用不在订阅文件里（可能在自动补回的内容中），无法继续收集")
+            }
+            missing.append(name)
+            let lines = candidate.components(separatedBy: "\n")
+            guard let rulesSection = Self.topLevelSection(named: "rules", in: lines) else {
+                return (missing, candidate, deletedLines, "rules 一节无法读取，无法继续收集")
+            }
+            let matched = Self.ruleSetRuleLineIndices(in: lines, section: rulesSection, missingName: name)
+            guard !matched.isEmpty else {
+                return (missing, candidate, deletedLines, "rules 里没有引用「\(name)」的规则行，无法继续收集")
+            }
+            deletedLines[name] = matched.map { lines[$0] }
+            var newLines = lines
+            for index in matched.reversed() { newLines.remove(at: index) }
+            candidate = newLines.joined(separator: "\n")
+        }
+        return (missing, candidate, deletedLines, "缺失的规则集超过 20 个，只收集了前 \(missing.count) 个")
+    }
+
+    /// Builds the repair-ALL plan for a profile (v0.2.49):
+    /// collect every missing set with the core as the oracle, then
+    /// decide each one's action against the ORIGINAL text — a set
+    /// the text already defines is core-invisible (the core still
+    /// reports it missing), so it is deleted with an explanation
+    /// instead of completed; the rest are completed from sibling
+    /// templates when inferable, else deleted. The combined text
+    /// (all edits applied) is re-validated; when it fails, the
+    /// plan falls back to the all-deleted candidate the loop
+    /// already proved clean. Nil when the file cannot be read or
+    /// nothing is missing.
+    @MainActor
+    func ruleSetRepairAllPlan(for profile: Profile) async -> RuleSetRepairAllPlan? {
+        guard let url = fileURL(for: profile),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let collected = await collectMissingRuleSets(for: profile)
+        guard !collected.missing.isEmpty else { return nil }
+        // Names the text defines (textual scan): the core reports
+        // these missing anyway, so their definitions are invisible
+        // to the core — completion would only add a duplicate key.
+        let lines = text.components(separatedBy: "\n")
+        var definedNames = Set<String>()
+        if let section = Self.topLevelSection(named: "rule-providers", in: lines) {
+            definedNames = Set(Self.ruleProviderEntries(in: lines, section: section).map { $0.name })
+        }
+        var combinedText = text
+        var items: [RuleSetRepairItem] = []
+        for name in collected.missing {
+            let invisible = definedNames.contains(name)
+            let plan = Self.ruleSetRepairPlan(text: combinedText, missingName: name, coreInvisibleNames: invisible ? [name] : [])
+            items.append(RuleSetRepairItem(missingName: name, kind: plan.kind, previewLines: plan.previewLines))
+            if let newText = plan.newText { combinedText = newText }
+        }
+        // Re-validate the combined text: completions add new
+        // provider definitions, so the result must be checked
+        // again before it is offered for writing.
+        var fellBackToDeleteAll = false
+        var finalText: String? = combinedText
+        var blockingIssue = collected.blockingIssue
+        do {
+            let issues = try await validateCandidateText(combinedText, for: profile)
+            if let first = issues.first {
+                fellBackToDeleteAll = true
+                finalText = collected.finalCandidate
+                blockingIssue = "补全的定义未通过校验（\(first.message)），已改为删除全部引用规则"
+                items = items.map { item in
+                    if case .complete = item.kind,
+                       let deleted = collected.deletedLines[item.missingName], !deleted.isEmpty {
+                        return RuleSetRepairItem(missingName: item.missingName, kind: .delete(ruleCount: deleted.count), previewLines: deleted)
+                    }
+                    return item
+                }
+            }
+        } catch {
+            fellBackToDeleteAll = true
+            finalText = collected.finalCandidate
+            blockingIssue = "修复后校验失败（\(error.localizedDescription)），已改为删除全部引用规则"
+            items = items.map { item in
+                if case .complete = item.kind,
+                   let deleted = collected.deletedLines[item.missingName], !deleted.isEmpty {
+                    return RuleSetRepairItem(missingName: item.missingName, kind: .delete(ruleCount: deleted.count), previewLines: deleted)
+                }
+                return item
+            }
+        }
+        let names = collected.missing.map { "「\($0)」" }.joined(separator: "、")
+        let summary = collected.missing.count == 1
+            ? "核心拒绝配置，因为规则引用了未定义的规则集\(names)。下面是校验收集到的全部缺失项，一次修复全部。"
+            : "核心拒绝配置，因为规则引用了 \(collected.missing.count) 个未定义的规则集（\(names)）。核心一次只报第一个，下面的列表是逐个校验收集到的全部缺失项，一次修复全部。"
+        return RuleSetRepairAllPlan(
+            profileName: profile.name,
+            items: items,
+            newText: finalText,
+            summary: summary,
+            blockingIssue: blockingIssue,
+            fellBackToDeleteAll: fellBackToDeleteAll)
+    }
+
     /// Pure core: completion first, delete fallback,
     /// unrepairable last. Line-based; the rest of the file is
-    /// preserved byte-for-byte.
-    static func ruleSetRepairPlan(text: String, missingName: String) -> RuleSetRepairPlan {
+    /// preserved byte-for-byte. `coreInvisibleNames` (v0.2.49)
+    /// names the sets the CORE reports missing even though the
+    /// text defines them (the TikTok paradox: the sheet used to
+    /// claim "已在 rule-providers 中定义" while the core said
+    /// "not found" — one of the two checks was wrong, and the
+    /// core's verdict governs): for those, completion is not
+    /// offered at all — adding a second definition would only
+    /// create a duplicate key — the plan deletes the referencing
+    /// rules and says plainly that the core does not recognise
+    /// the existing definition.
+    static func ruleSetRepairPlan(text: String, missingName: String, coreInvisibleNames: Set<String> = []) -> RuleSetRepairPlan {
         let lines = text.components(separatedBy: "\n")
         // --- Completion ---
         var completionBlocker: String? = nil
@@ -1563,7 +1802,11 @@ final class ProfileStore: ObservableObject {
             } else {
                 let entries = ruleProviderEntries(in: lines, section: section)
                 if entries.contains(where: { $0.name == missingName }) {
-                    completionBlocker = "「\(missingName)」已在 rule-providers 中定义，无法再补全"
+                    if coreInvisibleNames.contains(missingName) {
+                        completionBlocker = "「\(missingName)」在 rule-providers 里有一条，但核心校验时找不到它（定义可能写在了核心读不到的位置，或字段不完整），无法通过补全修复"
+                    } else {
+                        completionBlocker = "「\(missingName)」已在 rule-providers 中定义，无法再补全"
+                    }
                 } else if entries.isEmpty {
                     completionBlocker = "rule-providers 一节是空的，没有可参照的提供方"
                 } else {

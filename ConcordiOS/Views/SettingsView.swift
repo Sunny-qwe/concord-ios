@@ -888,6 +888,7 @@ struct DnsQueriesView: View {
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("DNS 查询")
+        .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $dnsStore.searchText, prompt: "搜索域名或上游")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -1150,6 +1151,7 @@ struct ProvidersView: View {
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("提供方")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu("地理数据库") {
@@ -1414,6 +1416,7 @@ struct ResourcesView: View {
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("资源")
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             scanGeoFiles()
         }

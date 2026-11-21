@@ -92,6 +92,7 @@ struct AppIconPickerView: View {
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("App 图标")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func select(_ option: AppIconOption) {

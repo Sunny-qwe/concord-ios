@@ -153,6 +153,7 @@ struct BackupView: View {
         .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("备份与恢复")
+        .navigationBarTitleDisplayMode(.inline)
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.zip], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):

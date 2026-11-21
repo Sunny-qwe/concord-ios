@@ -317,6 +317,7 @@ struct ThemePickerView: View {
         .font(.system(size: 13, weight: .semibold))
         .background(ConcordTheme.pageBackground)
         .navigationTitle("主题")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     /// "#RRGGBB" for a picked colour.

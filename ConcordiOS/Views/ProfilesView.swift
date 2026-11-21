@@ -69,7 +69,7 @@ struct ProfilesView: View {
     @State private var reorderDraft: [Profile] = []
     @State private var qrProfile: Profile?
     @State private var renameTarget: CustomSubscription?
-    @State private var renameText = 
+    @State private var renameText = ""
     @State private var exportURL: URL?
     @State private var deleteTarget: Profile?
     @State private var updatingIDs: Set<UUID> = []

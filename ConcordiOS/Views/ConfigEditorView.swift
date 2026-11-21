@@ -71,7 +71,7 @@ struct ConfigEditorView: View {
     @State private var findIndex = 0
     /// Editable title (FlClash editor.dart:99-101,185 titleEditable):
     /// the profile name, edited here and saved with the file.
-    @State private var editorTitle = 
+    @State private var editorTitle = ""
 
     private var isDirty: Bool {
         isLoaded && (text != originalText || editorTitle != editedProfile?.name)

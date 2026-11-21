@@ -508,6 +508,23 @@ private struct NodeSourcesEditorView: View {
         }
         isApplying = true
         defer { isApplying = false }
+        // Validate the bake with the core BEFORE noteBaked +
+        // saveActiveProfileYAML (ProfileStore.validateBakedSubscription):
+        // a baked section the core rejects must never be saved into
+        // the active profile. Refuse on issues, and also when the
+        // validation itself fails — a gate that fails open would
+        // silently save unvalidated content. The refusal surfaces
+        // in applyMessage, the view's existing message line.
+        do {
+            let issues = try await profileStore.validateBakedSubscription(sub, for: active)
+            if !issues.isEmpty {
+                applyMessage = "校验未通过，未保存：" + issues.map { $0.message }.joined(separator: "；")
+                return
+            }
+        } catch {
+            applyMessage = "校验失败，未保存：\(error.localizedDescription)"
+            return
+        }
         CustomSubscriptionStore.noteBaked(subscriptionID: sub.id, into: active.id)
         text = CustomSubscriptionStore.bake(sub, into: text)
         var message = await profileStore.saveActiveProfileYAML(text)

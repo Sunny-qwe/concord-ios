@@ -1897,13 +1897,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if let rules = overlayRules() {
             overlay["rules"] = rules
         }
-        if let dns = effectiveDnsWithModules() {
+        // Baked per-profile sections (v0.2.55): when config.yaml
+        // carries a baked marker block for dns / ntp / sniffer, the
+        // profile's own section IS the baked one — omit that
+        // section's overlay key, or the overlay would replace the
+        // baked section wholesale at every config.apply (upstream
+        // merge.rs) and the baked values would never reach the
+        // core. No marker block (today's state for every user)
+        // leaves the overlay byte-identical. `tun:` needs no
+        // change: no tun overlay exists unless overrides exist.
+        let bakedLines = bakedBlockLines()
+        if !hasBakedBlock(bakedLines, begin: "# concord-ios 自定义 DNS 开始", end: "# concord-ios 自定义 DNS 结束"),
+           let dns = effectiveDnsWithModules() {
             overlay["dns"] = dns
         }
-        if let ntp = effectiveSection(file: ntpFileName, section: "ntp") {
+        if !hasBakedBlock(bakedLines, begin: "# concord-ios 自定义 NTP 开始", end: "# concord-ios 自定义 NTP 结束"),
+           let ntp = effectiveSection(file: ntpFileName, section: "ntp") {
             overlay["ntp"] = ntp
         }
-        if let sniffer = effectiveSection(file: snifferFileName, section: "sniffer") {
+        if !hasBakedBlock(bakedLines, begin: "# concord-ios 自定义嗅探 开始", end: "# concord-ios 自定义嗅探 结束"),
+           let sniffer = effectiveSection(file: snifferFileName, section: "sniffer") {
             overlay["sniffer"] = sniffer
         }
         if let tun = effectiveTunWithModules() {
@@ -1934,6 +1947,32 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         }
         return overlay
+    }
+
+    /// The shared config.yaml's lines, for baked-block detection
+    /// below. Nil when the container or file is unreadable — then
+    /// no block is detected and the overlay is unchanged.
+    private func bakedBlockLines() -> [String]? {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID),
+              let data = try? Data(contentsOf: container.appendingPathComponent(configFileName)),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        return text.components(separatedBy: "\n")
+    }
+
+    /// Whether `lines` carry a baked scoped block between the two
+    /// marker lines (both present, end after begin) — the same test
+    /// CustomSubscriptionStore.reapplyBakedBlocks uses to carry a
+    /// block over. Marker strings are duplicated here because the
+    /// extension target cannot see the app's store; they must match
+    /// CustomSubscriptionStore.dnsBegin/dnsEnd, ntpBegin/ntpEnd and
+    /// snifferBegin/snifferEnd verbatim.
+    private func hasBakedBlock(_ lines: [String]?, begin: String, end: String) -> Bool {
+        guard let lines,
+              let beginIndex = lines.firstIndex(of: begin),
+              let endIndex = lines.firstIndex(of: end),
+              endIndex > beginIndex else { return false }
+        return true
     }
 
     /// The MITM overlay for config.apply: the user's own mitm.json

@@ -3,7 +3,9 @@ import UIKit
 
 // MARK: - Custom subscription editor (FlClash: lib/views/profiles/custom/)
 // Full editor for one custom subscription: groups (+ members),
-// dialers, proxy/rule providers and rules. The subscription itself
+// dialers, proxy/rule providers and rules, plus the per-profile
+// scoped sections DNS / NTP / sniffer / TUN (v0.2.55, FlClash
+// custom.dart _MoreSectionsView). The subscription itself
 // lives in CustomSubscriptionStore; providers here are references
 // to existing providers by name (upstream custom/providers.dart),
 // never created from scratch.
@@ -106,7 +108,50 @@ struct CustomSubscriptionEditorView: View {
         for provider in sub.proxyProviders where provider.kind == "http" && provider.url.isEmpty {
             issues.append("代理提供方「\(provider.name)」没有链接")
         }
+        // Scoped sections (v0.2.55): the same per-field checks
+        // the global pages run (DnsSettingsView listen / CIDR
+        // validation, NtpSettingsView port / interval ranges,
+        // NetworkSettingsView MTU range).
+        if let dns = sub.dns {
+            if let listen = dns.listen, !listen.isEmpty, !DnsSettingsView.isValidListenAddress(listen) {
+                issues.append("DNS 监听地址格式不对，应为 IP 或 IP:端口")
+            }
+            if let range = dns.fakeIpRange, !range.isEmpty, !SettingsStore.isValidIPv4CIDR(range) {
+                issues.append("DNS Fake-IP 段格式不对，应为 a.b.c.d/n")
+            }
+            if let range6 = dns.fakeIpRange6, !range6.isEmpty, !NetworkSettingsView.isValidCIDR(range6) {
+                issues.append("DNS Fake-IP 段（IPv6）格式不对，应为 IPv6 地址/n")
+            }
+            if let ipcidr = dns.fallbackFilter?.ipcidr {
+                for cidr in ipcidr where !NetworkSettingsView.isValidCIDR(cidr) {
+                    issues.append("DNS 备用过滤里有一条 IP 段格式不对：\(cidr)")
+                }
+            }
+        }
+        if let ntp = sub.ntp {
+            if let port = ntp.port, !(1...65535).contains(port) {
+                issues.append("NTP 端口应在 1–65535 之间")
+            }
+            if let interval = ntp.interval, !(1...1440).contains(interval) {
+                issues.append("NTP 同步间隔应在 1–1440 分钟之间")
+            }
+        }
+        if let tun = sub.tun {
+            if let mtu = tun.mtu, !(1280...65535).contains(mtu) {
+                issues.append("TUN MTU 应在 1280–65535 之间")
+            }
+        }
         return issues
+    }
+
+    /// Which of the four scoped sections are set (overview row).
+    private var moreSectionsSummary: String {
+        var set: [String] = []
+        if sub.dns != nil { set.append("DNS") }
+        if sub.ntp != nil { set.append("NTP") }
+        if sub.sniffer != nil { set.append("嗅探") }
+        if sub.tun != nil { set.append("TUN") }
+        return set.isEmpty ? "未设置" : set.joined(separator: "、") + " 已设置"
     }
 
     private var missingProviderCount: Int {
@@ -140,15 +185,13 @@ struct CustomSubscriptionEditorView: View {
                 HStack {
                     Text("更多（DNS / NTP / 嗅探 / TUN）").font(.headline)
                     Spacer()
-                    Text("见「覆盖」页，按订阅设置")
+                    Text(moreSectionsSummary)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                NavigationLink {
-                    OverrideView()
-                } label: {
-                    Label("打开覆盖设置", systemImage: "slider.horizontal.3")
-                }
+                Text("下面四个区只对这个订阅生效：打开后只设置你想改的项，没设置的项用订阅自己的值；设置后会替换订阅自带的同名配置，关掉后恢复。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             Section {
                 TextField("订阅名称", text: Binding(
@@ -334,6 +377,114 @@ struct CustomSubscriptionEditorView: View {
                         Label("删除所选（\(selectedRuleIDs.count) 条）", systemImage: "trash")
                     }
                 }
+            }
+
+            // MARK: - More sections (v0.2.55, FlClash custom.dart
+            // _MoreSectionsView): per-profile DNS / NTP / sniffer /
+            // TUN. Each area is off until its toggle is on; only
+            // the keys the user sets are baked, replacing the
+            // profile's own section of the same key (the original
+            // is preserved in the baked block and restored when
+            // the toggle goes off again).
+            Section("DNS") {
+                Toggle("为此订阅自定义 DNS", isOn: Binding(
+                    get: { sub.dns != nil },
+                    set: { on in
+                        var copy = sub
+                        copy.dns = on ? (copy.dns ?? CustomDnsSection()) : nil
+                        draft = copy
+                    }
+                ))
+                if sub.dns != nil {
+                    Text("只设置你想改的项：没设置的项用订阅自己的值。设置后会替换订阅自带的 DNS。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if sub.dns != nil {
+                CustomDnsSectionFormView(section: Binding(
+                    get: { sub.dns ?? CustomDnsSection() },
+                    set: { value in
+                        var copy = sub
+                        copy.dns = value
+                        draft = copy
+                    }
+                ))
+            }
+            Section("NTP") {
+                Toggle("为此订阅自定义 NTP", isOn: Binding(
+                    get: { sub.ntp != nil },
+                    set: { on in
+                        var copy = sub
+                        copy.ntp = on ? (copy.ntp ?? CustomNtpSection()) : nil
+                        draft = copy
+                    }
+                ))
+                if sub.ntp != nil {
+                    Text("只设置你想改的项：没设置的项用订阅自己的值。设置后会替换订阅自带的 NTP。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if sub.ntp != nil {
+                CustomNtpSectionFormView(section: Binding(
+                    get: { sub.ntp ?? CustomNtpSection() },
+                    set: { value in
+                        var copy = sub
+                        copy.ntp = value
+                        draft = copy
+                    }
+                ))
+            }
+            Section("嗅探") {
+                Toggle("为此订阅自定义嗅探", isOn: Binding(
+                    get: { sub.sniffer != nil },
+                    set: { on in
+                        var copy = sub
+                        copy.sniffer = on ? (copy.sniffer ?? CustomSnifferSection()) : nil
+                        draft = copy
+                    }
+                ))
+                if sub.sniffer != nil {
+                    Text("只设置你想改的项：没设置的项用订阅自己的值。设置后会替换订阅自带的嗅探配置。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if sub.sniffer != nil {
+                CustomSnifferSectionFormView(section: Binding(
+                    get: { sub.sniffer ?? CustomSnifferSection() },
+                    set: { value in
+                        var copy = sub
+                        copy.sniffer = value
+                        draft = copy
+                    }
+                ))
+            }
+            Section("TUN") {
+                Toggle("为此订阅自定义 TUN", isOn: Binding(
+                    get: { sub.tun != nil },
+                    set: { on in
+                        var copy = sub
+                        copy.tun = on ? (copy.tun ?? CustomTunSection()) : nil
+                        draft = copy
+                    }
+                ))
+                if sub.tun != nil {
+                    Text("只设置你想改的项：没设置的项用订阅自己的值。设置后会替换订阅自带的 TUN。iOS 上只有 MTU 和拥塞控制真正生效（下次启动 VPN 时应用），其余项只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if sub.tun != nil {
+                CustomTunSectionFormView(section: Binding(
+                    get: { sub.tun ?? CustomTunSection() },
+                    set: { value in
+                        var copy = sub
+                        copy.tun = value
+                        draft = copy
+                    }
+                ))
             }
         }
         .font(.footnote.weight(.semibold))
@@ -1080,6 +1231,435 @@ private struct CustomProviderPickerView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("取消") { dismiss() }
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Per-profile section forms (v0.2.55)
+//
+// Each form edits one scoped section through a Binding to the
+// (non-optional) section struct; the parent creates the section
+// on toggle-on and nils it on toggle-off. Every field is
+// tri-state in effect: an empty text field / empty list / "未设置"
+// choice stores nil, which bakes nothing for that key — only
+// keys the user actually sets are baked (an explicit 关 bakes
+// false, which is different from unset).
+
+/// Tri-state toggle (unset / on / off) for an optional Bool —
+/// the same segmented pattern as SnifferSettingsView's
+/// per-protocol override-destination. "未设置" bakes nothing for
+/// the key; an explicit 关 bakes false.
+private struct OptionalBoolRow: View {
+    let label: String
+    var value: Binding<Bool?>
+
+    var body: some View {
+        Picker(label, selection: value) {
+            Text("未设置").tag(nil as Bool?)
+            Text("开").tag(true as Bool?)
+            Text("关").tag(false as Bool?)
+        }
+        .pickerStyle(.segmented)
+    }
+}
+
+/// Optional string picker: "未设置" plus the named options.
+private struct OptionalStringPickerRow: View {
+    let label: String
+    var value: Binding<String?>
+    var options: [(value: String, label: String)]
+
+    var body: some View {
+        Picker(label, selection: value) {
+            Text("未设置").tag(nil as String?)
+            ForEach(options.indices, id: \.self) { index in
+                Text(options[index].label).tag(options[index].value as String?)
+            }
+        }
+    }
+}
+
+/// Number row for an optional Int: empty = unset (nil). Same
+/// shape as the group form's interval / timeout rows.
+private struct OptionalNumberRow: View {
+    let label: String
+    var value: Binding<Int?>
+    var placeholder: String
+
+    var body: some View {
+        HStack {
+            Text(label)
+            Spacer()
+            TextField(placeholder, value: value, format: .number)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 80)
+        }
+    }
+}
+
+/// Optional text field: empty = unset (nil). Same pattern as
+/// CustomProviderOptionsView's optional fields.
+private struct OptionalTextRow: View {
+    let placeholder: String
+    var value: Binding<String?>
+    var keyboard: UIKeyboardType = .default
+
+    var body: some View {
+        TextField(placeholder, text: Binding(
+            get: { value.wrappedValue ?? "" },
+            set: { value.wrappedValue = $0.isEmpty ? nil : $0 }
+        ))
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .keyboardType(keyboard)
+    }
+}
+
+/// Optional string list: empty = unset (nil).
+private struct OptionalStringListRow: View {
+    var value: Binding<[String]?>
+    var placeholder: String
+
+    var body: some View {
+        StringListEditor(items: Binding(
+            get: { value.wrappedValue ?? [] },
+            set: { value.wrappedValue = $0.isEmpty ? nil : $0 }
+        ), placeholder: placeholder)
+    }
+}
+
+/// Optional string map: empty = unset (nil).
+private struct OptionalStringMapRow: View {
+    var value: Binding<[String: String]?>
+    var keyPlaceholder: String
+    var valuePlaceholder: String
+
+    var body: some View {
+        KeyValueListEditor(items: Binding(
+            get: { value.wrappedValue ?? [:] },
+            set: { value.wrappedValue = $0.isEmpty ? nil : $0 }
+        ), keyPlaceholder: keyPlaceholder, valuePlaceholder: valuePlaceholder)
+    }
+}
+
+/// Comma-separated number list (TUN UID / port lists): the field
+/// shows the current values joined by ", "; editing parses the
+/// text, keeps the valid integers and flags the rest. Bound to
+/// an optional list through OptionalIntListRow (empty = nil).
+private struct IntListEditor: View {
+    @Binding var items: [Int]
+    var placeholder: String
+    @State private var text = ""
+    @State private var invalidText: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            TextField(placeholder, text: $text)
+                .keyboardType(.numbersAndPunctuation)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .onAppear { text = items.map(String.init).joined(separator: ", ") }
+                .onChange(of: text) { _, newValue in
+                    let parts = newValue.split(separator: ",")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                    var valid: [Int] = []
+                    var invalid: [String] = []
+                    for part in parts {
+                        if let number = Int(part) {
+                            valid.append(number)
+                        } else {
+                            invalid.append(part)
+                        }
+                    }
+                    items = valid
+                    invalidText = invalid.isEmpty ? nil : "忽略了无效的数字：\(invalid.joined(separator: "、"))"
+                }
+            if let invalidText {
+                Text(invalidText)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+}
+
+/// Optional number list: empty = unset (nil).
+private struct OptionalIntListRow: View {
+    var value: Binding<[Int]?>
+    var placeholder: String
+
+    var body: some View {
+        IntListEditor(items: Binding(
+            get: { value.wrappedValue ?? [] },
+            set: { value.wrappedValue = $0.isEmpty ? nil : $0 }
+        ), placeholder: placeholder)
+    }
+}
+
+/// One sniffed protocol: ports list + override-destination
+/// (跟随 / 覆盖开 / 覆盖关). Mirrors SnifferSettingsView's
+/// SniffProtocolRow, bound to a CustomSnifferSection's protocol
+/// config instead of the global store.
+private struct CustomSniffProtocolRow: View {
+    let title: String
+    @Binding var config: SniffProtocolConfig
+    @State private var newPort = ""
+    @State private var portError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                    .fontWeight(.semibold)
+                Spacer()
+                Text(config.ports.isEmpty ? "默认端口" : "\(config.ports.count) 个端口")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Picker("覆盖目标地址", selection: Binding(
+                get: { config.overrideDest },
+                set: { config.overrideDest = $0 }
+            )) {
+                Text("跟随").tag(nil as Bool?)
+                Text("覆盖开").tag(true as Bool?)
+                Text("覆盖关").tag(false as Bool?)
+            }
+            .pickerStyle(.segmented)
+            ForEach(config.ports, id: \.self) { port in
+                HStack {
+                    Text(port)
+                        .font(.system(.body, design: .monospaced))
+                    Spacer()
+                    Button {
+                        config.ports.removeAll { $0 == port }
+                    } label: {
+                        Image(systemName: "minus.circle")
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            HStack {
+                TextField("端口或范围，如 8080 或 8000-9000", text: $newPort)
+                    .keyboardType(.numbersAndPunctuation)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("添加") {
+                    let value = newPort.trimmingCharacters(in: .whitespaces)
+                    guard Self.isValidPortRange(value) else {
+                        portError = "格式不对，应为端口号或起止范围，如 8080 或 8000-9000"
+                        return
+                    }
+                    guard !config.ports.contains(value) else {
+                        portError = "这个端口已存在"
+                        return
+                    }
+                    portError = nil
+                    config.ports.append(value)
+                    newPort = ""
+                }
+                .disabled(newPort.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if let portError {
+                Text(portError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    static func isValidPortRange(_ value: String) -> Bool {
+        let parts = value.split(separator: "-")
+        guard parts.count <= 2 else { return false }
+        return parts.allSatisfy { part in
+            guard let port = Int(part), (1...65535).contains(port) else { return false }
+            return true
+        }
+    }
+}
+
+private struct CustomDnsSectionFormView: View {
+    @Binding var section: CustomDnsSection
+
+    /// Updates one field of the fallback filter, creating the
+    /// filter on first set and dropping it again when it becomes
+    /// entirely empty (so an untouched filter never persists).
+    private func updateFallbackFilter(_ update: (inout CustomDnsFallbackFilter) -> Void) {
+        var filter = section.fallbackFilter ?? CustomDnsFallbackFilter()
+        update(&filter)
+        let isEmpty = filter.geoip == nil && filter.geoipCode == nil
+            && (filter.geosite ?? []).isEmpty && (filter.ipcidr ?? []).isEmpty
+            && (filter.domain ?? []).isEmpty
+        section.fallbackFilter = isEmpty ? nil : filter
+    }
+
+    var body: some View {
+        Group {
+            Section("DNS · 选项") {
+                OptionalBoolRow(label: "启用 DNS", value: $section.enable)
+                OptionalStringPickerRow(label: "增强模式", value: $section.enhancedMode, options: [
+                    (value: "normal", label: "普通"),
+                    (value: "fake-ip", label: "Fake-IP"),
+                    (value: "redir-host", label: "redir-host"),
+                ])
+                OptionalTextRow(placeholder: "监听地址，如 127.0.0.1:1053（留空为默认）", value: $section.listen)
+                OptionalNumberRow(label: "监听路由标记", value: $section.listenRoutingMark, placeholder: "默认 0")
+                OptionalBoolRow(label: "使用 Hosts", value: $section.useHosts)
+                OptionalBoolRow(label: "使用系统 Hosts", value: $section.useSystemHosts)
+                OptionalBoolRow(label: "DNS 用 IPv6", value: $section.ipv6)
+                OptionalNumberRow(label: "IPv6 超时（毫秒）", value: $section.ipv6Timeout, placeholder: "默认 100")
+                OptionalBoolRow(label: "遵循规则", value: $section.respectRules)
+                OptionalBoolRow(label: "优先 HTTP/3", value: $section.preferH3)
+                OptionalStringPickerRow(label: "缓存算法", value: $section.cacheAlgorithm, options: [
+                    (value: "lru", label: "LRU"),
+                    (value: "arc", label: "ARC"),
+                ])
+                OptionalNumberRow(label: "缓存上限（条）", value: $section.cacheMaxSize, placeholder: "默认 4096")
+            }
+            Section("DNS · Fake-IP") {
+                OptionalTextRow(placeholder: "Fake-IP 段，如 198.18.0.1/16", value: $section.fakeIpRange)
+                OptionalTextRow(placeholder: "Fake-IP 段（IPv6），如 2001:db8::/32", value: $section.fakeIpRange6)
+                OptionalStringPickerRow(label: "Fake-IP 过滤模式", value: $section.fakeIpFilterMode, options: [
+                    (value: "blacklist", label: "黑名单"),
+                    (value: "whitelist", label: "白名单"),
+                    (value: "rule", label: "规则"),
+                ])
+                OptionalNumberRow(label: "Fake-IP TTL", value: $section.fakeIpTtl, placeholder: "默认 1")
+                OptionalStringListRow(value: $section.fakeIpFilter, placeholder: "域名，如 example.com")
+            }
+            Section("DNS · 解析服务器") {
+                OptionalStringListRow(value: $section.nameserver, placeholder: "解析服务器，如 https://dns.alidns.com/dns-query")
+                OptionalStringListRow(value: $section.defaultNameserver, placeholder: "默认解析服务器 IP")
+                OptionalStringMapRow(value: $section.nameserverPolicy, keyPlaceholder: "域名 / 规则集", valuePlaceholder: "服务器")
+                OptionalStringListRow(value: $section.fallback, placeholder: "备用解析服务器")
+                OptionalBoolRow(label: "备用懒查询", value: $section.fallbackLazyQuery)
+                OptionalStringListRow(value: $section.proxyServerNameserver, placeholder: "代理节点解析服务器")
+                OptionalStringMapRow(value: $section.proxyServerNameserverPolicy, keyPlaceholder: "域名 / 规则集", valuePlaceholder: "服务器")
+                OptionalStringListRow(value: $section.directNameserver, placeholder: "直连解析服务器")
+                OptionalBoolRow(label: "直连跟随解析策略", value: $section.directNameserverFollowPolicy)
+            }
+            Section("DNS · 备用过滤") {
+                OptionalBoolRow(label: "GeoIP 过滤", value: Binding(
+                    get: { section.fallbackFilter?.geoip },
+                    set: { value in updateFallbackFilter { $0.geoip = value } }
+                ))
+                OptionalTextRow(placeholder: "GeoIP 国家码，如 CN", value: Binding(
+                    get: { section.fallbackFilter?.geoipCode },
+                    set: { value in updateFallbackFilter { $0.geoipCode = value } }
+                ))
+                Text("GeoSite、IP 段、域名留空时不写出；只填了其中几项也只写出那几项。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                OptionalStringListRow(value: Binding(
+                    get: { section.fallbackFilter?.geosite },
+                    set: { value in updateFallbackFilter { $0.geosite = value } }
+                ), placeholder: "GeoSite，如 gfw")
+                OptionalStringListRow(value: Binding(
+                    get: { section.fallbackFilter?.ipcidr },
+                    set: { value in updateFallbackFilter { $0.ipcidr = value } }
+                ), placeholder: "IP 段，如 1.2.3.0/24")
+                OptionalStringListRow(value: Binding(
+                    get: { section.fallbackFilter?.domain },
+                    set: { value in updateFallbackFilter { $0.domain = value } }
+                ), placeholder: "域名")
+            }
+        }
+    }
+}
+
+private struct CustomNtpSectionFormView: View {
+    @Binding var section: CustomNtpSection
+
+    var body: some View {
+        Group {
+            Section("NTP") {
+                OptionalBoolRow(label: "启用 NTP", value: $section.enable)
+                OptionalTextRow(placeholder: "服务器，如 time.apple.com", value: $section.server, keyboard: .URL)
+                OptionalNumberRow(label: "端口", value: $section.port, placeholder: "默认 123")
+                OptionalNumberRow(label: "同步间隔（分钟）", value: $section.interval, placeholder: "默认 30")
+                OptionalTextRow(placeholder: "拨号代理（节点名，留空为直连）", value: $section.dialerProxy)
+                OptionalBoolRow(label: "写入系统时间", value: $section.writeToSystem)
+                Text("iOS 不允许 App 修改系统时间：该开关会随配置传给核心，由核心决定是否执行，App 内无法验证它是否生效。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct CustomSnifferSectionFormView: View {
+    @Binding var section: CustomSnifferSection
+
+    var body: some View {
+        Group {
+            Section("嗅探") {
+                OptionalBoolRow(label: "启用嗅探", value: $section.enable)
+                OptionalBoolRow(label: "覆盖目标地址", value: $section.overrideDestination)
+                OptionalBoolRow(label: "强制 DNS 映射", value: $section.forceDnsMapping)
+                Text("把嗅探到的域名映射回 Fake-IP。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                OptionalBoolRow(label: "解析纯 IP", value: $section.parsePureIp)
+            }
+            Section("强制嗅探域名") {
+                OptionalStringListRow(value: $section.forceDomain, placeholder: "域名，如 example.com")
+            }
+            Section("跳过域名") {
+                OptionalStringListRow(value: $section.skipDomain, placeholder: "域名，如 example.com")
+            }
+            Section("跳过源地址") {
+                OptionalStringListRow(value: $section.skipSrcAddress, placeholder: "IP 或 CIDR，如 192.168.1.0/24")
+            }
+            Section("跳过目标地址") {
+                OptionalStringListRow(value: $section.skipDstAddress, placeholder: "IP 或 CIDR，如 10.0.0.0/8")
+            }
+            Section("嗅探协议") {
+                CustomSniffProtocolRow(title: "HTTP", config: $section.sniffHttp)
+                CustomSniffProtocolRow(title: "TLS", config: $section.sniffTls)
+                CustomSniffProtocolRow(title: "QUIC", config: $section.sniffQuic)
+                Text("端口为空时按协议默认端口嗅探。覆盖目标地址选「跟随」时用上面总开关的值。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+private struct CustomTunSectionFormView: View {
+    @Binding var section: CustomTunSection
+
+    var body: some View {
+        Group {
+            Section("TUN") {
+                OptionalBoolRow(label: "启用 TUN", value: $section.enable)
+                OptionalStringPickerRow(label: "协议栈", value: $section.stack, options: [
+                    (value: "gvisor", label: "gVisor"),
+                    (value: "system", label: "系统"),
+                    (value: "lwip", label: "Lwip"),
+                ])
+                OptionalNumberRow(label: "MTU", value: $section.mtu, placeholder: "默认 9000")
+                OptionalTextRow(placeholder: "拥塞控制算法，如 cubic、bbr", value: $section.congestionController)
+                Text("iOS 上只有 MTU 和拥塞控制真正生效（下次启动 VPN 时应用）；下面的项只进核心的 TUN 设备创建路径，iOS 的包通道 TUN 从不走那条路，改了也不会生效。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                OptionalBoolRow(label: "严格路由", value: $section.strictRoute)
+                OptionalStringListRow(value: $section.routeAddress, placeholder: "路由地址，如 10.0.0.0/8")
+                OptionalStringListRow(value: $section.routeExcludeAddress, placeholder: "排除路由地址，如 192.168.0.0/16")
+                OptionalStringListRow(value: $section.dnsHijack, placeholder: "DNS 劫持，如 any:53")
+                OptionalNumberRow(label: "UDP 超时（秒）", value: $section.udpTimeout, placeholder: "默认 300")
+                OptionalBoolRow(label: "禁用 ICMP 转发", value: $section.disableIcmpForwarding)
+                OptionalBoolRow(label: "GSO", value: $section.gso)
+                OptionalStringListRow(value: $section.includeInterface, placeholder: "包含网卡，如 en0")
+                OptionalStringListRow(value: $section.excludeInterface, placeholder: "排除网卡，如 en0")
+                OptionalIntListRow(value: $section.includeUid, placeholder: "包含 UID，逗号分隔")
+                OptionalIntListRow(value: $section.excludeUid, placeholder: "排除 UID，逗号分隔")
+                OptionalIntListRow(value: $section.excludeSrcPort, placeholder: "排除源端口，逗号分隔")
+                OptionalIntListRow(value: $section.excludeDstPort, placeholder: "排除目标端口，逗号分隔")
+                OptionalStringListRow(value: $section.loopbackAddress, placeholder: "回流地址")
             }
         }
     }

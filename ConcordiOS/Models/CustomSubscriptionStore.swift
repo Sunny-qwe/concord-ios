@@ -8,10 +8,13 @@ import Combine
 // (custom-subscriptions.json), one entry per subscription; the
 // editor bakes the chosen subscription into the ACTIVE profile's
 // YAML (proxy-groups / proxy-providers / rule-providers / rules /
-// dialer-proxy on proxies) through the existing profile apply path
-// (ProfileStore.saveActiveProfileYAML + reapplyActive), so a
-// subscription refresh of the underlying profile does not wipe it
-// any more than the custom proxies it already re-bakes.
+// dialer-proxy on proxies, plus the per-profile scoped sections
+// dns / ntp / sniffer / tun — v0.2.55, each replacing the
+// profile's own section of the same key) through the existing
+// profile apply path (ProfileStore.saveActiveProfileYAML +
+// reapplyActive), so a subscription refresh of the underlying
+// profile does not wipe it any more than the custom proxies it
+// already re-bakes.
 
 struct CustomGroup: Codable, Equatable, Identifiable {
     var id: String
@@ -240,6 +243,365 @@ struct CustomRule: Codable, Equatable, Identifiable {
     }
 }
 
+// MARK: - Per-profile scoped sections (v0.2.55, FlClash
+// custom.dart _MoreSectionsView: DnsView.profile / NtpView /
+// SnifferView / TunView per profile)
+//
+// Each section is optional on CustomSubscription: nil = unset,
+// and an unset section bakes nothing (no empty sections, no
+// defaults injected). Inside a section every field is optional
+// too: nil = that key is not baked, so a profile only overrides
+// the keys the user actually set — the rest keep the
+// subscription's own values. An explicit false IS baked: nil vs
+// false is the difference between "follow the profile" and
+// "turn this off for this profile".
+//
+// Field shapes mirror the global pages (DnsSettingsView /
+// NtpStore / SnifferStore / TunOverrideView + OverrideStore's
+// dns / ntp / sniffer / tun key specs) and upstream
+// lib/models/clash_config.dart (Dns / Ntp / Sniffer / Tun).
+// TUN leaves out device / auto-route: on iOS the device is the
+// packet channel, owned by the extension (TunOverrideView).
+//
+// Codable is tolerant like CustomGroup's v0.2.54 `icon`
+// fallback: files saved before v0.2.55 have none of these keys,
+// and every field decodes with decodeIfPresent, so old
+// custom-subscriptions.json files keep loading.
+
+/// The fallback-filter map inside a DNS section (upstream
+/// FallbackFilter: geoip / geoip-code / geosite / ipcidr /
+/// domain). All optional: a filter that sets nothing bakes no
+/// `fallback-filter:` map at all.
+struct CustomDnsFallbackFilter: Codable, Equatable {
+    var geoip: Bool?
+    var geoipCode: String?
+    var geosite: [String]?
+    var ipcidr: [String]?
+    var domain: [String]?
+
+    init(geoip: Bool? = nil, geoipCode: String? = nil, geosite: [String]? = nil,
+         ipcidr: [String]? = nil, domain: [String]? = nil) {
+        self.geoip = geoip
+        self.geoipCode = geoipCode
+        self.geosite = geosite
+        self.ipcidr = ipcidr
+        self.domain = domain
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case geoip, geoipCode, geosite, ipcidr, domain
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        geoip = try c.decodeIfPresent(Bool.self, forKey: .geoip)
+        geoipCode = try c.decodeIfPresent(String.self, forKey: .geoipCode)
+        geosite = try c.decodeIfPresent([String].self, forKey: .geosite)
+        ipcidr = try c.decodeIfPresent([String].self, forKey: .ipcidr)
+        domain = try c.decodeIfPresent([String].self, forKey: .domain)
+    }
+}
+
+/// Per-profile DNS (baked under the top-level `dns:` key).
+struct CustomDnsSection: Codable, Equatable {
+    var enable: Bool?
+    var listen: String?
+    var listenRoutingMark: Int?
+    var preferH3: Bool?
+    var useHosts: Bool?
+    var useSystemHosts: Bool?
+    var respectRules: Bool?
+    var ipv6: Bool?
+    var ipv6Timeout: Int?
+    var cacheAlgorithm: String?
+    var cacheMaxSize: Int?
+    var defaultNameserver: [String]?
+    /// "normal" / "fake-ip" / "redir-host" (no "hosts": the core
+    /// rejects it as an enhanced-mode — DnsSettingsView).
+    var enhancedMode: String?
+    var fakeIpRange: String?
+    var fakeIpRange6: String?
+    var fakeIpFilter: [String]?
+    /// "blacklist" / "whitelist" / "rule".
+    var fakeIpFilterMode: String?
+    var fakeIpTtl: Int?
+    var nameserverPolicy: [String: String]?
+    var nameserver: [String]?
+    var fallback: [String]?
+    var fallbackLazyQuery: Bool?
+    var proxyServerNameserver: [String]?
+    var proxyServerNameserverPolicy: [String: String]?
+    var directNameserver: [String]?
+    var directNameserverFollowPolicy: Bool?
+    var fallbackFilter: CustomDnsFallbackFilter?
+
+    init(enable: Bool? = nil, listen: String? = nil, listenRoutingMark: Int? = nil,
+         preferH3: Bool? = nil, useHosts: Bool? = nil, useSystemHosts: Bool? = nil,
+         respectRules: Bool? = nil, ipv6: Bool? = nil, ipv6Timeout: Int? = nil,
+         cacheAlgorithm: String? = nil, cacheMaxSize: Int? = nil,
+         defaultNameserver: [String]? = nil, enhancedMode: String? = nil,
+         fakeIpRange: String? = nil, fakeIpRange6: String? = nil,
+         fakeIpFilter: [String]? = nil, fakeIpFilterMode: String? = nil,
+         fakeIpTtl: Int? = nil, nameserverPolicy: [String: String]? = nil,
+         nameserver: [String]? = nil, fallback: [String]? = nil,
+         fallbackLazyQuery: Bool? = nil, proxyServerNameserver: [String]? = nil,
+         proxyServerNameserverPolicy: [String: String]? = nil,
+         directNameserver: [String]? = nil, directNameserverFollowPolicy: Bool? = nil,
+         fallbackFilter: CustomDnsFallbackFilter? = nil) {
+        self.enable = enable
+        self.listen = listen
+        self.listenRoutingMark = listenRoutingMark
+        self.preferH3 = preferH3
+        self.useHosts = useHosts
+        self.useSystemHosts = useSystemHosts
+        self.respectRules = respectRules
+        self.ipv6 = ipv6
+        self.ipv6Timeout = ipv6Timeout
+        self.cacheAlgorithm = cacheAlgorithm
+        self.cacheMaxSize = cacheMaxSize
+        self.defaultNameserver = defaultNameserver
+        self.enhancedMode = enhancedMode
+        self.fakeIpRange = fakeIpRange
+        self.fakeIpRange6 = fakeIpRange6
+        self.fakeIpFilter = fakeIpFilter
+        self.fakeIpFilterMode = fakeIpFilterMode
+        self.fakeIpTtl = fakeIpTtl
+        self.nameserverPolicy = nameserverPolicy
+        self.nameserver = nameserver
+        self.fallback = fallback
+        self.fallbackLazyQuery = fallbackLazyQuery
+        self.proxyServerNameserver = proxyServerNameserver
+        self.proxyServerNameserverPolicy = proxyServerNameserverPolicy
+        self.directNameserver = directNameserver
+        self.directNameserverFollowPolicy = directNameserverFollowPolicy
+        self.fallbackFilter = fallbackFilter
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enable, listen, listenRoutingMark, preferH3, useHosts, useSystemHosts,
+             respectRules, ipv6, ipv6Timeout, cacheAlgorithm, cacheMaxSize,
+             defaultNameserver, enhancedMode, fakeIpRange, fakeIpRange6,
+             fakeIpFilter, fakeIpFilterMode, fakeIpTtl, nameserverPolicy,
+             nameserver, fallback, fallbackLazyQuery, proxyServerNameserver,
+             proxyServerNameserverPolicy, directNameserver,
+             directNameserverFollowPolicy, fallbackFilter
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enable = try c.decodeIfPresent(Bool.self, forKey: .enable)
+        listen = try c.decodeIfPresent(String.self, forKey: .listen)
+        listenRoutingMark = try c.decodeIfPresent(Int.self, forKey: .listenRoutingMark)
+        preferH3 = try c.decodeIfPresent(Bool.self, forKey: .preferH3)
+        useHosts = try c.decodeIfPresent(Bool.self, forKey: .useHosts)
+        useSystemHosts = try c.decodeIfPresent(Bool.self, forKey: .useSystemHosts)
+        respectRules = try c.decodeIfPresent(Bool.self, forKey: .respectRules)
+        ipv6 = try c.decodeIfPresent(Bool.self, forKey: .ipv6)
+        ipv6Timeout = try c.decodeIfPresent(Int.self, forKey: .ipv6Timeout)
+        cacheAlgorithm = try c.decodeIfPresent(String.self, forKey: .cacheAlgorithm)
+        cacheMaxSize = try c.decodeIfPresent(Int.self, forKey: .cacheMaxSize)
+        defaultNameserver = try c.decodeIfPresent([String].self, forKey: .defaultNameserver)
+        enhancedMode = try c.decodeIfPresent(String.self, forKey: .enhancedMode)
+        fakeIpRange = try c.decodeIfPresent(String.self, forKey: .fakeIpRange)
+        fakeIpRange6 = try c.decodeIfPresent(String.self, forKey: .fakeIpRange6)
+        fakeIpFilter = try c.decodeIfPresent([String].self, forKey: .fakeIpFilter)
+        fakeIpFilterMode = try c.decodeIfPresent(String.self, forKey: .fakeIpFilterMode)
+        fakeIpTtl = try c.decodeIfPresent(Int.self, forKey: .fakeIpTtl)
+        nameserverPolicy = try c.decodeIfPresent([String: String].self, forKey: .nameserverPolicy)
+        nameserver = try c.decodeIfPresent([String].self, forKey: .nameserver)
+        fallback = try c.decodeIfPresent([String].self, forKey: .fallback)
+        fallbackLazyQuery = try c.decodeIfPresent(Bool.self, forKey: .fallbackLazyQuery)
+        proxyServerNameserver = try c.decodeIfPresent([String].self, forKey: .proxyServerNameserver)
+        proxyServerNameserverPolicy = try c.decodeIfPresent([String: String].self, forKey: .proxyServerNameserverPolicy)
+        directNameserver = try c.decodeIfPresent([String].self, forKey: .directNameserver)
+        directNameserverFollowPolicy = try c.decodeIfPresent(Bool.self, forKey: .directNameserverFollowPolicy)
+        fallbackFilter = try c.decodeIfPresent(CustomDnsFallbackFilter.self, forKey: .fallbackFilter)
+    }
+}
+
+/// Per-profile NTP (baked under the top-level `ntp:` key).
+struct CustomNtpSection: Codable, Equatable {
+    var enable: Bool?
+    var server: String?
+    var port: Int?
+    var interval: Int?
+    var dialerProxy: String?
+    var writeToSystem: Bool?
+
+    init(enable: Bool? = nil, server: String? = nil, port: Int? = nil,
+         interval: Int? = nil, dialerProxy: String? = nil, writeToSystem: Bool? = nil) {
+        self.enable = enable
+        self.server = server
+        self.port = port
+        self.interval = interval
+        self.dialerProxy = dialerProxy
+        self.writeToSystem = writeToSystem
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enable, server, port, interval, dialerProxy, writeToSystem
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enable = try c.decodeIfPresent(Bool.self, forKey: .enable)
+        server = try c.decodeIfPresent(String.self, forKey: .server)
+        port = try c.decodeIfPresent(Int.self, forKey: .port)
+        interval = try c.decodeIfPresent(Int.self, forKey: .interval)
+        dialerProxy = try c.decodeIfPresent(String.self, forKey: .dialerProxy)
+        writeToSystem = try c.decodeIfPresent(Bool.self, forKey: .writeToSystem)
+    }
+}
+
+/// Per-profile sniffer (baked under the top-level `sniffer:`
+/// key). The per-protocol configs reuse SniffProtocolConfig
+/// (SnifferStore): ports (empty = the protocol's standard port)
+/// and override-destination (nil = inherit the section's).
+/// A protocol with no ports and no override bakes nothing.
+struct CustomSnifferSection: Codable, Equatable {
+    var enable: Bool?
+    var overrideDestination: Bool?
+    var forceDnsMapping: Bool?
+    var parsePureIp: Bool?
+    var forceDomain: [String]?
+    var skipDomain: [String]?
+    var skipSrcAddress: [String]?
+    var skipDstAddress: [String]?
+    var sniffHttp: SniffProtocolConfig
+    var sniffTls: SniffProtocolConfig
+    var sniffQuic: SniffProtocolConfig
+
+    init(enable: Bool? = nil, overrideDestination: Bool? = nil,
+         forceDnsMapping: Bool? = nil, parsePureIp: Bool? = nil,
+         forceDomain: [String]? = nil, skipDomain: [String]? = nil,
+         skipSrcAddress: [String]? = nil, skipDstAddress: [String]? = nil,
+         sniffHttp: SniffProtocolConfig = SniffProtocolConfig(),
+         sniffTls: SniffProtocolConfig = SniffProtocolConfig(),
+         sniffQuic: SniffProtocolConfig = SniffProtocolConfig()) {
+        self.enable = enable
+        self.overrideDestination = overrideDestination
+        self.forceDnsMapping = forceDnsMapping
+        self.parsePureIp = parsePureIp
+        self.forceDomain = forceDomain
+        self.skipDomain = skipDomain
+        self.skipSrcAddress = skipSrcAddress
+        self.skipDstAddress = skipDstAddress
+        self.sniffHttp = sniffHttp
+        self.sniffTls = sniffTls
+        self.sniffQuic = sniffQuic
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enable, overrideDestination, forceDnsMapping, parsePureIp,
+             forceDomain, skipDomain, skipSrcAddress, skipDstAddress,
+             sniffHttp, sniffTls, sniffQuic
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enable = try c.decodeIfPresent(Bool.self, forKey: .enable)
+        overrideDestination = try c.decodeIfPresent(Bool.self, forKey: .overrideDestination)
+        forceDnsMapping = try c.decodeIfPresent(Bool.self, forKey: .forceDnsMapping)
+        parsePureIp = try c.decodeIfPresent(Bool.self, forKey: .parsePureIp)
+        forceDomain = try c.decodeIfPresent([String].self, forKey: .forceDomain)
+        skipDomain = try c.decodeIfPresent([String].self, forKey: .skipDomain)
+        skipSrcAddress = try c.decodeIfPresent([String].self, forKey: .skipSrcAddress)
+        skipDstAddress = try c.decodeIfPresent([String].self, forKey: .skipDstAddress)
+        sniffHttp = try c.decodeIfPresent(SniffProtocolConfig.self, forKey: .sniffHttp) ?? SniffProtocolConfig()
+        sniffTls = try c.decodeIfPresent(SniffProtocolConfig.self, forKey: .sniffTls) ?? SniffProtocolConfig()
+        sniffQuic = try c.decodeIfPresent(SniffProtocolConfig.self, forKey: .sniffQuic) ?? SniffProtocolConfig()
+    }
+}
+
+/// Per-profile TUN (baked under the top-level `tun:` key).
+/// Keys mirror OverrideStore's tun specs plus the base
+/// enable / stack / mtu from NetworkSettingsView. No device /
+/// auto-route (extension-owned). iOS note (TunOverrideView):
+/// only mtu + congestion-controller reach tun.start; the other
+/// keys only enter the core's TUN device-create path, which the
+/// iOS packet-channel TUN never runs — they are stored and
+/// baked, but have no effect on this platform.
+struct CustomTunSection: Codable, Equatable {
+    var enable: Bool?
+    /// "gvisor" / "system" / "lwip" (NetworkSettingsView).
+    var stack: String?
+    var mtu: Int?
+    var congestionController: String?
+    var strictRoute: Bool?
+    var routeAddress: [String]?
+    var routeExcludeAddress: [String]?
+    var dnsHijack: [String]?
+    var udpTimeout: Int?
+    var disableIcmpForwarding: Bool?
+    var gso: Bool?
+    var includeInterface: [String]?
+    var excludeInterface: [String]?
+    var includeUid: [Int]?
+    var excludeUid: [Int]?
+    var excludeSrcPort: [Int]?
+    var excludeDstPort: [Int]?
+    var loopbackAddress: [String]?
+
+    init(enable: Bool? = nil, stack: String? = nil, mtu: Int? = nil,
+         congestionController: String? = nil, strictRoute: Bool? = nil,
+         routeAddress: [String]? = nil, routeExcludeAddress: [String]? = nil,
+         dnsHijack: [String]? = nil, udpTimeout: Int? = nil,
+         disableIcmpForwarding: Bool? = nil, gso: Bool? = nil,
+         includeInterface: [String]? = nil, excludeInterface: [String]? = nil,
+         includeUid: [Int]? = nil, excludeUid: [Int]? = nil,
+         excludeSrcPort: [Int]? = nil, excludeDstPort: [Int]? = nil,
+         loopbackAddress: [String]? = nil) {
+        self.enable = enable
+        self.stack = stack
+        self.mtu = mtu
+        self.congestionController = congestionController
+        self.strictRoute = strictRoute
+        self.routeAddress = routeAddress
+        self.routeExcludeAddress = routeExcludeAddress
+        self.dnsHijack = dnsHijack
+        self.udpTimeout = udpTimeout
+        self.disableIcmpForwarding = disableIcmpForwarding
+        self.gso = gso
+        self.includeInterface = includeInterface
+        self.excludeInterface = excludeInterface
+        self.includeUid = includeUid
+        self.excludeUid = excludeUid
+        self.excludeSrcPort = excludeSrcPort
+        self.excludeDstPort = excludeDstPort
+        self.loopbackAddress = loopbackAddress
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enable, stack, mtu, congestionController, strictRoute,
+             routeAddress, routeExcludeAddress, dnsHijack, udpTimeout,
+             disableIcmpForwarding, gso, includeInterface, excludeInterface,
+             includeUid, excludeUid, excludeSrcPort, excludeDstPort,
+             loopbackAddress
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enable = try c.decodeIfPresent(Bool.self, forKey: .enable)
+        stack = try c.decodeIfPresent(String.self, forKey: .stack)
+        mtu = try c.decodeIfPresent(Int.self, forKey: .mtu)
+        congestionController = try c.decodeIfPresent(String.self, forKey: .congestionController)
+        strictRoute = try c.decodeIfPresent(Bool.self, forKey: .strictRoute)
+        routeAddress = try c.decodeIfPresent([String].self, forKey: .routeAddress)
+        routeExcludeAddress = try c.decodeIfPresent([String].self, forKey: .routeExcludeAddress)
+        dnsHijack = try c.decodeIfPresent([String].self, forKey: .dnsHijack)
+        udpTimeout = try c.decodeIfPresent(Int.self, forKey: .udpTimeout)
+        disableIcmpForwarding = try c.decodeIfPresent(Bool.self, forKey: .disableIcmpForwarding)
+        gso = try c.decodeIfPresent(Bool.self, forKey: .gso)
+        includeInterface = try c.decodeIfPresent([String].self, forKey: .includeInterface)
+        excludeInterface = try c.decodeIfPresent([String].self, forKey: .excludeInterface)
+        includeUid = try c.decodeIfPresent([Int].self, forKey: .includeUid)
+        excludeUid = try c.decodeIfPresent([Int].self, forKey: .excludeUid)
+        excludeSrcPort = try c.decodeIfPresent([Int].self, forKey: .excludeSrcPort)
+        excludeDstPort = try c.decodeIfPresent([Int].self, forKey: .excludeDstPort)
+        loopbackAddress = try c.decodeIfPresent([String].self, forKey: .loopbackAddress)
+    }
+}
+
 struct CustomSubscription: Codable, Equatable, Identifiable {
     var id: UUID
     var name: String
@@ -248,10 +610,23 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
     var proxyProviders: [CustomProvider]
     var ruleProviders: [CustomProvider]
     var rules: [CustomRule]
+    /// Per-profile scoped sections (v0.2.55, FlClash custom.dart
+    /// _MoreSectionsView: DnsView.profile / NtpView / SnifferView /
+    /// TunView per profile). Nil = unset: the section bakes
+    /// nothing for this profile. A set section replaces the
+    /// profile's own section of the same key when baked (see
+    /// bakeScopedSection); the profile's original is preserved
+    /// inside the marker block and restored on unset.
+    var dns: CustomDnsSection?
+    var ntp: CustomNtpSection?
+    var sniffer: CustomSnifferSection?
+    var tun: CustomTunSection?
 
     init(id: UUID = UUID(), name: String = "", groups: [CustomGroup] = [],
          dialers: [CustomDialer] = [], proxyProviders: [CustomProvider] = [],
-         ruleProviders: [CustomProvider] = [], rules: [CustomRule] = []) {
+         ruleProviders: [CustomProvider] = [], rules: [CustomRule] = [],
+         dns: CustomDnsSection? = nil, ntp: CustomNtpSection? = nil,
+         sniffer: CustomSnifferSection? = nil, tun: CustomTunSection? = nil) {
         self.id = id
         self.name = name
         self.groups = groups
@@ -259,6 +634,10 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
         self.proxyProviders = proxyProviders
         self.ruleProviders = ruleProviders
         self.rules = rules
+        self.dns = dns
+        self.ntp = ntp
+        self.sniffer = sniffer
+        self.tun = tun
     }
 }
 
@@ -364,12 +743,38 @@ final class CustomSubscriptionStore: ObservableObject {
     static let ruleProvidersEnd = "# concord-ios 自定义规则提供方 结束"
     static let rulesBegin = "# concord-ios 自定义规则 开始"
     static let rulesEnd = "# concord-ios 自定义规则 结束"
+    /// Scoped-section markers (v0.2.55). The block between them
+    /// holds the baked section PLUS the profile's own section
+    /// preserved as `#~ `-prefixed lines (see bakeScopedSection).
+    static let dnsBegin = "# concord-ios 自定义 DNS 开始"
+    static let dnsEnd = "# concord-ios 自定义 DNS 结束"
+    static let ntpBegin = "# concord-ios 自定义 NTP 开始"
+    static let ntpEnd = "# concord-ios 自定义 NTP 结束"
+    static let snifferBegin = "# concord-ios 自定义嗅探 开始"
+    static let snifferEnd = "# concord-ios 自定义嗅探 结束"
+    static let tunBegin = "# concord-ios 自定义 TUN 开始"
+    static let tunEnd = "# concord-ios 自定义 TUN 结束"
+    /// Note line inside every scoped block, above the preserved
+    /// original: tells a reader (or a hand-editor) the block is
+    /// managed and the original comes back when the section is
+    /// unset. parseScopedBlock skips comment lines here.
+    static let scopedNote = "# 取消自定义后恢复订阅原有配置（请勿手动编辑此块）"
+    /// Prefix for a preserved original-section line inside a
+    /// scoped block. A blank original line encodes as "#~".
+    static let scopedPreservePrefix = "#~ "
 
     /// Bake a custom subscription into profile YAML text: custom
     /// groups / providers / rules replace any previously baked
     /// block (marker-delimited, so re-baking never duplicates),
     /// and dialers set `dialer-proxy:` on the matching proxy
     /// entries. Sections that do not exist yet are created.
+    /// The scoped sections (dns / ntp / sniffer / tun) replace
+    /// the profile's own section of the same key instead of
+    /// appending into it (bakeScopedSection): appending the same
+    /// keys would create duplicate keys in one mapping, which the
+    /// core's YAML parser rejects. A section that sets nothing
+    /// bakes nothing — the profile's own section is left alone
+    /// (or restored, when a previous bake replaced it).
     static func bake(_ sub: CustomSubscription, into text: String) -> String {
         var result = text
         result = bakeSection(
@@ -389,6 +794,22 @@ final class CustomSubscriptionStore: ObservableObject {
             lines: sub.rules.map { "  - \(CustomProxy.quote($0.text))" }
         )
         result = bakeDialers(sub.dialers, into: result)
+        result = bakeScopedSection(
+            result, key: "dns:", begin: dnsBegin, end: dnsEnd,
+            lines: sub.dns.map { dnsYAML($0) } ?? []
+        )
+        result = bakeScopedSection(
+            result, key: "ntp:", begin: ntpBegin, end: ntpEnd,
+            lines: sub.ntp.map { ntpYAML($0) } ?? []
+        )
+        result = bakeScopedSection(
+            result, key: "sniffer:", begin: snifferBegin, end: snifferEnd,
+            lines: sub.sniffer.map { snifferYAML($0) } ?? []
+        )
+        result = bakeScopedSection(
+            result, key: "tun:", begin: tunBegin, end: tunEnd,
+            lines: sub.tun.map { tunYAML($0) } ?? []
+        )
         return result
     }
 
@@ -414,6 +835,24 @@ final class CustomSubscriptionStore: ObservableObject {
             let inner = Array(oldLines[(beginIndex + 1)..<endIndex])
             guard !inner.isEmpty else { continue }
             result = bakeSection(result, key: key, begin: begin, end: end, lines: inner)
+        }
+        // Scoped sections carry differently: the old block's baked
+        // lines are kept, but the preserved original is replaced
+        // by the fresh text's own section (if any) — the
+        // subscription author's current section, not the stale one
+        // stored in the old block (carryScopedBlock).
+        for (key, begin, end) in [
+            ("dns:", dnsBegin, dnsEnd),
+            ("ntp:", ntpBegin, ntpEnd),
+            ("sniffer:", snifferBegin, snifferEnd),
+            ("tun:", tunBegin, tunEnd),
+        ] {
+            let oldLines = oldText.components(separatedBy: "\n")
+            guard let beginIndex = oldLines.firstIndex(of: begin),
+                  let endIndex = oldLines.firstIndex(of: end),
+                  endIndex > beginIndex else { continue }
+            let block = Array(oldLines[beginIndex...endIndex])
+            result = carryScopedBlock(block, key: key, begin: begin, end: end, into: result)
         }
         let dialers = extractDialers(from: oldText)
         if !dialers.isEmpty {
@@ -508,6 +947,363 @@ final class CustomSubscriptionStore: ObservableObject {
             out.append(contentsOf: block)
         }
         return out.joined(separator: "\n")
+    }
+
+    // MARK: - Scoped map sections (dns / ntp / sniffer / tun)
+    //
+    // A scoped section is a YAML *map*, not a list, so the
+    // append-into-the-profile's-section trick bakeSection uses
+    // for groups / providers / rules does not work here:
+    // appending `enable: true` under a profile that already has
+    // `enable: false` creates duplicate keys in one mapping, and
+    // the core's YAML parser rejects duplicate keys. A scoped
+    // section therefore REPLACES the profile's own section, in
+    // place, inside a marker block that also preserves the
+    // profile's original section verbatim (as `#~ `-prefixed
+    // lines) — so un-setting the section restores the original
+    // exactly, and a subscription refresh re-preserves the
+    // author's current section instead of a stale copy.
+    //
+    // Block layout (all comment lines at column 0 are legal YAML
+    // anywhere):
+    //   # concord-ios 自定义 DNS 开始
+    //   # 取消自定义后恢复订阅原有配置（请勿手动编辑此块）
+    //   #~ dns:
+    //   #~   enable: false
+    //   dns:
+    //     enable: true
+    //     ...
+    //   # concord-ios 自定义 DNS 结束
+    // With no original section there are simply no `#~ ` lines.
+
+    /// The line range of a top-level `key:` section: the key line
+    /// plus following blank / comment / indented lines, up to (not
+    /// including) the next column-0 non-comment line or EOF. Nil
+    /// when the key is absent. Matches bakeSection's rule for
+    /// where a section ends.
+    private static func topLevelSectionRange(in lines: [String], key: String) -> Range<Int>? {
+        for idx in lines.indices {
+            let line = lines[idx]
+            guard line == key || line.hasPrefix(key + " ") else { continue }
+            var end = idx + 1
+            while end < lines.endIndex {
+                let next = lines[end]
+                if next.isEmpty || next.hasPrefix("#") || next.hasPrefix(" ") || next.hasPrefix("\t") {
+                    end += 1
+                } else {
+                    break
+                }
+            }
+            return idx..<end
+        }
+        return nil
+    }
+
+    /// The line range of a marker block, markers included. Nil
+    /// when either marker is missing or the end precedes the begin.
+    private static func markerBlockRange(in lines: [String], begin: String, end: String) -> Range<Int>? {
+        guard let beginIndex = lines.firstIndex(of: begin),
+              let endIndex = lines.firstIndex(of: end),
+              endIndex >= beginIndex else { return nil }
+        return beginIndex..<(endIndex + 1)
+    }
+
+    /// Splits a scoped marker block into its preserved original
+    /// section lines (the `#~ `-prefixed lines, prefix stripped)
+    /// and its baked lines (the `key:` line plus its indented
+    /// content). Nil when the block is malformed (no `key:` line
+    /// inside): the caller then rebuilds the block from scratch
+    /// instead of trusting it.
+    private static func parseScopedBlock(_ block: [String], key: String) -> (preserved: [String], baked: [String])? {
+        guard block.count >= 3 else { return nil }
+        var preserved: [String] = []
+        var idx = 1
+        while idx < block.count - 1 {
+            let line = block[idx]
+            if line.hasPrefix(scopedPreservePrefix) {
+                preserved.append(String(line.dropFirst(scopedPreservePrefix.count)))
+                idx += 1
+            } else if line == "#~" {
+                preserved.append("")
+                idx += 1
+            } else if line.hasPrefix("#") {
+                // The note line (or any other comment): skip.
+                idx += 1
+            } else {
+                break
+            }
+        }
+        guard idx < block.count - 1,
+              block[idx] == key || block[idx].hasPrefix(key + " ") else { return nil }
+        return (preserved, Array(block[idx..<(block.count - 1)]))
+    }
+
+    /// Bake one scoped map section into profile YAML text.
+    /// `lines` are the section's content lines (indented two
+    /// spaces, without the `key:` line). When `lines` is empty
+    /// the section is un-baked: any marker block is removed and
+    /// the preserved original is put back; with no block at all
+    /// the profile's own section is left untouched. Baking is
+    /// idempotent: re-baking the same lines rebuilds the same
+    /// block with the same preserved original.
+    private static func bakeScopedSection(
+        _ text: String, key: String, begin: String, end: String,
+        lines: [String]
+    ) -> String {
+        var out = text.components(separatedBy: "\n")
+        // 1. An existing marker block: take its preserved
+        // original, then drop the block.
+        var preserved: [String] = []
+        var insertAt: Int? = nil
+        if let blockRange = markerBlockRange(in: out, begin: begin, end: end) {
+            let block = Array(out[blockRange])
+            if let parsed = parseScopedBlock(block, key: key) {
+                preserved = parsed.preserved
+            }
+            insertAt = blockRange.lowerBound
+            out.removeSubrange(blockRange)
+        }
+        // 2. A live top-level section for this key is the current
+        // original (a fresh download after a carried block, or the
+        // profile's own section on first bake): preserve it and
+        // remove it from the text. Fresh wins over the stored
+        // copy from step 1 when both exist.
+        if let sectionRange = topLevelSectionRange(in: out, key: key) {
+            preserved = Array(out[sectionRange])
+            if insertAt == nil { insertAt = sectionRange.lowerBound }
+            out.removeSubrange(sectionRange)
+        }
+        // 3. Unset: put the preserved original back (or nothing
+        // when there never was one).
+        guard !lines.isEmpty else {
+            if !preserved.isEmpty {
+                out.insert(contentsOf: preserved, at: insertAt ?? out.endIndex)
+            }
+            return out.joined(separator: "\n")
+        }
+        // 4. Build the block and insert it where the section was
+        // (or at the old block's place, or at end of file).
+        var block = [begin, scopedNote]
+        for line in preserved {
+            block.append(line.isEmpty ? "#~" : scopedPreservePrefix + line)
+        }
+        block.append(key)
+        block.append(contentsOf: lines)
+        block.append(end)
+        if let insertAt = insertAt {
+            out.insert(contentsOf: block, at: insertAt)
+        } else {
+            if let last = out.last, !last.isEmpty { out.append("") }
+            out.append(contentsOf: block)
+        }
+        return out.joined(separator: "\n")
+    }
+
+    /// Carries a scoped marker block from an old profile text into
+    /// a fresh download. The old block's baked lines are kept, but
+    /// the preserved original is replaced by the fresh text's own
+    /// section (if any) — the subscription author's current
+    /// section, not the stale one stored in the old block. A
+    /// malformed old block (no `key:` line inside) is dropped
+    /// rather than carried.
+    private static func carryScopedBlock(
+        _ blockLines: [String], key: String, begin: String, end: String,
+        into text: String
+    ) -> String {
+        guard let parsed = parseScopedBlock(blockLines, key: key),
+              !parsed.baked.isEmpty else { return text }
+        var out = text.components(separatedBy: "\n")
+        if let existing = markerBlockRange(in: out, begin: begin, end: end) {
+            out.removeSubrange(existing)
+        }
+        var preserved = parsed.preserved
+        var insertAt: Int? = nil
+        if let sectionRange = topLevelSectionRange(in: out, key: key) {
+            preserved = Array(out[sectionRange])
+            insertAt = sectionRange.lowerBound
+            out.removeSubrange(sectionRange)
+        }
+        var block = [begin, scopedNote]
+        for line in preserved {
+            block.append(line.isEmpty ? "#~" : scopedPreservePrefix + line)
+        }
+        block.append(contentsOf: parsed.baked)
+        block.append(end)
+        if let insertAt = insertAt {
+            out.insert(contentsOf: block, at: insertAt)
+        } else {
+            if let last = out.last, !last.isEmpty { out.append("") }
+            out.append(contentsOf: block)
+        }
+        return out.joined(separator: "\n")
+    }
+
+    // MARK: - Scoped-section YAML (keys are the core's kebab-case
+    // RawConfig keys — SettingsStore's dns dict, NtpStore's
+    // overlayDict, SnifferStore's overlayDict, OverrideStore's tun
+    // specs). Only set fields emit lines; a section that sets
+    // nothing returns [] and bakes nothing.
+
+    /// `key:` followed by `  - value` items (2-space key indent,
+    /// 4-space items). Empty / nil values emit nothing.
+    private static func yamlStringList(_ key: String, _ values: [String]?) -> [String] {
+        guard let values = values, !values.isEmpty else { return [] }
+        var lines = ["  \(key):"]
+        lines.append(contentsOf: values.map { "    - \(CustomProxy.quote($0))" })
+        return lines
+    }
+
+    /// `key:` followed by `  - number` items.
+    private static func yamlIntList(_ key: String, _ values: [Int]?) -> [String] {
+        guard let values = values, !values.isEmpty else { return [] }
+        var lines = ["  \(key):"]
+        lines.append(contentsOf: values.map { "    - \($0)" })
+        return lines
+    }
+
+    /// `key:` followed by sorted `  name: value` lines.
+    private static func yamlStringMap(_ key: String, _ values: [String: String]?) -> [String] {
+        guard let values = values, !values.isEmpty else { return [] }
+        var lines = ["  \(key):"]
+        for mapKey in values.keys.sorted() {
+            lines.append("    \(CustomProxy.quote(mapKey)): \(CustomProxy.quote(values[mapKey] ?? ""))")
+        }
+        return lines
+    }
+
+    private static func dnsYAML(_ section: CustomDnsSection) -> [String] {
+        var lines: [String] = []
+        if let enable = section.enable { lines.append("  enable: \(enable)") }
+        if let listen = section.listen, !listen.isEmpty { lines.append("  listen: \(CustomProxy.quote(listen))") }
+        if let mark = section.listenRoutingMark { lines.append("  listen-routing-mark: \(mark)") }
+        if let preferH3 = section.preferH3 { lines.append("  prefer-h3: \(preferH3)") }
+        if let useHosts = section.useHosts { lines.append("  use-hosts: \(useHosts)") }
+        if let useSystemHosts = section.useSystemHosts { lines.append("  use-system-hosts: \(useSystemHosts)") }
+        if let respectRules = section.respectRules { lines.append("  respect-rules: \(respectRules)") }
+        if let ipv6 = section.ipv6 { lines.append("  ipv6: \(ipv6)") }
+        if let timeout = section.ipv6Timeout { lines.append("  ipv6-timeout: \(timeout)") }
+        if let algorithm = section.cacheAlgorithm, !algorithm.isEmpty { lines.append("  cache-algorithm: \(CustomProxy.quote(algorithm))") }
+        if let maxSize = section.cacheMaxSize { lines.append("  cache-max-size: \(maxSize)") }
+        lines.append(contentsOf: yamlStringList("default-nameserver", section.defaultNameserver))
+        if let mode = section.enhancedMode, !mode.isEmpty { lines.append("  enhanced-mode: \(CustomProxy.quote(mode))") }
+        if let range = section.fakeIpRange, !range.isEmpty { lines.append("  fake-ip-range: \(CustomProxy.quote(range))") }
+        if let range6 = section.fakeIpRange6, !range6.isEmpty { lines.append("  fake-ip-range6: \(CustomProxy.quote(range6))") }
+        lines.append(contentsOf: yamlStringList("fake-ip-filter", section.fakeIpFilter))
+        if let filterMode = section.fakeIpFilterMode, !filterMode.isEmpty { lines.append("  fake-ip-filter-mode: \(CustomProxy.quote(filterMode))") }
+        if let ttl = section.fakeIpTtl { lines.append("  fake-ip-ttl: \(ttl)") }
+        lines.append(contentsOf: yamlStringMap("nameserver-policy", section.nameserverPolicy))
+        lines.append(contentsOf: yamlStringList("nameserver", section.nameserver))
+        lines.append(contentsOf: yamlStringList("fallback", section.fallback))
+        if let lazy = section.fallbackLazyQuery { lines.append("  fallback-lazy-query: \(lazy)") }
+        lines.append(contentsOf: yamlStringList("proxy-server-nameserver", section.proxyServerNameserver))
+        lines.append(contentsOf: yamlStringMap("proxy-server-nameserver-policy", section.proxyServerNameserverPolicy))
+        lines.append(contentsOf: yamlStringList("direct-nameserver", section.directNameserver))
+        if let follow = section.directNameserverFollowPolicy { lines.append("  direct-nameserver-follow-policy: \(follow)") }
+        if let filter = section.fallbackFilter {
+            let filterLines = dnsFallbackFilterYAML(filter)
+            if !filterLines.isEmpty {
+                lines.append("  fallback-filter:")
+                lines.append(contentsOf: filterLines)
+            }
+        }
+        return lines
+    }
+
+    /// The `fallback-filter:` map's content lines (4-space keys,
+    /// 6-space list items). Empty when the filter sets nothing.
+    private static func dnsFallbackFilterYAML(_ filter: CustomDnsFallbackFilter) -> [String] {
+        var lines: [String] = []
+        if let geoip = filter.geoip { lines.append("    geoip: \(geoip)") }
+        if let code = filter.geoipCode, !code.isEmpty { lines.append("    geoip-code: \(CustomProxy.quote(code))") }
+        if let geosite = filter.geosite, !geosite.isEmpty {
+            lines.append("    geosite:")
+            lines.append(contentsOf: geosite.map { "      - \(CustomProxy.quote($0))" })
+        }
+        if let ipcidr = filter.ipcidr, !ipcidr.isEmpty {
+            lines.append("    ipcidr:")
+            lines.append(contentsOf: ipcidr.map { "      - \(CustomProxy.quote($0))" })
+        }
+        if let domain = filter.domain, !domain.isEmpty {
+            lines.append("    domain:")
+            lines.append(contentsOf: domain.map { "      - \(CustomProxy.quote($0))" })
+        }
+        return lines
+    }
+
+    private static func ntpYAML(_ section: CustomNtpSection) -> [String] {
+        var lines: [String] = []
+        if let enable = section.enable { lines.append("  enable: \(enable)") }
+        if let server = section.server, !server.isEmpty { lines.append("  server: \(CustomProxy.quote(server))") }
+        if let port = section.port { lines.append("  port: \(port)") }
+        if let interval = section.interval { lines.append("  interval: \(interval)") }
+        if let dialerProxy = section.dialerProxy, !dialerProxy.isEmpty { lines.append("  dialer-proxy: \(CustomProxy.quote(dialerProxy))") }
+        if let writeToSystem = section.writeToSystem { lines.append("  write-to-system: \(writeToSystem)") }
+        return lines
+    }
+
+    private static func snifferYAML(_ section: CustomSnifferSection) -> [String] {
+        var lines: [String] = []
+        if let enable = section.enable { lines.append("  enable: \(enable)") }
+        if let overrideDest = section.overrideDestination { lines.append("  override-destination: \(overrideDest)") }
+        if let forceDnsMapping = section.forceDnsMapping { lines.append("  force-dns-mapping: \(forceDnsMapping)") }
+        if let parsePureIp = section.parsePureIp { lines.append("  parse-pure-ip: \(parsePureIp)") }
+        lines.append(contentsOf: yamlStringList("force-domain", section.forceDomain))
+        lines.append(contentsOf: yamlStringList("skip-domain", section.skipDomain))
+        lines.append(contentsOf: yamlStringList("skip-src-address", section.skipSrcAddress))
+        lines.append(contentsOf: yamlStringList("skip-dst-address", section.skipDstAddress))
+        var sniffLines: [String] = []
+        sniffLines.append(contentsOf: sniffProtocolYAML("HTTP", section.sniffHttp))
+        sniffLines.append(contentsOf: sniffProtocolYAML("TLS", section.sniffTls))
+        sniffLines.append(contentsOf: sniffProtocolYAML("QUIC", section.sniffQuic))
+        if !sniffLines.isEmpty {
+            lines.append("  sniff:")
+            lines.append(contentsOf: sniffLines)
+        }
+        return lines
+    }
+
+    /// One protocol's sniff config (`    HTTP:` + `      ports:` /
+    /// `      override-destination:`). Empty when the protocol
+    /// sets nothing (ports empty + override nil): an empty ports
+    /// list is the protocol's standard port, so emitting it
+    /// would inject a default.
+    private static func sniffProtocolYAML(_ name: String, _ config: SniffProtocolConfig) -> [String] {
+        var inner: [String] = []
+        if !config.ports.isEmpty {
+            inner.append("      ports:")
+            // Port strings ("8080", "8000-9000") are quoted:
+            // unquoted they would parse as numbers, and the
+            // core reads them as strings.
+            inner.append(contentsOf: config.ports.map { "        - \(CustomProxy.quote($0))" })
+        }
+        if let overrideDest = config.overrideDest { inner.append("      override-destination: \(overrideDest)") }
+        guard !inner.isEmpty else { return [] }
+        var lines = ["    \(name):"]
+        lines.append(contentsOf: inner)
+        return lines
+    }
+
+    private static func tunYAML(_ section: CustomTunSection) -> [String] {
+        var lines: [String] = []
+        if let enable = section.enable { lines.append("  enable: \(enable)") }
+        if let stack = section.stack, !stack.isEmpty { lines.append("  stack: \(CustomProxy.quote(stack))") }
+        if let mtu = section.mtu { lines.append("  mtu: \(mtu)") }
+        if let congestion = section.congestionController, !congestion.isEmpty { lines.append("  congestion-controller: \(CustomProxy.quote(congestion))") }
+        if let strictRoute = section.strictRoute { lines.append("  strict-route: \(strictRoute)") }
+        lines.append(contentsOf: yamlStringList("route-address", section.routeAddress))
+        lines.append(contentsOf: yamlStringList("route-exclude-address", section.routeExcludeAddress))
+        lines.append(contentsOf: yamlStringList("dns-hijack", section.dnsHijack))
+        if let udpTimeout = section.udpTimeout { lines.append("  udp-timeout: \(udpTimeout)") }
+        if let disableIcmp = section.disableIcmpForwarding { lines.append("  disable-icmp-forwarding: \(disableIcmp)") }
+        if let gso = section.gso { lines.append("  gso: \(gso)") }
+        lines.append(contentsOf: yamlStringList("include-interface", section.includeInterface))
+        lines.append(contentsOf: yamlStringList("exclude-interface", section.excludeInterface))
+        lines.append(contentsOf: yamlIntList("include-uid", section.includeUid))
+        lines.append(contentsOf: yamlIntList("exclude-uid", section.excludeUid))
+        lines.append(contentsOf: yamlIntList("exclude-src-port", section.excludeSrcPort))
+        lines.append(contentsOf: yamlIntList("exclude-dst-port", section.excludeDstPort))
+        lines.append(contentsOf: yamlStringList("loopback-address", section.loopbackAddress))
+        return lines
     }
 
     private static func groupYAML(_ group: CustomGroup) -> [String] {

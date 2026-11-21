@@ -1668,6 +1668,49 @@ final class ProfileStore: ObservableObject {
         return try await AppCore.shared.configValidate(profilePath: tempURL.path)
     }
 
+    /// Validates one custom subscription's baked candidate for a
+    /// profile with the core (config.validate on a temp file in
+    /// the App Group) — the same path validateCandidateText uses
+    /// for the repair flow, but for an EXPLICIT subscription
+    /// instead of the bake-map entry: bake the subscription (plus
+    /// the other local overrides, in the same order as
+    /// reapplyLocalOverrides) into the profile's on-disk text,
+    /// then validate the baked bytes, because the core applies the
+    /// BAKED bytes, not the raw profile file. Returns the core's
+    /// issues (empty = clean). Throws when no core is reachable
+    /// at all. VPN on: the extension's core validates; VPN off:
+    /// the app-side core validates (ensureValidationSession
+    /// first — a broken config leaves no session behind).
+    /// Wiring point for the "应用到当前配置" flow: validate the
+    /// bake BEFORE noteBaked + saveActiveProfileYAML, and refuse
+    /// to save when issues come back. Currently uncalled —
+    /// NodeSourcesView.applyNow owns that call site.
+    @MainActor
+    func validateBakedSubscription(_ sub: CustomSubscription, for profile: Profile) async throws -> [ConcordIssue] {
+        guard let dir = profilesDirectory else {
+            throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "App Group 容器不可用"])
+        }
+        guard let url = fileURL(for: profile),
+              let text = try? String(contentsOf: url, encoding: .utf8) else {
+            throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "无法读取订阅「\(profile.name)」的文件"])
+        }
+        var result = CustomProxyStore.bakeCurrent(into: text)
+        let store = CustomProxyStore()
+        result = CustomProxyStore.bakeFilterOverrides(store.filterOverrides, into: result)
+        result = CustomSubscriptionStore.bake(sub, into: result)
+        let tempURL = dir.appendingPathComponent(".scoped-validate.yaml")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try result.write(to: tempURL, atomically: true, encoding: .utf8)
+        if TunnelManager.shared.isRunning {
+            return try await client.configValidate(profilePath: tempURL.path)
+        }
+        try await AppCore.shared.ensureValidationSession()
+        return try await AppCore.shared.configValidate(profilePath: tempURL.path)
+    }
+
     /// Collects EVERY rule set the core reports missing for one
     /// profile, with the core as the oracle (v0.2.49 repair-all):
     /// validate the (baked) candidate, take the first issue,

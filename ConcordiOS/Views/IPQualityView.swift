@@ -615,12 +615,14 @@ struct IPQualityView: View {
         case hedge(Int)
     }
 
-    /// One source's parse outcome: an answer (with its inferred
-    /// flag) or a classified failure.
-    private enum SourceParseResult {
-        case answer(IPQualityInfo, inferred: Bool)
-        case failure(IPQualitySourceStatus)
     }
+}
+
+/// One source's parse outcome: an answer (with its inferred
+/// flag) or a classified failure.
+private enum SourceParseResult {
+    case answer(IPQualityInfo, inferred: Bool)
+    case failure(IPQualitySourceStatus)
 }
 
 // MARK: - Sources

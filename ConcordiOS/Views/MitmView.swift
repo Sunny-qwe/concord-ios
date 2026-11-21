@@ -594,17 +594,17 @@ enum MitmExchangeMenuAction: Equatable {
     }
 }
 
-private struct MitmMenuNotice: Identifiable {
+struct MitmMenuNotice: Identifiable {
     let id = UUID()
     let text: String
 }
 
-private struct MitmShareFile: Identifiable {
+struct MitmShareFile: Identifiable {
     let id = UUID()
     let url: URL
 }
 
-private struct MitmRuleEditorRequest: Identifiable {
+struct MitmRuleEditorRequest: Identifiable {
     let id = UUID()
     let module: MitmModule?
     let initialText: String

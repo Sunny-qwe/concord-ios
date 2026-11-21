@@ -162,8 +162,8 @@ final class ConnectionStore: ObservableObject {
     @Published var facetProcess: String?
     @Published var facetMitmOnly = false
     /// Record grouping (upstream trackerInfoGroupers), persisted.
-    @Published var groupBy: ConnectionGroupBy = ConnectionGroupBy(rawValue: UserDefaults.standard.string(forKey: Self.groupByKey) ?? "") ?? .none {
-        didSet { UserDefaults.standard.set(groupBy.rawValue, forKey: Self.groupByKey) }
+    @Published var groupBy: ConnectionGroupBy = ConnectionGroupBy(rawValue: UserDefaults.standard.string(forKey: ConnectionStore.groupByKey) ?? "") ?? .none {
+        didSet { UserDefaults.standard.set(groupBy.rawValue, forKey: ConnectionStore.groupByKey) }
     }
 
     private static let groupByKey = "ConcordiOS.connections.groupBy.v1"

@@ -20,10 +20,19 @@ enum ProxySort: String, CaseIterable, Identifiable {
 }
 
 final class ProxyStyleStore: ObservableObject {
-    /// 标签页：一次看一组（顶部切换组）；列表：所有组上下排布，可折叠。
+    /// 标签页：一次看一组（顶部切换组）；列表：所有组上下排布，可折叠；
+    /// 卡片（MuYu iOS build, v0.9.4-ios 新增的第三种风格，上游 FlClash
+    /// 0.9.3 没有）：组以两列卡片网格排布，卡片上有品牌图标与
+    /// “TYPE · n/m” 及当前节点行，顶部有文件夹筛选栏。
     enum Style: String, CaseIterable {
-        case tab, list
-        var label: String { self == .tab ? "标签页" : "列表" }
+        case tab, list, icons
+        var label: String {
+            switch self {
+            case .tab: return "标签页"
+            case .list: return "列表"
+            case .icons: return "卡片"
+            }
+        }
     }
     /// 列数（FlClash getProxiesColumns）：手机宽度下紧凑 3 列、
     /// 标准 2 列、宽松 1 列。Case 顺序即 ⋯ 子菜单里的顺序
@@ -42,8 +51,9 @@ final class ProxyStyleStore: ObservableObject {
         case standard = "标准"
         case compact = "紧凑"
     }
-    /// 列表样式里组头的图标：色块（圆角底 + 首字）、纯图标
-    /// （只有首字）、隐藏。
+    /// 列表与卡片样式里组头的图标：色块（圆角底 + 首字）、纯图标
+    /// （只有首字）、隐藏。卡片样式里图标是组卡片右上角的大品牌
+    /// 图标（MuYu icon_card.dart _GroupBrandIcon）。
     enum IconStyle: String, CaseIterable {
         case filled = "色块"
         case plain = "纯图标"

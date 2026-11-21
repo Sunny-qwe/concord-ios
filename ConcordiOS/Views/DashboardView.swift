@@ -688,8 +688,11 @@ struct DashboardView: View {
 
     private var titleRow: some View {
         HStack(alignment: .center) {
+            // FlClash pageTitle is 24pt semibold on a tab page
+            // (scaffold.dart:780); the 18pt bold here was the
+            // v0.2.50-era guess. Pushed pages keep 17pt inline.
             Text("tab.dashboard".l10n)
-                .font(.system(size: 18, weight: .bold))
+                .font(.system(size: 24, weight: .semibold))
             Spacer()
             Button { showEditSheet = true } label: {
                 ThickPencilIcon(iconColor: editButtonIconColor, bandColor: editButtonBackground)

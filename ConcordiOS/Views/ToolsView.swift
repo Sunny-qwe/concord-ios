@@ -92,8 +92,11 @@ struct ToolsView: View {
         NavigationStack(path: $navPath) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
+                    // FlClash pageTitle is 24pt semibold on a tab
+                    // page (scaffold.dart:780); the 18pt bold here
+                    // was the v0.2.50-era guess.
                     Text("tools.title".l10n)
-                        .font(.system(size: 18, weight: .bold))
+                        .font(.system(size: 24, weight: .semibold))
                     toolSection(header: nil) {
                         ToolRow(icon: "clock", title: "tools.requests".l10n) { navPath.append(.requests) }
                         Divider().padding(.leading, 54)

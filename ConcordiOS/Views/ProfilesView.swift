@@ -100,9 +100,18 @@ struct ProfilesView: View {
             }
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
-            .navigationTitle("title.profiles".l10n)
-            .navigationBarTitleDisplayMode(.inline)
+            // FlClash pageTitle is 24pt semibold on a tab page
+            // (scaffold.dart:780: compactTitle is false — isCompact
+            // is true only for bottom/form sheets, sheet.dart:42,
+            // and pushed is false at a tab root). SwiftUI's inline
+            // title is fixed at 17pt, so the title is a leading
+            // toolbar item instead. Pushed pages keep their 17pt
+            // inline title.
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Text("title.profiles".l10n)
+                        .font(.system(size: 24, weight: .semibold))
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { navPath.append(.nodeSources) } label: {
                         Image(systemName: "globe")

@@ -36,6 +36,14 @@ struct ProxyGroup: Identifiable {
     /// Group icon from the profile (URL or short text); "" = none,
     /// the list header falls back to the name's first character.
     var icon: String
+    /// Hidden from the Proxies page in rule mode (Clash `hidden`).
+    /// Carried through the store (v0.2.53, MuYu mode filtering):
+    /// rule mode shows only non-hidden groups, global mode shows
+    /// all of them, direct mode shows none. The flag lives here —
+    /// not dropped at fetch — so the mode filter can apply at
+    /// display time and the delay test sees the same list the page
+    /// shows. Local/offline groups read it from the YAML too.
+    let hidden: Bool
 }
 
 /// A delay-test result key (FlClash delayTestKey): the test URL
@@ -48,7 +56,32 @@ struct LatencyKey: Hashable {
 
 final class ProxyStore: ObservableObject {
     @Published var isRunning = false
+    /// ALL fetched groups, hidden included (v0.2.53). The hidden
+    /// filter used to live at fetch (`!$0.hidden`); it moved to
+    /// display time so the mode filter (below) can apply — rule
+    /// mode drops hidden groups, global mode keeps them, direct
+    /// mode shows none (MuYu providers/state/proxies.dart:10-12).
+    /// `groups` itself is the raw list: name-resolution lookups
+    /// (member icons, availability counts) still read it, while
+    /// everything the user SEES reads `displayGroups`.
     @Published var groups: [ProxyGroup] = []
+    /// Groups without the hidden flag — what Dashboard and Settings
+    /// count (they never showed hidden groups, in any mode).
+    var nonHiddenGroups: [ProxyGroup] { groups.filter { !$0.hidden } }
+    /// The groups the Proxies page shows for the CURRENT outbound
+    /// mode, read live from SettingsStore (same weak-ref pattern as
+    /// delayTimeoutMs below; defaults to rule when unset). The
+    /// delay test iterates this list too, so in rule mode it tests
+    /// exactly what it tested before (hidden groups were never
+    /// fetched), in global mode it also tests hidden groups, and in
+    /// direct mode there is nothing to test.
+    var displayGroups: [ProxyGroup] {
+        switch settingsStore?.mode ?? .rule {
+        case .direct: return []
+        case .global: return groups
+        case .rule: return nonHiddenGroups
+        }
+    }
     @Published var latencies: [String: Int32] = [:]
     /// Latency keyed by (testUrl, real node name) — FlClash
     /// DelayMap (audit B3/B7). `latencies` above stays name-keyed
@@ -677,7 +710,7 @@ final class ProxyStore: ObservableObject {
             throw ConcordClientError.transport("核心未返回策略组（快照为空）")
         }
         let nodeTypes = Dictionary(uniqueKeysWithValues: result.nodes.map { ($0.name, $0) })
-        groups = result.groups.filter { !$0.hidden }.map { g in
+        groups = result.groups.map { g in
             ProxyGroup(
                 name: g.name,
                 type: g.type,
@@ -688,7 +721,8 @@ final class ProxyStore: ObservableObject {
                 selectedNodeName: g.now,
                 testUrl: g.testUrl,
                 fixed: g.fixed,
-                icon: g.icon
+                icon: g.icon,
+                hidden: g.hidden
             )
         }
         // Latencies are keyed by (testUrl, real node) now (B3):
@@ -721,7 +755,8 @@ final class ProxyStore: ObservableObject {
                 selectedNodeName: g.type == "select" ? pending : nil,
                 testUrl: g.testURL,
                 fixed: g.type == "select" ? nil : pending,
-                icon: ""
+                icon: "",
+                hidden: g.hidden
             )
         }
         isLocalFallback = true
@@ -1013,6 +1048,13 @@ final class ProxyStore: ObservableObject {
     /// node failed; only a returned value of -2 marks a dead node.
     @MainActor
     func testLatency() async {
+        // Direct mode shows no groups (MuYu providers/state/
+        // proxies.dart:10), so there is nothing to test: return
+        // before touching lastTest / the report, so a bolt tap in
+        // direct mode is a silent no-op instead of a confusing
+        // empty diagnosis. In rule mode displayGroups is exactly
+        // the old fetched list, so the tested set is unchanged.
+        guard (settingsStore?.mode ?? .rule) != .direct else { return }
         lastTest = .all
         // Every member of every group, resolved to the real node
         // FlClash would dial (nested groups -> their current pick,
@@ -1022,7 +1064,7 @@ final class ProxyStore: ObservableObject {
         // Targets dedupe on (testUrl, real name), as upstream does.
         var seen = Set<DelayTarget>()
         var targets: [DelayTarget] = []
-        for group in groups {
+        for group in displayGroups {
             let fallback = effectiveTestURL(for: group)
             for node in group.nodes {
                 guard let target = resolveDelayTarget(memberName: node.name, fallbackTestUrl: fallback),
@@ -1030,7 +1072,7 @@ final class ProxyStore: ObservableObject {
                 targets.append(target)
             }
         }
-        await runLatencyTest(targets: targets, groupNames: Set(groups.map { $0.name }))
+        await runLatencyTest(targets: targets, groupNames: Set(displayGroups.map { $0.name }))
     }
 
     /// Latency test for one group only (the bolt on a group

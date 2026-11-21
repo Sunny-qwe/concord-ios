@@ -202,7 +202,7 @@ struct DashboardView: View {
     /// selected node's latency is negative; a group with no selected
     /// node (url-test/fallback) only when every tested node failed.
     private var timeoutCount: Int {
-        proxyStore.groups.filter { group in
+        proxyStore.nonHiddenGroups.filter { group in
             if let selected = group.selectedNodeName,
                let delay = proxyStore.latency(forNodeNamed: selected, inGroup: group) {
                 return delay < 0
@@ -213,13 +213,13 @@ struct DashboardView: View {
     }
 
     private var groupInitials: [String] {
-        proxyStore.groups.prefix(4).map { group in
+        proxyStore.nonHiddenGroups.prefix(4).map { group in
             group.name == "github" ? "GH" : String(group.name.prefix(1)).uppercased()
         }
     }
 
     private var extraGroups: Int {
-        max(0, proxyStore.groups.count - 4)
+        max(0, proxyStore.nonHiddenGroups.count - 4)
     }
 
     // MARK: - Card order + density (FlClash dashboard/edit.dart)
@@ -1567,12 +1567,12 @@ struct DashboardView: View {
                 .foregroundStyle(Color(.label))
             }
             .buttonStyle(.plain)
-            if proxyStore.groups.isEmpty {
+            if proxyStore.nonHiddenGroups.isEmpty {
                 groupsEmptyView
             } else {
                 HStack {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text("\(proxyStore.groups.count)")
+                    Text("\(proxyStore.nonHiddenGroups.count)")
                         .font(.system(size: bigNumberSize, weight: .bold))
                     Text("个")
                         .font(.footnote)

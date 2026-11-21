@@ -1269,7 +1269,7 @@ struct ResourcesView: View {
                 }
             }
             Section("已加载") {
-                LabeledContent("代理组", value: "\(proxyStore.groups.count)")
+                LabeledContent("代理组", value: "\(proxyStore.nonHiddenGroups.count)")
                 LabeledContent("节点", value: "\(proxyStore.allNodes.count)")
                 LabeledContent("规则", value: "\(ruleStore.rules.count)")
                 LabeledContent("提供方", value: "\(ruleStore.providers.count)")

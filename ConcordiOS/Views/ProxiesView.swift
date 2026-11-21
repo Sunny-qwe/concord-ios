@@ -80,11 +80,30 @@ private struct PillsWidthKey: PreferenceKey {
     }
 }
 
+/// Header positions reported by the sticky list headers: group
+/// name -> the header's top edge in the List's coordinate space.
+/// A stuck header sits at minY ~ 0; a header at rest sits at its
+/// natural position in the content. Values merge across all
+/// visible headers; headers that scroll out of view drop out of
+/// the set (their floating flag is cleared by the consumer).
+private struct SectionHeaderPositionKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
 struct ProxiesView: View {
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var styleStore: ProxyStyleStore
+    /// Observed so the page re-renders when the outbound mode
+    /// changes (v0.2.53 mode filtering): ProxyStore.displayGroups
+    /// reads settingsStore.mode, but the store does not publish
+    /// mode changes itself, so the view must observe the mode
+    /// directly or the list would not refresh on a mode switch.
+    @EnvironmentObject private var settingsStore: SettingsStore
     @ObservedObject private var iconSetStore = IconSetStore.shared
     @StateObject private var customStore = CustomProxyStore()
     @State private var searchText = ""
@@ -101,6 +120,14 @@ struct ProxiesView: View {
     @State private var notice: String?
     @State private var scrollTargetName: String?
     @State private var scrollNonce = 0
+    /// Lift-shadow state for the sticky list headers (v0.2.53
+    /// C1): whether each expanded group's header is currently
+    /// stuck (floating) at the top of the list, and whether the
+    /// list has scrolled at all (the at-rest first header also
+    /// sits at minY ~ 0, so position alone cannot tell stuck from
+    /// rest). Both change only on transitions, never per frame.
+    @State private var floatingHeaders: [String: Bool] = [:]
+    @State private var isScrolled = false
     /// Card style only (MuYu icon_card.dart / list.dart): the
     /// folder bar selection. Local state, NOT persisted — MuYu's
     /// `_folder` is the same (default all).
@@ -156,15 +183,15 @@ struct ProxiesView: View {
     /// the group test covers the whole group.
     private func searchMatchedNodeNames(forGroupNamed name: String) -> [String]? {
         guard searching else { return nil }
-        guard let raw = proxyStore.groups.first(where: { $0.name == name }) else { return [] }
+        guard let raw = proxyStore.displayGroups.first(where: { $0.name == name }) else { return [] }
         return raw.nodes.filter(matchesSearch).map(\.name)
     }
 
     private var selectedGroup: ProxyGroup? {
         if let name = selectedGroupName {
-            return proxyStore.groups.first { $0.name == name }
+            return proxyStore.displayGroups.first { $0.name == name }
         }
-        return proxyStore.groups.first
+        return proxyStore.displayGroups.first
     }
 
     /// Groups after search + hide-timeout + sort (FlClash:
@@ -178,9 +205,16 @@ struct ProxiesView: View {
         // Group names, once per pass: the hide-timeout filter and
         // the delay sort both used to scan proxyStore.groups per
         // node / per comparison (O(n) inside an O(n log n) sort).
+        // This set deliberately uses the FULL group list, not the
+        // mode-filtered one: a member that is itself a group — even
+        // a hidden one — is still a group, so hide-timeout keeps it
+        // and the delay sort ranks it as a group.
         let groupNames = Set(proxyStore.groups.map(\.name))
         var out: [ProxyGroup] = []
-        for group in proxyStore.groups {
+        // The enumeration is the mode-filtered list (v0.2.53):
+        // rule mode drops hidden groups, global mode keeps them,
+        // direct mode shows none.
+        for group in proxyStore.displayGroups {
             var nodes = group.nodes
             if searching {
                 nodes = nodes.filter(matchesSearch)
@@ -266,13 +300,15 @@ struct ProxiesView: View {
         return group.nodes.allSatisfy { !allGroupNames.contains($0.name) }
     }
 
-    /// Folder counts, from the RAW groups (MuYu counts from
-    /// allGroups = groupsProvider, not the search-filtered list).
+    /// Folder counts, from the mode-filtered groups (MuYu counts
+    /// from allGroups = groupsProvider, not the search-filtered
+    /// list — "raw" here means before search filtering, and the
+    /// provider itself is already mode-filtered).
     private func folderCount(_ folder: ProxyFolder) -> Int {
         switch folder {
-        case .all: return proxyStore.groups.count
-        case .strategy: return proxyStore.groups.filter { !isNodeOnlyGroup($0) }.count
-        case .nodes: return proxyStore.groups.filter { isNodeOnlyGroup($0) }.count
+        case .all: return proxyStore.displayGroups.count
+        case .strategy: return proxyStore.displayGroups.filter { !isNodeOnlyGroup($0) }.count
+        case .nodes: return proxyStore.displayGroups.filter { isNodeOnlyGroup($0) }.count
         case .leafNodes: return leafNodeEntries.count
         }
     }
@@ -643,7 +679,7 @@ struct ProxiesView: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(proxyStore.groups.isEmpty || testing)
+        .disabled(proxyStore.displayGroups.isEmpty || testing)
         .accessibilityLabel("测速全部")
     }
 
@@ -892,19 +928,33 @@ struct ProxiesView: View {
             // the chips overflow, listing all groups (max 7 visible)
             // with a checkmark on the current one. The chip label
             // is subheadline semibold; unselected labels use the
-            // onSurfaceVariant colour (.secondary here).
+            // onSurfaceVariant colour (.secondary here). The label
+            // is capped at PopupMenu.labelMaxWidth (240.0pt — see
+            // the pill below); the tab is the capped label + padding.
             ScrollViewReader { pillReader in
                 HStack(spacing: 8) {
                     ZStack(alignment: .trailing) {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
                                 ForEach(visibleGroups) { group in
-                                    Button(group.name) {
+                                    Button {
                                         if selectedVisibleGroup?.id == group.id {
                                             scrollToSelected(in: group)
                                         } else {
                                             selectedGroupName = group.name
                                         }
+                                    } label: {
+                                        // MuYu group_tabs.dart _TabExtents:
+                                        // the label width is
+                                        // min(measured, labelMaxWidth);
+                                        // labelMaxWidth = 240.0pt,
+                                        // verified at the MuYu-pinned
+                                        // prism_ui commit 6c47901c
+                                        // lib/popup.dart:1864:
+                                        // 280 - 2*8 - 24 = 240.
+                                        Text(group.name)
+                                            .lineLimit(1)
+                                            .frame(maxWidth: 240)
                                     }
                                     .id("pill:\(group.name)")
                                     .font(.subheadline)
@@ -992,7 +1042,7 @@ struct ProxiesView: View {
                     }
                     .refreshable { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
                 }
-            } else if proxyStore.groups.isEmpty && proxyStore.isLoading {
+            } else if proxyStore.displayGroups.isEmpty && proxyStore.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if searching {
@@ -1016,7 +1066,12 @@ struct ProxiesView: View {
                         showGroupPicker = false
                     } label: {
                         HStack(spacing: 12) {
+                            // Same 240pt cap as the strip pills (MuYu:
+                            // the overflow menu's labels are capped at
+                            // PopupMenu.labelMaxWidth too).
                             Text(group.name)
+                                .lineLimit(1)
+                                .frame(maxWidth: 240)
                             Spacer()
                             if selectedVisibleGroup?.id == group.id {
                                 Image(systemName: "checkmark")
@@ -1038,9 +1093,21 @@ struct ProxiesView: View {
 
     // MARK: - List style
 
+    /// Sticky headers (v0.2.53 C1): the list style is a plain List
+    /// whose section headers stick to the top while scrolling
+    /// (upstream PinnedHeaderSliver). The lift shadow appears only
+    /// on a STUCK header of an EXPANDED group — upstream's `under`
+    /// is 0 for collapsed groups, so their headers never lift —
+    /// detected from the header's own position in the List's
+    /// coordinate space plus a scrolled flag. The shadow belongs
+    /// to the stuck header only, never to the node cards (v0.2.51).
+    /// The delay-test hooks are untouched: the header keeps its
+    /// per-group bolt + spinner + search field, the grid keeps the
+    /// Equatable ProxyNodeCards, and scrollTo / refreshable work
+    /// exactly as before.
     private func listContent(width: CGFloat) -> some View {
         Group {
-            if proxyStore.groups.isEmpty && proxyStore.isLoading {
+            if proxyStore.displayGroups.isEmpty && proxyStore.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if visibleGroups.isEmpty && searching {
@@ -1049,15 +1116,48 @@ struct ProxiesView: View {
                 noGroupsView
             } else {
                 ScrollViewReader { reader in
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            localFallbackNote
-                            ForEach(visibleGroups) { group in
-                                groupSection(group, width: width)
+                    List {
+                        if proxyStore.isLocalFallback {
+                            Section {
+                                localFallbackNote
+                                    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                                    .listRowBackground(Color.clear)
+                                    .listRowSeparator(.hidden)
                             }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
+                        ForEach(visibleGroups) { group in
+                            Section(header: listHeader(group, width: width)) {
+                                if expandedGroups.contains(group.name) {
+                                    listGridRow(group, width: width)
+                                }
+                            }
+                        }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .background(ConcordTheme.pageBackground)
+                    .coordinateSpace(name: "proxiesList")
+                    .listSectionSpacing(12)
+                    .contentMargins(.vertical, 12)
+                    .onScrollGeometryChange(for: Bool.self, of: { $0.contentOffset.y > 0.5 }) { _, scrolled in
+                        // Boolean-gated on purpose: the closure runs
+                        // on every scroll frame, but the state — and
+                        // therefore the body — only changes twice
+                        // (rest <-> scrolled).
+                        if scrolled != isScrolled { isScrolled = scrolled }
+                    }
+                    .onPreferenceChange(SectionHeaderPositionKey.self) { positions in
+                        var next = floatingHeaders
+                        var changed = false
+                        for (name, minY) in positions {
+                            let floating = expandedGroups.contains(name) && isScrolled && minY <= 0.5
+                            if next[name] != floating { next[name] = floating; changed = true }
+                        }
+                        for name in next.keys where positions[name] == nil && next[name] == true {
+                            next[name] = false
+                            changed = true
+                        }
+                        if changed { floatingHeaders = next }
                     }
                     .onChange(of: scrollNonce) { _, _ in
                         if let target = scrollTargetName {
@@ -1082,7 +1182,7 @@ struct ProxiesView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 4)
             Group {
-                if proxyStore.groups.isEmpty && proxyStore.isLoading {
+                if proxyStore.displayGroups.isEmpty && proxyStore.isLoading {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if iconFolder == .leafNodes && leafNodeEntries.isEmpty && searching {
@@ -1194,11 +1294,10 @@ struct ProxiesView: View {
     /// The brand-icon card (MuYu icon_card.dart GroupIconCard):
     /// name + brand icon, "TYPE · n/m" subtitle (+ the per-group
     /// search field when unfolded), then the bottom row with the
-    /// selected node and the latency pill. Tapping the card toggles
-    /// it; tapping the pill tests the group. Per-node up/down
-    /// speeds (MuYu _SelectedSpeeds) are NOT shown: the Concord
-    /// core exposes no per-node traffic (proxy.states has alive /
-    /// UDP / history only).
+    /// selected node, its live up/down speeds while unfolded
+    /// (MuYu _SelectedSpeeds, from TrafficStore's per-node sampler)
+    /// and the latency pill. Tapping the card toggles it; tapping
+    /// the pill tests the group.
     private func iconCard(_ group: ProxyGroup) -> some View {
         let m = iconCardMetrics()
         let expanded = expandedGroups.contains(group.name)
@@ -1260,6 +1359,12 @@ struct ProxiesView: View {
                 } else {
                     Spacer()
                 }
+                // MuYu icon_card.dart:296-301: the speeds sit
+                // between the selected node and the delay, only
+                // while unfolded with a node selected.
+                if let selectedName, expanded {
+                    SelectedNodeSpeedsView(proxyName: selectedName, running: proxyStore.isRunning)
+                }
                 Spacer()
                 if selectedName != nil {
                     iconCardLatencyPill(group: group, latencyMs: latency, testing: testing)
@@ -1290,6 +1395,45 @@ struct ProxiesView: View {
             }
         }
     }
+
+/// The selected node's live up/down speeds (MuYu _SelectedSpeeds,
+/// icon_card.dart:318-353): ↑/↓ bytes/s from TrafficStore's
+/// per-node sampler, shown only while the card is unfolded with a
+/// node selected; zeros while the VPN is off (MuYu shows the zero
+/// Traffic then). A leaf view observing TrafficStore so the 1 s
+/// publish re-renders only this row — ProxiesView itself must NOT
+/// observe TrafficStore, or the whole page would re-render every
+/// second (v0.2.51).
+private struct SelectedNodeSpeedsView: View {
+    let proxyName: String
+    let running: Bool
+    @EnvironmentObject var trafficStore: TrafficStore
+
+    var body: some View {
+        let speed: NodeSpeed = running ? (trafficStore.nodeSpeeds[proxyName] ?? NodeSpeed.zero) : NodeSpeed.zero
+        HStack(spacing: 4) {
+            speedFigure(systemName: "arrow.up", bytesPerSecond: speed.up)
+            speedFigure(systemName: "arrow.down", bytesPerSecond: speed.down)
+        }
+    }
+
+    /// One figure (MuYu _SpeedFigure): 12pt glyph + rate text,
+    /// 2pt apart, caption2 semibold in the muted colour. The rate
+    /// text is "value unit/s" (MuYu _rateText), via the same
+    /// ConcordBytes.split the Dashboard speed panels use.
+    private func speedFigure(systemName: String, bytesPerSecond: Double) -> some View {
+        let split = ConcordBytes.split(Int64(bytesPerSecond))
+        return HStack(spacing: 2) {
+            Image(systemName: systemName)
+                .font(.system(size: 12))
+            Text("\(split.number) \(split.unit)/s")
+                .lineLimit(1)
+        }
+        .font(.caption2)
+        .fontWeight(.semibold)
+        .foregroundStyle(.secondary)
+    }
+}
 
     /// The selected node's group icon for the card's bottom row
     /// (MuYu _SelectedProxy: groups.getGroup(proxyName)?.icon).
@@ -1379,97 +1523,143 @@ struct ProxiesView: View {
         }
     }
 
-    private func groupSection(_ group: ProxyGroup, width: CGFloat) -> some View {
+    /// The list-style group header (v0.2.53 C1): the same row the
+    /// old groupSection drew, now a List section header so it
+    /// sticks to the top while its rows scroll under it. Its card
+    /// shape follows its state — top corners only while attached
+    /// to its grid at rest, fully round when collapsed or when
+    /// stuck (floating) above scrolling rows — and the lift shadow
+    /// appears only while floating. Tap toggles expand/collapse,
+    /// exactly as before; the per-group bolt, spinner, locate
+    /// button and search field are unchanged.
+    private func listHeader(_ group: ProxyGroup, width: CGFloat) -> some View {
         let expanded = expandedGroups.contains(group.name)
-        return VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                groupIcon(group)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(group.name)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .lineLimit(1)
-                    // FlClash ListHeader: the subtitle is the
-                    // selected node name whenever there is one,
-                    // hidden entirely when there is none — in both
-                    // states. The old code showed the group type
-                    // when collapsed (duplicating the trailing type
-                    // text) and "未选择" when expanded. The minHeight
-                    // keeps the two-line header height stable when
-                    // the subtitle is empty (upstream's header is a
-                    // fixed 61pt).
-                    Text(group.selectedNodeName ?? "")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(minHeight: 13, alignment: .leading)
+        let floating = floatingHeaders[group.name] == true
+        return HStack(spacing: 10) {
+            groupIcon(group)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(group.name)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                // FlClash ListHeader: the subtitle is the
+                // selected node name whenever there is one,
+                // hidden entirely when there is none — in both
+                // states. The old code showed the group type
+                // when collapsed (duplicating the trailing type
+                // text) and "未选择" when expanded. The minHeight
+                // keeps the two-line header height stable when
+                // the subtitle is empty (upstream's header is a
+                // fixed 61pt).
+                Text(group.selectedNodeName ?? "")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(minHeight: 13, alignment: .leading)
+            }
+            Spacer()
+            if expanded {
+                groupSearchControl(for: group)
+                RoundedBarButton(systemName: "location.fill", label: "滚动到已选", size: 28) {
+                    scrollToSelectedInList(group)
                 }
-                Spacer()
-                if expanded {
-                    groupSearchControl(for: group)
-                    RoundedBarButton(systemName: "location.fill", label: "滚动到已选", size: 28) {
-                        scrollToSelectedInList(group)
+                let testing = proxyStore.testingGroups.contains(group.name)
+                Button {
+                    Task { await proxyStore.testLatency(group: group, nodeNames: searchMatchedNodeNames(forGroupNamed: group.name)) }
+                } label: {
+                    if testing {
+                        ProgressView()
+                            .frame(width: 28, height: 28)
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                    } else {
+                        Image(systemName: "bolt.fill")
+                            .frame(width: 28, height: 28)
+                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
                     }
-                    let testing = proxyStore.testingGroups.contains(group.name)
-                    Button {
-                        Task { await proxyStore.testLatency(group: group, nodeNames: searchMatchedNodeNames(forGroupNamed: group.name)) }
-                    } label: {
-                        if testing {
-                            ProgressView()
-                                .frame(width: 28, height: 28)
-                                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-                        } else {
-                            Image(systemName: "bolt.fill")
-                                .frame(width: 28, height: 28)
-                                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(testing)
-                } else {
-                    Text(group.type)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
                 }
-                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                .buttonStyle(.plain)
+                .disabled(testing)
+            } else {
+                Text(group.type)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            .padding(12)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if expanded {
-                    expandedGroups.remove(group.name)
-                } else {
-                    expandedGroups.insert(group.name)
-                    // FlClash _handleChange (list.dart:45-60) scrolls
-                    // the group into view on every toggle; collapsing
-                    // needs none (the header stays put), but an
-                    // expanding group does — once its rows are laid out.
-                    Task {
-                        try? await Task.sleep(nanoseconds: 250_000_000)
-                        scrollTargetName = groupHeaderID(group.name)
-                        scrollNonce += 1
-                    }
-                }
-            }
+            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .contentShape(Rectangle())
+        .onTapGesture {
             if expanded {
-                LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
-                    // The group's own search keyword filters only
-                    // this group (MuYu GroupSearchControl); the
-                    // page search / hide-timeout / sort already
-                    // applied by visibleGroups.
-                    ForEach(displayNodes(for: group)) { node in
-                        nodeCard(node, in: group)
-                            .id(scrollID(nodeName: node.name, groupName: group.name))
-                    }
+                expandedGroups.remove(group.name)
+            } else {
+                expandedGroups.insert(group.name)
+                // FlClash _handleChange (list.dart:45-60) scrolls
+                // the group into view on every toggle; collapsing
+                // needs none (the header stays put), but an
+                // expanding group does — once its rows are laid out.
+                Task {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    scrollTargetName = groupHeaderID(group.name)
+                    scrollNonce += 1
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 12)
             }
         }
+        .background(
+            ConcordTheme.cardBackground,
+            in: listHeaderShape(expanded: expanded, floating: floating)
+        )
+        .shadow(color: .black.opacity(0.12), radius: floating ? 8 : 0, x: 0, y: floating ? 2 : 0)
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: SectionHeaderPositionKey.self,
+                    value: [group.name: geo.frame(in: .named("proxiesList")).minY]
+                )
+            }
+        )
+        .padding(.horizontal, 16)
         .id(groupHeaderID(group.name))
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    /// Header card corners (v0.2.53 C1): at rest the header and
+    /// its grid are one card, so the header rounds only its top
+    /// corners; collapsed, or floating above scrolling rows, it
+    /// stands alone and rounds all four.
+    private func listHeaderShape(expanded: Bool, floating: Bool) -> UnevenRoundedRectangle {
+        let r = ConcordTheme.panelRadius
+        if expanded && !floating {
+            return UnevenRoundedRectangle(topLeading: r, bottomLeading: 0, bottomTrailing: 0, topTrailing: r)
+        }
+        return UnevenRoundedRectangle(topLeading: r, bottomLeading: r, bottomTrailing: r, topTrailing: r)
+    }
+
+    /// The list-style group grid (v0.2.53 C1): the same LazyVGrid
+    /// the old groupSection drew, now the section's single row.
+    /// Its card rounds only its bottom corners — the header above
+    /// rounds the top — so the two read as one card at rest. No
+    /// shadow here (v0.2.51): the lift belongs to the stuck header.
+    private func listGridRow(_ group: ProxyGroup, width: CGFloat) -> some View {
+        LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
+            // The group's own search keyword filters only
+            // this group (MuYu GroupSearchControl); the
+            // page search / hide-timeout / sort already
+            // applied by visibleGroups.
+            ForEach(displayNodes(for: group)) { node in
+                nodeCard(node, in: group)
+                    .id(scrollID(nodeName: node.name, groupName: group.name))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
+        .background(
+            ConcordTheme.cardBackground,
+            in: UnevenRoundedRectangle(topLeading: 0, bottomLeading: ConcordTheme.panelRadius, bottomTrailing: ConcordTheme.panelRadius, topTrailing: 0)
+        )
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 
     private func groupHeaderID(_ groupName: String) -> String {
@@ -1748,22 +1938,56 @@ struct ProxiesView: View {
 
 /// A group's brand icon at any size (MuYu _GroupBrandIcon,
 /// widgets/icon.dart): the profile's icon URL (loaded) or short
-/// text, else the group's first character. Filled = rounded tile
-/// with 6pt inner padding, plain = bare in the accent colour,
-/// hidden = nothing. The MuYu brandIconFor(name) → SVG asset
-/// fallback (Google/GitHub/Apple…) has no equivalent here: we
-/// ship no SVG assets, so a group with no profile icon falls back
-/// to its monogram, as the list header already does.
+/// text, else the MuYu brandIconFor(name) mark, else the code-drawn
+/// send glyph for a group literally named "rocket", else the
+/// group's first character. Filled = rounded tile with 6pt inner
+/// padding, plain = bare in the accent colour, hidden = nothing.
+/// The 14 bundled marks are the MuYu assets/images/services SVGs
+/// (Simple Icons 13.0.0, CC0) converted to template PDFs; the two
+/// GPL-3.0 FlClash-original marks (claude, disney/disneyplus) are
+/// deliberately NOT bundled — the repo has no LICENSE file — so
+/// those names fall through to the monogram.
 private struct GroupBrandIconView: View {
     let icon: String
     let name: String
     let size: CGFloat
     let iconStyle: ProxyStyleStore.IconStyle
 
+    /// MuYu brandIcons.dart: group name -> bundled asset, keyed by
+    /// the name lowercased with all non-[a-z0-9] stripped.
+    private static let brandAssets: [String: String] = [
+        "apple": "BrandApple",
+        "appletv": "BrandAppletv",
+        "bilibili": "BrandBilibili",
+        "chatgpt": "BrandOpenai",
+        "discord": "BrandDiscord",
+        "gemini": "BrandGemini",
+        "github": "BrandGithub",
+        "google": "BrandGoogle",
+        "netflix": "BrandNetflix",
+        "openai": "BrandOpenai",
+        "prime": "BrandPrimevideo",
+        "primevideo": "BrandPrimevideo",
+        "spotify": "BrandSpotify",
+        "steam": "BrandSteam",
+        "tiktok": "BrandTiktok",
+        "youtube": "BrandYoutube",
+    ]
+
+    /// MuYu _compactBrandName: lowercase, strip all non-[a-z0-9].
+    private static func compactBrandName(_ value: String) -> String {
+        value.lowercased().filter { ("a"..."z").contains($0) || ("0"..."9").contains($0) }
+    }
+
+    private static func brandAssetName(for groupName: String) -> String? {
+        let key = compactBrandName(groupName)
+        guard !key.isEmpty else { return nil }
+        return brandAssets[key]
+    }
+
     var body: some View {
         let monogram = String(name.prefix(1))
         let isURL = icon.hasPrefix("http")
-        let text = icon.isEmpty ? monogram : (isURL ? monogram : icon)
         let content: some View = Group {
             if isURL, let url = URL(string: icon) {
                 AsyncImage(url: url) { image in
@@ -1773,8 +1997,28 @@ private struct GroupBrandIconView: View {
                         .font(.subheadline)
                         .fontWeight(.semibold)
                 }
+            } else if !icon.isEmpty {
+                // The profile's own text icon (e.g. an emoji or a
+                // letter) wins over the brand mark, as before.
+                Text(icon)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+            } else if let brandAsset = Self.brandAssetName(for: name) {
+                // MuYu brandIconFor step 2: the bundled brand mark,
+                // rendered as a template so it tints like the
+                // monogram does.
+                Image(brandAsset)
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+            } else if Self.compactBrandName(name) == "rocket" {
+                // MuYu brandIconFor step 3: the code-drawn send
+                // glyph (AppGlyphs.send).
+                Image(systemName: "paperplane.fill")
+                    .resizable()
+                    .scaledToFit()
             } else {
-                Text(text)
+                Text(monogram)
                     .font(.subheadline)
                     .fontWeight(.semibold)
             }

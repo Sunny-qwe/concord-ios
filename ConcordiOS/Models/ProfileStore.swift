@@ -1124,9 +1124,15 @@ final class ProfileStore: ObservableObject {
         let excludeFilter: String
         /// Provider names from the group's `use:` list.
         let useProviders: [String]
+        /// Hidden from the Proxies page in rule mode (Clash
+        /// `hidden: true`); carried so the offline list filters
+        /// exactly like the live one (v0.2.53 mode filtering).
+        /// Defaults to false — most groups do not set it.
+        let hidden: Bool
 
         init(name: String, type: String, nodeNames: [String], testURL: String,
-             filter: String = "", excludeFilter: String = "", useProviders: [String] = []) {
+             filter: String = "", excludeFilter: String = "", useProviders: [String] = [],
+             hidden: Bool = false) {
             self.name = name
             self.type = type
             self.nodeNames = nodeNames
@@ -1134,6 +1140,7 @@ final class ProfileStore: ObservableObject {
             self.filter = filter
             self.excludeFilter = excludeFilter
             self.useProviders = useProviders
+            self.hidden = hidden
         }
     }
 
@@ -1214,7 +1221,8 @@ final class ProfileStore: ObservableObject {
                         name: name, type: item["type"] ?? "select",
                         nodeNames: members, testURL: item["url"] ?? "",
                         filter: item["filter"] ?? "", excludeFilter: item["exclude-filter"] ?? "",
-                        useProviders: itemUseFlow ?? itemUse))
+                        useProviders: itemUseFlow ?? itemUse,
+                        hidden: item["hidden"]?.lowercased() == "true"))
                 }
             }
             item = [:]
@@ -1372,7 +1380,8 @@ final class ProfileStore: ObservableObject {
             return LocalProxyGroup(
                 name: group.name, type: group.type, nodeNames: members,
                 testURL: group.testURL, filter: group.filter,
-                excludeFilter: group.excludeFilter, useProviders: group.useProviders)
+                excludeFilter: group.excludeFilter, useProviders: group.useProviders,
+                hidden: group.hidden)
         }
         groups = resolvedGroups
         if groups.isEmpty {

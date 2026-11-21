@@ -14,6 +14,17 @@ struct TrafficPoint: Identifiable {
     let down: Int64
 }
 
+/// One node's live up/down rates in bytes/s (MuYu `Traffic` as
+/// sampled by `ExternalTrafficSampler`: per-connection byte deltas
+/// over the sample interval, attributed to every name in the
+/// connection's chain).
+struct NodeSpeed {
+    let up: Double
+    let down: Double
+
+    static let zero = NodeSpeed(up: 0, down: 0)
+}
+
 final class TrafficStore: ObservableObject {
     @Published var current = ConcordTraffic(up: 0, down: 0, totalUp: 0, totalDown: 0)
     @Published var history: [TrafficPoint] = []
@@ -23,6 +34,19 @@ final class TrafficStore: ObservableObject {
     @Published var services: [ConcordServiceItem] = []
     @Published var isProbingServices = false
     @Published var servicesError: String?
+    /// Live up/down per proxy and group name (MuYu
+    /// nodeSpeedsProvider), from the same snapshots as the
+    /// dashboard speeds. A reader takes the selected node's entry,
+    /// or zero when nothing flows through it; the map keeps its
+    /// last values while the tunnel is down, so a reader checks
+    /// `isRunning` itself.
+    @Published var nodeSpeeds: [String: NodeSpeed] = [:]
+    /// Per-connection last-seen byte counts behind the sampler
+    /// (MuYu ExternalTrafficSampler._nodeSeen). A connection first
+    /// seen here is only a baseline; its bytes so far would
+    /// otherwise read as one second's spike.
+    private var nodeSeen: [UInt64: (upload: Int64, download: Int64)] = [:]
+    private var nodeSeenAt: Date?
     /// The live engine status (engine.state): created / initialized /
     /// configured / running / failed, plus any services that failed
     /// to start. Read from the extension's engine.json snapshot.
@@ -55,6 +79,9 @@ final class TrafficStore: ObservableObject {
             .sink { [weak self] _ in
                 Task {
                     await self?.refresh()
+                    // The per-node speeds ride the same 1 s tick as
+                    // the traffic snapshot (MuYu updateTraffic).
+                    await self?.refreshNodeSpeeds()
                     // D11: the engine row rides the same 1 s tick
                     // as the traffic snapshot, otherwise it freezes
                     // after the first read.
@@ -98,6 +125,61 @@ final class TrafficStore: ObservableObject {
                 // the stale live rates (keep the cumulative totals).
                 current = ConcordTraffic(up: 0, down: 0, totalUp: current.totalUp, totalDown: current.totalDown)
             }
+        }
+    }
+
+    /// Samples the per-node live speeds (MuYu
+    /// ExternalTrafficSampler._updateNodeSpeeds,
+    /// lib/core/external_controller.dart:56-103, ported verbatim):
+    /// each live connection's byte deltas since the last sample,
+    /// divided by the elapsed seconds, attributed to every name in
+    /// the connection's chain. The data source is the core's
+    /// connection.watch snapshot — ConcordConnection carries the
+    /// cumulative upload/download counters and the exit chain, so
+    /// no new core API was needed. On the first sample the
+    /// connections are baselines only (no speeds); a stale snapshot
+    /// while the tunnel is down throws and the last map is kept —
+    /// the UI shows zeros while not running anyway. This touches
+    /// only the connections snapshot; the delay test uses
+    /// test_delay / delay.run.poll and is unaffected.
+    @MainActor
+    func refreshNodeSpeeds() async {
+        do {
+            let snapshot = try await client.connectionSnapshot()
+            let now = Date()
+            let previousAt = nodeSeenAt
+            nodeSeenAt = now
+            guard let previousAt else {
+                for c in snapshot.connections {
+                    nodeSeen[c.connectionId] = (c.upload ?? 0, c.download ?? 0)
+                }
+                return
+            }
+            let elapsed = now.timeIntervalSince(previousAt)
+            guard elapsed > 0 else { return }
+            var speeds: [String: NodeSpeed] = [:]
+            var currentIds = Set<UInt64>()
+            for c in snapshot.connections {
+                currentIds.insert(c.connectionId)
+                let previous = nodeSeen[c.connectionId]
+                nodeSeen[c.connectionId] = (c.upload ?? 0, c.download ?? 0)
+                guard let previous else { continue }
+                let upDelta = (c.upload ?? 0) - previous.upload
+                let downDelta = (c.download ?? 0) - previous.download
+                guard upDelta > 0 || downDelta > 0 else { continue }
+                let up = upDelta > 0 ? Double(upDelta) / elapsed : 0
+                let down = downDelta > 0 ? Double(downDelta) / elapsed : 0
+                for name in Set(c.chains ?? []) {
+                    let current = speeds[name] ?? .zero
+                    speeds[name] = NodeSpeed(up: current.up + up, down: current.down + down)
+                }
+            }
+            nodeSeen = nodeSeen.filter { currentIds.contains($0.key) }
+            nodeSpeeds = speeds
+        } catch {
+            // Stale snapshot while the tunnel is down
+            // (connection.watch throws past its 10 s max-age):
+            // keep the last map.
         }
     }
 

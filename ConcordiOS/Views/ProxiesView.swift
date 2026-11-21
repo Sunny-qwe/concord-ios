@@ -1139,18 +1139,22 @@ struct ProxiesView: View {
                     .coordinateSpace(name: "proxiesList")
                     .listSectionSpacing(12)
                     .contentMargins(.vertical, 12)
-                    .onScrollGeometryChange(for: Bool.self, of: { $0.contentOffset.y > 0.5 }) { _, scrolled in
-                        // Boolean-gated on purpose: the closure runs
-                        // on every scroll frame, but the state — and
-                        // therefore the body — only changes twice
-                        // (rest <-> scrolled).
-                        if scrolled != isScrolled { isScrolled = scrolled }
-                    }
                     .onPreferenceChange(SectionHeaderPositionKey.self) { positions in
+                        // iOS 17: onScrollGeometryChange is iOS 18+,
+                        // so the scrolled flag comes from the header
+                        // positions instead — the first header rests
+                        // at minY ≈ 12 (top content margin), so any
+                        // visible header below 11.5 means the list
+                        // has scrolled past 0.5pt. Same threshold as
+                        // the old contentOffset.y > 0.5 check, and
+                        // the floating test reads the fresh value
+                        // instead of the previous frame's state.
+                        let scrolled = positions.values.contains { $0 < 11.5 }
+                        if scrolled != isScrolled { isScrolled = scrolled }
                         var next = floatingHeaders
                         var changed = false
                         for (name, minY) in positions {
-                            let floating = expandedGroups.contains(name) && isScrolled && minY <= 0.5
+                            let floating = expandedGroups.contains(name) && scrolled && minY <= 0.5
                             if next[name] != floating { next[name] = floating; changed = true }
                         }
                         for name in next.keys where positions[name] == nil && next[name] == true {
@@ -1630,9 +1634,9 @@ private struct SelectedNodeSpeedsView: View {
     private func listHeaderShape(expanded: Bool, floating: Bool) -> UnevenRoundedRectangle {
         let r = ConcordTheme.panelRadius
         if expanded && !floating {
-            return UnevenRoundedRectangle(topLeading: r, bottomLeading: 0, bottomTrailing: 0, topTrailing: r)
+            return UnevenRoundedRectangle(topLeadingRadius: r, bottomLeadingRadius: 0, bottomTrailingRadius: 0, topTrailingRadius: r)
         }
-        return UnevenRoundedRectangle(topLeading: r, bottomLeading: r, bottomTrailing: r, topTrailing: r)
+        return UnevenRoundedRectangle(topLeadingRadius: r, bottomLeadingRadius: r, bottomTrailingRadius: r, topTrailingRadius: r)
     }
 
     /// The list-style group grid (v0.2.53 C1): the same LazyVGrid
@@ -1655,7 +1659,7 @@ private struct SelectedNodeSpeedsView: View {
         .padding(.bottom, 12)
         .background(
             ConcordTheme.cardBackground,
-            in: UnevenRoundedRectangle(topLeading: 0, bottomLeading: ConcordTheme.panelRadius, bottomTrailing: ConcordTheme.panelRadius, topTrailing: 0)
+            in: UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: ConcordTheme.panelRadius, bottomTrailingRadius: ConcordTheme.panelRadius, topTrailingRadius: 0)
         )
         .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
         .listRowSeparator(.hidden)

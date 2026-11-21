@@ -1,4 +1,4 @@
-From d7d35b97985670c5159874974e87d8bb25989da5 Mon Sep 17 00:00:00 2001
+From 857b92ff4f21592fb97b4b4f115143755579ac5f Mon Sep 17 00:00:00 2001
 From: sunny-qwe <gmlg138888@gmail.com>
 Date: Fri, 20 Nov 2026 13:20:49 +0000
 Subject: [PATCH 2/7] ios: promote FakeDevice to a production packet-channel

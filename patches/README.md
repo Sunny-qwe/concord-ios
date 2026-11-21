@@ -6,14 +6,14 @@ never copied into this repo: the GitHub workflow checks out
 build time. A local inspection copy lives at `../upstream/` (gitignored,
 never uploaded).
 
-- **Pinned upstream commit:** `b0806a8b7e7b55e8f0410a832e5d00512a6499d1`
-  (`feat(netstack): BBR on the TUN and WireGuard/MASQUE IP stacks`, 2026-11-20)
-- **Produced from:** the rebase tree at `/home/hatch/concord-rebase-b0806a8` (7 commits
-  on top of `b0806a8`, `git format-patch b0806a8`), rebased
-  2026-11-20 from the previous pin `165154c92ddec38c6fc461d52d4ed210e7e8a65e`.
-  Verified: the 7 patches apply to a fresh clone at `b0806a8`
+- **Pinned upstream commit:** `4db36a472bd3f290195dec55dfc30ac2ebc03b7a`
+  (`perf(engine): hand memory back after a GeoSite update`, 2026-11-21)
+- **Produced from:** the rebase tree at `/home/hatch/concord-rebase-4db36a4` (7 commits
+  on top of `4db36a4`, `git format-patch 4db36a4`), rebased
+  2026-11-21 from the previous pin `b0806a8b7e7b55e8f0410a832e5d00512a6499d1`.
+  Verified: the 7 patches apply to a fresh clone at `4db36a4`
   with zero rejects and produce a tree byte-identical to the rebase tree
-  (see the "Rebase to b0806a8" section). The local inspection copy at `../upstream/` (branch `ios-port`)
+  (see the "Rebase to 4db36a4" section). The local inspection copy at `../upstream/` (branch `ios-port`)
   still points at the old pin until it is refreshed; the patches in this
   directory are the authority for the new pin.
 - **Apply order:** `01`, then `02`, then `03`, then `04`, then `05`, then `06`, then `07` (filenames sort in order).
@@ -533,6 +533,51 @@ patched tree rewrites it. That is harmless here: the workflows run
 `cargo build` without `--locked`, so the runner regenerates the lock
 itself. Do not commit a locally regenerated lock into a patch unless the
 build is switched to `--locked`.
+
+## Rebase to 4db36a4 (2026-11-21)
+
+All 7 patches applied cleanly with **zero conflicts and zero content
+changes** — `01`, `02`, `03`, `05`, `06`, `07` are byte-identical to
+their `b0806a8` versions, and `04` differs only in one hunk line number
+(`vendor/PATCHES.md` 96 → 97, because upstream added a quinn GRO-socket
+row above it). 6 commits since `b0806a8`, all perf/docs/bench:
+`4db36a4` GeoSite update hands memory back (by-value `GeoSiteEntry` in
+`crates/rules/src/geo/dat.rs`); `140639c` one shared GRO socket for
+QUIC (vendor/quinn `src/runtime/tokio.rs` + `vendor/PATCHES.md` row);
+`06978e3` MITM serves large map-local files from disk and streams geo
+updates (`crates/mitm/src/{body,exchange,forward,rules}.rs`,
+`crates/engine/src/resources/{fetch,geo}.rs`, tokio gains the `fs`
+feature and tokio-util the `io` feature in `crates/mitm/Cargo.toml` —
+in a region away from patch 05's rquickjs hunk); `36424ef` Windows-only
+bench `--keep-awake`; `73ebdda` + `fb5436f` bench docs only. New patch
+commits on top of `4db36a4` in `/home/hatch/concord-rebase-4db36a4`,
+regenerated with `git format-patch 4db36a4`; the regenerated patches
+applied to a fresh clone at `4db36a4` produce a tree byte-identical to
+the rebase tree (0 diff lines, verified before any `cargo` invocation;
+the rebase tree's `Cargo.lock` was later rewritten by the local cargo
+checks below and is NOT part of the patches — never commit it).
+
+`schema/api.json` at the new HEAD is **byte-identical to the `b0806a8`
+version: still 71 methods, none added, removed, or changed** (no `$defs`
+changes either). **No Swift wiring is needed for this rebase.** The
+only behaviour changes that could surface on-device: GeoSite updates
+should use less memory, and large MITM map-local files are now served
+from disk instead of memory.
+
+Local verification at the new pin (Linux, same libclang workaround as
+the 01d7a13 rebase — Python `clang` package's bundled libclang + gcc
+headers):
+
+- `cargo check -p concord-proto -p concord-tun --target
+  aarch64-apple-ios` — passes (covers the patch-02 channel code and
+  `TunSource::Channel`, patch 03, patch 06 and the vendored nix).
+- `cargo check -p concord-api -p concord-ffi -p concord-engine
+  -p concord-ios` (host) — passes.
+- `cargo check -p concord-api --target aarch64-apple-ios` — stops at
+  the known SDK wall: `cc-rs: failed to find tool "xcrun"`. No Rust
+  code is reached past that point on Linux; the macOS runner (which has
+  `xcrun` and the iOS SDK) is the verification for the full staticlib
+  build, as before.
 
 ## v0.2.11 signing experiment (FlClash-style placeholder entitlements)
 

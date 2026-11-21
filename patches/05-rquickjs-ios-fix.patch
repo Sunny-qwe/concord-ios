@@ -1,4 +1,4 @@
-From 858d360de5272472abd4e4334d4145c62b86983c Mon Sep 17 00:00:00 2001
+From f71194fe7630eb7aafe65fab8173856f161b5ce6 Mon Sep 17 00:00:00 2001
 From: sunny-qwe <gmlg138888@gmail.com>
 Date: Fri, 20 Nov 2026 13:20:49 +0000
 Subject: [PATCH 5/7] ios: enable rquickjs bindgen for iOS
@@ -8,7 +8,7 @@ Subject: [PATCH 5/7] ios: enable rquickjs bindgen for iOS
  1 file changed, 11 insertions(+)
 
 diff --git a/crates/mitm/Cargo.toml b/crates/mitm/Cargo.toml
-index 1daecd5..24594ea 100644
+index cea2386..46f8442 100644
 --- a/crates/mitm/Cargo.toml
 +++ b/crates/mitm/Cargo.toml
 @@ -60,6 +60,17 @@ rquickjs = { workspace = true, optional = true }

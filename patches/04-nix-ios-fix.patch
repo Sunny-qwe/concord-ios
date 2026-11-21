@@ -1,4 +1,4 @@
-From 5c39404c4e76acd67f2ce3b0cd636973abf32396 Mon Sep 17 00:00:00 2001
+From 0228bc90684020f412945477fc6cbb4c0a9f9eb5 Mon Sep 17 00:00:00 2001
 From: sunny-qwe <gmlg138888@gmail.com>
 Date: Fri, 20 Nov 2026 13:20:49 +0000
 Subject: [PATCH 4/7] ios: vendor nix 0.31.3 with macOS-only utun gating
@@ -286,7 +286,7 @@ index fde45fb..570d258 100644
  
  rustls = { path = "vendor/rustls" }
 diff --git a/vendor/PATCHES.md b/vendor/PATCHES.md
-index 0edb628..affd735 100644
+index 4b4c728..4f0c1a4 100644
 --- a/vendor/PATCHES.md
 +++ b/vendor/PATCHES.md
 @@ -32,6 +32,7 @@ crate's directory, its `[patch.crates-io]` entry and its lines in `UPSTREAM.sha2
@@ -297,7 +297,7 @@ index 0edb628..affd735 100644
  | quinn | `MAX_TRANSMIT_DATAGRAMS` 80 (`MAX_TRANSMIT_SEGMENTS` back to upstream's 10) | n0-computer/noq#636 (noq) | The segment cap is upstream's again; propose only the datagram limit to quinn-rs/quinn |
  | quinn | Stamp each received batch with its own read time | None; quinn `main` `8fe66c3` passes one `now` | PR with `crates/proxy/tests/quinn_recv_time.rs` as the regression |
  | quinn | Lease receive scratch for a socket poll instead of an endpoint lifetime | None | Propose to quinn-rs/quinn with the endpoint sharing regression and receive-buffer lease contracts |
-@@ -96,6 +97,18 @@ The package archive checksum is `7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c
+@@ -97,6 +98,18 @@ The package archive checksum is `7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c
    10 1803) the selector waits as the release does. `windows-link` declares the three ntdll calls, which
    `windows-sys` does not; `Overlapped::new` is built without `os-ext`.
  

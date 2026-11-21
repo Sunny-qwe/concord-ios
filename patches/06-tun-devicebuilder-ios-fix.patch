@@ -1,4 +1,4 @@
-From c167c6dceeb88d6cbdd3a1ad66a2b8f1e5ae01b2 Mon Sep 17 00:00:00 2001
+From 443f7dadb29e76c6a05ff8c44300c2ad728f2050 Mon Sep 17 00:00:00 2001
 From: sunny-qwe <gmlg138888@gmail.com>
 Date: Fri, 20 Nov 2026 13:20:49 +0000
 Subject: [PATCH 6/7] ios: gate TunDevice::create off iOS with Unsupported stub

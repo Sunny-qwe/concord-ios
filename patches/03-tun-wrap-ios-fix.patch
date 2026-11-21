@@ -1,4 +1,4 @@
-From 7fdceb419681144b0a8fcc4c2203254d90e0ba41 Mon Sep 17 00:00:00 2001
+From 26719f47c9f9c6edafc9a92201d050ef35473911 Mon Sep 17 00:00:00 2001
 From: sunny-qwe <gmlg138888@gmail.com>
 Date: Fri, 20 Nov 2026 13:20:49 +0000
 Subject: [PATCH 3/7] ios: cfg-gate TunDevice::wrap name/index lookup off iOS

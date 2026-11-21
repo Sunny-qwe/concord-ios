@@ -162,6 +162,16 @@ final class AppCore {
     /// are keyed by sub and replayed on registration.
     private var delayRunStash: [(sub: Int, items: [Any])] = []
 
+    /// log.watch subscription (mirrors the extension's five-stream
+    /// subscribe in PacketTunnelProvider): the app core's log stream
+    /// has an EMPTY snapshot — entries only arrive as events — so
+    /// the Logs page reads them from this buffer while the VPN is
+    /// off (the extension snapshot file does not exist then).
+    /// Bounded to the newest 500 entries, like the extension's
+    /// trimBuffer.
+    private var logSub: Int?
+    private var logBuffer: [ConcordLogEntry] = []
+
     /// True while the app-side core session is open.
     var isRunning: Bool { session != 0 }
 
@@ -583,6 +593,12 @@ final class AppCore {
                 loadedGroupCount = nil
                 loadedNodeCount = nil
             }
+            // Subscribe to the app core's log.watch stream so the
+            // Logs page has live entries while the VPN is off
+            // (Issue 2): the stream's snapshot is empty — entries
+            // only arrive as events. Best-effort; a failure leaves
+            // the page with the persisted diagnostics only.
+            try? await subscribeLogWatch()
             let configInfo = configFileInfo(for: configURL)
             recordBootReport(home: home, seed: appSeed, outcome: "成功", providerSeed: providerSeed,
                              appliedProfileName: Self.profileStore?.activeProfile?.name,
@@ -635,6 +651,8 @@ final class AppCore {
             pending.removeAll()
             delayRun = nil
             delayRunStash.removeAll()
+            logSub = nil
+            logBuffer.removeAll()
             loadedConfigSignature = nil
         }
     }
@@ -821,6 +839,67 @@ final class AppCore {
                 continuation.resume(returning: DelayRunSnapshot(runId: run.sub, done: run.done, results: results))
             }
         }
+    }
+
+    // MARK: App-core log stream (Issue 2)
+    //
+    // The Logs page used to read ONLY the extension's log.watch
+    // snapshot file, so with the VPN off the list was always empty
+    // even though this core was up and logging (IMG_1162: boot
+    // report 10:02:33 "成功", live list empty). The app core gets
+    // the same subscribe-once + accumulate pattern the extension
+    // uses (PacketTunnelProvider.subscribeToStreams): one log.watch
+    // subscription per session, events accumulate in logBuffer,
+    // one unit of credit refilled per batch consumed.
+
+    /// The log.watch subscribe reply ({sub, snapshot: {}}).
+    private struct StreamSubscribeResult: Decodable {
+        let sub: Int
+    }
+
+    /// Subscribes to the app core's log.watch stream (once per
+    /// session; best-effort — a failure just leaves the Logs page
+    /// without live entries, it never fails the boot). Called from
+    /// ensureStarted after engine.start, and lazily from
+    /// LogStore.refresh when the session is up but no sub exists.
+    func subscribeLogWatch() async throws {
+        guard session != 0 else { return }
+        if logSub != nil { return }
+        let start = try await sendRequest(method: "log.watch", params: ["credit": 8], resultType: StreamSubscribeResult.self, timeoutSeconds: 60)
+        // Register the sub SYNCHRONOUSLY on coreQueue and replay
+        // any batches that arrived before registration (same race
+        // as delay.run — see delayRunStash). The nil-check inside
+        // the sync is the real guard: two concurrent subscribes
+        // (boot + a Logs-page refresh) both send the request, but
+        // only the first registration wins — the loser's sub is
+        // ignored, so its events never double-accumulate.
+        coreQueue.sync {
+            guard self.logSub == nil else { return }
+            self.logSub = start.sub
+            let stashed = self.delayRunStash.filter { $0.sub == start.sub }
+            self.delayRunStash.removeAll { $0.sub == start.sub }
+            for batch in stashed {
+                self.accumulateLogItems(batch.items)
+            }
+        }
+    }
+
+    /// The accumulated app-core log entries (empty when the session
+    /// is down or the stream was never subscribed). Reads the
+    /// buffer on coreQueue (it is written there).
+    func logEntries() async -> [ConcordLogEntry] {
+        await withCheckedContinuation { continuation in
+            coreQueue.async {
+                continuation.resume(returning: self.logBuffer)
+            }
+        }
+    }
+
+    /// core.lastWarnings on the app-side core (same shape as the
+    /// client's: {warnings: [ConcordWarning]}).
+    func lastWarnings() async throws -> [ConcordWarning] {
+        struct WarningsResult: Decodable { let warnings: [ConcordWarning] }
+        return try await sendRequest(method: "core.lastWarnings", params: [:], resultType: WarningsResult.self).warnings
     }
 
     // MARK: Providers (B2 second version)
@@ -1211,6 +1290,10 @@ final class AppCore {
             accumulateDelayItems(items)
             return
         }
+        if logSub == sub {
+            accumulateLogItems(items)
+            return
+        }
         // No run registered for this sub yet — the delay.run reply
         // has not reached delayRunStart's registration (see
         // delayRunStash). Stash the batch instead of dropping it;
@@ -1242,5 +1325,25 @@ final class AppCore {
         }
         delayRun = run
         sendNotification(method: "$/credit", params: ["sub": run.sub, "n": 1])
+    }
+
+    /// Applies one batch of log.watch events (LogEntry {level,
+    /// time, text}) to the buffer. Runs on coreQueue. Refills one
+    /// unit of credit per batch consumed, like the extension;
+    /// without it the server pump stops after the initial credit
+    /// (WatchOptions.credit = 8).
+    private func accumulateLogItems(_ items: [Any]) {
+        for item in items {
+            guard let dict = item as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: dict),
+                  let entry = try? JSONDecoder().decode(ConcordLogEntry.self, from: data) else { continue }
+            logBuffer.append(entry)
+        }
+        if logBuffer.count > 500 {
+            logBuffer.removeFirst(logBuffer.count - 500)
+        }
+        if let sub = logSub {
+            sendNotification(method: "$/credit", params: ["sub": sub, "n": 1])
+        }
     }
 }

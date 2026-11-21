@@ -75,8 +75,15 @@ struct LogsView: View {
                     }
 
                     if logStore.filtered.isEmpty {
-                        ContentUnavailableView("暂无日志", systemImage: "doc.text", description: Text("日志级别或搜索条件可能过滤掉了全部条目"))
+                        // FlClash logs.dart: the log list is a
+                        // top-aligned shrink-wrapped list and the
+                        // empty state is a bounded NullStatus — it
+                        // never expands to fill the page. The old
+                        // ContentUnavailableView greedily took all
+                        // remaining space and pushed the persisted
+                        // diagnostics ~1000pt down (IMG_1162).
                         ScrollView {
+                            compactEmptyStateView
                             persistedDiagnosticsView
                         }
                     } else {
@@ -129,7 +136,21 @@ struct LogsView: View {
                     .padding(.vertical, 4)
 
                     if eventStore.filtered.isEmpty {
-                        ContentUnavailableView("暂无事件", systemImage: "bolt", description: Text("核心事件（提供方更新、测速、致命错误、状态变化）会显示在这里"))
+                        // Same compact treatment as the logs tab:
+                        // a bounded empty state, not a greedy
+                        // ContentUnavailableView.
+                        VStack(spacing: 8) {
+                            Image(systemName: "bolt")
+                                .font(.system(size: 36))
+                                .foregroundStyle(.secondary)
+                            Text("暂无事件")
+                                .font(.headline)
+                            Text("核心事件（提供方更新、测速、致命错误、状态变化）会显示在这里")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
                     } else {
                         ScrollViewReader { proxy in
                             List(eventStore.filtered) { entry in
@@ -247,11 +268,16 @@ struct LogsView: View {
                 } else { await eventStore.refresh() }
             }
             // Live feed (audit B26/B35): poll the active tab every
-            // 1 s like FlClash, only while this page is visible and
-            // the tunnel is running. The task restarts when the tab
-            // changes (id: tab) and is cancelled when the page
-            // disappears, so polling stops with the VPN off or the
-            // view gone. New rows auto-scroll via the onChange
+            // 1 s like FlClash, only while this page is visible.
+            // The old `guard TunnelManager.isRunning` stopped all
+            // polling with the VPN off — but the app core runs (and
+            // logs) without the tunnel, so LogStore.refresh() now
+            // reads the app core's log.watch buffer when it is up
+            // and no-ops when neither core runs (Issue 2). The
+            // events tab still only polls while the tunnel runs —
+            // its stream is extension-only. The task restarts when
+            // the tab changes (id: tab) and is cancelled when the
+            // page disappears. New rows auto-scroll via the onChange
             // handlers on each list.
             .task(id: tab) {
                 loadPersistedReports()
@@ -263,8 +289,11 @@ struct LogsView: View {
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     guard !Task.isCancelled else { break }
-                    guard TunnelManager.shared.isRunning else { continue }
-                    if tab == .logs { await logStore.refresh() } else { await eventStore.refresh() }
+                    if tab == .logs {
+                        await logStore.refresh()
+                    } else if TunnelManager.shared.isRunning {
+                        await eventStore.refresh()
+                    }
                 }
             }
     }
@@ -278,11 +307,29 @@ struct LogsView: View {
         delayReport = AppCore.lastDelayTestReportText()
     }
 
-    /// Persisted diagnostics (v0.2.40): the live list is empty
-    /// when the VPN is off — the 1 s poll is gated on
-    /// TunnelManager.isRunning — so show the reports AppCore
-    /// already wrote to disk below the empty state instead of a
-    /// blank page. "暂无记录" when a report was never written.
+    /// Compact bounded empty state (FlClash NullStatus): a small
+    /// icon + two lines, fixed height — the diagnostics below sit
+    /// right under the filters instead of a giant gap.
+    private var compactEmptyStateView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+            Text("暂无日志")
+                .font(.headline)
+            Text("日志级别或搜索条件可能过滤掉了全部条目")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+    }
+
+    /// Persisted diagnostics (v0.2.40): when the live list is
+    /// empty — no core running, or the level/search filter hides
+    /// every row — show the reports AppCore already wrote to disk
+    /// below the compact empty state instead of a blank page.
+    /// "暂无记录" when a report was never written.
     @ViewBuilder
     private var persistedDiagnosticsView: some View {
         VStack(alignment: .leading, spacing: 12) {

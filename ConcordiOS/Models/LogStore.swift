@@ -124,16 +124,39 @@ final class LogStore: ObservableObject {
         return result
     }
 
+    /// Reads the live log stream from whichever core is actually
+    /// running. FlClash runs the core in-process, so its log stream
+    /// is always there; ours has two cores — the extension's (VPN
+    /// on) and the app-side core's (VPN off, booted by a delay test
+    /// or CA generation). The old code only ever read the
+    /// extension's snapshot file, so with the VPN off the list was
+    /// always empty even while the app core was up and logging
+    /// (IMG_1162). When neither core runs there is nothing to
+    /// read: keep the entries we have, clear any stale error, and
+    /// let the Logs page show the persisted diagnostics.
     @MainActor
     func refresh() async {
         do {
-            let fresh = try await client.logEntries()
+            let fresh: [ConcordLogEntry]
+            if TunnelManager.shared.isRunning {
+                fresh = try await client.logEntries()
+                warnings = try await client.lastWarnings()
+            } else if AppCore.shared.isRunning {
+                // Lazily (re-)subscribe if the boot-time subscribe
+                // failed or the session restarted since; the call
+                // is a no-op when a sub already exists.
+                try? await AppCore.shared.subscribeLogWatch()
+                fresh = await AppCore.shared.logEntries()
+                warnings = (try? await AppCore.shared.lastWarnings()) ?? []
+            } else {
+                lastError = nil
+                return
+            }
             // The stream replays the buffered entries; keep the newest
             // copy of each (id = time + text) and sort oldest first.
             var merged = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
             for entry in fresh { merged[entry.id] = entry }
             entries = merged.values.sorted { $0.time < $1.time }
-            warnings = try await client.lastWarnings()
             lastError = nil
         } catch {
             lastError = error.localizedDescription

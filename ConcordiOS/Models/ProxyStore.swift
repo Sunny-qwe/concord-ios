@@ -1286,7 +1286,6 @@ final class ProxyStore: ObservableObject {
     /// the rest of the run: the backend is down, not the nodes.
     @MainActor
     private func runLatencyTest(targets: [DelayTarget], groupNames: Set<String>) async {
-        guard testingGroups.isDisjoint(with: groupNames) else { return }
         let startedAt = Date()
         let backend = client.mode == .live
             ? (TunnelManager.shared.isRunning ? "隧道核心（VPN 运行中）" : "应用内核心（VPN 未运行）")
@@ -1296,6 +1295,13 @@ final class ProxyStore: ObservableObject {
         var throwError: Error?
         var preloadNote: String?
         var channelNote: String?
+        /// Set when this tap starts nothing because a test for the
+        /// same group(s) is already in flight: the report still
+        /// updates, so a stuck earlier run is visible instead of a
+        /// stale card (v0.2.48: the old guard returned before the
+        /// defer was installed, so a tap during an in-flight run
+        /// left the 00:09:29 card untouched).
+        var skippedNote: String?
         // The diagnostic report for the Logs export (method, params,
         // per-node outcome counts, channel diagnosis): written on
         // EVERY exit — including the early ones below — so the file
@@ -1303,7 +1309,9 @@ final class ProxyStore: ObservableObject {
         // stale one. Counts are tallied in the shared tail from the
         // recorded latencies (one record per target — the parallel
         // loop records each outcome exactly once), so the counts
-        // cannot double-count.
+        // cannot double-count. The sampled target names are the
+        // exact strings passed to delay.test, so a name mismatch
+        // between the page and the core is visible in the export.
         defer {
             let untested = targets.count - okCount - timeoutCount - failedCount
             let urlText = Set(targets.map { $0.testUrl }).sorted().joined(separator: "、")
@@ -1312,6 +1320,10 @@ final class ProxyStore: ObservableObject {
             lines.append("方法：delay.test（逐个，并行 2 个）；超时：\(timeoutMs)ms（单次调用另有 30s 兜底）")
             lines.append("测速地址：\(urlText)")
             lines.append("目标：\(targets.count) 个节点；结果：成功 \(okCount)，超时(-1) \(timeoutCount)，失败(-2) \(failedCount)，未返回 \(untested)")
+            let targetSample = targets.prefix(5).map { $0.proxyName }.joined(separator: "、")
+            if !targetSample.isEmpty {
+                lines.append("目标节点（前 5，传给 delay.test 的原名）：\(targetSample)" + (targets.count > 5 ? "…" : ""))
+            }
             if failedCount > 0 {
                 let failedNames = targets.filter { latency(for: $0) == -2 }.map { $0.proxyName }
                 let failedText = failedNames.prefix(8).joined(separator: "、") + (failedNames.count > 8 ? "…" : "")
@@ -1320,8 +1332,13 @@ final class ProxyStore: ObservableObject {
             if let preloadNote { lines.append("提供方预加载：\(preloadNote)") }
             if let throwError { lines.append("调用失败：\(throwError.localizedDescription)") }
             if let channelNote { lines.append("通道诊断：\(channelNote)") }
+            if let skippedNote { lines.append(skippedNote) }
             lines.append("此前是否测速成功过：\(everText)")
             AppCore.recordDelayTestReport(lines.joined(separator: "\n"))
+        }
+        guard testingGroups.isDisjoint(with: groupNames) else {
+            skippedNote = "本次点击未启动新测速：同一策略组已有测速在进行中（请等它完成；若一直没有结果，说明上一次测速卡住了——请把日志导出发来定位）"
+            return
         }
         // No resolvable target (e.g. a group whose members are all
         // nested groups with no current pick): tapping the bolt
@@ -1511,7 +1528,17 @@ final class ProxyStore: ObservableObject {
     /// the chip stays untested and the banner says why.
     @MainActor
     func testLatency(node: ProxyNode, testURL: String? = nil) async {
-        guard !testingNodes.contains(node.name) else { return }
+        let startedAt = Date()
+        let backend = client.mode == .live
+            ? (TunnelManager.shared.isRunning ? "隧道核心（VPN 运行中）" : "应用内核心（VPN 未运行）")
+            : "示例数据"
+        guard !testingNodes.contains(node.name) else {
+            // v0.2.48: like the group path, a tap during an
+            // in-flight test still writes a fresh report instead
+            // of leaving a stale card.
+            AppCore.recordDelayTestReport("[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)，单节点）\n方法：delay.test；节点：\(node.name)\n结果：未测速：该节点已有测速在进行中")
+            return
+        }
         testingNodes.insert(node.name)
         testError = nil
         testErrorIsGeoSeed = false
@@ -1522,12 +1549,12 @@ final class ProxyStore: ObservableObject {
             let reason = "该节点当前没有可测速的真实节点（策略组未选择节点）"
             lastError = reason
             testError = reason
+            // v0.2.48: the group path writes a fresh report on
+            // every exit — do the same here, so this tap does not
+            // leave a stale card either.
+            AppCore.recordDelayTestReport("[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)，单节点）\n方法：delay.test；节点：\(node.name)\n结果：未测速：\(reason)")
             return
         }
-        let startedAt = Date()
-        let backend = client.mode == .live
-            ? (TunnelManager.shared.isRunning ? "隧道核心（VPN 运行中）" : "应用内核心（VPN 未运行）")
-            : "示例数据"
         let useAppCore = client.mode == .live && !TunnelManager.shared.isRunning
         // Writes the single-node diagnostic report (last-delay-
         // test-report.txt) for one outcome. `extra` carries the

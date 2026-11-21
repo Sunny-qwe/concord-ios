@@ -46,6 +46,10 @@ struct ContentView: View {
 
     @State private var selectedTab: AppTab = .dashboard
     @State private var updateAlertMessage: String?
+    /// Drives the sliding grey pill behind the selected tab in the
+    /// floating bar (matchedGeometryEffect): the pill glides to the
+    /// tapped tab inside the same 0.3 s ease-out transaction that
+    /// slides the page, like FlClash's PageView + dock indicator.
     // T1: the TrafficStore 1 s timer had no stop() caller and ran
     // forever, even in the background — waking the app every
     // second to RPC a (usually dead) core.
@@ -66,7 +70,10 @@ struct ContentView: View {
                     .tint(themeStore.accentColor)
             } else {
                 // Floating capsule bar (default, reference bottom bar).
-                tabView
+                // FlClash home.dart: a PageView (300 ms ease-out slide,
+                // pages kept alive) — NOT a TabView, whose switch is an
+                // instant jump with no transition and no shared pill.
+                slidingTabView
                     .toolbar(.hidden, for: .tabBar)
                     .tint(themeStore.accentColor)
                     .safeAreaInset(edge: .bottom) {
@@ -204,7 +211,7 @@ struct ContentView: View {
     /// The four tabs (shared by the floating and docked bar styles).
     private var tabView: some View {
         TabView(selection: $selectedTab) {
-            DashboardView(onSelectTab: { selectedTab = $0 })
+            DashboardView(onSelectTab: { selectTab($0) })
                 .tag(AppTab.dashboard)
                 .tabItem { Label("tab.dashboard".l10n, systemImage: "square.grid.2x2.fill") }
             ProxiesView()
@@ -219,12 +226,71 @@ struct ContentView: View {
         }
     }
 
+    /// Floating-style page container: FlClash's PageView in SwiftUI.
+    /// All four pages are mounted once and kept alive (FlClash
+    /// KeepScope), so switching never rebuilds a page; the selected
+    /// page slides in with a 0.3 s ease-out (FlClash kTabScrollDuration
+    /// = 300 ms, Curves.easeOut), and off-screen pages are disabled
+    /// (FlClash TickerMode / ExcludeFocus on inactive pages).
+    private var slidingTabView: some View {
+        GeometryReader { geo in
+            HStack(spacing: 0) {
+                DashboardView(onSelectTab: { selectTab($0) })
+                    .frame(width: geo.size.width)
+                    .disabled(selectedTab != .dashboard)
+                ProxiesView()
+                    .frame(width: geo.size.width)
+                    .disabled(selectedTab != .proxies)
+                ProfilesView()
+                    .frame(width: geo.size.width)
+                    .disabled(selectedTab != .profiles)
+                ToolsView()
+                    .frame(width: geo.size.width)
+                    .disabled(selectedTab != .tools)
+            }
+            .offset(x: -CGFloat(selectedTab.rawValue) * geo.size.width)
+        }
+        .clipped()
+    }
+
+    /// FlClash _HomePageView._toPage: animateToPage with a 300 ms
+    /// ease-out. A jump of more than one page first parks (no
+    /// animation) on the adjacent page so no intermediate page
+    /// flashes past, then slides to the target — the async hop lets
+    /// the parked frame paint before the slide starts.
+    private func selectTab(_ tab: AppTab) {
+        guard tab != selectedTab else { return }
+        if themeStore.navBarStyle == .docked {
+            selectedTab = tab
+            return
+        }
+        let distance = abs(tab.rawValue - selectedTab.rawValue)
+        if distance > 1 {
+            let adjacentRaw = tab.rawValue > selectedTab.rawValue
+                ? selectedTab.rawValue + 1
+                : selectedTab.rawValue - 1
+            let adjacent = AppTab(rawValue: adjacentRaw) ?? tab
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { selectedTab = adjacent }
+            DispatchQueue.main.async {
+                withAnimation(.easeOut(duration: 0.3)) {
+                    self.selectedTab = tab
+                }
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.3)) {
+                selectedTab = tab
+            }
+        }
+    }
+
     /// Floating white capsule bar (reference bottom bar): the selected
     /// tab gets a pale capsule behind a blue icon + label.
     private var floatingTabBar: some View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.self) { tab in
-                Button { selectedTab = tab } label: {
+                Button { selectTab(tab) } label: {
                     VStack(spacing: 3) {
                         Image(systemName: tab.icon)
                             .font(.system(size: 20, weight: .semibold))
@@ -233,12 +299,13 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 6)
-                    .background(
-                        selectedTab == tab
-                            ? ConcordTheme.tabSelectedFill
-                            : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 24)
-                    )
+                    .background {
+                        if selectedTab == tab {
+                            RoundedRectangle(cornerRadius: 24)
+                                .fill(ConcordTheme.tabSelectedFill)
+                                .matchedGeometryEffect(id: "tabPill", in: tabPillNamespace)
+                        }
+                    }
                     .foregroundStyle(selectedTab == tab ? ConcordTheme.accent : ConcordTheme.tabUnselected)
                 }
                 .buttonStyle(.plain)

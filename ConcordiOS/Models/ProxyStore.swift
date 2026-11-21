@@ -7,7 +7,13 @@ import Combine
 // ConcordClient; in `.live` mode they come from the real core.
 
 struct ProxyNode: Identifiable {
-    let id = UUID()
+    /// Stable identity: the core guarantees unique proxy names
+    /// within a profile, and the app already keys scrolling by name
+    /// (scrollID). The old `let id = UUID()` regenerated every id
+    /// on each refresh() (new structs from the core / local YAML),
+    /// so SwiftUI destroyed and rebuilt every row — and could lose
+    /// the scroll position — whenever the list reloaded.
+    var id: String { name }
     let name: String
     let type: String
     let provider: String?
@@ -15,7 +21,9 @@ struct ProxyNode: Identifiable {
 }
 
 struct ProxyGroup: Identifiable {
-    let id = UUID()
+    /// Same as ProxyNode.id: group names are unique within a
+    /// profile; a UUID here churned every row's identity on reload.
+    var id: String { name }
     let name: String
     let type: String
     var nodes: [ProxyNode]

@@ -30,6 +30,15 @@ struct LogsView: View {
     /// the VPN is off and the live list is empty.
     @State private var bootReport: String?
     @State private var delayReport: String?
+    /// Whether the user is currently at the bottom of each list
+    /// (upstream "following": logs.dart wires its auto-scroll
+    /// through a follow-mode list controller, so new rows only pull
+    /// the list down while it is already at the end). Without this,
+    /// every new entry yanked the list to the bottom even while the
+    /// user was reading older rows — the list fought the scroll.
+    /// Tracked by the last row's appear/disappear below.
+    @State private var followingLogs = true
+    @State private var followingEvents = true
 
     var body: some View {
         // No NavigationStack here on purpose: this page is pushed
@@ -138,11 +147,13 @@ struct LogsView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .id(entry.id)
+                                .onAppear { if entry.id == logStore.filtered.last?.id { followingLogs = true } }
+                                .onDisappear { if entry.id == logStore.filtered.last?.id { followingLogs = false } }
                             }
                             .listStyle(.insetGrouped)
                             .scrollContentBackground(.hidden)
                             .onChange(of: logStore.filtered.count) { _, _ in
-                                if logStore.autoScroll, let last = logStore.filtered.last {
+                                if logStore.autoScroll, followingLogs, let last = logStore.filtered.last {
                                     proxy.scrollTo(last.id, anchor: .bottom)
                                 }
                             }
@@ -196,11 +207,13 @@ struct LogsView: View {
                                     }
                                 }
                                 .id(entry.id)
+                                .onAppear { if entry.id == eventStore.filtered.last?.id { followingEvents = true } }
+                                .onDisappear { if entry.id == eventStore.filtered.last?.id { followingEvents = false } }
                             }
                             .listStyle(.insetGrouped)
                             .scrollContentBackground(.hidden)
                             .onChange(of: eventStore.filtered.count) { _, _ in
-                                if logStore.autoScroll, let last = eventStore.filtered.last {
+                                if logStore.autoScroll, followingEvents, let last = eventStore.filtered.last {
                                     proxy.scrollTo(last.id, anchor: .bottom)
                                 }
                             }

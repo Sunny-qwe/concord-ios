@@ -105,6 +105,10 @@ struct ProxiesView: View {
     /// Group identity is preserved (copies keep the same id), so the
     /// expanded/collapsed state and scroll ids survive a refresh.
     private var visibleGroups: [ProxyGroup] {
+        // Group names, once per pass: the hide-timeout filter and
+        // the delay sort both used to scan proxyStore.groups per
+        // node / per comparison (O(n) inside an O(n log n) sort).
+        let groupNames = Set(proxyStore.groups.map(\.name))
         var out: [ProxyGroup] = []
         for group in proxyStore.groups {
             var nodes = group.nodes
@@ -113,22 +117,22 @@ struct ProxiesView: View {
                 guard !nodes.isEmpty else { continue }
             }
             if styleStore.hideTimeout {
-                let kept = nodes.filter { keepWhenHidingTimeout($0, in: group) }
+                let kept = nodes.filter { keepWhenHidingTimeout($0, in: group, groupNames: groupNames) }
                 if !kept.isEmpty { nodes = kept }
             }
             var copy = group
-            copy.nodes = sortNodes(nodes)
+            copy.nodes = sortNodes(nodes, groupNames: groupNames)
             out.append(copy)
         }
         return out
     }
 
-    private func keepWhenHidingTimeout(_ node: ProxyNode, in group: ProxyGroup) -> Bool {
+    private func keepWhenHidingTimeout(_ node: ProxyNode, in group: ProxyGroup, groupNames: Set<String>) -> Bool {
         // The selected node, and nodes that are groups themselves,
         // are always kept — hiding them would take away the only way
         // to choose that group.
         if node.name == group.selectedNodeName { return true }
-        if proxyStore.groups.contains(where: { $0.name == node.name }) { return true }
+        if groupNames.contains(node.name) { return true }
         if Self.isUnprobeableType(node.type) { return true }
         guard let ms = node.latencyMs else { return true }
         return ms > 0
@@ -150,7 +154,7 @@ struct ProxiesView: View {
         return 3
     }
 
-    private func sortNodes(_ nodes: [ProxyNode]) -> [ProxyNode] {
+    private func sortNodes(_ nodes: [ProxyNode], groupNames: Set<String>) -> [ProxyNode] {
         switch styleStore.sort {
         case .default: return nodes
         case .delay: return nodes.sorted { a, b in
@@ -159,8 +163,8 @@ struct ProxiesView: View {
             let da = a.latencyMs ?? 0, db = b.latencyMs ?? 0
             if da != db { return da < db }
             // Ties: nested groups first (FlClash DelayState.compareTo).
-            let aIsGroup = proxyStore.groups.contains { $0.name == a.name }
-            let bIsGroup = proxyStore.groups.contains { $0.name == b.name }
+            let aIsGroup = groupNames.contains(a.name)
+            let bIsGroup = groupNames.contains(b.name)
             if aIsGroup != bIsGroup { return aIsGroup }
             return false
         }
@@ -863,58 +867,21 @@ struct ProxiesView: View {
     }
 
     private func nodeCard(_ node: ProxyNode, in group: ProxyGroup) -> some View {
-        let pinned = group.fixed == node.name
-        let selected = group.selectedNodeName == node.name
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 4) {
-                Text(node.name)
-                    .font(.footnote)
-                    .fontWeight(.semibold)
-                    .lineLimit(styleStore.cardType == .compact ? 1 : 2)
-                Spacer()
-                if pinned {
-                    Image(systemName: "pin.fill")
-                        .font(.caption2)
-                        .foregroundStyle(selected ? ConcordTheme.accent : .secondary)
-                } else if selected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.blue)
-                }
-            }
-            if styleStore.cardType == .loose {
-                HStack(spacing: 4) {
-                    iconSetStore.icon(for: node.type)
-                    Text(nodeDescription(node))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Button { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } } label: {
-                    DelayText(latencyMs: node.latencyMs, testing: proxyStore.testingNodes.contains(node.name))
-                }
-                .buttonStyle(.plain)
-            } else {
-                HStack {
-                    iconSetStore.icon(for: node.type)
-                    Text(node.type)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    Button { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } } label: {
-                        DelayText(latencyMs: node.latencyMs, testing: proxyStore.testingNodes.contains(node.name))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: cardHeight, alignment: .top)
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-        .shadow(color: ConcordTheme.cardShadow, radius: 8, x: 0, y: 2)
-        .contentShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        ProxyNodeCard(
+            name: node.name,
+            type: node.type,
+            description: nodeDescription(node),
+            latencyMs: node.latencyMs,
+            testing: proxyStore.testingNodes.contains(node.name),
+            pinned: group.fixed == node.name,
+            selected: group.selectedNodeName == node.name,
+            cardType: styleStore.cardType,
+            cardHeight: cardHeight,
+            iconSymbol: iconSetStore.symbol(for: node.type),
+            iconColor: iconSetStore.color(for: node.type),
+            onTest: { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } }
+        )
+        .equatable()
         .onTapGesture { Task { await selectNode(node, in: group) } }
         .contextMenu { nodeMenu(node, in: group) }
     }
@@ -1054,6 +1021,108 @@ struct ProxiesView: View {
         } catch {
             showNotice("加入失败：\(error.localizedDescription)")
         }
+    }
+}
+
+/// One proxy card as its own view, fed only by plain values.
+/// The old nodeCard(_:in:) was a function on ProxiesView, so every
+/// @Published change in ProxyStore — each delay-test result landing,
+/// each testing-flag flip — rebuilt every visible card's body while
+/// the user scrolled. As an Equatable struct with narrow inputs,
+/// SwiftUI skips a row whose own values did not change, so a
+/// latency landing on one node no longer re-renders the other 40+
+/// cards. The card also drops its .shadow: upstream FlClash's Card
+/// has no drop shadow (prism_ui Card / PressSurface: fill + shape
+/// only, elevation 0), and in SwiftUI a shadow costs an offscreen
+/// render pass per card — the classic scrolling-jank source in a
+/// grid of cards. The fill, corner radius, text and layout are
+/// unchanged; the shadow was 5% black and is visually negligible.
+private struct ProxyNodeCard: View, Equatable {
+    let name: String
+    let type: String
+    /// Precomputed description: loose cards show "type(selected)",
+    /// other sizes show the plain type (see nodeDescription).
+    let description: String
+    let latencyMs: Int32?
+    let testing: Bool
+    let pinned: Bool
+    let selected: Bool
+    let cardType: ProxyStyleStore.CardType
+    let cardHeight: CGFloat
+    let iconSymbol: String
+    let iconColor: Color
+    let onTest: () -> Void
+
+    // Closures are not Equatable: compare everything else, and
+    // treat the test action as always equal (it only fires on tap).
+    static func == (lhs: ProxyNodeCard, rhs: ProxyNodeCard) -> Bool {
+        lhs.name == rhs.name
+            && lhs.type == rhs.type
+            && lhs.description == rhs.description
+            && lhs.latencyMs == rhs.latencyMs
+            && lhs.testing == rhs.testing
+            && lhs.pinned == rhs.pinned
+            && lhs.selected == rhs.selected
+            && lhs.cardType == rhs.cardType
+            && lhs.cardHeight == rhs.cardHeight
+            && lhs.iconSymbol == rhs.iconSymbol
+            && lhs.iconColor == rhs.iconColor
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 4) {
+                Text(name)
+                    .font(.footnote)
+                    .fontWeight(.semibold)
+                    .lineLimit(cardType == .compact ? 1 : 2)
+                Spacer()
+                if pinned {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(selected ? ConcordTheme.accent : .secondary)
+                } else if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.blue)
+                }
+            }
+            if cardType == .loose {
+                HStack(spacing: 4) {
+                    Image(systemName: iconSymbol)
+                        .font(.system(size: 10))
+                        .foregroundStyle(iconColor)
+                    Text(description)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Button(action: onTest) {
+                    DelayText(latencyMs: latencyMs, testing: testing)
+                }
+                .buttonStyle(.plain)
+            } else {
+                HStack {
+                    Image(systemName: iconSymbol)
+                        .font(.system(size: 10))
+                        .foregroundStyle(iconColor)
+                    Text(type)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button(action: onTest) {
+                        DelayText(latencyMs: latencyMs, testing: testing)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: cardHeight, alignment: .top)
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .contentShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
     }
 }
 

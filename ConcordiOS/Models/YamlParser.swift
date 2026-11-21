@@ -75,7 +75,7 @@ enum YamlParser {
                 if raw.prefix(leadCount).contains("\t") {
                     throw YamlParserError(line: num, message: "缩进不能使用 Tab，请改用空格")
                 }
-                let content = Self.stripComment(raw)
+                let content = YamlParser.stripComment(raw)
                 if content.trimmingCharacters(in: .whitespaces).isEmpty { continue }
                 let indent = content.prefix(while: { $0 == " " }).count
                 let body = String(content.dropFirst(indent))
@@ -116,8 +116,8 @@ enum YamlParser {
 
         private mutating func parseBlock(_ indent: Int) throws -> JSONValue {
             guard let ln = peek() else { return .null }
-            if Self.isSequenceItem(ln.text) { return try parseSequence(indent) }
-            if Self.isMappingEntry(ln.text) { return try parseMapping(indent) }
+            if YamlParser.isSequenceItem(ln.text) { return try parseSequence(indent) }
+            if YamlParser.isMappingEntry(ln.text) { return try parseMapping(indent) }
             // 孤立的标量文档
             index += 1
             return try parseInlineValue(ln.text, indent: indent, line: ln.num)
@@ -128,10 +128,10 @@ enum YamlParser {
             var merged: [String: JSONValue] = [:]
             var seen: Set<String> = []
             while let ln = peek(), ln.indent == indent {
-                guard Self.isMappingEntry(ln.text) else {
+                guard YamlParser.isMappingEntry(ln.text) else {
                     throw YamlParserError(line: ln.num, message: "此处应为 key: value，实际是：\(String(ln.text.prefix(40)))")
                 }
-                let (key, rest) = try Self.splitKey(ln.text, line: ln.num)
+                let (key, rest) = try YamlParser.splitKey(ln.text, line: ln.num)
                 index += 1
                 let value = try parseValueAfterKey(rest, indent: indent, line: ln.num)
                 if key == "<<" {
@@ -163,7 +163,7 @@ enum YamlParser {
         private mutating func parseSequence(_ indent: Int) throws -> JSONValue {
             var out: [JSONValue] = []
             while let ln = peek(), ln.indent == indent {
-                guard Self.isSequenceItem(ln.text) else {
+                guard YamlParser.isSequenceItem(ln.text) else {
                     throw YamlParserError(line: ln.num, message: "此处应为 - 列表项，实际是：\(String(ln.text.prefix(40)))")
                 }
                 let body = String(ln.text.dropFirst().drop(while: { $0 == " " }))
@@ -178,9 +178,9 @@ enum YamlParser {
                 }
                 // 把当前行改写为 indent+2 的虚拟行，再按映射/序列/标量递归
                 lines[index] = Line(indent: indent + 2, text: body, num: ln.num)
-                if Self.isSequenceItem(body) {
+                if YamlParser.isSequenceItem(body) {
                     out.append(try parseSequence(indent + 2))
-                } else if Self.isMappingEntry(body) {
+                } else if YamlParser.isMappingEntry(body) {
                     out.append(try parseMapping(indent + 2))
                 } else {
                     index += 1
@@ -196,7 +196,7 @@ enum YamlParser {
             if rest.isEmpty {
                 guard let nxt = peek() else { return .null }
                 if nxt.indent > indent { return try parseBlock(nxt.indent) }
-                if nxt.indent == indent && Self.isSequenceItem(nxt.text) {
+                if nxt.indent == indent && YamlParser.isSequenceItem(nxt.text) {
                     return try parseSequence(indent)
                 }
                 return .null
@@ -205,7 +205,7 @@ enum YamlParser {
         }
 
         private mutating func parseInlineValue(_ text: String, indent: Int, line: Int) throws -> JSONValue {
-            let stripped = Self.stripComment(text).trimmingCharacters(in: .whitespaces)
+            let stripped = YamlParser.stripComment(text).trimmingCharacters(in: .whitespaces)
             guard !stripped.isEmpty else { return .null }
             if stripped.hasPrefix("!") {
                 let tag = stripped.split(separator: " ", maxSplits: 1).first.map(String.init) ?? stripped
@@ -251,11 +251,11 @@ enum YamlParser {
                         var pos = 0
                         let value: String
                         if acc.hasPrefix("\"") {
-                            value = try Self.parseDoubleQuoted(chars, pos: &pos, line: line)
+                            value = try YamlParser.parseDoubleQuoted(chars, pos: &pos, line: line)
                         } else {
-                            value = try Self.parseSingleQuoted(chars, pos: &pos, line: line)
+                            value = try YamlParser.parseSingleQuoted(chars, pos: &pos, line: line)
                         }
-                        let rest = Self.stripComment(String(chars[pos...])).trimmingCharacters(in: .whitespaces)
+                        let rest = YamlParser.stripComment(String(chars[pos...])).trimmingCharacters(in: .whitespaces)
                         if !rest.isEmpty {
                             throw YamlParserError(line: line, message: "引用字符串后有多余内容：\(String(rest.prefix(30)))")
                         }
@@ -270,9 +270,9 @@ enum YamlParser {
                 }
             }
             // plain 标量；后续更深缩进的行是它的续行（按 YAML 规则以空格连接）
-            var value = Self.resolveScalar(stripped, line: line)
+            var value = YamlParser.resolveScalar(stripped, line: line)
             while let nxt = peek(), nxt.indent > indent {
-                let cont = Self.stripComment(nxt.text).trimmingCharacters(in: .whitespaces)
+                let cont = YamlParser.stripComment(nxt.text).trimmingCharacters(in: .whitespaces)
                 index += 1
                 guard !cont.isEmpty else { continue }
                 switch value {
@@ -294,7 +294,7 @@ enum YamlParser {
                     let value = try flowValue(chars, pos: &pos, line: line)
                     flowSkipWhitespace(chars, pos: &pos)
                     if pos < chars.count {
-                        let rest = Self.stripComment(String(chars[pos...])).trimmingCharacters(in: .whitespaces)
+                        let rest = YamlParser.stripComment(String(chars[pos...])).trimmingCharacters(in: .whitespaces)
                         if !rest.isEmpty {
                             throw YamlParserError(line: line, message: "流式值后有多余内容：\(String(rest.prefix(30)))")
                         }
@@ -397,9 +397,9 @@ enum YamlParser {
             case "[":
                 return try flowSequence(chars, pos: &pos, line: line)
             case "\"":
-                return .string(try Self.parseDoubleQuoted(chars, pos: &pos, line: line))
+                return .string(try YamlParser.parseDoubleQuoted(chars, pos: &pos, line: line))
             case "'":
-                return .string(try Self.parseSingleQuoted(chars, pos: &pos, line: line))
+                return .string(try YamlParser.parseSingleQuoted(chars, pos: &pos, line: line))
             case "&":
                 pos += 1
                 let start = pos
@@ -448,9 +448,9 @@ enum YamlParser {
                     key = keyValue.displayString
                 } else if kc == "\"" || kc == "'" {
                     if kc == "\"" {
-                        key = try Self.parseDoubleQuoted(chars, pos: &pos, line: line)
+                        key = try YamlParser.parseDoubleQuoted(chars, pos: &pos, line: line)
                     } else {
-                        key = try Self.parseSingleQuoted(chars, pos: &pos, line: line)
+                        key = try YamlParser.parseSingleQuoted(chars, pos: &pos, line: line)
                     }
                 } else {
                     let rawKey = flowPlainScalar(chars, pos: &pos, line: line)
@@ -531,7 +531,7 @@ enum YamlParser {
                 // 调用方只在确定有值时调用；空值由调用方处理，这里返回 null
                 return .null
             }
-            return Self.resolveScalar(raw, line: line)
+            return YamlParser.resolveScalar(raw, line: line)
         }
 
         private func flowSkipWhitespace(_ chars: [Character], pos: inout Int) {

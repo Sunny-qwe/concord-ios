@@ -57,15 +57,17 @@ struct IPQualityInfo: Codable {
     let qualityType: IpQualityType?
     /// Defaults on the declarations (not just the init): the
     /// synthesized Decodable falls back to them when an old cache
-    /// or an ip-api.com answer carries no quality keys.
-    let isProxy: Bool = false
-    let isVpn: Bool = false
-    let isTor: Bool = false
-    let isAbuser: Bool = false
+    /// or an ip-api.com answer carries no quality keys. `var`
+    /// (not `let`): the memberwise init below also assigns them,
+    /// and a `let` with a default may only be initialized once.
+    var isProxy: Bool = false
+    var isVpn: Bool = false
+    var isTor: Bool = false
+    var isAbuser: Bool = false
     /// The type was inferred (a source silent about hosting/mobile
     /// reads as residential) — upstream keeps such an answer only
     /// as a fallback while a stated type is still awaited.
-    let typeInferred: Bool = false
+    var typeInferred: Bool = false
 
     /// ip-api.com calls the ASN field `as`, not `asn` — without
     /// this mapping `asn` never decoded and the page always showed

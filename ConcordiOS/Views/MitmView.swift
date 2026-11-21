@@ -664,7 +664,13 @@ final class MitmExchangeMenuModel: ObservableObject {
             UIPasteboard.general.string = summary.url
             notice = MitmMenuNotice(text: "已复制链接")
         case .copyCurl, .copyRequest, .copyResponse, .copyResponseBody, .exportHar:
-            guard let full = detail ?? (try? await client.mitmExchange(id: summary.exchangeId).result.decoded(as: MitmExchangeDetail.self)) else {
+            let resolvedDetail: MitmExchangeDetail?
+            if let detail {
+                resolvedDetail = detail
+            } else {
+                resolvedDetail = try? await client.mitmExchange(id: summary.exchangeId).result.decoded(as: MitmExchangeDetail.self)
+            }
+            guard let full = resolvedDetail else {
                 notice = MitmMenuNotice(text: "读取详情失败：这条请求的记录已清除")
                 return
             }
@@ -705,7 +711,13 @@ final class MitmExchangeMenuModel: ObservableObject {
                 break
             }
         case .addRejectRule(let target), .addMapLocalRule(let target):
-            guard let full = detail ?? (try? await client.mitmExchange(id: summary.exchangeId).result.decoded(as: MitmExchangeDetail.self)) else {
+            let resolvedDetail: MitmExchangeDetail?
+            if let detail {
+                resolvedDetail = detail
+            } else {
+                resolvedDetail = try? await client.mitmExchange(id: summary.exchangeId).result.decoded(as: MitmExchangeDetail.self)
+            }
+            guard let full = resolvedDetail else {
                 notice = MitmMenuNotice(text: "读取详情失败：这条请求的记录已清除")
                 return
             }
@@ -832,10 +844,16 @@ extension View {
             } message: { notice in
                 Text(notice.text)
             }
-            .sheet(item: $model.shareFile) { file in
+            .sheet(item: Binding(
+                get: { model.shareFile },
+                set: { model.shareFile = $0 }
+            )) { file in
                 ShareSheet(items: [file.url])
             }
-            .sheet(item: $model.ruleEditor) { request in
+            .sheet(item: Binding(
+                get: { model.ruleEditor },
+                set: { model.ruleEditor = $0 }
+            )) { request in
                 MitmModuleTextEditorView(module: request.module, initialText: request.initialText, onSaved: { saved in
                     if let saved, let name = request.attachmentName, let data = request.attachmentData {
                         Task { await moduleStore.attachFile(saved, fileName: name, data: data) }

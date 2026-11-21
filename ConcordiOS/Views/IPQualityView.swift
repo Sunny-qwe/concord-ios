@@ -498,7 +498,7 @@ struct IPQualityView: View {
         var inFlight = 0
         var fallback: (IPQualityInfo, String)?
         var failures: [IPQualityFailure] = []
-        let answer = await withTaskGroup(of: WaveOutcome.self) { group in
+        let answer = await withTaskGroup(of: WaveOutcome.self, returning: (IPQualityInfo, String)?.self) { group in
             func addWave(_ index: Int) {
                 launchedWave = index
                 for source in Self.waves[index] {

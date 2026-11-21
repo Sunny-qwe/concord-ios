@@ -4375,7 +4375,6 @@ enum MitmModuleParser {
         let lines = text.components(separatedBy: .newlines)
         func isHeader(_ line: String, _ name: String? = nil) -> Bool {
             guard let title = RX.match(sectionPattern, line.trimmingCharacters(in: .whitespaces))?[1] else { return false }
-            guard let title else { return false }
             if let name { return title.trimmingCharacters(in: .whitespaces).lowercased() == name.lowercased() }
             return true
         }

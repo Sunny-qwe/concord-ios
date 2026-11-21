@@ -50,8 +50,8 @@ struct DashboardView: View {
     @AppStorage("ConcordiOS.dashboard.show.memory") private var showMemory = true
     @AppStorage("ConcordiOS.dashboard.show.update") private var showUpdate = true
     /// Traffic statistics card (MuYu TrafficStatisticsCard, D-M8):
-    /// today's up/down + uptime. Week/month ranges are not recorded
-    /// yet — the detail sheet says so honestly.
+    /// today's up/down + uptime, plus week/month totals from the
+    /// daily history TrafficStore records since v0.2.55.
     @AppStorage("ConcordiOS.dashboard.show.traffic") private var showTraffic = true
     /// Compact density (FlClash layout.dart DashboardDensity.compact):
     /// smaller type, smaller start button and tiles, subtitles dropped.
@@ -192,6 +192,19 @@ struct DashboardView: View {
     private var uptimeText: String {
         guard let started = tunnelStartedAt else { return "—" }
         return ConcordFormat.duration(seconds: max(0, Int64(Date().timeIntervalSince(started))))
+    }
+
+    /// Week/month totals for the traffic card (combined up + down).
+    /// "暂无数据" while no day has been recorded yet (history starts
+    /// with v0.2.55 — pre-upgrade traffic is not invented).
+    private var weekTrafficText: String {
+        guard trafficStore.weekRecordedDays > 0 else { return "暂无数据" }
+        return ConcordFormat.bytes(trafficStore.weekUp + trafficStore.weekDown)
+    }
+
+    private var monthTrafficText: String {
+        guard trafficStore.monthRecordedDays > 0 else { return "暂无数据" }
+        return ConcordFormat.bytes(trafficStore.monthUp + trafficStore.monthDown)
     }
 
     private func service(named name: String) -> ConcordServiceItem? {
@@ -598,6 +611,12 @@ struct DashboardView: View {
             TrafficStatsDetailSheet(
                 todayUp: trafficStore.todayUp,
                 todayDown: trafficStore.todayDown,
+                weekUp: trafficStore.weekUp,
+                weekDown: trafficStore.weekDown,
+                weekRecordedDays: trafficStore.weekRecordedDays,
+                monthUp: trafficStore.monthUp,
+                monthDown: trafficStore.monthDown,
+                monthRecordedDays: trafficStore.monthRecordedDays,
                 totalUp: trafficStore.current.totalUp,
                 totalDown: trafficStore.current.totalDown,
                 uptimeText: uptimeText
@@ -1124,9 +1143,10 @@ struct DashboardView: View {
     //
     // Today's up/down come from TrafficStore's day-start baseline
     // (cumulative core totals minus the midnight baseline); uptime
-    // is the tunnel start time. Week/month ranges need persisted
-    // history the app does not record yet — the detail sheet says
-    // so instead of inventing numbers.
+    // is the tunnel start time. Week/month totals come from the
+    // daily history TrafficStore records since v0.2.55 (rolling
+    // last 7 days incl. today / current calendar month); ranges
+    // with no recorded day show "暂无数据", never invented numbers.
 
     private var trafficCard: some View {
         Button { showTrafficDetail = true } label: {
@@ -1142,6 +1162,10 @@ struct DashboardView: View {
                     trafficStatCell(value: ConcordFormat.bytes(trafficStore.todayUp), label: "今日上传")
                     trafficStatCell(value: ConcordFormat.bytes(trafficStore.todayDown), label: "今日下载")
                     trafficStatCell(value: uptimeText, label: "运行时间")
+                }
+                HStack(spacing: 0) {
+                    trafficStatCell(value: weekTrafficText, label: "本周流量")
+                    trafficStatCell(value: monthTrafficText, label: "本月流量")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2154,13 +2178,21 @@ private struct ServiceManageSheet: View {
     }
 }
 
-/// Traffic statistics detail sheet (D-M8): today's figures plus
-/// the cumulative totals since the core started. Week/month
-/// ranges are honestly unavailable — the app records no
-/// persisted traffic history yet.
+/// Traffic statistics detail sheet (D-M8): today's figures, the
+/// week/month totals from the daily history recorded since v0.2.55
+/// (rolling last 7 days incl. today / current calendar month), plus
+/// the cumulative totals since the core started. Days with no
+/// recorded history contribute zero and are labelled as such —
+/// pre-upgrade traffic was never recorded and is not invented.
 private struct TrafficStatsDetailSheet: View {
     let todayUp: Int64
     let todayDown: Int64
+    let weekUp: Int64
+    let weekDown: Int64
+    let weekRecordedDays: Int
+    let monthUp: Int64
+    let monthDown: Int64
+    let monthRecordedDays: Int
     let totalUp: Int64
     let totalDown: Int64
     let uptimeText: String
@@ -2178,12 +2210,38 @@ private struct TrafficStatsDetailSheet: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                Section("本周（近 7 天，含今日）") {
+                    LabeledContent("本周上传", value: ConcordFormat.bytes(weekUp))
+                    LabeledContent("本周下载", value: ConcordFormat.bytes(weekDown))
+                    if weekRecordedDays > 0 {
+                        Text("近 7 天中有 \(weekRecordedDays) 天有记录；没有记录的日子按 0 计。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("暂无记录。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section("本月") {
+                    LabeledContent("本月上传", value: ConcordFormat.bytes(monthUp))
+                    LabeledContent("本月下载", value: ConcordFormat.bytes(monthDown))
+                    if monthRecordedDays > 0 {
+                        Text("本月有 \(monthRecordedDays) 天有记录；没有记录的日子按 0 计。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("暂无记录。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Section("累计（核心启动以来）") {
                     LabeledContent("累计上传", value: ConcordFormat.bytes(totalUp))
                     LabeledContent("累计下载", value: ConcordFormat.bytes(totalDown))
                 }
                 Section {
-                    Text("周 / 月统计暂不支持：需要持续记录每日流量历史，当前版本只保存今日基线。")
+                    Text("自 v0.2.55 起记录每日流量；升级前的数据没有记录，不计入统计。每天结束时保存一次当日总流量。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

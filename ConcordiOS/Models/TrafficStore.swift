@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 // MARK: - Traffic store (FlClash: Dashboard network-speed card + traffic)
 // Backed by Concord traffic.watch (stream) / traffic.reset and
@@ -131,6 +132,336 @@ final class TrafficStore: ObservableObject {
         guard UserDefaults.standard.string(forKey: Self.todayDateKey) == Self.todayString() else { return 0 }
         return max(0, current.totalDown - Int64(UserDefaults.standard.integer(forKey: Self.todayDownKey)))
     }
+
+    // MARK: - Daily traffic history (v0.2.55)
+    //
+    // Daily totals recorded from v0.2.55 on; days before the upgrade
+    // have no entry and are never invented — the UI shows "暂无数据"
+    // for ranges with no recorded day. "本周" is the rolling last 7
+    // days including today (not the locale calendar week, so no
+    // week-start rule is needed); "本月" is the current calendar
+    // month. Both derive from the same cumulative core counters
+    // (current.totalUp / totalDown) as todayUp / todayDown — there
+    // is no second source of truth.
+    //
+    // HOW A DAY IS RECORDED — one value per date, never a sum of
+    // snapshots, so a second write of the same day can only
+    // overwrite with the same total, never double-count:
+    //
+    // * While the app runs, the 1 s tick keeps an in-memory
+    //   accumulator for the current day: each tick adds
+    //   max(0, current total − last-seen total) to it. A negative
+    //   delta means the core restarted or traffic.reset ran, so the
+    //   counters re-based; the negative delta is dropped (never a
+    //   negative day) and the new total becomes the base. Traffic
+    //   before a mid-day core restart therefore stays in the day's
+    //   total, unlike the day-start baseline behind todayUp, which
+    //   re-calibrates and restarts from zero — after such a restart
+    //   the week/month today figure is the more complete one,
+    //   while 今日 keeps its existing baseline behaviour.
+    //   (A baseline-difference snapshot at rollover was considered
+    //   and rejected: at the first tick after midnight the current
+    //   totals already include the new day's traffic so far, so
+    //   when the app was backgrounded overnight that traffic would
+    //   be wrongly attributed to yesterday.)
+    // * At day rollover the accumulator for the finished day is
+    //   written as the day's final total (partial: false) before
+    //   the accumulator resets for the new day.
+    // * On backgrounding (and best-effort on termination) the
+    //   in-progress day is written as a provisional total
+    //   (partial: true). A later rollover or backgrounding
+    //   overwrites the same date with the newer total — never adds
+    //   to it.
+    // * On launch the accumulator is seeded once from today's
+    //   provisional entry, if one exists, so a same-day restart
+    //   continues the day instead of losing what was recorded
+    //   before it.
+    //
+    // THE FOUR RESTART CASES:
+    // (1) Restart on the same day: the accumulator is rebuilt from
+    //     today's provisional snapshot (written at the last
+    //     backgrounding) and keeps adding deltas on top of it; the
+    //     day is finalised once, at rollover.
+    // (2) Restart after midnight without having run at rollover:
+    //     the finished day keeps only its last provisional
+    //     snapshot (traffic between the last backgrounding and
+    //     midnight was never observed, so it is not invented); the
+    //     new day starts from zero. Days the app never ran on get
+    //     no entry at all.
+    // (3) Core restart / counters reset to zero mid-day: the
+    //     negative delta is dropped, the accumulator keeps what it
+    //     had, and the new (lower) total becomes the base — the day
+    //     can never go negative or count the same bytes twice.
+    // (4) Clock / timezone change: every day is the device's local
+    //     calendar day (todayString(), same as the today baseline).
+    //     A jump to a new date finalises the old day from the
+    //     accumulator first; a final entry is never overwritten by
+    //     a later snapshot, so a clock moved backwards cannot
+    //     corrupt a finished day.
+    //
+    // LIMIT: the app can only observe traffic while it runs. Traffic
+    // that flows while the app is suspended (VPN on, app
+    // backgrounded) is not observed; the day's total then covers
+    // only the observed part. That is honest under-counting, not
+    // invented data.
+
+    /// One recorded day: bytes moved that day. `partial` is true for
+    /// a provisional snapshot of an in-progress day (written on
+    /// backgrounding); a rollover writes the same date again with
+    /// partial false, overwriting the provisional value.
+    struct DailyTraffic: Codable {
+        let up: Int64
+        let down: Int64
+        let partial: Bool
+    }
+
+    private static let dailyHistoryFileName = "daily-history-v1.json"
+    private static let dailyHistoryDefaultsKey = "ConcordiOS.traffic.dailyHistory.v1"
+    /// History is kept small and bounded: entries older than this
+    /// are pruned on load and on every save.
+    private static let dailyHistoryRetentionDays = 62
+
+    /// Persisted daily history, keyed by local date ("yyyy-MM-dd").
+    /// @Published so views reading week/month totals re-render when
+    /// a day is finalised or snapshotted (the 1 s tick re-renders
+    /// the dashboard anyway; this is the correct observation
+    /// channel).
+    @Published private(set) var dailyHistory: [String: DailyTraffic] = [:]
+
+    /// Last-seen cumulative core totals behind the accumulator, and
+    /// the current day's accumulated deltas. Nil until the first
+    /// tick of this process (see maintainDailyHistory's seeding
+    /// branch).
+    private var lastSeenUp: Int64?
+    private var lastSeenDown: Int64?
+    private var accumUp: Int64 = 0
+    private var accumDown: Int64 = 0
+    private var accumDate: String?
+    private var accumulatorSeeded = false
+
+    /// The App Group file for the history (same container the
+    /// engine snapshots live in). Falls back to a UserDefaults copy
+    /// when the container is unavailable.
+    private var dailyHistoryFileURL: URL? {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)?
+            .appendingPathComponent("traffic")
+            .appendingPathComponent(Self.dailyHistoryFileName)
+    }
+
+    private struct DailyHistoryFile: Codable {
+        var days: [String: DailyTraffic]
+    }
+
+    private func loadDailyHistory() {
+        var loaded: [String: DailyTraffic] = [:]
+        if let url = dailyHistoryFileURL,
+           let data = try? Data(contentsOf: url),
+           let file = try? JSONDecoder().decode(DailyHistoryFile.self, from: data) {
+            loaded = file.days
+        } else if let data = UserDefaults.standard.data(forKey: Self.dailyHistoryDefaultsKey),
+                  let file = try? JSONDecoder().decode(DailyHistoryFile.self, from: data) {
+            loaded = file.days
+        }
+        dailyHistory = Self.pruned(loaded)
+    }
+
+    private func saveDailyHistory() {
+        let pruned = Self.pruned(dailyHistory)
+        dailyHistory = pruned
+        guard let data = try? JSONEncoder().encode(DailyHistoryFile(days: pruned)) else { return }
+        if let url = dailyHistoryFileURL {
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: url, options: .atomic)
+                return
+            } catch {
+                // Fall through to the UserDefaults copy below.
+            }
+        }
+        UserDefaults.standard.set(data, forKey: Self.dailyHistoryDefaultsKey)
+    }
+
+    private static func pruned(_ days: [String: DailyTraffic]) -> [String: DailyTraffic] {
+        // "yyyy-MM-dd" sorts lexicographically, so a plain string
+        // comparison against the cutoff date is a date comparison.
+        let cutoff = Self.pruneCutoffString()
+        return days.filter { $0.key >= cutoff }
+    }
+
+    private static func pruneCutoffString() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let cutoff = Calendar.current.date(
+            byAdding: .day, value: -dailyHistoryRetentionDays, to: Date()) ?? Date()
+        return formatter.string(from: cutoff)
+    }
+
+    /// Advances the daily-history accumulator from the same
+    /// cumulative counters behind todayUp/todayDown. Runs on the
+    /// 1 s tick, after `current` is refreshed.
+    private func maintainDailyHistory() {
+        let today = Self.todayString()
+        // First tick of this process: seed the accumulator. A
+        // provisional snapshot of today from an earlier backgrounding
+        // carries the traffic recorded before a same-day restart, so
+        // the day is continued, not restarted (case 1).
+        if !accumulatorSeeded {
+            accumulatorSeeded = true
+            accumDate = today
+            accumUp = 0
+            accumDown = 0
+            if let partial = dailyHistory[today], partial.partial {
+                accumUp = partial.up
+                accumDown = partial.down
+            }
+            lastSeenUp = current.totalUp
+            lastSeenDown = current.totalDown
+            return
+        }
+        guard let previousDate = accumDate else { return }
+        if previousDate != today {
+            // Day rollover (or a clock/timezone jump to a new local
+            // date): finalise the finished day from the accumulator
+            // before resetting it. A final entry is never overwritten
+            // (case 4: the clock moved backwards onto a finished day).
+            if dailyHistory[previousDate]?.partial != false {
+                finalizeDay(previousDate, up: accumUp, down: accumDown)
+            }
+            accumDate = today
+            accumUp = 0
+            accumDown = 0
+            if let partial = dailyHistory[today], partial.partial {
+                accumUp = partial.up
+                accumDown = partial.down
+            }
+            lastSeenUp = current.totalUp
+            lastSeenDown = current.totalDown
+            return
+        }
+        // Same day: add the tick's deltas. A negative delta means the
+        // core restarted or traffic.reset ran — the counters re-based,
+        // so it is dropped and the new total becomes the base (case 3:
+        // never a negative day, never the same bytes twice).
+        if let seenUp = lastSeenUp {
+            let deltaUp = current.totalUp - seenUp
+            if deltaUp > 0 { accumUp += deltaUp }
+        }
+        if let seenDown = lastSeenDown {
+            let deltaDown = current.totalDown - seenDown
+            if deltaDown > 0 { accumDown += deltaDown }
+        }
+        lastSeenUp = current.totalUp
+        lastSeenDown = current.totalDown
+    }
+
+    /// Writes a day's final total, keyed by date. Idempotent:
+    /// writing the same date again overwrites with the same value,
+    /// never adds. A final entry is never overwritten by a
+    /// provisional snapshot.
+    private func finalizeDay(_ date: String, up: Int64, down: Int64) {
+        if dailyHistory[date]?.partial == false { return }
+        dailyHistory[date] = DailyTraffic(up: max(0, up), down: max(0, down), partial: false)
+        saveDailyHistory()
+    }
+
+    /// Best-effort snapshot of the in-progress day, called when the
+    /// app backgrounds (and on termination). The value is
+    /// provisional: a later rollover or backgrounding overwrites
+    /// the same date with the newer total, never adds to it.
+    func snapshotCurrentDayPartial() {
+        guard let date = accumDate, date == Self.todayString() else { return }
+        if dailyHistory[date]?.partial == false { return }
+        dailyHistory[date] = DailyTraffic(up: max(0, accumUp), down: max(0, accumDown), partial: true)
+        saveDailyHistory()
+    }
+
+    /// Today's accumulated traffic so far (the live contribution of
+    /// today to the week/month totals). Unlike todayUp/todayDown it
+    /// survives a mid-day core restart — see the history notes above.
+    var todayAccumulatedUp: Int64 { accumUp }
+    var todayAccumulatedDown: Int64 { accumDown }
+
+    /// Rolling last 7 days including today (see the history notes
+    /// above for why rolling, not the calendar week).
+    var weekUp: Int64 { totalsForLastDays(7).up }
+    var weekDown: Int64 { totalsForLastDays(7).down }
+    /// Days in the rolling 7-day window with a recorded total (a
+    /// history entry, or today with traffic so far). Zero means
+    /// nothing has been recorded yet — the UI shows "暂无数据".
+    var weekRecordedDays: Int { totalsForLastDays(7).recordedDays }
+
+    /// Current calendar month (1st through today).
+    var monthUp: Int64 { totalsForCurrentMonth().up }
+    var monthDown: Int64 { totalsForCurrentMonth().down }
+    var monthRecordedDays: Int { totalsForCurrentMonth().recordedDays }
+
+    private func totalsForLastDays(_ count: Int) -> (up: Int64, down: Int64, recordedDays: Int) {
+        totals(for: Self.dayStrings(count: count))
+    }
+
+    private func totalsForCurrentMonth() -> (up: Int64, down: Int64, recordedDays: Int) {
+        totals(for: Self.currentMonthDayStrings())
+    }
+
+    /// Sums the given local dates. Today always contributes the live
+    /// accumulator — never a stored entry for today, so a stale
+    /// provisional snapshot can neither double-count nor go stale
+    /// after a same-day restart or a totals reset. Past days
+    /// contribute their stored final (or provisional) total; days
+    /// with no entry contribute zero.
+    private func totals(for dates: [String]) -> (up: Int64, down: Int64, recordedDays: Int) {
+        var up: Int64 = 0
+        var down: Int64 = 0
+        var recorded = 0
+        let today = Self.todayString()
+        for date in dates {
+            if date == today {
+                up += accumUp
+                down += accumDown
+                if accumUp > 0 || accumDown > 0 || dailyHistory[today] != nil {
+                    recorded += 1
+                }
+            } else if let day = dailyHistory[date] {
+                up += day.up
+                down += day.down
+                recorded += 1
+            }
+        }
+        return (up, down, recorded)
+    }
+
+    private static func dayStrings(count: Int) -> [String] {
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        var result: [String] = []
+        for offset in 0..<count {
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: Date()) else { continue }
+            result.append(formatter.string(from: date))
+        }
+        return result
+    }
+
+    private static func currentMonthDayStrings() -> [String] {
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let startOfMonth = calendar.date(
+            from: calendar.dateComponents([.year, .month], from: Date())) else {
+            return [todayString()]
+        }
+        var result: [String] = []
+        var date = startOfMonth
+        let today = Date()
+        while date <= today {
+            result.append(formatter.string(from: date))
+            guard let next = calendar.date(byAdding: .day, value: 1, to: date) else { break }
+            date = next
+        }
+        return result
+    }
     /// Live up/down per proxy and group name (MuYu
     /// nodeSpeedsProvider), from the same snapshots as the
     /// dashboard speeds. A reader takes the selected node's entry,
@@ -162,8 +493,38 @@ final class TrafficStore: ObservableObject {
     /// are kept — they are cumulative counters, not live rates.
     private var consecutiveRefreshFailures = 0
 
+    /// Background/termination observers for the provisional
+    /// end-of-day snapshot (same closure pattern as
+    /// MobileConfigInstaller).
+    private var backgroundObserver: NSObjectProtocol?
+    private var terminateObserver: NSObjectProtocol?
+
     init(client: ConcordClient = ConcordClient()) {
         self.client = client
+        loadDailyHistory()
+        backgroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.snapshotCurrentDayPartial()
+        }
+        terminateObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.snapshotCurrentDayPartial()
+        }
+    }
+
+    deinit {
+        if let backgroundObserver {
+            NotificationCenter.default.removeObserver(backgroundObserver)
+        }
+        if let terminateObserver {
+            NotificationCenter.default.removeObserver(terminateObserver)
+        }
     }
 
     var maxDown: Int64 { history.map { $0.down }.max() ?? 1 }
@@ -213,6 +574,7 @@ final class TrafficStore: ObservableObject {
             history.append(TrafficPoint(date: Date(), up: traffic.up, down: traffic.down))
             if history.count > maxHistory { history.removeFirst(history.count - maxHistory) }
             maintainTodayBaseline()
+            maintainDailyHistory()
             consecutiveRefreshFailures = 0
             lastError = nil
         } catch {
@@ -321,6 +683,18 @@ final class TrafficStore: ObservableObject {
             try await client.trafficReset()
             history.removeAll()
             current = ConcordTraffic(up: 0, down: 0, totalUp: 0, totalDown: 0)
+            // A totals reset restarts today from zero: drop what the
+            // accumulator holds for today, or the pre-reset bytes
+            // would be counted again on top of the post-reset
+            // traffic. The next background snapshot overwrites
+            // today's provisional entry with the restarted total
+            // (today's contribution to week/month always reads the
+            // live accumulator, never the stored entry, so the stale
+            // entry cannot leak into the totals meanwhile).
+            accumUp = 0
+            accumDown = 0
+            lastSeenUp = 0
+            lastSeenDown = 0
         } catch {
             lastError = error.localizedDescription
         }

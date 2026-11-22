@@ -1,3 +1,5 @@
+import SwiftUI
+
 // DnsQueriesView — moved out of SettingsView.swift in v0.2.68 (no behaviour change).
 // The Dashboard stats sheet and the Tools > DNS查询 page share this view; the sheet
 // presents it in records-only mode, the Tools page with the manual query + filters.

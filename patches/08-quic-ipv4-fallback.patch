@@ -1,0 +1,124 @@
+From 238db630c3f385a0673123581eff8975e8ee674e Mon Sep 17 00:00:00 2001
+From: sunny-qwe <gmlg138888@gmail.com>
+Date: Sun, 22 Nov 2026 04:01:44 +0000
+Subject: [PATCH] dns: try every resolved address for a QUIC upstream
+
+quic_socket took only the first resolved address, while tcp tries each one in turn, so a quic:// or h3:// nameserver whose hostname resolves to IPv6 first never fell back to IPv4 on a network with no IPv6 route: the handshake to the unreachable address fails and the query fails with it.
+
+A loop over addresses inside quic_socket alone would not fix it: binding a UDP socket never tests the route, so the bind succeeds for every address and the first one would still be picked. The retry therefore spans the handshake: quic_socket becomes the per-address quic_socket_for, and DoqClient::dial / Doh3Client::dial try each resolved address with a full socket + handshake, keeping the last error, exactly like Connector::tcp.
+---
+ crates/dns/src/dialer.rs | 16 ++++++++--------
+ crates/dns/src/doh3.rs   | 22 ++++++++++++++++++----
+ crates/dns/src/doq.rs    | 22 ++++++++++++++++++----
+ 3 files changed, 44 insertions(+), 16 deletions(-)
+
+diff --git a/crates/dns/src/dialer.rs b/crates/dns/src/dialer.rs
+index 3d246b0..c6dcb84 100644
+--- a/crates/dns/src/dialer.rs
++++ b/crates/dns/src/dialer.rs
+@@ -222,16 +222,16 @@ impl Connector {
+         Err(last)
+     }
+ 
+-    /// The socket of a QUIC endpoint, which names the peer on every send: a local
+-    /// socket, or a UDP session through the outbound, as mihomo's `ListenPacket` gives.
+-    pub(crate) async fn quic_socket(
++    /// The socket of a QUIC endpoint at one resolved address, which names the
++    /// peer on every send: a local socket, or a UDP session through the
++    /// outbound, as mihomo's `ListenPacket` gives. Callers try each resolved
++    /// address in turn: binding a UDP socket never tests the route, so only
++    /// the handshake past this socket can tell an unreachable address from a
++    /// live one.
++    pub(crate) async fn quic_socket_for(
+         &self,
+-        host: &str,
+-        port: u16,
+-        cx: Cx,
++        peer: SocketAddr,
+     ) -> io::Result<(Arc<dyn AsyncUdpSocket>, SocketAddr)> {
+-        let ips = self.resolve(host, cx).await?;
+-        let peer = SocketAddr::new(first_ip(&ips)?, port);
+         if let Some((dialer, name)) = self.tunnel()? {
+             let session = passing(&name, dialer.bind_udp(&name, &Address::Socket(peer))).await?;
+             let socket: Arc<dyn AsyncUdpSocket> =
+diff --git a/crates/dns/src/doh3.rs b/crates/dns/src/doh3.rs
+index 6faafff..f32a32b 100644
+--- a/crates/dns/src/doh3.rs
++++ b/crates/dns/src/doh3.rs
+@@ -1,4 +1,5 @@
+ use std::io;
++use std::net::SocketAddr;
+ use std::sync::{Arc, Mutex};
+ 
+ use async_trait::async_trait;
+@@ -62,11 +63,24 @@ impl Doh3Client {
+         })
+     }
+ 
++    /// One handshake per resolved address, like `Connector::tcp`: a hostname
++    /// that resolves to IPv6 first still dials over IPv4 on a network with no
++    /// IPv6 route, where the handshake — not the socket bind — reports the
++    /// unreachable address.
+     async fn dial(&self, cx: Cx) -> io::Result<Session> {
+-        let (socket, peer) = self
+-            .connector
+-            .quic_socket(&self.target.host, self.target.port, cx)
+-            .await?;
++        let ips = self.connector.resolve(&self.target.host, cx).await?;
++        let mut last = io::Error::from(io::ErrorKind::NotFound);
++        for ip in ips {
++            match self.dial_at(cx, SocketAddr::new(ip, self.target.port)).await {
++                Ok(session) => return Ok(session),
++                Err(err) => last = err,
++            }
++        }
++        Err(last)
++    }
++
++    async fn dial_at(&self, cx: Cx, peer: SocketAddr) -> io::Result<Session> {
++        let (socket, peer) = self.connector.quic_socket_for(peer).await?;
+         let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
+             quinn::EndpointConfig::default(),
+             None,
+diff --git a/crates/dns/src/doq.rs b/crates/dns/src/doq.rs
+index 3ba5cbc..dac06ec 100644
+--- a/crates/dns/src/doq.rs
++++ b/crates/dns/src/doq.rs
+@@ -1,4 +1,5 @@
+ use std::io;
++use std::net::SocketAddr;
+ use std::sync::Arc;
+ 
+ use async_trait::async_trait;
+@@ -53,11 +54,24 @@ impl DoqClient {
+         })
+     }
+ 
++    /// One handshake per resolved address, like `Connector::tcp`: a hostname
++    /// that resolves to IPv6 first still dials over IPv4 on a network with no
++    /// IPv6 route, where the handshake — not the socket bind — reports the
++    /// unreachable address.
+     async fn dial(&self, cx: Cx) -> io::Result<Session> {
+-        let (socket, peer) = self
+-            .connector
+-            .quic_socket(&self.host, self.port, cx)
+-            .await?;
++        let ips = self.connector.resolve(&self.host, cx).await?;
++        let mut last = io::Error::from(io::ErrorKind::NotFound);
++        for ip in ips {
++            match self.dial_at(cx, SocketAddr::new(ip, self.port)).await {
++                Ok(session) => return Ok(session),
++                Err(err) => last = err,
++            }
++        }
++        Err(last)
++    }
++
++    async fn dial_at(&self, cx: Cx, peer: SocketAddr) -> io::Result<Session> {
++        let (socket, peer) = self.connector.quic_socket_for(peer).await?;
+         let mut endpoint = quinn::Endpoint::new_with_abstract_socket(
+             quinn::EndpointConfig::default(),
+             None,
+-- 
+2.43.0
+

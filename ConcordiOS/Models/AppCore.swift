@@ -186,15 +186,162 @@ final class AppCore {
     /// so the user can send the last failure as-is.
     private static let delayTestReportFileName = "last-delay-test-report.txt"
 
+    /// Per-profile delay-test diagnostics (v0.2.58): the
+    /// overall-latest file above is single-slot, so a run on one
+    /// subscription overwrote the previous subscription's
+    /// diagnostic (2026-11-22: a 150G failure overwrote a 良心云
+    /// run's report, leaving the export with no trace of it).
+    /// Each profile keeps its own latest report under
+    /// `delay-test-report-<sanitized-profile-name>.txt` in the
+    /// same home dir, bounded to 3 profiles (the oldest file by
+    /// modification date is deleted when a 4th appears).
+    private static let delayTestReportFilePrefix = "delay-test-report-"
+    private static let maxDelayTestReportsByProfile = 3
+    /// Profile name used when the report carries no
+    /// "当前订阅：" line (e.g. the single-node early-return
+    /// reports, which never name a profile).
+    private static let unknownDelayTestProfile = "（未知订阅）"
+
     /// Writes one delay-test diagnostic (plain text, already
     /// timestamped by the caller) to `last-delay-test-report.txt`.
     /// Best-effort and synchronous: called from ProxyStore's
-    /// run-exits, including the throw paths.
+    /// run-exits, including the throw paths. ALSO keeps the
+    /// latest report per profile (v0.2.58): the profile name is
+    /// parsed from the report's own "当前订阅：" line, so a later
+    /// run on another subscription no longer erases this one.
+    /// The per-profile write is best-effort too and never blocks
+    /// or fails the delay test.
     static func recordDelayTestReport(_ text: String) {
         guard let home = try? appHomeDirectory() else { return }
         try? text.write(
             to: home.appendingPathComponent(delayTestReportFileName),
             atomically: true, encoding: .utf8)
+        let profile = Self.profileName(fromDelayTestReport: text)
+        let fileName = delayTestReportFilePrefix
+            + Self.sanitizedProfileFileNameComponent(profile) + ".txt"
+        try? text.write(
+            to: home.appendingPathComponent(fileName),
+            atomically: true, encoding: .utf8)
+        Self.pruneDelayTestReportsByProfile(in: home)
+    }
+
+    /// The profile a delay-test report belongs to, parsed from
+    /// its own "当前订阅：<name>" line; "（未知订阅）" when the
+    /// line is absent or empty.
+    private static func profileName(fromDelayTestReport text: String) -> String {
+        for line in text.components(separatedBy: "\n") {
+            guard line.hasPrefix("当前订阅：") else { continue }
+            let name = line.dropFirst("当前订阅：".count)
+                .trimmingCharacters(in: .whitespaces)
+            return name.isEmpty ? unknownDelayTestProfile : name
+        }
+        return unknownDelayTestProfile
+    }
+
+    /// Sanitizes a profile name into a safe file-name component:
+    /// keeps alphanumerics + CJK + `-_`, replaces anything else
+    /// with `_`, capped at 40 characters. Falls back to
+    /// "unknown" only when nothing survives (the unknown-profile
+    /// fallback contains CJK, so in practice it never does).
+    private static func sanitizedProfileFileNameComponent(_ name: String) -> String {
+        var result = ""
+        for scalar in name.unicodeScalars {
+            let keep = CharacterSet.alphanumerics.contains(scalar)
+                || scalar == "-" || scalar == "_"
+                || (scalar.value >= 0x3400 && scalar.value <= 0x4DBF)
+                || (scalar.value >= 0x4E00 && scalar.value <= 0x9FFF)
+                || (scalar.value >= 0xF900 && scalar.value <= 0xFAFF)
+                || (scalar.value >= 0x20000 && scalar.value <= 0x2A6DF)
+            result.unicodeScalars.append(keep ? scalar : "_")
+            if result.count >= 40 { break }
+        }
+        return result.isEmpty ? "unknown" : result
+    }
+
+    /// Deletes the oldest per-profile delay-test reports (by
+    /// modification date) until at most 3 remain. Best-effort:
+    /// a listing or deletion failure just leaves the extra files.
+    private static func pruneDelayTestReportsByProfile(in home: URL) {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: home, includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]) else { return }
+        let reportURLs = urls.filter {
+            $0.lastPathComponent.hasPrefix(delayTestReportFilePrefix)
+                && $0.pathExtension == "txt"
+        }
+        guard reportURLs.count > maxDelayTestReportsByProfile else { return }
+        let dated = reportURLs.map { url -> (url: URL, mtime: Date) in
+            let mtime = (try? url.resourceValues(
+                forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return (url, mtime)
+        }.sorted { $0.mtime < $1.mtime }
+        for entry in dated.prefix(reportURLs.count - maxDelayTestReportsByProfile) {
+            try? FileManager.default.removeItem(at: entry.url)
+        }
+    }
+
+    /// The latest delay-test diagnostic per profile, newest
+    /// first, bounded to 3. Each entry's profile is parsed from
+    /// its own "当前订阅：" line ("（未知订阅）" when absent),
+    /// so the display name is the real subscription name, not
+    /// the sanitized file-name component.
+    static func lastDelayTestReportsByProfile() -> [(profile: String, text: String)] {
+        guard let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first else { return [] }
+        let home = base.appendingPathComponent("ConcordAppCore", isDirectory: true)
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: home, includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]) else { return [] }
+        var entries: [(profile: String, text: String, mtime: Date)] = []
+        for url in urls where url.lastPathComponent.hasPrefix(delayTestReportFilePrefix)
+            && url.pathExtension == "txt" {
+            guard let text = try? String(contentsOf: url, encoding: .utf8),
+                  !text.isEmpty else { continue }
+            let mtime = (try? url.resourceValues(
+                forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            entries.append((profile: Self.profileName(fromDelayTestReport: text), text: text, mtime: mtime))
+        }
+        entries.sort { $0.mtime > $1.mtime }
+        return Array(entries.prefix(maxDelayTestReportsByProfile))
+            .map { (profile: $0.profile, text: $0.text) }
+    }
+
+    /// The file name repair attempts are persisted under, in
+    /// this core's app-private home dir (v0.2.58). Written by
+    /// the repair flows via recordRepairAttempt; read by the
+    /// Logs export, so the user can send what was already tried.
+    private static let repairAttemptsFileName = "repair-attempts.txt"
+    /// Repair attempts are bounded to the newest 50 lines.
+    private static let maxRepairAttemptLines = 50
+
+    /// Appends one repair attempt (`text`, already timestamped
+    /// by the caller — this only appends and reads) as a line in
+    /// `repair-attempts.txt`, keeping the last 50 lines.
+    /// Best-effort and synchronous, never throws: a missing home
+    /// or a failed write just drops the line.
+    static func recordRepairAttempt(_ text: String) {
+        guard let home = try? appHomeDirectory() else { return }
+        let url = home.appendingPathComponent(repairAttemptsFileName)
+        var lines = (try? String(contentsOf: url, encoding: .utf8))?
+            .components(separatedBy: "\n").filter { !$0.isEmpty } ?? []
+        lines.append(contentsOf: text.components(separatedBy: "\n").filter { !$0.isEmpty })
+        if lines.count > maxRepairAttemptLines {
+            lines.removeFirst(lines.count - maxRepairAttemptLines)
+        }
+        try? (lines.joined(separator: "\n") + "\n").write(
+            to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// The recorded repair attempts, if any were ever written.
+    /// Nil when the file is missing or empty.
+    static func lastRepairAttemptsText() -> String? {
+        guard let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let url = base.appendingPathComponent("ConcordAppCore", isDirectory: true)
+            .appendingPathComponent(repairAttemptsFileName)
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              !text.isEmpty else { return nil }
+        return text
     }
 
     /// The last delay-test diagnostic, if one was ever written.

@@ -76,6 +76,25 @@ final class LogStore: ObservableObject {
         }
         sections.append("== 应用内核心启动诊断 ==\n" + (AppCore.lastBootReportText() ?? "暂无记录（尚未在应用内启动过核心）"))
         sections.append("== 最近一次测速诊断 ==\n" + (AppCore.lastDelayTestReportText() ?? "暂无记录（尚未测速，或本次测速未写入诊断）"))
+        // Per-profile delay diagnostics (v0.2.58): the section
+        // above is single-slot, so a run on one subscription
+        // overwrote the previous subscription's report — the
+        // 2026-11-22 150G failure erased the 良心云 run's
+        // diagnostic from the export. Each profile's latest
+        // report is listed here, newest first.
+        let perProfileReports = AppCore.lastDelayTestReportsByProfile()
+        if perProfileReports.isEmpty {
+            sections.append("== 各订阅最近一次测速诊断 ==\n（暂无）")
+        } else {
+            let body = perProfileReports
+                .map { "【\($0.profile)】\n\($0.text)" }
+                .joined(separator: "\n\n")
+            sections.append("== 各订阅最近一次测速诊断 ==\n" + body)
+        }
+        // Repair attempts (v0.2.58): what the repair flows
+        // already tried, so the user (and the next diagnosis)
+        // does not repeat them blindly.
+        sections.append("== 修复记录 ==\n" + (AppCore.lastRepairAttemptsText() ?? "暂无记录（尚未尝试修复）"))
         sections.append("== VPN 启动诊断 ==\n" + (TunnelManager.shared.lastStartupDiagnostic() ?? "暂无最近的 VPN 启动诊断（扩展未写入或已超过 180 秒）"))
         if let lastError {
             sections.append("== 日志拉取错误 ==\n\(lastError)")

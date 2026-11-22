@@ -272,6 +272,18 @@ struct ContentView: View {
             }
         }
         .clipped()
+        // Root backdrop (v0.2.56): every tab page is a NavigationStack
+        // that paints ConcordTheme.pageBackground only on its inner
+        // content (inside the safe area), so nothing painted the
+        // status-bar strip — the UIWindow default (white in light
+        // mode) showed through as a white band on every page
+        // (IMG_1178). Painting the same theme-aware page colour
+        // edge-to-edge behind the whole tab container removes the
+        // strip on all four tabs and on every pushed page (they all
+        // sit inside this container), and it always matches the
+        // pages exactly — systemGroupedBackground in light/dark,
+        // black in pure-black dark mode — so there is no seam.
+        .background(ConcordTheme.pageBackground.ignoresSafeArea())
     }
 
     /// FlClash _HomePageView._toPage: animateToPage with a 300 ms

@@ -737,18 +737,22 @@ struct ProvidersSheet: View {
 // MuYu key_28 + views/traffic_statistics.dart: 日/周/月
 // segmented control, date navigator, a 流量概括 card (total,
 // down/up pills, dashed 45% 代理 gauge, 累计运行 + 代理/直连
-// mini-cells), then a ranking list (策略/节点/域名 tabs).
-// All figures come from TrafficStore's daily history
-// (recorded since v0.2.55; ranges with no recorded day show
-// "暂无记录", never invented numbers). The trash button clears
-// the recorded history after confirmation; refresh re-reads
-// the live snapshot.
+// mini-cells), then a 流量趋势 chart, a 规则命中 list, then
+// a ranking list (策略/节点/域名 tabs). All figures come from
+// TrafficStore's daily history (recorded since v0.2.55; ranges
+// with no recorded day show "暂无记录", never invented
+// numbers). The trash button clears the recorded history
+// after confirmation; refresh re-reads the live snapshot.
 //
-// NOT in this sheet (no truthful source): the hourly trend
-// chart (we keep no hourly buckets) and the rule-hit cards
-// (no per-day rule-hit counts). The 配置 ranking tab is
-// omitted — only one profile is ever active, so the row
-// would just repeat the total.
+// v0.2.57 adds, in MuYu's order (key_28 / f_029): the hourly
+// trend chart (hourly buckets collected from v0.2.57 on, no
+// backfill — a pre-upgrade day has a daily total but no bars),
+// the rule-hit list (per-day counts from the connection
+// feed's `rule` field, same 1 s sampling as the split), and
+// per-day uptime (past ranges show recorded values; days with
+// no observation show "—"). The 配置 ranking tab is omitted —
+// only one profile is ever active, so the row would just
+// repeat the total.
 
 private enum TrafficRankingTab: String, CaseIterable {
     case policy, node, domain
@@ -770,6 +774,143 @@ private struct TrafficRankingRow: Identifiable {
     var total: Int64 { up + down }
 }
 
+// MARK: - Traffic trend chart (v0.2.57, MuYu 流量趋势)
+//
+// MuYu key_28 / f_029: a 流量趋势 card — legend 下载 (dark) /
+// 上传 (light) top-right, grouped vertical bars per hour,
+// x-axis 0/6/12/18, y-axis max / max/2 / 0 on the right,
+// dashed gridlines. Day range shows 24 hourly buckets;
+// week/month show one grouped bar per day (daily totals,
+// recorded since v0.2.55). A bucket with no recorded data
+// draws no bar — never an invented value. Pure SwiftUI,
+// iOS 17-safe (no Charts framework, no iOS 18 APIs).
+
+private struct TrafficTrendChart: View {
+    /// One bar group: down + up bytes. `label` is the x-axis
+    /// label (nil for most groups — only a few hours/days are
+    /// labelled, like MuYu's 0/6/12/18).
+    struct Bucket: Identifiable {
+        let id: Int
+        let down: Int64
+        let up: Int64
+        let label: String?
+    }
+
+    let buckets: [Bucket]
+
+    private var maxValue: Int64 {
+        max(buckets.map { max($0.down, $0.up) }.max() ?? 0, 1)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(ConcordTheme.accent.opacity(0.15))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: "chart.bar")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(ConcordTheme.accent)
+                }
+                Text("流量趋势")
+                    .font(.headline)
+                Spacer()
+                legendDot(color: ConcordTheme.accent)
+                Text("下载")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                legendDot(color: ConcordTheme.accent.opacity(0.45))
+                Text("上传")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 8) {
+                    GeometryReader { geo in
+                        chartBody(width: geo.size.width, height: geo.size.height)
+                    }
+                    .frame(height: 160)
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text(dashboardBytesNoSpace(maxValue))
+                        Spacer()
+                        Text(dashboardBytesNoSpace(maxValue / 2))
+                        Spacer()
+                        Text("0")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 52, height: 160, alignment: .top)
+                }
+                HStack(spacing: 0) {
+                    ForEach(buckets) { bucket in
+                        Text(bucket.label ?? "")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                // Same width as the y-axis column + spacing, so
+                // the labels sit under the bars, not under the
+                // axis.
+                .padding(.trailing, 60)
+            }
+        }
+        .padding(16)
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    private func legendDot(color: Color) -> some View {
+        Circle()
+            .fill(color)
+            .frame(width: 8, height: 8)
+    }
+
+    private func chartBody(width: CGFloat, height: CGFloat) -> some View {
+        let groupWidth = width / CGFloat(max(buckets.count, 1))
+        let barWidth = max(2, (groupWidth - 3) / 2)
+        return ZStack(alignment: .bottomLeading) {
+            VStack(spacing: 0) {
+                dashedLine(width: width)
+                Spacer()
+                dashedLine(width: width)
+                Spacer()
+                Rectangle()
+                    .fill(Color(.separator))
+                    .frame(height: 1)
+            }
+            HStack(alignment: .bottom, spacing: 0) {
+                ForEach(buckets) { bucket in
+                    HStack(alignment: .bottom, spacing: 1) {
+                        trendBar(value: bucket.down, color: ConcordTheme.accent, height: height, width: barWidth)
+                        trendBar(value: bucket.up, color: ConcordTheme.accent.opacity(0.45), height: height, width: barWidth)
+                    }
+                    .frame(width: groupWidth, alignment: .center)
+                }
+            }
+        }
+    }
+
+    private func dashedLine(width: CGFloat) -> some View {
+        Path { path in
+            path.move(to: CGPoint(x: 0, y: 0.5))
+            path.addLine(to: CGPoint(x: width, y: 0.5))
+        }
+        .stroke(Color(.systemGray4), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+        .frame(height: 1)
+    }
+
+    /// One bar: height proportional to the max bar value; a
+    /// positive value always gets at least 2pt so it stays
+    /// visible; zero draws nothing.
+    private func trendBar(value: Int64, color: Color, height: CGFloat, width: CGFloat) -> some View {
+        let barHeight: CGFloat = value <= 0 ? 0 : max(2, CGFloat(value) / CGFloat(maxValue) * height)
+        return RoundedRectangle(cornerRadius: 1.5)
+            .fill(color)
+            .frame(width: width, height: barHeight)
+    }
+}
+
 struct TrafficStatsSheet: View {
     @EnvironmentObject private var trafficStore: TrafficStore
 
@@ -780,7 +921,6 @@ struct TrafficStatsSheet: View {
 
     private var dates: [String] { trafficStore.rangeDates(range: range, offset: offset) }
     private var totals: DayTotals { trafficStore.totalsForDates(dates) }
-    private var isToday: Bool { range == .day && offset == 0 }
 
     private var rankedRows: [TrafficRankingRow] {
         let buckets: [String: TrafficStore.DaySplit]
@@ -829,8 +969,10 @@ struct TrafficStatsSheet: View {
                             .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
                     } else {
                         summaryCard
+                        trendSection
+                        ruleHitsSection
                         rankingSection
-                        Text("代理/直连与排行按连接采样统计，仅含应用运行时观测到的流量；短连接与后台流量可能未计入，拆分之和可能小于总流量。")
+                        Text("代理/直连、排行与规则命中按连接采样统计，仅含应用运行时观测到的流量；在两次采样之间开闭的短连接不会计入，拆分之和可能小于总流量。分时流量自 v0.2.57 起记录，升级前日期无分时数据。累计运行只统计应用观测到的隧道时段：在应用未运行时结束的会话无法计入，未观测到的日期显示 —。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -849,7 +991,7 @@ struct TrafficStatsSheet: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将删除自 v0.2.55 起记录的每日流量、代理/直连拆分与排行，今日从零开始重新记录。核心累计流量不受影响。")
+            Text("将删除自 v0.2.55 起记录的每日流量、代理/直连拆分与排行，以及自 v0.2.57 起记录的分时流量与规则命中，今日从零开始重新记录。累计运行时间与核心累计流量不受影响。")
         }
     }
 
@@ -928,7 +1070,7 @@ struct TrafficStatsSheet: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                    Text(isToday ? trafficStore.todayUptimeText : "—")
+                    Text(totals.uptimeText ?? "—")
                         .font(.system(size: 17, weight: .semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
@@ -960,11 +1102,6 @@ struct TrafficStatsSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
             }
-            if !isToday {
-                Text("累计运行仅统计今日，历史范围的运行时间暂未保存。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
         }
         .padding(16)
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
@@ -977,6 +1114,147 @@ struct TrafficStatsSheet: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .background(ConcordTheme.softFill, in: Capsule())
+    }
+
+    /// Chart buckets, oldest first. Day range: 24 hourly
+    /// buckets (x labels 0/6/12/18, like MuYu). Week/month:
+    /// one grouped bar per day from the daily totals (week
+    /// dates come back newest-first, so they are reversed;
+    /// month dates are already oldest-first).
+    private var trendBuckets: [TrafficTrendChart.Bucket] {
+        if range == .day {
+            let date = dates.first ?? ""
+            return (0..<24).map { hour in
+                let key = "\(date) \(String(format: "%02d", hour))"
+                let split = trafficStore.hourlyBucket(for: key)
+                return TrafficTrendChart.Bucket(
+                    id: hour, down: split?.down ?? 0, up: split?.up ?? 0,
+                    label: [0, 6, 12, 18].contains(hour) ? "\(hour)" : nil)
+            }
+        }
+        let ordered = range == .week ? Array(dates.reversed()) : dates
+        return ordered.enumerated().map { (index, date) in
+            let day = trafficStore.totalsForDates([date])
+            let label: String?
+            if range == .week {
+                label = TrafficStore.shortDayLabel(date)
+            } else if let dayNumber = Int(date.suffix(2)), dayNumber == 1 || (dayNumber - 1) % 5 == 0 {
+                label = "\(dayNumber)"
+            } else {
+                label = nil
+            }
+            return TrafficTrendChart.Bucket(id: index, down: day.down, up: day.up, label: label)
+        }
+    }
+
+    /// Whether the selected day has any recorded hourly bucket
+    /// (false for a pre-v0.2.57 day, which has only a daily
+    /// total, and for a day with no traffic at all).
+    private var dayHasHourlyData: Bool {
+        trendBuckets.contains { $0.down > 0 || $0.up > 0 }
+    }
+
+    private struct TopRuleHit: Identifiable {
+        let name: String
+        let count: Int
+
+        var id: String { name }
+    }
+
+    private var topRuleHits: [TopRuleHit] {
+        totals.ruleHits
+            .sorted { $0.value > $1.value }
+            .prefix(10)
+            .map { TopRuleHit(name: $0.key, count: $0.value) }
+    }
+
+    /// The 流量趋势 card (MuYu f_029: below the summary, above
+    /// 规则命中). A pre-v0.2.57 day shows an honest note instead
+    /// of an empty chart — its hourly buckets were never
+    /// recorded.
+    private var trendSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if range == .day && !dayHasHourlyData {
+                Text("该日无分时记录：分时流量自 v0.2.57 起记录，升级前日期只有每日总流量。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+            } else {
+                TrafficTrendChart(buckets: trendBuckets)
+                if range == .day {
+                    Text("分时流量自 v0.2.57 起记录，仅含应用运行时观测到的流量；空白时段无观测记录。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// The 规则命中 list (MuYu f_029: below 流量趋势, above the
+    /// ranking tabs — the frames show the header but no rows, so
+    /// the rows use the same card/row style as the ranking list:
+    /// rule name, hit count, share of the range's hits).
+    private var ruleHitsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("规则命中")
+                .font(.headline)
+            if topRuleHits.isEmpty {
+                Text("该范围没有规则命中记录。规则命中自 v0.2.57 起按连接采样统计（一次连接计一次）。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(topRuleHits) { hit in
+                        ruleHitRow(hit)
+                        if hit.name != topRuleHits.last?.name {
+                            Divider().padding(.leading, 56)
+                        }
+                    }
+                    if totals.ruleHits.count > topRuleHits.count {
+                        Text("仅显示前 \(topRuleHits.count) 条，共 \(totals.ruleHits.count) 条规则。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 8)
+                    }
+                }
+                .padding(16)
+                .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+            }
+        }
+    }
+
+    private func ruleHitRow(_ hit: TopRuleHit) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(ConcordTheme.softFill)
+                    .frame(width: 40, height: 40)
+                Image(systemName: "tag")
+                    .font(.system(size: 17))
+                    .foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(hit.name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(hit.count) 次命中")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Text(totals.totalRuleHits > 0
+                 ? String(format: "%.1f%%", Double(hit.count) / Double(totals.totalRuleHits) * 100)
+                 : "—")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 8)
     }
 
     private var rankingSection: some View {

@@ -40,7 +40,20 @@ struct LogsView: View {
     var body: some View {
         // No NavigationStack here on purpose: this page is pushed
         // from the Tools tab, whose stack provides the navigation bar.
-        VStack(spacing: 0) {
+        // v0.2.63: the page background is a full-screen layer
+        // behind the VStack. IMG_1195 showed a ~244pt white gap
+        // ABOVE the search box on the Events tab (the Logs tab has
+        // none) — the gap sits outside the VStack, so the VStack's
+        // own background never paints it and the window behind it
+        // is white. A full-screen background makes any such gap
+        // the page gray instead of white. The VStack is pinned to
+        // the top so the search box stays right under the nav bar.
+        // (The VStack's children keep their old indentation; only
+        // the wrap is new.)
+        ZStack {
+            ConcordTheme.pageBackground
+                .ignoresSafeArea()
+            VStack(spacing: 0) {
                 if client.mode == .sample {
                     HStack {
                         SampleDataBadge()
@@ -251,6 +264,15 @@ struct LogsView: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        // v0.2.63: the keyboard must not shift this page. The gap
+        // in IMG_1195 is ~244pt tall — about a keyboard tall — and
+        // only on the Events tab, so the likeliest cause is the
+        // keyboard pushing the page down and the layout getting
+        // stuck. The search box sits at the top, so the keyboard
+        // never covers it anyway.
+        .ignoresSafeArea(.keyboard)
             .background(ConcordTheme.pageBackground)
             .navigationTitle("日志")
             .navigationBarTitleDisplayMode(.inline)

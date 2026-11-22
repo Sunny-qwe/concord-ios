@@ -1,7 +1,7 @@
-From 26719f47c9f9c6edafc9a92201d050ef35473911 Mon Sep 17 00:00:00 2001
-From: sunny-qwe <gmlg138888@gmail.com>
-Date: Fri, 20 Nov 2026 13:20:49 +0000
-Subject: [PATCH 3/7] ios: cfg-gate TunDevice::wrap name/index lookup off iOS
+From 69ab0fdf767463c75d7893a5b79e6e6269ff842f Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Sun, 22 Nov 2026 06:19:28 +0000
+Subject: [PATCH 3/8] ios: cfg-gate TunDevice::wrap name/index lookup off iOS
 
 ---
  crates/tun/src/device/mod.rs | 11 +++++++++--

@@ -1,7 +1,7 @@
-From f71194fe7630eb7aafe65fab8173856f161b5ce6 Mon Sep 17 00:00:00 2001
-From: sunny-qwe <gmlg138888@gmail.com>
-Date: Fri, 20 Nov 2026 13:20:49 +0000
-Subject: [PATCH 5/7] ios: enable rquickjs bindgen for iOS
+From b0142e44326c5fd65fcfb9d04331c1233de91f5b Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Sun, 22 Nov 2026 06:19:28 +0000
+Subject: [PATCH 5/8] ios: enable rquickjs bindgen for iOS
 
 ---
  crates/mitm/Cargo.toml | 11 +++++++++++

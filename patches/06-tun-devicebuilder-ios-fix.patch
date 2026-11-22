@@ -1,7 +1,7 @@
-From 443f7dadb29e76c6a05ff8c44300c2ad728f2050 Mon Sep 17 00:00:00 2001
-From: sunny-qwe <gmlg138888@gmail.com>
-Date: Fri, 20 Nov 2026 13:20:49 +0000
-Subject: [PATCH 6/7] ios: gate TunDevice::create off iOS with Unsupported stub
+From 367357f5fb78f1ac30afeab71341c3c9e85b7541 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Sun, 22 Nov 2026 06:19:28 +0000
+Subject: [PATCH 6/8] ios: gate TunDevice::create off iOS with Unsupported stub
 
 ---
  crates/tun/src/device/mod.rs | 21 +++++++++++++++++++--

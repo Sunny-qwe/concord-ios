@@ -1,11 +1,8 @@
-From 238db630c3f385a0673123581eff8975e8ee674e Mon Sep 17 00:00:00 2001
-From: sunny-qwe <gmlg138888@gmail.com>
-Date: Sun, 22 Nov 2026 04:01:44 +0000
-Subject: [PATCH] dns: try every resolved address for a QUIC upstream
+From 5b47e52b3d16750f395a93cdbcb847bfd26addbe Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Sun, 22 Nov 2026 06:19:29 +0000
+Subject: [PATCH 8/8] dns: try every resolved address for a QUIC upstream
 
-quic_socket took only the first resolved address, while tcp tries each one in turn, so a quic:// or h3:// nameserver whose hostname resolves to IPv6 first never fell back to IPv4 on a network with no IPv6 route: the handshake to the unreachable address fails and the query fails with it.
-
-A loop over addresses inside quic_socket alone would not fix it: binding a UDP socket never tests the route, so the bind succeeds for every address and the first one would still be picked. The retry therefore spans the handshake: quic_socket becomes the per-address quic_socket_for, and DoqClient::dial / Doh3Client::dial try each resolved address with a full socket + handshake, keeping the last error, exactly like Connector::tcp.
 ---
  crates/dns/src/dialer.rs | 16 ++++++++--------
  crates/dns/src/doh3.rs   | 22 ++++++++++++++++++----

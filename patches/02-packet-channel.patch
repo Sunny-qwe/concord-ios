@@ -1,8 +1,7 @@
-From 857b92ff4f21592fb97b4b4f115143755579ac5f Mon Sep 17 00:00:00 2001
-From: sunny-qwe <gmlg138888@gmail.com>
-Date: Fri, 20 Nov 2026 13:20:49 +0000
-Subject: [PATCH 2/7] ios: promote FakeDevice to a production packet-channel
- DeviceSource
+From 5ad4845132f74633fc67c63ec3b47220ae1205d6 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Sun, 22 Nov 2026 06:19:28 +0000
+Subject: [PATCH 2/8] ios: promote FakeDevice to a production packet-channel
 
 ---
  crates/api/Cargo.toml           |   1 +
@@ -385,10 +384,10 @@ index fdaabde..4c87a42 100644
  pub use callback::{Deliver, Release};
  pub use hub::{Hub, Receiver, hub, install, set_notice};
 diff --git a/crates/proto/src/types/live.rs b/crates/proto/src/types/live.rs
-index 02a4ebc..5eb0d0c 100644
+index 441d436..3f81a01 100644
 --- a/crates/proto/src/types/live.rs
 +++ b/crates/proto/src/types/live.rs
-@@ -299,8 +299,8 @@ pub enum EngineState {
+@@ -410,8 +410,8 @@ pub enum EngineState {
      Failed,
  }
  
@@ -399,7 +398,7 @@ index 02a4ebc..5eb0d0c 100644
  #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
  #[serde(tag = "kind", rename_all = "snake_case")]
  pub enum TunSource {
-@@ -311,6 +311,14 @@ pub enum TunSource {
+@@ -422,6 +422,14 @@ pub enum TunSource {
      Inherited {
          handle: u64,
      },
@@ -728,10 +727,10 @@ index 4a701e1..0874cda 100644
      let Some(handler) = deps.dns.clone() else {
          return Ok(None);
 diff --git a/schema/api.json b/schema/api.json
-index 9e6cf3a..e0edadf 100644
+index ddb17f9..a9a6dc5 100644
 --- a/schema/api.json
 +++ b/schema/api.json
-@@ -4370,9 +4370,28 @@
+@@ -4624,9 +4624,28 @@
              "kind",
              "handle"
            ]

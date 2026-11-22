@@ -1,7 +1,7 @@
-From 0228bc90684020f412945477fc6cbb4c0a9f9eb5 Mon Sep 17 00:00:00 2001
-From: sunny-qwe <gmlg138888@gmail.com>
-Date: Fri, 20 Nov 2026 13:20:49 +0000
-Subject: [PATCH 4/7] ios: vendor nix 0.31.3 with macOS-only utun gating
+From 7fa161e5859f0ddf56318ef591a613d4520dd4d0 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Sun, 22 Nov 2026 06:19:28 +0000
+Subject: [PATCH 4/8] ios: vendor nix 0.31.3 with macOS-only utun gating
 
 ---
  Cargo.toml                                    |    7 +-
@@ -262,7 +262,7 @@ Subject: [PATCH 4/7] ios: vendor nix 0.31.3 with macOS-only utun gating
  create mode 100644 vendor/nix-0.31.3-ios/test/test_unistd.rs
 
 diff --git a/Cargo.toml b/Cargo.toml
-index fde45fb..570d258 100644
+index cf6ab5b..f3d5f93 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -32,7 +32,7 @@ members = [
@@ -274,7 +274,7 @@ index fde45fb..570d258 100644
  
  [workspace.package]
  version = "0.1.0"
-@@ -304,5 +304,10 @@ quinn = { path = "vendor/quinn" }
+@@ -302,5 +302,10 @@ quinn = { path = "vendor/quinn" }
  quinn-proto = { path = "vendor/quinn-proto" }
  shadowsocks = { path = "vendor/shadowsocks" }
  mio = { path = "vendor/mio" }

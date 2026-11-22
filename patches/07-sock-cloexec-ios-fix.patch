@@ -1,7 +1,7 @@
-From e2e61c92b2be2fdd14d73f0d0a011e26f4354b69 Mon Sep 17 00:00:00 2001
-From: sunny-qwe <gmlg138888@gmail.com>
-Date: Fri, 20 Nov 2026 13:20:49 +0000
-Subject: [PATCH 7/7] ios: drop SOCK_CLOEXEC on Apple targets
+From a428dbf5deceadba1e97c7b23fc37a0345753569 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Sun, 22 Nov 2026 06:19:28 +0000
+Subject: [PATCH 7/8] ios: drop SOCK_CLOEXEC on Apple targets
 
 ---
  bins/ios/src/bridge.rs | 19 ++++++++++---------

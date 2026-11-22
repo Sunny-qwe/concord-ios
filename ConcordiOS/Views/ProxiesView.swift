@@ -99,13 +99,23 @@ struct ProxiesView: View {
     /// Picker mode (FlClash proxies.dart:14-18,157,165,174):
     /// as a dashboard sheet the page keeps only search + delay
     /// test — the ⋯ menu is stripped and the locate button hidden.
-    /// Default false (the tab page). No in-repo caller yet (the
-    /// picker instance actually used upstream is ProfilesView),
-    /// but the component API now exists.
+    /// v0.2.64: the dashboard's 策略组 card presents this in
+    /// picker mode (upstream showProxiesSheet), forcing the card
+    /// grid regardless of the tab's style, with a sheet header
+    /// (✕ + 代理 + search/bolt/menu) instead of the 24pt tab
+    /// title. `onPickGroup`, when set, is called with the picked
+    /// group's name instead of expanding it — the dashboard sheet
+    /// uses it to select the group, dismiss, and switch to the
+    /// Proxies tab. Default false / nil (the tab page).
     let picker: Bool
+    let onPickGroup: ((String) -> Void)?
 
-    init(picker: Bool = false) { self.picker = picker }
+    init(picker: Bool = false, onPickGroup: ((String) -> Void)? = nil) {
+        self.picker = picker
+        self.onPickGroup = onPickGroup
+    }
 
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var client: ConcordClient
@@ -130,7 +140,6 @@ struct ProxiesView: View {
     /// drill-down submenu via menuLevel. Reset on disappear so the
     /// menu always reopens collapsed.
     @State private var styleExpanded = false
-    @State private var selectedGroupName: String?
     /// Groups the user expanded in list style. FlClash's unfoldSet
     /// (models/profile.dart:78) defaults to {} — groups start
     /// collapsed — so this set starts empty too.
@@ -212,7 +221,7 @@ struct ProxiesView: View {
     }
 
     private var selectedGroup: ProxyGroup? {
-        if let name = selectedGroupName {
+        if let name = proxyStore.selectedGroupName {
             return proxyStore.displayGroups.first { $0.name == name }
         }
         return proxyStore.displayGroups.first
@@ -301,7 +310,7 @@ struct ProxiesView: View {
     }
 
     private var selectedVisibleGroup: ProxyGroup? {
-        if let name = selectedGroupName,
+        if let name = proxyStore.selectedGroupName,
            let found = visibleGroups.first(where: { $0.name == name }) {
             return found
         }
@@ -585,13 +594,20 @@ struct ProxiesView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 4)
                     }
-                    switch styleStore.style {
-                    case .tab:
-                        tabContent(width: geometry.size.width)
-                    case .list:
-                        listContent(width: geometry.size.width)
-                    case .icons:
+                    if picker {
+                        // The dashboard sheet always shows the card
+                        // grid (video: 2-column group cards +
+                        // filter pills), whatever the tab's style.
                         iconsContent(width: geometry.size.width)
+                    } else {
+                        switch styleStore.style {
+                        case .tab:
+                            tabContent(width: geometry.size.width)
+                        case .list:
+                            listContent(width: geometry.size.width)
+                        case .icons:
+                            iconsContent(width: geometry.size.width)
+                        }
                     }
                 }
                 .background(ConcordTheme.pageBackground)
@@ -604,14 +620,39 @@ struct ProxiesView: View {
             // toolbar item instead. Pushed pages keep their 17pt
             // inline title (compactTitle is true there).
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Text("tab.proxies".l10n)
-                        .font(.system(size: 24, weight: .semibold))
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    topBarPill
-                }
-                if !picker {
+                if picker {
+                    // Sheet header (video: ✕ + 代理 + search/bolt/
+                    // menu in one row), not the 24pt tab title —
+                    // the sheet chrome is the title here.
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { dismiss() } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color(.label))
+                                .frame(width: 36, height: 36)
+                                .background(ConcordTheme.cardBackground, in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("关闭")
+                    }
+                    ToolbarItem(placement: .principal) {
+                        Text("代理")
+                            .font(.headline)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        topBarPill
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        moreButton
+                    }
+                } else {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Text("tab.proxies".l10n)
+                            .font(.system(size: 24, weight: .semibold))
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        topBarPill
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         moreButton
                     }
@@ -1092,7 +1133,7 @@ struct ProxiesView: View {
                                         if selectedVisibleGroup?.id == group.id {
                                             scrollToSelected(in: group)
                                         } else {
-                                            selectedGroupName = group.name
+                                            proxyStore.selectedGroupName = group.name
                                         }
                                     } label: {
                                         // MuYu group_tabs.dart _TabExtents:
@@ -1211,7 +1252,7 @@ struct ProxiesView: View {
             VStack(spacing: 0) {
                 ForEach(visibleGroups) { group in
                     Button {
-                        selectedGroupName = group.name
+                        proxyStore.selectedGroupName = group.name
                         showGroupPicker = false
                     } label: {
                         HStack(spacing: 12) {
@@ -1592,6 +1633,13 @@ struct ProxiesView: View {
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
         .contentShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
         .onTapGesture {
+            // Picker (dashboard sheet): tapping a group picks it
+            // instead of expanding — the caller selects the group,
+            // dismisses the sheet, and switches to the Proxies tab.
+            if picker {
+                onPickGroup?(group.name)
+                return
+            }
             if expanded {
                 expandedGroups.remove(group.name)
             } else {
@@ -1990,7 +2038,14 @@ private struct SelectedNodeSpeedsView: View {
             onTest: { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } }
         )
         .equatable()
-        .onTapGesture { Task { await selectNode(node, in: group) } }
+        .onTapGesture {
+            Task {
+                await selectNode(node, in: group)
+                // Picker (dashboard sheet): picking a node also
+                // closes the sheet at its group.
+                if picker { onPickGroup?(group.name) }
+            }
+        }
         .contextMenu { nodeMenu(node, in: group) }
     }
 

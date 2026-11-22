@@ -81,6 +81,10 @@ struct DashboardView: View {
     @State private var showServiceSheet = false
     /// Rule-providers sheet (config card, MuYu key_25).
     @State private var showProvidersSheet = false
+    /// Strategy-groups sheet (groups card, v0.2.64): upstream
+    /// opens ProxiesView(picker: true) here instead of jumping
+    /// to the Proxies tab.
+    @State private var showGroupsSheet = false
     @State private var tunnelStartedAt: Date?
     @State private var subscription: ConcordSubscriptionInfo?
     @State private var intranetIp: String?
@@ -669,7 +673,17 @@ struct DashboardView: View {
         // v0.2.56: the config card opens the rule-providers
         // sheet (MuYu key_25).
         .sheet(isPresented: $showProvidersSheet) {
-            ProvidersSheet(profileName: profileStore.activeProfile?.name ?? "配置")
+            ProvidersSheet(profileName: profileStore.activeProfile?.name ?? "配置", subscription: subscription)
+                .presentationDetents([.fraction(0.85), .large])
+                .presentationDragIndicator(.hidden)
+                .presentationBackground(Color(.systemGroupedBackground))
+                .presentationCornerRadius(28)
+        }
+        // v0.2.64: the 策略组 card opens this sheet (upstream
+        // FlClash proxy_groups.dart showProxiesSheet) instead of
+        // jumping straight to the Proxies tab.
+        .sheet(isPresented: $showGroupsSheet) {
+            groupsSheet
                 .presentationDetents([.fraction(0.85), .large])
                 .presentationDragIndicator(.hidden)
                 .presentationBackground(Color(.systemGroupedBackground))
@@ -1275,6 +1289,10 @@ struct DashboardView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // v0.2.64: belt-and-braces — the whole card is already
+            // a Button, but the contentShape makes taps on any
+            // transparent part of the card register too.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .concordCard()
@@ -1652,6 +1670,13 @@ struct DashboardView: View {
             }
         }
         .concordCard()
+        // v0.2.64: the whole card opens the 服务状态 sheet —
+        // tapping anywhere in the row must show the drawer, not
+        // just the title/chevron. When expanded, taps stay
+        // inside the expanded details (the chevron collapses);
+        // the title Button keeps opening the sheet too.
+        .contentShape(Rectangle())
+        .onTapGesture { if !servicesExpanded { showServiceSheet = true } }
     }
 
     private func servicePill(for service: ConcordServiceItem?) -> some View {
@@ -1898,7 +1923,11 @@ struct DashboardView: View {
 
     private var groupsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button { onSelectTab(.proxies) } label: {
+            // v0.2.64: upstream opens the groups sheet here
+            // (FlClash proxy_groups.dart showProxiesSheet), it does
+            // NOT jump to the Proxies tab. Empty = no tap (upstream
+            // onTap is null when there are no groups).
+            Button { if !proxyStore.nonHiddenGroups.isEmpty { showGroupsSheet = true } } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "square.stack.3d.up")
                         .font(.callout.weight(.semibold))
@@ -1954,6 +1983,34 @@ struct DashboardView: View {
             }
         }
         .concordCard()
+        // v0.2.64: the whole card opens the sheet — the header
+        // Button alone left the count figure and group circles
+        // dead, which is exactly the "only the chevron works"
+        // report. Empty = no tap (upstream onTap is null when
+        // there are no groups).
+        .contentShape(Rectangle())
+        .onTapGesture { if !proxyStore.nonHiddenGroups.isEmpty { showGroupsSheet = true } }
+    }
+
+    /// The strategy-groups sheet (v0.2.64, upstream FlClash
+    /// proxy_groups.dart showProxiesSheet: ProxiesView in picker
+    /// mode). Lists every visible group with its type and current
+    /// pick; tapping one selects that group on the Proxies tab
+    /// (via proxyStore.selectedGroupName, which the tab's pills
+    /// read), dismisses the sheet, and switches tabs.
+    /// The dashboard's 策略组 sheet (v0.2.64, video): upstream
+    /// FlClash proxy_groups.dart showProxiesSheet presents the
+    /// ProxiesView itself in picker mode — title 代理， filter
+    /// pills (全部/策略组/节点组/节点 with counts), a 2-column
+    /// grid of group cards (name, TYPE · n/m, selected node,
+    /// latency pill), and search. Tapping a group selects it,
+    /// dismisses the sheet, and switches to the Proxies tab.
+    private var groupsSheet: some View {
+        ProxiesView(picker: true) { name in
+            proxyStore.selectedGroupName = name
+            showGroupsSheet = false
+            onSelectTab(.proxies)
+        }
     }
 
     /// Empty proxy-groups state (FlClash proxy_groups.dart
@@ -1988,11 +2045,16 @@ struct DashboardView: View {
     /// formatted with dashboardCount (grouped digits, compact ≥100k).
     private var statsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Text("连接统计")
-                    .font(.caption.weight(.semibold))
-                Spacer()
+            // v0.2.64: the header opens the 实时连接 sheet — the
+            // whole card must respond, not just the stat cells.
+            Button { statsDestination = .live } label: {
+                HStack(spacing: 8) {
+                    Text("连接统计")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                }
             }
+            .buttonStyle(.plain)
             HStack(spacing: 0) {
                 statCell(value: dashboardCount(connectionStore.connections.count), label: "实时连接", destination: .live)
                 statCell(value: dashboardCount(eventStore.entries.count), label: "最近请求", destination: .recent)
@@ -2023,6 +2085,8 @@ struct DashboardView: View {
 
     /// D-M6: a stat cell opens its source page — live/recent
     /// connections, or the DNS queries page for the DNS cell.
+    /// v0.2.64: the contentShape makes the full cell column
+    /// tappable, not just the number/label glyphs.
     private func statCell(value: String, label: String, destination: StatsDestination) -> some View {
         Button { statsDestination = destination } label: {
             VStack(spacing: 4) {
@@ -2033,6 +2097,7 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -2076,6 +2141,10 @@ struct DashboardView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            // v0.2.64: belt-and-braces — the whole card is already
+            // a Button, but the contentShape makes taps on any
+            // transparent part of the card register too.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .concordCard()

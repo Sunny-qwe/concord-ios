@@ -640,8 +640,14 @@ struct ServiceStatusSheet: View {
 
 struct ProvidersSheet: View {
     @EnvironmentObject private var ruleStore: RuleStore
+    @EnvironmentObject private var proxyStore: ProxyStore
+    @EnvironmentObject private var profileStore: ProfileStore
 
     let profileName: String
+    /// The active profile's subscription info, passed from the
+    /// dashboard (same source as the profile card's traffic
+    /// text, so the sheet and the card always agree).
+    let subscription: ConcordSubscriptionInfo?
     @State private var showAll = false
     @State private var isRefreshing = false
 
@@ -649,6 +655,97 @@ struct ProvidersSheet: View {
         let all = ruleStore.providers
         if showAll { return all }
         return all.filter { $0.type == "rule" }
+    }
+
+    /// Header (v0.2.64, video sheet_2 bottom-right): four stat
+    /// cells (策略组 / 代理 / 规则 / 外部资源）, a 订阅信息
+    /// section (used/total + expiry date), and a 配置 section
+    /// (上次更新）. Counts with no loaded data show "—" —
+    /// never an invented number.
+    private var headerSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                profileStatCell(value: groupCountText, label: "策略组")
+                profileStatCell(value: nodeCountText, label: "代理")
+                profileStatCell(value: ruleCountText, label: "规则")
+                profileStatCell(value: providerCountText, label: "外部资源")
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("订阅信息")
+                    .font(.headline)
+                HStack {
+                    Text(subscriptionText)
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(expireText)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("配置")
+                    .font(.headline)
+                HStack {
+                    Text("上次更新")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(updatedText)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(16)
+    }
+
+    private func profileStatCell(value: String, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.system(size: 22, weight: .bold))
+            Text(label)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var groupCountText: String {
+        proxyStore.groups.isEmpty ? "—" : "\(proxyStore.nonHiddenGroups.count)"
+    }
+
+    private var nodeCountText: String {
+        // allNodes repeats a node once per group that lists it;
+        // dedup by name (unique within a profile) for the true
+        // proxy count.
+        proxyStore.groups.isEmpty ? "—" : "\(Set(proxyStore.allNodes.map { $0.name }).count)"
+    }
+
+    private var ruleCountText: String {
+        ruleStore.rules.isEmpty ? "—" : "\(ruleStore.rules.count)"
+    }
+
+    private var providerCountText: String {
+        ruleStore.providers.isEmpty ? "—" : "\(ruleStore.providers.count)"
+    }
+
+    private var subscriptionText: String {
+        guard let info = subscription, info.total > 0 else { return "—" }
+        return "\(dashboardBytesNoSpace(info.upload + info.download)) / \(dashboardBytesNoSpace(info.total))"
+    }
+
+    private var expireText: String {
+        guard let info = subscription, info.expire > 0 else { return "—" }
+        let date = Date(timeIntervalSince1970: TimeInterval(info.expire))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private var updatedText: String {
+        guard let date = profileStore.activeProfile?.updatedAt else { return "—" }
+        return ConcordRelativeTime.string(since: date)
     }
 
     var body: some View {
@@ -675,6 +772,8 @@ struct ProvidersSheet: View {
         ) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    headerSection
+                    Divider().padding(.horizontal, 16)
                     if providers.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(ruleStore.providers.isEmpty ? "暂无提供方" : "暂无规则提供方")
@@ -759,18 +858,19 @@ struct ProvidersSheet: View {
 // the rule-hit list (per-day counts from the connection
 // feed's `rule` field, same 1 s sampling as the split), and
 // per-day uptime (past ranges show recorded values; days with
-// no observation show "—"). The 配置 ranking tab is omitted —
-// only one profile is ever active, so the row would just
-// repeat the total.
+// no observation show "—"). v0.2.64 adds the 4th ranking tab
+// 配置 (video sheet_3): a single row, the active profile with
+// the range totals — only one profile is ever active.
 
 private enum TrafficRankingTab: String, CaseIterable {
-    case policy, node, domain
+    case policy, node, domain, config
 
     var title: String {
         switch self {
         case .policy: return "策略"
         case .node: return "节点"
         case .domain: return "域名"
+        case .config: return "配置"
         }
     }
 }
@@ -922,6 +1022,7 @@ private struct TrafficTrendChart: View {
 
 struct TrafficStatsSheet: View {
     @EnvironmentObject private var trafficStore: TrafficStore
+    @EnvironmentObject private var profileStore: ProfileStore
 
     @State private var range: TrafficRange = .day
     @State private var offset = 0
@@ -932,15 +1033,23 @@ struct TrafficStatsSheet: View {
     private var totals: DayTotals { trafficStore.totalsForDates(dates) }
 
     private var rankedRows: [TrafficRankingRow] {
-        let buckets: [String: TrafficStore.DaySplit]
         switch rankingTab {
-        case .policy: buckets = totals.groups
-        case .node: buckets = totals.nodes
-        case .domain: buckets = totals.domains
+        case .policy:
+            return totals.groups.map { TrafficRankingRow(id: $0.key, up: $0.value.up, down: $0.value.down) }
+                .sorted { $0.total > $1.total }
+        case .node:
+            return totals.nodes.map { TrafficRankingRow(id: $0.key, up: $0.value.up, down: $0.value.down) }
+                .sorted { $0.total > $1.total }
+        case .domain:
+            return totals.domains.map { TrafficRankingRow(id: $0.key, up: $0.value.up, down: $0.value.down) }
+                .sorted { $0.total > $1.total }
+        case .config:
+            // v0.2.64 (video sheet_3): the 4th tab 配置. Only one
+            // profile is ever active, so it is a single row — the
+            // active profile's name with the range totals.
+            let name = profileStore.activeProfile?.name ?? "配置"
+            return [TrafficRankingRow(id: name, up: totals.up, down: totals.down)]
         }
-        return buckets
-            .map { TrafficRankingRow(id: $0.key, up: $0.value.up, down: $0.value.down) }
-            .sorted { $0.total > $1.total }
     }
 
     private var shownRows: [TrafficRankingRow] { Array(rankedRows.prefix(30)) }
@@ -1352,7 +1461,7 @@ struct MemoryDetailSheet: View {
     let onRelease: () async -> Void
 
     var body: some View {
-        DashboardBottomSheet(title: "内存") {
+        DashboardBottomSheet(title: "内存信息") {
             List {
                 Section("总计") {
                     memoryRow("应用 + 核心", value: ConcordFormat.bytes(Int64(appBytes + (coreBytes ?? 0))))

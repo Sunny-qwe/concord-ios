@@ -94,6 +94,11 @@ final class ProxyStore: ObservableObject {
     @Published var latenciesByURL: [LatencyKey: Int32] = [:]
     /// Group names with a delay test in flight (per-group spinners).
     @Published var testingGroups: Set<String> = []
+    /// The Proxies tab's currently selected group (v0.2.64): hoisted
+    /// out of ProxiesView's @State so the Dashboard 策略组 sheet can
+    /// select a group before switching tabs — the pills read
+    /// selectedVisibleGroup, which reads this. nil = first group.
+    @Published var selectedGroupName: String?
     /// When each testing group started its current run (v0.2.49):
     /// a run that never returns leaves its flag set forever, so
     /// every later tap is refused. A run older than
@@ -1615,6 +1620,18 @@ final class ProxyStore: ObservableObject {
     /// dead node — urltest.rs test_delay returns Failed), so it
     /// records -2 for that node and, after 3 such throws, cancels
     /// the rest of the run: the backend is down, not the nodes.
+    /// How many delay.test calls run at once (v0.2.64, user
+    /// direction 2026-11-22: "一次测多少个改的和上游一样"):
+    /// upstream FlClash caps iOS at 2 but runs 32 on
+    /// Windows/Android (lib/common/constant.dart:99:
+    /// maxConcurrentDelayTests = Platform.isIOS ? 2 : 32,
+    /// TaskPool in providers/actions/proxies.dart:30). 2 made a
+    /// 43-node run take ~9 minutes (log 2026-11-22 18:44:
+    /// 566 s) while fast nodes waited behind slow ones; 32
+    /// matches the upstream Windows/Android behaviour the user
+    /// asked for. The per-outcome applyLatencies() streaming
+    /// (same version) shows each result as it lands.
+    private static let delayTestBatchSize = 32
     @MainActor
     private func runLatencyTest(targets: [DelayTarget], groupNames: Set<String>) async {
         let startedAt = Date()
@@ -1674,7 +1691,7 @@ final class ProxyStore: ObservableObject {
             let elapsed = Int(Date().timeIntervalSince(startedAt))
             var lines = ["[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)）"]
             if let profileName { lines.append("当前订阅：\(profileName)") }
-            lines.append("方法：delay.test（逐个，并行 2 个）；超时：\(timeoutMs)ms（单次调用另有 30s 兜底）")
+            lines.append("方法：delay.test（逐个，并行 \(Self.delayTestBatchSize) 个）；超时：\(timeoutMs)ms（单次调用另有 30s 兜底）")
             lines.append("测速地址：\(urlText)")
             lines.append("目标：\(targets.count) 个节点；结果：成功 \(okCount)，超时(-1) \(timeoutCount)，失败(-2) \(failedCount)，未返回 \(untested)")
             let targetSample = targets.prefix(5).map { $0.proxyName }.joined(separator: "、")
@@ -1807,15 +1824,16 @@ final class ProxyStore: ObservableObject {
             preload = .ready(updated: [])
         }
         preloadSeconds = Int(Date().timeIntervalSince(preloadStart))
-        // One delay.test per target, at most 2 in flight (FlClash
-        // TaskPool, iOS = 2). Each call carries the settings timeout
-        // and the 30 s guard; see runOneDelayTest.
+        // One delay.test per target, at most delayTestBatchSize in
+        // flight (see the constant above for why 10, not
+        // upstream's iOS cap of 2). Each call carries the settings
+        // timeout and the 30 s guard; see runOneDelayTest.
         var firstTransportError: Error?
         var cancelledByTransport = false
         var index = 0
         let loopStart = Date()
         while index < targets.count, !cancelledByTransport {
-            let batch = Array(targets[index..<min(index + 2, targets.count)])
+            let batch = Array(targets[index..<min(index + Self.delayTestBatchSize, targets.count)])
             index += batch.count
             await withTaskGroup(of: DelayTargetOutcome.self) { group in
                 for target in batch {
@@ -1838,6 +1856,12 @@ final class ProxyStore: ObservableObject {
                         if firstTransportError == nil { firstTransportError = DelayTransportFailure(message: message) }
                         if transportThrowCount >= 3 { cancelledByTransport = true }
                     }
+                    // Stream results: recordLatency only writes the
+                    // dictionaries — the page reads groups, which
+                    // applyLatencies() rebuilds — so without this a
+                    // fast result waits for its whole batch's slowest
+                    // call before it shows (v0.2.64).
+                    applyLatencies()
                 }
             }
             applyLatencies()

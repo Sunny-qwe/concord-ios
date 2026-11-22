@@ -1523,10 +1523,12 @@ struct ProxiesView: View {
                                     switch segment {
                                     case .pair(let first, let second):
                                         HStack(spacing: 8) {
-                                            iconCard(first)
+                                            iconGroupCard(first)
+                                                .equatable()
                                                 .id(groupHeaderID(first.name))
                                             if let second {
-                                                iconCard(second)
+                                                iconGroupCard(second)
+                                                    .equatable()
                                                     .id(groupHeaderID(second.name))
                                             } else {
                                                 Color.clear
@@ -1535,7 +1537,8 @@ struct ProxiesView: View {
                                         }
                                     case .expanded(let group):
                                         VStack(spacing: 8) {
-                                            iconCard(group)
+                                            iconGroupCard(group)
+                                                .equatable()
                                                 .id(groupHeaderID(group.name))
                                             LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
                                                 ForEach(displayNodes(for: group)) { node in
@@ -1651,124 +1654,72 @@ struct ProxiesView: View {
         return out
     }
 
-    /// The brand-icon card (MuYu icon_card.dart GroupIconCard):
-    /// name + brand icon, "TYPE · n/m" subtitle (+ the per-group
-    /// search field when unfolded), then the bottom row with the
-    /// selected node, its live up/down speeds while unfolded
-    /// (MuYu _SelectedSpeeds, from TrafficStore's per-node sampler)
-    /// and the latency pill. Tapping the card toggles it; tapping
-    /// the pill tests the group.
-    private func iconCard(_ group: ProxyGroup) -> some View {
-        let m = iconCardMetrics()
-        let expanded = expandedGroups.contains(group.name)
-        let selectedName = group.selectedNodeName
-        let selectedIcon = selectedNodeIcon(for: group)
-        let latency = selectedNodeLatency(for: group)
-        let testing = proxyStore.testingGroups.contains(group.name)
+    /// Builds one card-style group card (MuYu icon_card.dart
+    /// GroupIconCard) as an Equatable IconGroupCard: every value
+    /// the card renders is precomputed here into plain values, so
+    /// a delay-test result landing on another group leaves this
+    /// card's == true and SwiftUI skips its body (same pattern as
+    /// nodeCard / ProxyNodeCard). The per-group search state, the
+    /// latency pill action and the tap action are passed as
+    /// closures the parent owns; the struct only calls them.
+    /// Call sites add .equatable() — without it SwiftUI does not
+    /// consult the ==.
+    private func iconGroupCard(_ group: ProxyGroup) -> IconGroupCard {
         let total = proxyStore.groups.first(where: { $0.name == group.name })?.nodes.count ?? group.nodes.count
-        // A tap gesture, NOT a Button: the card holds the latency
-        // pill Button and the search TextField, and a Button label
-        // swallows their touches (tapping the field would collapse
-        // the card instead of focusing it). The pill Button and the
-        // field take priority over this gesture for their own taps.
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: m.nameIconGap) {
-                Text(group.name)
-                    .font(.callout)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-                Spacer()
-                if styleStore.iconStyle != .hidden {
-                    GroupBrandIconView(icon: group.icon, name: group.name, size: m.brandSize, iconStyle: styleStore.iconStyle)
+        return IconGroupCard(
+            name: group.name,
+            type: group.type,
+            icon: group.icon,
+            subtitle: "\(Self.typeDisplayName(group.type).uppercased()) · \(availableCount(for: group))/\(total)",
+            selectedName: group.selectedNodeName,
+            selectedIcon: selectedNodeIcon(for: group),
+            latencyMs: selectedNodeLatency(for: group),
+            testing: proxyStore.testingGroups.contains(group.name),
+            expanded: expandedGroups.contains(group.name),
+            cardType: styleStore.cardType,
+            iconStyle: styleStore.iconStyle,
+            collapsedHeight: iconCardCollapsedHeight(for: group),
+            running: proxyStore.isRunning,
+            searchKeyword: groupSearchKeywords[group.name] ?? "",
+            searchOpen: groupSearchOpen.contains(group.name),
+            searchFocus: $groupSearchFocus,
+            onSearchKeywordChange: { new in
+                if new.isEmpty {
+                    groupSearchKeywords.removeValue(forKey: group.name)
+                } else {
+                    groupSearchKeywords[group.name] = new
                 }
-            }
-            Spacer().frame(height: m.metaGap)
-            HStack(spacing: 8) {
-                Text("\(Self.typeDisplayName(group.type).uppercased()) · \(availableCount(for: group))/\(total)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                if expanded {
-                    groupSearchControl(for: group)
+            },
+            onSearchOpen: { groupSearchOpen.insert(group.name) },
+            onSearchClose: {
+                groupSearchKeywords.removeValue(forKey: group.name)
+                groupSearchOpen.remove(group.name)
+                groupSearchFocus = nil
+            },
+            onSearchAppear: { groupSearchFocus = group.name },
+            onTestLatency: {
+                Task { await proxyStore.testLatency(group: group, nodeNames: searchMatchedNodeNames(forGroupNamed: group.name)) }
+            },
+            onTap: {
+                // Picker (dashboard sheet): tapping a group picks it
+                // instead of expanding — the caller selects the group,
+                // dismisses the sheet, and switches to the Proxies tab.
+                if picker {
+                    onPickGroup?(group.name)
+                    return
                 }
-            }
-            Spacer(minLength: m.bottomGap)
-            HStack(spacing: m.nameIconGap) {
-                // MuYu icon_card.dart _GroupBottomRow: the selected
-                // node sits in an Expanded — it takes ALL remaining
-                // width and truncates only when the row is genuinely
-                // full. The old row gave the name its ideal width
-                // next to a Spacer, so on a narrow card it was the
-                // name that got squeezed ("故…"); with the
-                // full-width rows above, the name now has the row to
-                // itself apart from the speeds and the pill.
-                HStack(spacing: m.nameIconGap) {
-                    if let selectedName {
-                        Image(systemName: "arrow.right.circle")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
-                        if let selectedIcon {
-                            GroupBrandIconView(icon: selectedIcon, name: selectedName, size: 16, iconStyle: .plain)
-                        }
-                        Text(selectedName)
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    } else if group.type == "load-balance" {
-                        Image(systemName: "checkmark.circle")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.secondary)
-                        Text("负载均衡")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                if expandedGroups.contains(group.name) {
+                    expandedGroups.remove(group.name)
+                } else {
+                    expandedGroups.insert(group.name)
+                    Task {
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                        scrollTargetName = groupHeaderID(group.name)
+                        scrollNonce += 1
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // MuYu icon_card.dart:296-301: the speeds sit
-                // between the selected node and the delay, only
-                // while unfolded with a node selected.
-                if let selectedName, expanded {
-                    SelectedNodeSpeedsView(proxyName: selectedName, running: proxyStore.isRunning)
-                }
-                if selectedName != nil {
-                    iconCardLatencyPill(group: group, latencyMs: latency, testing: testing)
-                }
-                // MuYu aligns the pill's right edge with the
-                // brand icon above it (icon_card.dart:273-274).
-                if styleStore.iconStyle == .filled {
-                    Spacer().frame(width: 6)
-                }
             }
-            .frame(height: 24)
-        }
-        .padding(m.inset)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: expanded ? nil : iconCardCollapsedHeight(for: group), alignment: .top)
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-        .contentShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-        .onTapGesture {
-            // Picker (dashboard sheet): tapping a group picks it
-            // instead of expanding — the caller selects the group,
-            // dismisses the sheet, and switches to the Proxies tab.
-            if picker {
-                onPickGroup?(group.name)
-                return
-            }
-            if expanded {
-                expandedGroups.remove(group.name)
-            } else {
-                expandedGroups.insert(group.name)
-                Task {
-                    try? await Task.sleep(nanoseconds: 250_000_000)
-                    scrollTargetName = groupHeaderID(group.name)
-                    scrollNonce += 1
-                }
-            }
-        }
+        )
     }
 
 /// The selected node's live up/down speeds (MuYu _SelectedSpeeds,
@@ -1836,47 +1787,6 @@ private struct SelectedNodeSpeedsView: View {
             .nodes.first(where: { $0.name == selected })?.latencyMs
     }
 
-    /// The latency pill (MuYu icon_card.dart _SelectedDelay): the
-    /// bare number, no "ms" suffix; bolt when untested, spinner
-    /// while testing. Tapping tests the group. While a test runs
-    /// the pill is deliberately neutral instead of keeping the last
-    /// delay's colour.
-    private func iconCardLatencyPill(group: ProxyGroup, latencyMs: Int32?, testing: Bool) -> some View {
-        let color: Color = {
-            if testing { return .secondary }
-            guard let ms = latencyMs else { return .secondary }
-            if ms > 0 { return ms < 600 ? .green : .orange }
-            return .red
-        }()
-        return Button {
-            Task { await proxyStore.testLatency(group: group, nodeNames: searchMatchedNodeNames(forGroupNamed: group.name)) }
-        } label: {
-            Group {
-                if testing {
-                    ProgressView()
-                        .frame(width: 14, height: 14)
-                        .scaleEffect(0.7)
-                } else if let ms = latencyMs {
-                    if ms > 0 {
-                        Text("\(ms)")
-                    } else {
-                        Text(ms == -1 ? "超时" : "失败")
-                    }
-                } else {
-                    Image(systemName: "bolt")
-                        .font(.system(size: 14))
-                }
-            }
-            .font(.caption2)
-            .fontWeight(.semibold)
-            .foregroundStyle(color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.15), in: Capsule())
-        }
-        .buttonStyle(.plain)
-        .disabled(testing)
-    }
 
     /// The "no groups" empty state: the "import a subscription"
     /// wording only applies when there genuinely is no active
@@ -1909,37 +1819,42 @@ private struct SelectedNodeSpeedsView: View {
     /// view once its rows are laid out (FlClash _handleChange,
     /// list.dart:45-60). The node grid is the same LazyVGrid the
     /// old section row drew, now inside the card.
+    /// Built as an Equatable ListGroupCard (same pattern as
+    /// iconGroupCard / IconGroupCard): the header's values are
+    /// plain inputs, and the expanded grid arrives as a @ViewBuilder
+    /// closure whose rendered data is shadowed by nodeFingerprints
+    /// — see ListGroupNodeFingerprint. Collapsed cards pass []
+    /// fingerprints (no grid rendered, no per-node lookups).
     private func listGroupCard(_ group: ProxyGroup, width: CGFloat) -> some View {
         let expanded = expandedGroups.contains(group.name)
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                groupIcon(group)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(group.name)
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                        .lineLimit(1)
-                    Text(group.selectedNodeName ?? "")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(minHeight: 13, alignment: .leading)
-                }
-                Spacer()
-                Text(Self.typeDisplayName(group.type))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.black)
-                    .frame(width: 30, height: 30)
-                    .background(Color(.systemGray4), in: Circle())
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if expanded {
+        let nodes = displayNodes(for: group)
+        let fingerprints: [ListGroupNodeFingerprint] = expanded ? nodes.map { node in
+            ListGroupNodeFingerprint(
+                name: node.name,
+                typeDisplay: Self.nodeTypeDisplayName(node.type),
+                description: nodeDescription(node),
+                latencyMs: node.latencyMs,
+                testing: proxyStore.testingNodes.contains(node.name),
+                pinned: group.fixed == node.name,
+                selected: group.selectedNodeName == node.name,
+                memberIcon: memberIcon(for: node),
+                addable: isAddable(node)
+            )
+        } : []
+        return ListGroupCard(
+            name: group.name,
+            icon: group.icon,
+            typeDisplay: Self.typeDisplayName(group.type),
+            selectedName: group.selectedNodeName,
+            expanded: expanded,
+            iconStyle: styleStore.iconStyle,
+            columnCount: ProxyStyleStore.columns(for: styleStore.layout, width: width),
+            cardType: styleStore.cardType,
+            cardHeight: cardHeight,
+            groupType: group.type,
+            nodeFingerprints: fingerprints,
+            onToggleExpand: {
+                if expandedGroups.contains(group.name) {
                     expandedGroups.remove(group.name)
                 } else {
                     expandedGroups.insert(group.name)
@@ -1950,110 +1865,21 @@ private struct SelectedNodeSpeedsView: View {
                     }
                 }
             }
-            if expanded {
-                LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
-                    // The group's own search keyword filters only
-                    // this group (MuYu GroupSearchControl); the
-                    // page search / hide-timeout / sort already
-                    // applied by visibleGroups.
-                    ForEach(displayNodes(for: group)) { node in
-                        nodeCard(node, in: group)
-                            .id(scrollID(nodeName: node.name, groupName: group.name))
-                    }
+        ) {
+            LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
+                ForEach(nodes) { node in
+                    nodeCard(node, in: group)
+                        .id(scrollID(nodeName: node.name, groupName: group.name))
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 12)
             }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
         }
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .equatable()
     }
 
     private func groupHeaderID(_ groupName: String) -> String {
         "groupHeader:\(groupName)"
-    }
-
-    /// Per-group search (MuYu GroupSearchControl, common.dart):
-    /// a magnifier that opens a 128pt field filtering only this
-    /// group's nodes. The clear button clears the keyword AND
-    /// closes the field (MuYu _close). Autofocus on open; the
-    /// keyword entry is removed when the text becomes empty.
-    @ViewBuilder
-    private func groupSearchControl(for group: ProxyGroup) -> some View {
-        if groupSearchOpen.contains(group.name) {
-            HStack(spacing: 4) {
-                TextField("搜索", text: Binding(
-                    get: { groupSearchKeywords[group.name] ?? "" },
-                    set: { new in
-                        if new.isEmpty {
-                            groupSearchKeywords.removeValue(forKey: group.name)
-                        } else {
-                            groupSearchKeywords[group.name] = new
-                        }
-                    }
-                ))
-                .font(.caption)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .focused($groupSearchFocus, equals: group.name)
-                .frame(width: 128)
-                Button {
-                    groupSearchKeywords.removeValue(forKey: group.name)
-                    groupSearchOpen.remove(group.name)
-                    groupSearchFocus = nil
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("清除搜索")
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-            .onAppear { groupSearchFocus = group.name }
-        } else {
-            Button {
-                groupSearchOpen.insert(group.name)
-            } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("搜索此组")
-        }
-    }
-
-    /// Group icon (FlClash _GroupIcon): the profile's icon when it
-    /// is a URL (loaded) or short text (shown as-is), else the
-    /// user-imported icon pack (matched by group name), else the
-    /// group's first character. Filled puts it in a rounded tile,
-    /// plain shows it bare, hidden leaves a small gap so the title
-    /// lines up with the card names below. Size is 40pt (v0.2.56):
-    /// MuYu's header icon fills the header row (listHeaderHeight
-    /// 61pt; IMG_1182 brand icons measure ~40pt) — the old 28pt
-    /// tile was visibly smaller than MuYu's.
-    private func groupIcon(_ group: ProxyGroup) -> some View {
-        let content: some View = GroupIconImageView(icon: group.icon, name: group.name)
-        switch styleStore.iconStyle {
-        case .hidden:
-            return AnyView(Color.clear.frame(width: 4, height: 40))
-        case .plain:
-            return AnyView(
-                content
-                    .foregroundStyle(ConcordTheme.accent)
-                    .frame(width: 40, height: 40)
-            )
-        case .filled:
-            return AnyView(
-                content
-                    .frame(width: 40, height: 40)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            )
-        }
     }
 
     // MARK: - Node card
@@ -2323,6 +2149,478 @@ private struct GroupBrandIconView: View {
                 .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
         }
+    }
+}
+
+/// One card-style group card (MuYu icon_card.dart GroupIconCard)
+/// as its own Equatable view, fed only by plain values (same
+/// pattern as ProxyNodeCard). The old iconCard(_:) was a function
+/// on ProxiesView, so every @Published change in ProxyStore — each
+/// delay-test result landing, each testing-flag flip — rebuilt
+/// every visible card's body. As an Equatable struct with narrow
+/// inputs, SwiftUI skips a card whose own values did not change,
+/// so a latency landing on one group no longer re-renders the
+/// other visible cards. Closures and the search FocusState binding
+/// are ignored by == (actions only fire on tap; focus is not
+/// rendered state). The metrics are derived from cardType with the
+/// same switch as ProxiesView.iconCardMetrics; the collapsed
+/// height is precomputed by the caller.
+private struct IconGroupCard: View, Equatable {
+    let name: String
+    let type: String
+    let icon: String
+    /// Precomputed "TYPE · n/m" subtitle, uppercased (MuYu
+    /// _GroupAvailability: type display name + available/total).
+    let subtitle: String
+    let selectedName: String?
+    /// The selected node's group icon (profile icon or icon-pack
+    /// URL as a string); nil shows no icon.
+    let selectedIcon: String?
+    let latencyMs: Int32?
+    let testing: Bool
+    let expanded: Bool
+    let cardType: ProxyStyleStore.CardType
+    let iconStyle: ProxyStyleStore.IconStyle
+    /// Precomputed collapsed height (iconCardCollapsedHeight).
+    let collapsedHeight: CGFloat
+    /// Whether the VPN tunnel is running (drives the live speeds).
+    let running: Bool
+    /// Per-group search, rendered only while expanded.
+    let searchKeyword: String
+    let searchOpen: Bool
+    let searchFocus: FocusState<String?>.Binding
+    let onSearchKeywordChange: (String) -> Void
+    let onSearchOpen: () -> Void
+    let onSearchClose: () -> Void
+    let onSearchAppear: () -> Void
+    /// Tests this group (search-scoped while the page searches).
+    let onTestLatency: () -> Void
+    /// Card tap: pick in picker mode, else toggle expand.
+    let onTap: () -> Void
+
+    init(
+        name: String,
+        type: String,
+        icon: String,
+        subtitle: String,
+        selectedName: String?,
+        selectedIcon: String?,
+        latencyMs: Int32?,
+        testing: Bool,
+        expanded: Bool,
+        cardType: ProxyStyleStore.CardType,
+        iconStyle: ProxyStyleStore.IconStyle,
+        collapsedHeight: CGFloat,
+        running: Bool,
+        searchKeyword: String,
+        searchOpen: Bool,
+        searchFocus: FocusState<String?>.Binding,
+        onSearchKeywordChange: @escaping (String) -> Void,
+        onSearchOpen: @escaping () -> Void,
+        onSearchClose: @escaping () -> Void,
+        onSearchAppear: @escaping () -> Void,
+        onTestLatency: @escaping () -> Void,
+        onTap: @escaping () -> Void
+    ) {
+        self.name = name
+        self.type = type
+        self.icon = icon
+        self.subtitle = subtitle
+        self.selectedName = selectedName
+        self.selectedIcon = selectedIcon
+        self.latencyMs = latencyMs
+        self.testing = testing
+        self.expanded = expanded
+        self.cardType = cardType
+        self.iconStyle = iconStyle
+        self.collapsedHeight = collapsedHeight
+        self.running = running
+        self.searchKeyword = searchKeyword
+        self.searchOpen = searchOpen
+        self.searchFocus = searchFocus
+        self.onSearchKeywordChange = onSearchKeywordChange
+        self.onSearchOpen = onSearchOpen
+        self.onSearchClose = onSearchClose
+        self.onSearchAppear = onSearchAppear
+        self.onTestLatency = onTestLatency
+        self.onTap = onTap
+    }
+
+    // Closures and the FocusState binding are not Equatable:
+    // compare everything else, and treat the actions as always
+    // equal (they only fire on tap, like ProxyNodeCard.onTest).
+    static func == (lhs: IconGroupCard, rhs: IconGroupCard) -> Bool {
+        lhs.name == rhs.name
+            && lhs.type == rhs.type
+            && lhs.icon == rhs.icon
+            && lhs.subtitle == rhs.subtitle
+            && lhs.selectedName == rhs.selectedName
+            && lhs.selectedIcon == rhs.selectedIcon
+            && lhs.latencyMs == rhs.latencyMs
+            && lhs.testing == rhs.testing
+            && lhs.expanded == rhs.expanded
+            && lhs.cardType == rhs.cardType
+            && lhs.iconStyle == rhs.iconStyle
+            && lhs.collapsedHeight == rhs.collapsedHeight
+            && lhs.running == rhs.running
+            && lhs.searchKeyword == rhs.searchKeyword
+            && lhs.searchOpen == rhs.searchOpen
+    }
+
+    /// Card metrics (MuYu icon_card.dart _cardMetrics, lines 20–49):
+    /// inset, name↔icon gap, meta gap, bottom gap, brand icon size.
+    /// Same switch as ProxiesView.iconCardMetrics — the struct
+    /// derives them from cardType instead of reading the store.
+    private static func metrics(for cardType: ProxyStyleStore.CardType) -> (inset: CGFloat, nameIconGap: CGFloat, metaGap: CGFloat, bottomGap: CGFloat, brandSize: CGFloat) {
+        switch cardType {
+        case .compact: return (8, 6, 4, 8, 40)
+        case .standard: return (12, 8, 6, 8, 48)
+        case .loose: return (16, 8, 8, 10, 56)
+        }
+    }
+
+    var body: some View {
+        let m = Self.metrics(for: cardType)
+        // A tap gesture, NOT a Button: the card holds the latency
+        // pill Button and the search TextField, and a Button label
+        // swallows their touches (tapping the field would collapse
+        // the card instead of focusing it). The pill Button and the
+        // field take priority over this gesture for their own taps.
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: m.nameIconGap) {
+                Text(name)
+                    .font(.callout)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                Spacer()
+                if iconStyle != .hidden {
+                    GroupBrandIconView(icon: icon, name: name, size: m.brandSize, iconStyle: iconStyle)
+                }
+            }
+            Spacer().frame(height: m.metaGap)
+            HStack(spacing: 8) {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                if expanded {
+                    groupSearchControl
+                }
+            }
+            Spacer(minLength: m.bottomGap)
+            HStack(spacing: m.nameIconGap) {
+                // MuYu icon_card.dart _GroupBottomRow: the selected
+                // node sits in an Expanded — it takes ALL remaining
+                // width and truncates only when the row is genuinely
+                // full. The old row gave the name its ideal width
+                // next to a Spacer, so on a narrow card it was the
+                // name that got squeezed ("故…"); with the
+                // full-width rows above, the name now has the row to
+                // itself apart from the speeds and the pill.
+                HStack(spacing: m.nameIconGap) {
+                    if let selectedName {
+                        Image(systemName: "arrow.right.circle")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                        if let selectedIcon {
+                            GroupBrandIconView(icon: selectedIcon, name: selectedName, size: 16, iconStyle: .plain)
+                        }
+                        Text(selectedName)
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else if type == "load-balance" {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                        Text("负载均衡")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // MuYu icon_card.dart:296-301: the speeds sit
+                // between the selected node and the delay, only
+                // while unfolded with a node selected.
+                if let selectedName, expanded {
+                    SelectedNodeSpeedsView(proxyName: selectedName, running: running)
+                }
+                if selectedName != nil {
+                    latencyPill
+                }
+                // MuYu aligns the pill's right edge with the
+                // brand icon above it (icon_card.dart:273-274).
+                if iconStyle == .filled {
+                    Spacer().frame(width: 6)
+                }
+            }
+            .frame(height: 24)
+        }
+        .padding(m.inset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: expanded ? nil : collapsedHeight, alignment: .top)
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .contentShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .onTapGesture(perform: onTap)
+    }
+
+    /// Per-group search (MuYu GroupSearchControl, common.dart):
+    /// a magnifier that opens a 128pt field filtering only this
+    /// group's nodes. The clear button clears the keyword AND
+    /// closes the field (MuYu _close). Autofocus on open; the
+    /// keyword entry is removed when the text becomes empty.
+    /// The keyword Binding is built here from the plain keyword
+    /// value + the parent's change callback; focus is the parent's
+    /// FocusState binding.
+    private var groupSearchControl: some View {
+        Group {
+            if searchOpen {
+                HStack(spacing: 4) {
+                    TextField("搜索", text: Binding(
+                        get: { searchKeyword },
+                        set: { onSearchKeywordChange($0) }
+                    ))
+                    .font(.caption)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused(searchFocus, equals: name)
+                    .frame(width: 128)
+                    Button(action: onSearchClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("清除搜索")
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                .onAppear(perform: onSearchAppear)
+            } else {
+                Button(action: onSearchOpen) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("搜索此组")
+            }
+        }
+    }
+
+    /// The latency pill (MuYu icon_card.dart _SelectedDelay): the
+    /// bare number, no "ms" suffix; bolt when untested, spinner
+    /// while testing. Tapping tests the group. While a test runs
+    /// the pill is deliberately neutral instead of keeping the last
+    /// delay's colour.
+    private var latencyPill: some View {
+        let color: Color = {
+            if testing { return .secondary }
+            guard let ms = latencyMs else { return .secondary }
+            if ms > 0 { return ms < 600 ? .green : .orange }
+            return .red
+        }()
+        return Button(action: onTestLatency) {
+            Group {
+                if testing {
+                    ProgressView()
+                        .frame(width: 14, height: 14)
+                        .scaleEffect(0.7)
+                } else if let ms = latencyMs {
+                    if ms > 0 {
+                        Text("\(ms)")
+                    } else {
+                        Text(ms == -1 ? "超时" : "失败")
+                    }
+                } else {
+                    Image(systemName: "bolt")
+                        .font(.system(size: 14))
+                }
+            }
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(testing)
+    }
+}
+
+/// One rendered row of an expanded list-style group card, as plain
+/// values: everything nodeCard reads to build one node card, so a
+/// change in any of it flips the parent card's == and the grid is
+/// rebuilt. The grid itself is NOT stored here — it arrives as a
+/// @ViewBuilder closure from the caller, which reuses the existing
+/// nodeCard wiring verbatim; the fingerprints are the ==-visible
+/// shadow of that closure's data. INVARIANT: keep this struct in
+/// sync with what the closure renders (nodeCard's inputs +
+/// nodeMenu's inputs + the grid columns). A field rendered by the
+/// grid but missing here would go stale when == says equal.
+private struct ListGroupNodeFingerprint: Equatable {
+    let name: String
+    let typeDisplay: String
+    let description: String
+    let latencyMs: Int32?
+    let testing: Bool
+    let pinned: Bool
+    let selected: Bool
+    let memberIcon: String?
+    /// nodeMenu's "添加到本地节点" row (FlClash _isAddableToLocal).
+    let addable: Bool
+}
+
+/// One list-style group card (v0.2.68, video f_040) as its own
+/// Equatable view, fed only by plain values plus the expanded node
+/// grid as a @ViewBuilder closure (same scoping idea as
+/// ProxyNodeCard: a latency landing on a node in another group
+/// leaves this card's == true, so SwiftUI skips the whole card,
+/// header and grid alike). The closure is ignored by ==; its data
+/// is covered by nodeFingerprints (+ groupType, columnCount,
+/// cardType, cardHeight — everything nodeCard / nodeMenu read).
+/// Collapsed cards pass [] fingerprints: they render no grid, so
+/// there is nothing to shadow, and the per-node lookups are
+/// skipped entirely.
+private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
+    let name: String
+    let icon: String
+    /// Capitalized type display name (Selector / URLTest / ...).
+    let typeDisplay: String
+    let selectedName: String?
+    let expanded: Bool
+    let iconStyle: ProxyStyleStore.IconStyle
+    let columnCount: Int
+    let cardType: ProxyStyleStore.CardType
+    let cardHeight: CGFloat
+    /// Raw group type: nodeMenu branches on it ("select" → 选择,
+    /// url-test/fallback/smart → 首选）.
+    let groupType: String
+    let nodeFingerprints: [ListGroupNodeFingerprint]
+    let expandedContent: () -> ExpandedContent
+    /// Header tap: toggle expand/collapse (+ scroll into view).
+    let onToggleExpand: () -> Void
+
+    init(
+        name: String,
+        icon: String,
+        typeDisplay: String,
+        selectedName: String?,
+        expanded: Bool,
+        iconStyle: ProxyStyleStore.IconStyle,
+        columnCount: Int,
+        cardType: ProxyStyleStore.CardType,
+        cardHeight: CGFloat,
+        groupType: String,
+        nodeFingerprints: [ListGroupNodeFingerprint],
+        onToggleExpand: @escaping () -> Void,
+        @ViewBuilder expandedContent: @escaping () -> ExpandedContent
+    ) {
+        self.name = name
+        self.icon = icon
+        self.typeDisplay = typeDisplay
+        self.selectedName = selectedName
+        self.expanded = expanded
+        self.iconStyle = iconStyle
+        self.columnCount = columnCount
+        self.cardType = cardType
+        self.cardHeight = cardHeight
+        self.groupType = groupType
+        self.nodeFingerprints = nodeFingerprints
+        self.onToggleExpand = onToggleExpand
+        self.expandedContent = expandedContent
+    }
+
+    // The expanded-content closure is not Equatable: compare
+    // everything else — the closure's rendered data is covered by
+    // nodeFingerprints + groupType + columnCount + cardType +
+    // cardHeight, so == false whenever the grid would look
+    // different. The toggle action only fires on tap.
+    static func == (lhs: ListGroupCard, rhs: ListGroupCard) -> Bool {
+        lhs.name == rhs.name
+            && lhs.icon == rhs.icon
+            && lhs.typeDisplay == rhs.typeDisplay
+            && lhs.selectedName == rhs.selectedName
+            && lhs.expanded == rhs.expanded
+            && lhs.iconStyle == rhs.iconStyle
+            && lhs.columnCount == rhs.columnCount
+            && lhs.cardType == rhs.cardType
+            && lhs.cardHeight == rhs.cardHeight
+            && lhs.groupType == rhs.groupType
+            && lhs.nodeFingerprints == rhs.nodeFingerprints
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                groupIconView(icon: icon, name: name, iconStyle: iconStyle)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    Text(selectedName ?? "")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(minHeight: 13, alignment: .leading)
+                }
+                Spacer()
+                Text(typeDisplay)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.black)
+                    .frame(width: 30, height: 30)
+                    .background(Color(.systemGray4), in: Circle())
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onToggleExpand)
+            if expanded {
+                expandedContent()
+            }
+        }
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+}
+
+/// Group icon (FlClash _GroupIcon): the profile's icon when it is
+/// a URL (loaded) or short text (shown as-is), else the
+/// user-imported icon pack (matched by group name), else the
+/// group's first character. Filled puts it in a rounded tile,
+/// plain shows it bare, hidden leaves a small gap so the title
+/// lines up with the card names below. Size is 40pt (v0.2.56):
+/// MuYu's header icon fills the header row (listHeaderHeight
+/// 61pt; IMG_1182 brand icons measure ~40pt) — the old 28pt
+/// tile was visibly smaller than MuYu's.
+private func groupIconView(icon: String, name: String, iconStyle: ProxyStyleStore.IconStyle) -> some View {
+    let content: some View = GroupIconImageView(icon: icon, name: name)
+    switch iconStyle {
+    case .hidden:
+        return AnyView(Color.clear.frame(width: 4, height: 40))
+    case .plain:
+        return AnyView(
+            content
+                .foregroundStyle(ConcordTheme.accent)
+                .frame(width: 40, height: 40)
+        )
+    case .filled:
+        return AnyView(
+            content
+                .frame(width: 40, height: 40)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+        )
     }
 }
 

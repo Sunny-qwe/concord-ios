@@ -7,10 +7,13 @@ import UIKit
 // service status (probe.services); the
 // active subscription card; proxy groups; stats row. The DATA wiring
 // is unchanged from the previous dashboard: proxyStore (running +
-// groups), trafficStore (speed + services + engine), connectionStore,
-// profileStore, ruleStore (provider list for the subscription info),
-// settingsStore, eventStore / dnsStore (stats), tunnelManager and
-// client. Only the look and the navigation changed.
+// groups), connectionStore, profileStore, ruleStore (provider list
+// for the subscription info), settingsStore, eventStore / dnsStore
+// (stats), tunnelManager and client. TrafficStore (speed + services
+// + engine) is NOT observed here — v0.2.69 moved every read into
+// narrow leaf views (see the MARK at the end of this file), so the
+// 1 s traffic tick no longer re-evaluates this body. Only the look
+// and the navigation changed.
 
 struct DashboardView: View {
     /// Switches the main tab (called with .proxies / .profiles from
@@ -18,7 +21,6 @@ struct DashboardView: View {
     var onSelectTab: (AppTab) -> Void = { _ in }
 
     @EnvironmentObject private var proxyStore: ProxyStore
-    @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var ruleStore: RuleStore
@@ -60,6 +62,14 @@ struct DashboardView: View {
     @AppStorage("ConcordiOS.dashboard.order") private var cardOrderString = ""
 
     @State private var showEditSheet = false
+    /// Non-subscribing TrafficStore action channel (v0.2.69): this
+    /// view no longer observes TrafficStore, so its body does not
+    /// re-evaluate on the 1 s traffic tick. The DashboardTrafficEffects
+    /// leaf observes the store and fills these closures on appear;
+    /// the dashboard only *calls* them from user gestures
+    /// (pull-to-refresh, the clover refresh), which never subscribe
+    /// and never re-render the body.
+    @State private var trafficActions = DashboardTrafficActions()
     @State private var servicesExpanded = false
     /// IP quality sheet (D-M4): the status card's IP opens the
     /// IP-quality page for that exact IP.
@@ -97,9 +107,10 @@ struct DashboardView: View {
     /// Profile sync spinner (FlClash profiles.dart _SyncButton shows
     /// an activity indicator while the profile is updating).
     @State private var isSyncingProfile = false
-    /// Memory card state (FlClash memory_info.dart): the app's own
-    /// resident size (task_info) plus the core RSS (core.stats).
-    @State private var appMemoryBytes: UInt64 = 0
+    /// Memory detail sheet state (FlClash memory_info.dart).
+    /// The app's own resident size (task_info) and the core RSS
+    /// (core.stats) are read by the MemoryCardView leaf and the
+    /// MemoryDetailSheetHost, not here.
     @State private var showMemoryDetail = false
     @State private var isReleasingMemory = false
     @State private var memoryReleaseMessage: String?
@@ -136,46 +147,6 @@ struct DashboardView: View {
         }
     }
 
-    /// probe.services status strings are part of the core's contract
-    /// (upstream crates/engine/src/probe/services.rs).
-    private func serviceStatusLabel(_ status: String) -> String {
-        switch status {
-        case "available": return "可用"
-        case "unavailable": return "不可用"
-        case "restricted": return "受限"
-        case "disallowed-isp": return "运营商限制"
-        case "blocked": return "被墙"
-        case "unsupported-region": return "地区不支持"
-        case "originals-only": return "仅自制剧"
-        case "coming-soon": return "即将推出"
-        case "timeout": return "超时"
-        case "failed": return "失败"
-        case "": return "未判断"
-        default: return status
-        }
-    }
-
-    private func serviceStatusColor(_ status: String) -> Color {
-        switch status {
-        case "available": return .green
-        case "blocked", "failed", "timeout", "unavailable": return .red
-        default: return .orange
-        }
-    }
-
-    /// engine.state values (upstream crates/proto EngineStatus):
-    /// created / initialized / configured / running / failed.
-    private func engineStateLabel(_ state: String) -> String {
-        switch state {
-        case "created": return "已创建"
-        case "initialized": return "已初始化"
-        case "configured": return "已配置"
-        case "running": return "运行中"
-        case "failed": return "启动失败"
-        default: return state
-        }
-    }
-
     private func modeShortLabel(_ mode: OutboundMode) -> String {
         switch mode {
         case .rule: return "规则"
@@ -190,26 +161,6 @@ struct DashboardView: View {
         case .global: return "globe"
         case .direct: return "record.circle"
         }
-    }
-
-    private var uptimeText: String {
-        guard let started = tunnelStartedAt else { return "—" }
-        return ConcordFormat.uptimeHMS(seconds: max(0, Int64(Date().timeIntervalSince(started))))
-    }
-
-    private func service(named name: String) -> ConcordServiceItem? {
-        trafficStore.services.first { $0.name.lowercased() == name }
-    }
-
-    /// Service-status verdict (FlClash service_status.dart: problems
-    /// = services where abnormal, i.e. status != available; chip is
-    /// "N 项异常" warn / "全部可用" ok, hidden while nothing has been
-    /// checked — FlClash has no grey "未检测" state).
-    private var serviceBadge: (text: String, tint: Color)? {
-        guard !trafficStore.services.isEmpty else { return nil }
-        let abnormal = trafficStore.services.filter { $0.status != "available" }.count
-        if abnormal == 0 { return ("全部可用", .green) }
-        return ("\(abnormal) 项异常", .orange)
     }
 
     /// Groups whose delay test failed (FlClash proxy_groups.dart
@@ -256,28 +207,6 @@ struct DashboardView: View {
 
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.25"
-    }
-
-    /// The app process's resident size (FlClash reads
-    /// ProcessInfo.currentRss on its side; task_info is the iOS
-    /// equivalent). The core runs in the extension process, so its
-    /// RSS comes from core.stats instead.
-    private func readAppMemory() {
-        var info = task_basic_info()
-        var count = mach_msg_type_number_t(MemoryLayout<task_basic_info>.size / MemoryLayout<integer_t>.size)
-        let result = withUnsafeMutablePointer(to: &info) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(TASK_BASIC_INFO), $0, &count)
-            }
-        }
-        if result == KERN_SUCCESS {
-            appMemoryBytes = UInt64(info.resident_size)
-        }
-    }
-
-    private func refreshMemorySnapshot() async {
-        readAppMemory()
-        await trafficStore.refreshMemory()
     }
 
     private func checkForUpdate() async {
@@ -441,12 +370,12 @@ struct DashboardView: View {
             tunnelStartedAt = extStarted
             // The traffic card's cumulative uptime counts this
             // session from the extension's start time.
-            await trafficStore.noteTunnelStarted(at: extStarted)
+            await trafficActions.noteTunnelStarted(extStarted)
         }
         await proxyStore.refresh()
         await connectionStore.refresh()
-        await trafficStore.refresh()
-        await trafficStore.refreshEngineStatus()
+        await trafficActions.refresh()
+        await trafficActions.refreshEngineStatus()
         await eventStore.refresh()
         await dnsStore.refresh()
         await refreshSubscription()
@@ -479,81 +408,23 @@ struct DashboardView: View {
         }
         .concordPageBackground()
         .refreshable { await refreshAll() }
-        .task {
-            morphProgress = proxyStore.isRunning ? 1 : 0
-            if proxyStore.isRunning && tunnelStartedAt == nil {
-                tunnelStartedAt = tunnelManager.readTunnelStartedAt() ?? Date()
-            }
-            // v0.2.56: the traffic card's cumulative uptime counts
-            // the live session from its start (the extension's
-            // start time, so it survives an app restart).
-            if proxyStore.isRunning, let started = tunnelStartedAt {
-                await trafficStore.noteTunnelStarted(at: started)
-            }
-            tunnelManager.checkTunRestartNeeded()
-            await fetchIPInfo()
-            await trafficStore.refreshEngineStatus()
-            await refreshSubscription()
-            if trafficStore.services.isEmpty,
-               let proxy = proxyStore.selectedOutbound,
-               client.mode == .sample || tunnelManager.isRunning {
-                await trafficStore.probeServices(proxy: proxy)
-            }
-        }
-        .onChange(of: proxyStore.isRunning) { _, running in
-            // D4: prefer the extension's own start time
-            // (vpn-diagnostics.json) so the uptime survives an app
-            // restart while the VPN is running; the local clock is
-            // only the fallback when the extension has not written
-            // the file yet.
-            tunnelStartedAt = running ? (tunnelStartedAt ?? tunnelManager.readTunnelStartedAt() ?? Date()) : nil
-            // v0.2.56: the traffic card's cumulative uptime counts
-            // finished sessions; settle the session that just
-            // ended (or start the one that just began).
-            if running {
-                if let started = tunnelStartedAt {
-                    Task { await trafficStore.noteTunnelStarted(at: started) }
-                }
-            } else {
-                Task { await trafficStore.noteTunnelStopped() }
-            }
-            // D-M7: hold the service/IP-probe results through the
-            // start — a stale pre-start result must not flash as
-            // current. The next services probe clears the hold
-            // (TrafficStore.probeServices), and the services card
-            // shows the held state until then.
-            if running { trafficStore.holdServices() }
-            // Morph circle -> cookie9 over 450ms (easeOutBack, the
-            // forward curve of FlClash's _StartToggle).
-            withAnimation(.timingCurve(0.34, 1.56, 0.64, 1, duration: 0.45)) {
-                morphProgress = running ? 1 : 0
-            }
-            // The egress IP changes when the VPN toggles: drop the
-            // stale direct-IP result so the card shows the loading
-            // skeletons (FlClash re-probes on start), then re-fetch
-            // so the status card shows the current proxy egress IP.
-            if running {
-                ipInfo = nil
-                ipAsn = nil
-                ipFetchFailed = false
-            }
-            Task { await fetchIPInfo() }
-            // D8/D10: the tunnel flip also refreshes the engine /
-            // services / connections snapshots and re-probes the
-            // egress IP through the core, otherwise the dashboard
-            // keeps showing pre-connect values (or nothing) until
-            // the next pull-to-refresh.
-            Task {
-                await trafficStore.refreshEngineStatus()
-                await connectionStore.refresh()
-                if running {
-                    await trafficStore.probe()
-                    if let proxy = proxyStore.selectedOutbound,
-                       client.mode == .sample || tunnelManager.isRunning {
-                        await trafficStore.probeServices(proxy: proxy)
-                    }
-                }
-            }
+        // v0.2.69: the tunnel bookkeeping, engine refresh and
+        // service probing that used to live in this view's .task /
+        // .onChange now live in DashboardTrafficEffects (below),
+        // a leaf that observes TrafficStore. Its body is clear
+        // colour, so the 1 s traffic tick re-evaluates almost
+        // nothing; this view stays unsubscribed.
+        .background {
+            DashboardTrafficEffects(
+                tunnelStartedAt: $tunnelStartedAt,
+                morphProgress: $morphProgress,
+                ipInfo: $ipInfo,
+                ipAsn: $ipAsn,
+                ipFetchFailed: $ipFetchFailed,
+                trafficActions: $trafficActions,
+                fetchIPInfo: fetchIPInfo,
+                refreshSubscription: refreshSubscription
+            )
         }
         .onChange(of: settingsStore.mode) { _, _ in
             Task { await settingsStore.applyGeneralToCore() }
@@ -581,20 +452,12 @@ struct DashboardView: View {
             )
         }
         .sheet(isPresented: $showMemoryDetail) {
-            MemoryDetailSheet(
-                appBytes: appMemoryBytes,
-                coreBytes: trafficStore.coreMemoryBytes,
+            // v0.2.69: the sheet's core-bytes read lives in the
+            // host leaf, which observes TrafficStore; this view
+            // no longer reads the store.
+            MemoryDetailSheetHost(
                 isReleasing: $isReleasingMemory,
-                releaseMessage: $memoryReleaseMessage,
-                onRelease: {
-                    do {
-                        try await client.coreReleaseMemory()
-                        await refreshMemorySnapshot()
-                        memoryReleaseMessage = "已请求核心释放内存"
-                    } catch {
-                        memoryReleaseMessage = "释放失败：\(error.localizedDescription)"
-                    }
-                }
+                releaseMessage: $memoryReleaseMessage
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.hidden)
@@ -615,19 +478,16 @@ struct DashboardView: View {
         // v0.2.56: the status card opens the 出站 IP sheet
         // (MuYu key_3).
         .sheet(isPresented: $showOutboundIPSheet) {
-            OutboundIPSheet(
-                displayIp: displayIp,
+            // v0.2.69: the egress-IP read and the core probe live
+            // in the host leaf, which observes TrafficStore.
+            OutboundIPSheetHost(
                 hideIp: $settingsStore.hideIp,
+                ipInfo: ipInfo,
                 assessed: assessedIpInfo,
                 ipAsn: ipAsn,
                 isChecking: ipChecking,
                 fetchFailed: ipFetchFailed,
-                onRefresh: {
-                    Task {
-                        await fetchIPInfo()
-                        await trafficStore.probe()
-                    }
-                }
+                fetchIPInfo: fetchIPInfo
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.hidden)
@@ -688,14 +548,10 @@ struct DashboardView: View {
         // that exact IP (upstream showIpQualitySheet is always
         // opened for one IP).
         .sheet(isPresented: $showIPQualitySheet) {
-            NavigationStack {
-                if let ip = displayIp {
-                    IPQualityView(ip: ip)
-                } else {
-                    IPQualityView()
-                }
-            }
-            .presentationDragIndicator(.visible)
+            // v0.2.69: the egress-IP read lives in the root leaf,
+            // which observes TrafficStore.
+            IPQualitySheetRoot(ipInfo: ipInfo)
+                .presentationDragIndicator(.visible)
         }
         // D-M3: manage the probe-service targets (order + enabled).
         .sheet(isPresented: $showServiceManageSheet) {
@@ -890,48 +746,6 @@ struct DashboardView: View {
     // _StatusWavePainter, painted behind the content and clipped to
     // the card's rounded rect (34pt, the FlClash mobile card radius).
 
-    /// IP to show in the status card (audit D10): the core's own
-    /// probe.outboundIp result first — it measures the egress
-    /// through the selected proxy — ip-api.com only as fallback
-    /// for the geo/org enrichment. TrafficStore.probe() runs when
-    /// the tunnel connects (see the isRunning onChange below).
-    private var displayIp: String? {
-        if proxyStore.isRunning,
-           let coreIp = trafficStore.outboundIp?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !coreIp.isEmpty {
-            return coreIp
-        }
-        return ipInfo?.query
-    }
-
-    /// IP slot (FlClash _ExitRow): a static grey bar while the core
-    /// is not running, a pulsing skeleton while running and the
-    /// probe has not answered, the real IP once it has, "服务失败"
-    /// (red) if the probe failed.
-    private var ipSlot: some View {
-        Group {
-            if !proxyStore.isRunning {
-                SkeletonBar(width: 140, height: 18)
-            } else if let ip = displayIp {
-                // FlClash _IpText: hideIp masks the IP as "*****
-                // (current_outbound.dart _ipMask).
-                // v0.2.68: 24pt bold, like the video (was 18pt semibold).
-                Text(settingsStore.hideIp ? "*****" : ip)
-                    .font(.system(size: 24, weight: .bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            } else if ipFetchFailed {
-                Text("服务失败")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
-            } else {
-                SkeletonBar(width: 140, height: 18, animated: true)
-            }
-        }
-        .frame(height: 30, alignment: .leading)
-    }
-
     /// Chips slot (FlClash _IpChips): two static grey bars while
     /// not running, two pulsing pills while running and loading,
     /// the real network-type + quality pills once probed, a retry
@@ -1026,15 +840,20 @@ struct DashboardView: View {
                             // egress IP through the core as well as
                             // the ip-api.com lookup, so the status
                             // card's IP and the core probe agree.
+                            // v0.2.69: the probe goes through the
+                            // non-subscribing action channel.
                             onRefresh: {
                                 Task {
                                     await fetchIPInfo()
-                                    await trafficStore.probe()
+                                    await trafficActions.probe()
                                 }
                             }
                         )
                         VStack(alignment: .leading, spacing: 0) {
-                            ipSlot
+                            // v0.2.69: the IP slot observes
+                            // TrafficStore itself, so the 1 s tick
+                            // re-renders only the slot.
+                            StatusIpSlotView(ipInfo: ipInfo, ipFetchFailed: ipFetchFailed)
                             Spacer().frame(height: 4)
                             chipsSlot
                         }
@@ -1049,11 +868,11 @@ struct DashboardView: View {
                             Text("运行时间")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            TimelineView(.periodic(from: .now, by: 1)) { _ in
-                                Text(uptimeText)
-                                    .font(.system(size: 14))
-                                    .fontWeight(.semibold)
-                            }
+                            // v0.2.69: the uptime text is its own leaf
+                            // with its own 1 s tick — it no longer
+                            // forces the status card (or the whole
+                            // dashboard) to rebuild every second.
+                            StatusUptimeText(startedAt: tunnelStartedAt)
                         }
                         VStack(alignment: .leading, spacing: 2) {
                             Text("组织")
@@ -1145,61 +964,16 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 12) {
             CardTitleRow(icon: "gauge.with.dots.needle.33percent", title: "网络速度")
             HStack(spacing: 12) {
-                speedPanel(isUp: true)
-                speedPanel(isUp: false)
+                // v0.2.69: each panel observes TrafficStore
+                // itself — the 1 s tick re-renders only the two
+                // panels, not the card or the dashboard.
+                SpeedPanelView(isUp: true, bigNumberSize: bigNumberSize, densityCompact: densityCompact)
+                SpeedPanelView(isUp: false, bigNumberSize: bigNumberSize, densityCompact: densityCompact)
             }
             // v0.2.68: the waveform moved INSIDE each speed panel
             // (SpeedPanelAreaWaveform) — no separate sparkline here.
         }
         .concordCard()
-    }
-
-    private func speedPanel(isUp: Bool) -> some View {
-        let bytes = isUp ? trafficStore.current.up : trafficStore.current.down
-        let total = isUp ? trafficStore.current.totalUp : trafficStore.current.totalDown
-        let split = ConcordBytes.split(bytes)
-        // v0.2.68: the area waveform is the panel's BACKGROUND
-        // (theme-tinted, numbers overlaid), like the video.
-        return ZStack(alignment: .leading) {
-            SpeedPanelAreaWaveform(
-                history: trafficStore.history,
-                value: isUp ? \.up : \.down,
-                color: isUp ? Color.orange : ConcordTheme.accent
-            )
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: isUp ? "arrow.up" : "arrow.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(isUp ? Color(.label) : ConcordTheme.accent)
-                    Text(isUp ? "上传" : "下载")
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                }
-                HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text(split.number)
-                        .font(.system(size: bigNumberSize, weight: .bold))
-                    Text("\(split.unit)/s")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.secondary)
-                }
-                // Compact density drops the subtitle (FlClash
-                // DashboardDensity.compact drops subtitles).
-                if !densityCompact {
-                    // Reference shows "累计 0 B" (no ".0"): ConcordFormat
-                    // formats 0 as "0.0 B", so special-case zero locally
-                    // (the shared formatter is used elsewhere and stays).
-                    Text("累计 \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(14)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-        .clipShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
     }
 
     // MARK: - Traffic statistics card (MuYu TrafficStatisticsCard, D-M8)
@@ -1218,83 +992,14 @@ struct DashboardView: View {
     // is unchanged (the sheet still reads it).
 
     private var trafficCard: some View {
-        let today = trafficStore.todayTotals
-        return Button { showTrafficDetail = true } label: {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    CardTitleRow(icon: "chart.pie", title: "流量统计")
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(dashboardBytesNoSpace(today.total))
-                            .font(.system(size: bigNumberSize, weight: .bold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        HStack(spacing: 8) {
-                            trafficCardPill("↓ \(dashboardBytesNoSpace(today.down))")
-                            trafficCardPill("↑ \(dashboardBytesNoSpace(today.up))")
-                        }
-                        // v0.2.68: 代理/直连 are TWO LINES in the
-                        // video, not side-by-side in one row.
-                        VStack(alignment: .leading, spacing: 4) {
-                            trafficSplitRow(dot: ConcordTheme.accent, label: "代理", value: dashboardBytesNoSpace(today.proxyBytes))
-                            trafficSplitRow(dot: ConcordTheme.accent.opacity(0.45), label: "直连", value: dashboardBytesNoSpace(today.directBytes))
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    ProxyRatioRing(ratio: today.proxyRatio)
-                }
-                HStack(spacing: 6) {
-                    Image(systemName: "clock")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    // The 1 s traffic tick re-renders the card
-                    // while the core answers; the TimelineView
-                    // keeps the uptime ticking through a transient
-                    // probe failure too (same pattern as the status
-                    // card's 运行时间).
-                    TimelineView(.periodic(from: .now, by: 1)) { _ in
-                        Text("累计运行 \(trafficStore.todayUptimeText)")
-                            .font(.footnote)
-                            .foregroundStyle(Color(.label))
-                            .lineLimit(1)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // v0.2.64: belt-and-braces — the whole card is already
-            // a Button, but the contentShape makes taps on any
-            // transparent part of the card register too.
-            .contentShape(Rectangle())
+        // v0.2.69: the changing figures live in TrafficCardContent,
+        // which observes TrafficStore itself — the 1 s tick
+        // re-renders only that leaf. The Button chrome stays here.
+        Button { showTrafficDetail = true } label: {
+            TrafficCardContent(bigNumberSize: bigNumberSize)
         }
         .buttonStyle(.plain)
         .concordCard()
-    }
-
-    private func trafficCardPill(_ label: String) -> some View {
-        Text(label)
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(ConcordTheme.softFill, in: Capsule())
-    }
-
-    private func trafficSplitRow(dot: Color, label: String, value: String) -> some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(dot)
-                .frame(width: 8, height: 8)
-            Text(label)
-                .font(.footnote)
-            Text(value)
-                .font(.footnote)
-        }
-        .foregroundStyle(Color(.label))
     }
 
     // MARK: - Outbound mode card
@@ -1510,100 +1215,17 @@ struct DashboardView: View {
 
     // MARK: - Service status card
 
+    // v0.2.69: the whole card lives in ServicesCardView, which
+    // observes TrafficStore itself. Its data changes on probe,
+    // not every second — but any read here would subscribe this
+    // view to the store and re-render the dashboard on the 1 s
+    // tick, so the card had to move out with the rest.
     private var servicesCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                // v0.2.56: the title + badge open the 服务状态
-                // sheet (MuYu key_7); the chevron keeps the inline
-                // expand (engine / TUN / DNS details).
-                Button { showServiceSheet = true } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "target")
-                            .font(.callout.weight(.semibold))
-                        Text("服务状态")
-                            .font(.caption.weight(.semibold))
-                        if let badge = serviceBadge {
-                            PillBadge(text: badge.text, tint: badge.tint)
-                        }
-                    }
-                    .foregroundStyle(Color(.label))
-                }
-                .buttonStyle(.plain)
-                Spacer()
-                Button { withAnimation { servicesExpanded.toggle() } } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(servicesExpanded ? 90 : 0))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(servicesExpanded ? "收起服务详情" : "展开服务详情")
-            }
-            // D-M3: the card shows the first two *enabled* services
-            // (TrafficStore.enabledServiceNames), not a hardcoded
-            // google/github pair.
-            HStack(spacing: 12) {
-                ForEach(Array(trafficStore.enabledServiceNames.prefix(2)), id: \.self) { name in
-                    servicePill(for: service(named: name))
-                }
-            }
-            // D-M7: the held state after a VPN start — the pre-start
-            // results are held, not shown as current, until the
-            // next probe lands.
-            if trafficStore.servicesHeld {
-                Text("检测结果已暂停：VPN 刚启动，等待下次检测刷新。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if servicesExpanded {
-                expandedServices
-            }
-        }
-        .concordCard()
-        // v0.2.64: the whole card opens the 服务状态 sheet —
-        // tapping anywhere in the row must show the drawer, not
-        // just the title/chevron. When expanded, taps stay
-        // inside the expanded details (the chevron collapses);
-        // the title Button keeps opening the sheet too.
-        .contentShape(Rectangle())
-        .onTapGesture { if !servicesExpanded { showServiceSheet = true } }
-    }
-
-    private func servicePill(for service: ConcordServiceItem?) -> some View {
-        HStack(spacing: 10) {
-            ZStack(alignment: .bottomTrailing) {
-                PackTileImage(
-                    name: service?.name ?? "",
-                    fallback: serviceTileText(service?.name),
-                    fontSize: service?.name.lowercased() == "github" ? 14 : 20
-                )
-                .foregroundStyle(Color(.label))
-                .frame(width: 40, height: 40)
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                if service?.status == "available" {
-                    Circle()
-                        .fill(Color.green)
-                        .frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                        .offset(x: 2, y: 2)
-                }
-            }
-            Text(service?.delay.map { "\($0) ms" } ?? "—")
-                .font(.footnote)
-                .fontWeight(.semibold)
-            Spacer()
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-    }
-
-    private func serviceTileText(_ name: String?) -> String {
-        guard let name else { return "?" }
-        if name.lowercased() == "github" { return "GH" }
-        return String(name.prefix(1)).uppercased()
+        ServicesCardView(
+            expanded: $servicesExpanded,
+            onOpenServiceSheet: { showServiceSheet = true },
+            onManageServices: { showServiceManageSheet = true }
+        )
     }
 
 /// Brand tile from the user's imported icon pack (v0.2.68):
@@ -1630,111 +1252,6 @@ struct PackTileImage: View {
         }
     }
 }
-
-    private var expandedServices: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider()
-            if trafficStore.isProbingServices {
-                ProgressView()
-            }
-            if let error = trafficStore.servicesError {
-                Text(error).font(.caption2).foregroundStyle(.red)
-            }
-            if trafficStore.services.isEmpty {
-                Text("通过当前出站检测 Google / GitHub / YouTube 等服务的可用性（probe.services）。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                // D-M3: each row shows region + proxy chains + status
-                // + delay (ConcordServiceItem carries all four).
-                ForEach(trafficStore.services) { service in
-                    HStack {
-                        Text(service.name).font(.footnote)
-                        Spacer()
-                        if let chains = service.chains, !chains.isEmpty {
-                            Text(chains.joined(separator: " → "))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        if let region = service.region, !region.isEmpty {
-                            Text(region).font(.caption2).foregroundStyle(.secondary)
-                        }
-                        Text(service.delay.map { "\($0) ms" } ?? "—").font(.caption2)
-                        Text(serviceStatusLabel(service.status))
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(serviceStatusColor(service.status))
-                    }
-                }
-            }
-            HStack(spacing: 8) {
-                Button("检测") {
-                    Task {
-                        if let proxy = proxyStore.selectedOutbound {
-                            await trafficStore.probeServices(proxy: proxy)
-                        }
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(ConcordTheme.accent)
-                .controlSize(.small)
-                .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
-                // D-M3: 全部检测 probes every registry service,
-                // including ones disabled in 管理服务 (检测 only
-                // probes the enabled ones).
-                Button("全部检测") {
-                    Task {
-                        if let proxy = proxyStore.selectedOutbound {
-                            await trafficStore.probeServices(proxy: proxy, names: trafficStore.orderedServiceNames)
-                        }
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
-                Spacer()
-                Button("管理服务") { showServiceManageSheet = true }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-            }
-            Divider()
-            LabeledContent("引擎", value: trafficStore.engineStatus.map { engineStateLabel($0.state) } ?? (proxyStore.isRunning ? "已启动" : "已停止"))
-                .font(.footnote.weight(.semibold))
-            if let engine = trafficStore.engineStatus,
-               let faults = engine.faults, !faults.isEmpty {
-                ForEach(faults, id: \.service) { fault in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("启动失败：\(fault.service)").font(.footnote)
-                        Text("\(fault.reason)：\(fault.message)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } else if let error = trafficStore.engineStatusError {
-                Text(error).font(.caption2).foregroundStyle(.red)
-            }
-            LabeledContent("VPN 隧道", value: tunnelStatusText)
-                .font(.footnote.weight(.semibold))
-            // D5: the unexpected-disconnect banner used to live here,
-            // inside this collapsed section — it now lives on the main
-            // VPN card (vpnCardSection), always visible.
-            if onDemandStore.enabled {
-                Text("按需连接已开启：断网或切换网络后系统会自动重连。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
-                .font(.footnote.weight(.semibold))
-            LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
-                .font(.footnote.weight(.semibold))
-            Text(client.mode == .live
-                 ? "数据面：PacketTunnel 扩展内的 Concord 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
-                 : "示例模式：VPN 开关只切换界面状态，不转发流量。切到实时核心并启动 VPN 后由扩展转发流量。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
 
     // MARK: - Subscription card
 
@@ -2025,70 +1542,18 @@ struct PackTileImage: View {
     // so the two numbers are separate processes, not one total to
     // be carved up. Polls every 2s like FlClash; tapping opens the
     // detail sheet with the release-memory action.
-
-    private var memoryTotalBytes: UInt64 {
-        appMemoryBytes + (trafficStore.coreMemoryBytes ?? 0)
-    }
+    //
+    // v0.2.69: the whole card lives in MemoryCardView, which
+    // observes TrafficStore itself — its core-bytes read here
+    // would subscribe this view and re-render the dashboard on
+    // the 1 s tick.
 
     private var memoryCard: some View {
-        Button { showMemoryDetail = true } label: {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    CardTitleRow(icon: "memorychip", title: "内存信息")
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                }
-                HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text(ConcordFormat.bytes(Int64(memoryTotalBytes)))
-                        .font(.system(size: bigNumberSize, weight: .bold))
-                        .foregroundStyle(Color(.label))
-                }
-                MemoryBar(appBytes: appMemoryBytes, coreBytes: trafficStore.coreMemoryBytes ?? 0)
-                HStack(spacing: 16) {
-                    memoryLegend(dot: ConcordTheme.accent, label: "应用", bytes: appMemoryBytes)
-                    memoryLegend(dot: memoryCoreColor, label: "核心", bytes: trafficStore.coreMemoryBytes ?? 0)
-                }
-                if !proxyStore.isRunning {
-                    Text("核心未运行：仅应用内存为实测值，核心为 0。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // v0.2.64: belt-and-braces — the whole card is already
-            // a Button, but the contentShape makes taps on any
-            // transparent part of the card register too.
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .concordCard()
-        .task {
-            await refreshMemorySnapshot()
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                // FlClash memory_info.dart pauses card polling while
-                // the detail sheet is open (the sheet reads on its own).
-                if !showMemoryDetail {
-                    await refreshMemorySnapshot()
-                }
-            }
-        }
-    }
-
-    /// Core segment colour (FlClash style.dart series2: primary
-    /// blended 45% over the card — a blue tone, not green).
-    private var memoryCoreColor: Color { ConcordTheme.accent.opacity(0.45) }
-
-    private func memoryLegend(dot: Color, label: String, bytes: UInt64) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(dot).frame(width: 8, height: 8)
-            Text(label).font(.caption2).foregroundStyle(Color(.label))
-            Text(ConcordFormat.bytes(Int64(bytes)))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(Color(.label))
-        }
+        MemoryCardView(
+            bigNumberSize: bigNumberSize,
+            isDetailOpen: $showMemoryDetail,
+            onOpenDetail: { showMemoryDetail = true }
+        )
     }
 
     // MARK: - Update card (FlClash update_status.dart)
@@ -2536,6 +2001,849 @@ private struct DashboardEditSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("完成") { dismiss() }
                 }
+            }
+        }
+    }
+}
+
+// MARK: - TrafficStore leaf views (v0.2.69)
+//
+// DashboardView used to observe TrafficStore directly, so every
+// 1 s traffic tick (current + history) re-evaluated its whole
+// body — ScrollView and every card. The store reads now live in
+// these narrow leaf views, each observing only the store; the
+// dashboard itself stays unsubscribed and only re-renders when
+// its own state or another store changes. No text, icon, colour
+// or layout changed in the move — the leaf bodies are verbatim
+// copies of the card code they replace.
+
+/// Non-subscribing TrafficStore action channel: the dashboard
+/// cannot call the store directly any more, so the
+/// DashboardTrafficEffects leaf observes the store and fills
+/// these closures on appear. The dashboard only *calls* them
+/// from user gestures (pull-to-refresh, the clover refresh),
+/// which never subscribe and never re-render the body.
+private struct DashboardTrafficActions {
+    var refresh: () async -> Void = {}
+    var refreshEngineStatus: () async -> Void = {}
+    var noteTunnelStarted: (Date) async -> Void = { _ in }
+    var probe: () async -> Void = {}
+}
+
+/// IP to show in the status card and the IP sheets (audit D10):
+/// the core's own probe.outboundIp result first — it measures
+/// the egress through the selected proxy — ip-api.com only as
+/// fallback for the geo/org enrichment. TrafficStore.probe()
+/// runs when the tunnel connects (see DashboardTrafficEffects).
+private func dashboardDisplayIp(isRunning: Bool, coreIp: String?, fallbackQuery: String?) -> String? {
+    if isRunning,
+       let coreIp = coreIp?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !coreIp.isEmpty {
+        return coreIp
+    }
+    return fallbackQuery
+}
+
+/// The app process's resident size (FlClash reads
+/// ProcessInfo.currentRss on its side; task_info is the iOS
+/// equivalent). The core runs in the extension process, so its
+/// RSS comes from core.stats instead. Nil when task_info fails,
+/// so callers keep their previous value.
+private func readAppMemoryBytes() -> UInt64? {
+    var info = task_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<task_basic_info>.size / MemoryLayout<integer_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) {
+        $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(mach_task_self_, task_flavor_t(TASK_BASIC_INFO), $0, &count)
+        }
+    }
+    guard result == KERN_SUCCESS else { return nil }
+    return UInt64(info.resident_size)
+}
+
+/// Side-effect bridge for the dashboard: the tunnel-start/stop
+/// bookkeeping, engine refresh and service probing that used to
+/// live in DashboardView's .task / .onChange, verbatim. Its body
+/// is clear colour, so the 1 s traffic tick re-evaluates almost
+/// nothing. It is placed in the ScrollView's background, so its
+/// .task fires exactly when the dashboard first appears, like
+/// the .task it replaces. The closures it receives only touch
+/// DashboardView's own @State and other stores — never
+/// TrafficStore — so the parent stays unsubscribed.
+private struct DashboardTrafficEffects: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    @EnvironmentObject private var proxyStore: ProxyStore
+    @EnvironmentObject private var tunnelManager: TunnelManager
+    @EnvironmentObject private var connectionStore: ConnectionStore
+    @EnvironmentObject private var client: ConcordClient
+
+    @Binding var tunnelStartedAt: Date?
+    @Binding var morphProgress: CGFloat
+    @Binding var ipInfo: IPQualityInfo?
+    @Binding var ipAsn: String?
+    @Binding var ipFetchFailed: Bool
+    @Binding var trafficActions: DashboardTrafficActions
+    let fetchIPInfo: () async -> Void
+    let refreshSubscription: () async -> Void
+
+    var body: some View {
+        Color.clear
+            .onAppear {
+                trafficActions = DashboardTrafficActions(
+                    refresh: { await trafficStore.refresh() },
+                    refreshEngineStatus: { await trafficStore.refreshEngineStatus() },
+                    noteTunnelStarted: { await trafficStore.noteTunnelStarted(at: $0) },
+                    probe: { await trafficStore.probe() }
+                )
+            }
+            .task {
+                morphProgress = proxyStore.isRunning ? 1 : 0
+                if proxyStore.isRunning && tunnelStartedAt == nil {
+                    tunnelStartedAt = tunnelManager.readTunnelStartedAt() ?? Date()
+                }
+                // v0.2.56: the traffic card's cumulative uptime counts
+                // the live session from its start (the extension's
+                // start time, so it survives an app restart).
+                if proxyStore.isRunning, let started = tunnelStartedAt {
+                    await trafficStore.noteTunnelStarted(at: started)
+                }
+                tunnelManager.checkTunRestartNeeded()
+                await fetchIPInfo()
+                await trafficStore.refreshEngineStatus()
+                await refreshSubscription()
+                if trafficStore.services.isEmpty,
+                   let proxy = proxyStore.selectedOutbound,
+                   client.mode == .sample || tunnelManager.isRunning {
+                    await trafficStore.probeServices(proxy: proxy)
+                }
+            }
+            .onChange(of: proxyStore.isRunning) { _, running in
+                // D4: prefer the extension's own start time
+                // (vpn-diagnostics.json) so the uptime survives an app
+                // restart while the VPN is running; the local clock is
+                // only the fallback when the extension has not written
+                // the file yet.
+                tunnelStartedAt = running ? (tunnelStartedAt ?? tunnelManager.readTunnelStartedAt() ?? Date()) : nil
+                // v0.2.56: the traffic card's cumulative uptime counts
+                // finished sessions; settle the session that just
+                // ended (or start the one that just began).
+                if running {
+                    if let started = tunnelStartedAt {
+                        Task { await trafficStore.noteTunnelStarted(at: started) }
+                    }
+                } else {
+                    Task { await trafficStore.noteTunnelStopped() }
+                }
+                // D-M7: hold the service/IP-probe results through the
+                // start — a stale pre-start result must not flash as
+                // current. The next services probe clears the hold
+                // (TrafficStore.probeServices), and the services card
+                // shows the held state until then.
+                if running { trafficStore.holdServices() }
+                // Morph circle -> cookie9 over 450ms (easeOutBack, the
+                // forward curve of FlClash's _StartToggle).
+                withAnimation(.timingCurve(0.34, 1.56, 0.64, 1, duration: 0.45)) {
+                    morphProgress = running ? 1 : 0
+                }
+                // The egress IP changes when the VPN toggles: drop the
+                // stale direct-IP result so the card shows the loading
+                // skeletons (FlClash re-probes on start), then re-fetch
+                // so the status card shows the current proxy egress IP.
+                if running {
+                    ipInfo = nil
+                    ipAsn = nil
+                    ipFetchFailed = false
+                }
+                Task { await fetchIPInfo() }
+                // D8/D10: the tunnel flip also refreshes the engine /
+                // services / connections snapshots and re-probes the
+                // egress IP through the core, otherwise the dashboard
+                // keeps showing pre-connect values (or nothing) until
+                // the next pull-to-refresh.
+                Task {
+                    await trafficStore.refreshEngineStatus()
+                    await connectionStore.refresh()
+                    if running {
+                        await trafficStore.probe()
+                        if let proxy = proxyStore.selectedOutbound,
+                           client.mode == .sample || tunnelManager.isRunning {
+                            await trafficStore.probeServices(proxy: proxy)
+                        }
+                    }
+                }
+            }
+    }
+}
+
+/// IP slot (FlClash _ExitRow): a static grey bar while the core
+/// is not running, a pulsing skeleton while running and the
+/// probe has not answered, the real IP once it has, "服务失败"
+/// (red) if the probe failed. The only TrafficStore read is
+/// outboundIp, so this slot — not the status card — re-renders
+/// when the probe lands.
+private struct StatusIpSlotView: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    @EnvironmentObject private var proxyStore: ProxyStore
+    @EnvironmentObject private var settingsStore: SettingsStore
+    let ipInfo: IPQualityInfo?
+    let ipFetchFailed: Bool
+
+    var body: some View {
+        Group {
+            if !proxyStore.isRunning {
+                SkeletonBar(width: 140, height: 18)
+            } else if let ip = dashboardDisplayIp(isRunning: proxyStore.isRunning, coreIp: trafficStore.outboundIp, fallbackQuery: ipInfo?.query) {
+                // FlClash _IpText: hideIp masks the IP as "*****
+                // (current_outbound.dart _ipMask).
+                // v0.2.68: 24pt bold, like the video (was 18pt semibold).
+                Text(settingsStore.hideIp ? "*****" : ip)
+                    .font(.system(size: 24, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            } else if ipFetchFailed {
+                Text("服务失败")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            } else {
+                SkeletonBar(width: 140, height: 18, animated: true)
+            }
+        }
+        .frame(height: 30, alignment: .leading)
+    }
+}
+
+/// Status card uptime (HH:MM:SS): its own leaf with its own 1 s
+/// tick, so the running clock re-renders only this text — never
+/// the status card, and never the dashboard.
+private struct StatusUptimeText: View {
+    let startedAt: Date?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            Text(startedAt.map { ConcordFormat.uptimeHMS(seconds: max(0, Int64(Date().timeIntervalSince($0)))) } ?? "—")
+                .font(.system(size: 14))
+                .fontWeight(.semibold)
+        }
+    }
+}
+
+/// One network-speed panel: the only view that reads
+/// TrafficStore.current / .history on the dashboard. The card
+/// keeps its title and HStack; the per-second numbers and the
+/// area waveform live here.
+private struct SpeedPanelView: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    let isUp: Bool
+    let bigNumberSize: CGFloat
+    let densityCompact: Bool
+
+    var body: some View {
+        let bytes = isUp ? trafficStore.current.up : trafficStore.current.down
+        let total = isUp ? trafficStore.current.totalUp : trafficStore.current.totalDown
+        let split = ConcordBytes.split(bytes)
+        // v0.2.68: the area waveform is the panel's BACKGROUND
+        // (theme-tinted, numbers overlaid), like the video.
+        return ZStack(alignment: .leading) {
+            SpeedPanelAreaWaveform(
+                history: trafficStore.history,
+                value: isUp ? \.up : \.down,
+                color: isUp ? Color.orange : ConcordTheme.accent
+            )
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: isUp ? "arrow.up" : "arrow.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isUp ? Color(.label) : ConcordTheme.accent)
+                    Text(isUp ? "上传" : "下载")
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(split.number)
+                        .font(.system(size: bigNumberSize, weight: .bold))
+                    Text("\(split.unit)/s")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                }
+                // Compact density drops the subtitle (FlClash
+                // DashboardDensity.compact drops subtitles).
+                if !densityCompact {
+                    // Reference shows "累计 0 B" (no ".0"): ConcordFormat
+                    // formats 0 as "0.0 B", so special-case zero locally
+                    // (the shared formatter is used elsewhere and stays).
+                    Text("累计 \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(14)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .clipShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+}
+
+/// Traffic statistics card content (MuYu TrafficStatisticsCard,
+/// D-M8): today's totals from TrafficStore.todayTotals, the
+/// 代理/直连 split, the proxy-share ring, and the 累计运行 row.
+/// All figures are TODAY's, from one source — the daily-history
+/// accumulator. The 1 s tick re-renders only this leaf.
+private struct TrafficCardContent: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    let bigNumberSize: CGFloat
+
+    var body: some View {
+        let today = trafficStore.todayTotals
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                CardTitleRow(icon: "chart.pie", title: "流量统计")
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(dashboardBytesNoSpace(today.total))
+                        .font(.system(size: bigNumberSize, weight: .bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    HStack(spacing: 8) {
+                        trafficCardPill("↓ \(dashboardBytesNoSpace(today.down))")
+                        trafficCardPill("↑ \(dashboardBytesNoSpace(today.up))")
+                    }
+                    // v0.2.68: 代理/直连 are TWO LINES in the
+                    // video, not side-by-side in one row.
+                    VStack(alignment: .leading, spacing: 4) {
+                        trafficSplitRow(dot: ConcordTheme.accent, label: "代理", value: dashboardBytesNoSpace(today.proxyBytes))
+                        trafficSplitRow(dot: ConcordTheme.accent.opacity(0.45), label: "直连", value: dashboardBytesNoSpace(today.directBytes))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                ProxyRatioRing(ratio: today.proxyRatio)
+            }
+            HStack(spacing: 6) {
+                Image(systemName: "clock")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                // The TimelineView keeps the uptime ticking through
+                // a transient probe failure too (same pattern as
+                // the status card's 运行时间).
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text("累计运行 \(trafficStore.todayUptimeText)")
+                        .font(.footnote)
+                        .foregroundStyle(Color(.label))
+                        .lineLimit(1)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // v0.2.64: belt-and-braces — the whole card is already
+        // a Button, but the contentShape makes taps on any
+        // transparent part of the card register too.
+        .contentShape(Rectangle())
+    }
+
+    private func trafficCardPill(_ label: String) -> some View {
+        Text(label)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(ConcordTheme.softFill, in: Capsule())
+    }
+
+    private func trafficSplitRow(dot: Color, label: String, value: String) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(dot)
+                .frame(width: 8, height: 8)
+            Text(label)
+                .font(.footnote)
+            Text(value)
+                .font(.footnote)
+        }
+        .foregroundStyle(Color(.label))
+    }
+}
+
+/// Service status card: the title + verdict badge open the 服务状态
+/// sheet (MuYu key_7); the chevron keeps the inline expand
+/// (engine / TUN / DNS details). Its data changes on probe, not
+/// every second — but any read in DashboardView would subscribe
+/// that view to the store and re-render the dashboard on the 1 s
+/// tick, so the whole card lives here. The expanded section's
+/// tunnel-status row duplicates DashboardView.tunnelStatusText
+/// (same switch, same strings) because this leaf owns its own
+/// TunnelManager observation.
+private struct ServicesCardView: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    @EnvironmentObject private var proxyStore: ProxyStore
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var tunnelManager: TunnelManager
+    @EnvironmentObject private var client: ConcordClient
+    @ObservedObject private var onDemandStore = OnDemandStore.shared
+
+    @Binding var expanded: Bool
+    let onOpenServiceSheet: () -> Void
+    let onManageServices: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                // v0.2.56: the title + badge open the 服务状态
+                // sheet (MuYu key_7); the chevron keeps the inline
+                // expand (engine / TUN / DNS details).
+                Button { onOpenServiceSheet() } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "target")
+                            .font(.callout.weight(.semibold))
+                        Text("服务状态")
+                            .font(.caption.weight(.semibold))
+                        if let badge = serviceBadge {
+                            PillBadge(text: badge.text, tint: badge.tint)
+                        }
+                    }
+                    .foregroundStyle(Color(.label))
+                }
+                .buttonStyle(.plain)
+                Spacer()
+                Button { withAnimation { expanded.toggle() } } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(expanded ? "收起服务详情" : "展开服务详情")
+            }
+            // D-M3: the card shows the first two *enabled* services
+            // (TrafficStore.enabledServiceNames), not a hardcoded
+            // google/github pair.
+            HStack(spacing: 12) {
+                ForEach(Array(trafficStore.enabledServiceNames.prefix(2)), id: \.self) { name in
+                    servicePill(for: service(named: name))
+                }
+            }
+            // D-M7: the held state after a VPN start — the pre-start
+            // results are held, not shown as current, until the
+            // next probe lands.
+            if trafficStore.servicesHeld {
+                Text("检测结果已暂停：VPN 刚启动，等待下次检测刷新。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if expanded {
+                expandedServices
+            }
+        }
+        .concordCard()
+        // v0.2.64: the whole card opens the 服务状态 sheet —
+        // tapping anywhere in the row must show the drawer, not
+        // just the title/chevron. When expanded, taps stay
+        // inside the expanded details (the chevron collapses);
+        // the title Button keeps opening the sheet too.
+        .contentShape(Rectangle())
+        .onTapGesture { if !expanded { onOpenServiceSheet() } }
+    }
+
+    private func service(named name: String) -> ConcordServiceItem? {
+        trafficStore.services.first { $0.name.lowercased() == name }
+    }
+
+    /// Service-status verdict (FlClash service_status.dart: problems
+    /// = services where abnormal, i.e. status != available; chip is
+    /// "N 项异常" warn / "全部可用" ok, hidden while nothing has been
+    /// checked — FlClash has no grey "未检测" state).
+    private var serviceBadge: (text: String, tint: Color)? {
+        guard !trafficStore.services.isEmpty else { return nil }
+        let abnormal = trafficStore.services.filter { $0.status != "available" }.count
+        if abnormal == 0 { return ("全部可用", .green) }
+        return ("\(abnormal) 项异常", .orange)
+    }
+
+    private func servicePill(for service: ConcordServiceItem?) -> some View {
+        HStack(spacing: 10) {
+            ZStack(alignment: .bottomTrailing) {
+                PackTileImage(
+                    name: service?.name ?? "",
+                    fallback: serviceTileText(service?.name),
+                    fontSize: service?.name.lowercased() == "github" ? 14 : 20
+                )
+                .foregroundStyle(Color(.label))
+                .frame(width: 40, height: 40)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                if service?.status == "available" {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                        .offset(x: 2, y: 2)
+                }
+            }
+            Text(service?.delay.map { "\($0) ms" } ?? "—")
+                .font(.footnote)
+                .fontWeight(.semibold)
+            Spacer()
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    private func serviceTileText(_ name: String?) -> String {
+        guard let name else { return "?" }
+        if name.lowercased() == "github" { return "GH" }
+        return String(name.prefix(1)).uppercased()
+    }
+
+    /// probe.services status strings are part of the core's contract
+    /// (upstream crates/engine/src/probe/services.rs).
+    private func serviceStatusLabel(_ status: String) -> String {
+        switch status {
+        case "available": return "可用"
+        case "unavailable": return "不可用"
+        case "restricted": return "受限"
+        case "disallowed-isp": return "运营商限制"
+        case "blocked": return "被墙"
+        case "unsupported-region": return "地区不支持"
+        case "originals-only": return "仅自制剧"
+        case "coming-soon": return "即将推出"
+        case "timeout": return "超时"
+        case "failed": return "失败"
+        case "": return "未判断"
+        default: return status
+        }
+    }
+
+    private func serviceStatusColor(_ status: String) -> Color {
+        switch status {
+        case "available": return .green
+        case "blocked", "failed", "timeout", "unavailable": return .red
+        default: return .orange
+        }
+    }
+
+    /// engine.state values (upstream crates/proto EngineStatus):
+    /// created / initialized / configured / running / failed.
+    private func engineStateLabel(_ state: String) -> String {
+        switch state {
+        case "created": return "已创建"
+        case "initialized": return "已初始化"
+        case "configured": return "已配置"
+        case "running": return "运行中"
+        case "failed": return "启动失败"
+        default: return state
+        }
+    }
+
+    private var tunnelStatusText: String {
+        switch tunnelManager.status {
+        case .connected: return "已连接"
+        case .connecting: return "连接中"
+        case .disconnecting: return "断开中"
+        case .disconnected: return "已断开"
+        case .reasserting: return "重新协商"
+        case .invalid: return "未配置"
+        @unknown default: return "未知"
+        }
+    }
+
+    private var expandedServices: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+            if trafficStore.isProbingServices {
+                ProgressView()
+            }
+            if let error = trafficStore.servicesError {
+                Text(error).font(.caption2).foregroundStyle(.red)
+            }
+            if trafficStore.services.isEmpty {
+                Text("通过当前出站检测 Google / GitHub / YouTube 等服务的可用性（probe.services）。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                // D-M3: each row shows region + proxy chains + status
+                // + delay (ConcordServiceItem carries all four).
+                ForEach(trafficStore.services) { service in
+                    HStack {
+                        Text(service.name).font(.footnote)
+                        Spacer()
+                        if let chains = service.chains, !chains.isEmpty {
+                            Text(chains.joined(separator: " → "))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        if let region = service.region, !region.isEmpty {
+                            Text(region).font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Text(service.delay.map { "\($0) ms" } ?? "—").font(.caption2)
+                        Text(serviceStatusLabel(service.status))
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(serviceStatusColor(service.status))
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                Button("检测") {
+                    Task {
+                        if let proxy = proxyStore.selectedOutbound {
+                            await trafficStore.probeServices(proxy: proxy)
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(ConcordTheme.accent)
+                .controlSize(.small)
+                .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
+                // D-M3: 全部检测 probes every registry service,
+                // including ones disabled in 管理服务 (检测 only
+                // probes the enabled ones).
+                Button("全部检测") {
+                    Task {
+                        if let proxy = proxyStore.selectedOutbound {
+                            await trafficStore.probeServices(proxy: proxy, names: trafficStore.orderedServiceNames)
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
+                Spacer()
+                Button("管理服务") { onManageServices() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+            Divider()
+            LabeledContent("引擎", value: trafficStore.engineStatus.map { engineStateLabel($0.state) } ?? (proxyStore.isRunning ? "已启动" : "已停止"))
+                .font(.footnote.weight(.semibold))
+            if let engine = trafficStore.engineStatus,
+               let faults = engine.faults, !faults.isEmpty {
+                ForEach(faults, id: \.service) { fault in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启动失败：\(fault.service)").font(.footnote)
+                        Text("\(fault.reason)：\(fault.message)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } else if let error = trafficStore.engineStatusError {
+                Text(error).font(.caption2).foregroundStyle(.red)
+            }
+            LabeledContent("VPN 隧道", value: tunnelStatusText)
+                .font(.footnote.weight(.semibold))
+            // D5: the unexpected-disconnect banner used to live here,
+            // inside this collapsed section — it now lives on the main
+            // VPN card (vpnCardSection), always visible.
+            if onDemandStore.enabled {
+                Text("按需连接已开启：断网或切换网络后系统会自动重连。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
+                .font(.footnote.weight(.semibold))
+            LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
+                .font(.footnote.weight(.semibold))
+            Text(client.mode == .live
+                 ? "数据面：PacketTunnel 扩展内的 Concord 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
+                 : "示例模式：VPN 开关只切换界面状态，不转发流量。切到实时核心并启动 VPN 后由扩展转发流量。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Memory card (FlClash memory_info.dart): app RSS (this process,
+/// task_info) + core RSS (core.stats via TrafficStore). The core
+/// runs in the NetworkExtension process, so the two numbers are
+/// separate processes, not one total to be carved up. Polls every
+/// 2s like FlClash; tapping opens the detail sheet with the
+/// release-memory action. The app-bytes state lives here now —
+/// DashboardView no longer holds it — and the 2 s poll pauses
+/// while the detail sheet is open, exactly as before.
+private struct MemoryCardView: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    @EnvironmentObject private var proxyStore: ProxyStore
+
+    @State private var appMemoryBytes: UInt64 = 0
+    @Binding var isDetailOpen: Bool
+    let bigNumberSize: CGFloat
+    let onOpenDetail: () -> Void
+
+    private var memoryTotalBytes: UInt64 {
+        appMemoryBytes + (trafficStore.coreMemoryBytes ?? 0)
+    }
+
+    var body: some View {
+        Button { onOpenDetail() } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    CardTitleRow(icon: "memorychip", title: "内存信息")
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(ConcordFormat.bytes(Int64(memoryTotalBytes)))
+                        .font(.system(size: bigNumberSize, weight: .bold))
+                        .foregroundStyle(Color(.label))
+                }
+                MemoryBar(appBytes: appMemoryBytes, coreBytes: trafficStore.coreMemoryBytes ?? 0)
+                HStack(spacing: 16) {
+                    memoryLegend(dot: ConcordTheme.accent, label: "应用", bytes: appMemoryBytes)
+                    memoryLegend(dot: memoryCoreColor, label: "核心", bytes: trafficStore.coreMemoryBytes ?? 0)
+                }
+                if !proxyStore.isRunning {
+                    Text("核心未运行：仅应用内存为实测值，核心为 0。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // v0.2.64: belt-and-braces — the whole card is already
+            // a Button, but the contentShape makes taps on any
+            // transparent part of the card register too.
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .concordCard()
+        .task {
+            await refreshMemorySnapshot()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                // FlClash memory_info.dart pauses card polling while
+                // the detail sheet is open (the sheet reads on its own).
+                if !isDetailOpen {
+                    await refreshMemorySnapshot()
+                }
+            }
+        }
+    }
+
+    private func refreshMemorySnapshot() async {
+        if let bytes = readAppMemoryBytes() {
+            appMemoryBytes = bytes
+        }
+        await trafficStore.refreshMemory()
+    }
+
+    /// Core segment colour (FlClash style.dart series2: primary
+    /// blended 45% over the card — a blue tone, not green).
+    private var memoryCoreColor: Color { ConcordTheme.accent.opacity(0.45) }
+
+    private func memoryLegend(dot: Color, label: String, bytes: UInt64) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(dot).frame(width: 8, height: 8)
+            Text(label).font(.caption2).foregroundStyle(Color(.label))
+            Text(ConcordFormat.bytes(Int64(bytes)))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color(.label))
+        }
+    }
+}
+
+/// Host for the memory detail sheet: the sheet's core-bytes read
+/// lives here, in a view that observes TrafficStore, so the
+/// dashboard never reads the store. The app-bytes snapshot is
+/// taken when the sheet opens and re-taken after a release —
+/// exactly the values the dashboard used to pass in (the card's
+/// 2 s poll pauses while this sheet is open, so the number was
+/// frozen while open before too).
+private struct MemoryDetailSheetHost: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    @EnvironmentObject private var client: ConcordClient
+
+    @State private var appMemoryBytes: UInt64 = 0
+    @Binding var isReleasing: Bool
+    @Binding var releaseMessage: String?
+
+    var body: some View {
+        MemoryDetailSheet(
+            appBytes: appMemoryBytes,
+            coreBytes: trafficStore.coreMemoryBytes,
+            isReleasing: $isReleasing,
+            releaseMessage: $releaseMessage,
+            onRelease: {
+                do {
+                    try await client.coreReleaseMemory()
+                    if let bytes = readAppMemoryBytes() {
+                        appMemoryBytes = bytes
+                    }
+                    await trafficStore.refreshMemory()
+                    releaseMessage = "已请求核心释放内存"
+                } catch {
+                    releaseMessage = "释放失败：\(error.localizedDescription)"
+                }
+            }
+        )
+        .task {
+            if let bytes = readAppMemoryBytes() {
+                appMemoryBytes = bytes
+            }
+        }
+    }
+}
+
+/// Host for the 出站 IP sheet (MuYu key_3): the egress-IP read
+/// and the core probe live here, in a view that observes
+/// TrafficStore. The ip-api.com lookup still runs in
+/// DashboardView (fetchIPInfo) and arrives as plain values.
+private struct OutboundIPSheetHost: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    @EnvironmentObject private var proxyStore: ProxyStore
+
+    @Binding var hideIp: Bool
+    let ipInfo: IPQualityInfo?
+    let assessed: IPQualityInfo?
+    let ipAsn: String?
+    let isChecking: Bool
+    let fetchFailed: Bool
+    let fetchIPInfo: () async -> Void
+
+    var body: some View {
+        OutboundIPSheet(
+            displayIp: dashboardDisplayIp(isRunning: proxyStore.isRunning, coreIp: trafficStore.outboundIp, fallbackQuery: ipInfo?.query),
+            hideIp: $hideIp,
+            assessed: assessed,
+            ipAsn: ipAsn,
+            isChecking: isChecking,
+            fetchFailed: fetchFailed,
+            onRefresh: {
+                Task {
+                    await fetchIPInfo()
+                    await trafficStore.probe()
+                }
+            }
+        )
+    }
+}
+
+/// Root for the IP-quality sheet (D-M4): the status card's IP
+/// opens the IP-quality page for that exact IP (upstream
+/// showIpQualitySheet is always opened for one IP). The
+/// egress-IP read lives here, in a view that observes
+/// TrafficStore.
+private struct IPQualitySheetRoot: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    @EnvironmentObject private var proxyStore: ProxyStore
+
+    let ipInfo: IPQualityInfo?
+
+    var body: some View {
+        NavigationStack {
+            if let ip = dashboardDisplayIp(isRunning: proxyStore.isRunning, coreIp: trafficStore.outboundIp, fallbackQuery: ipInfo?.query) {
+                IPQualityView(ip: ip)
+            } else {
+                IPQualityView()
             }
         }
     }

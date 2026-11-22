@@ -455,7 +455,21 @@ enum ConcordFormat {
         var v = Double(value)
         var i = 0
         while v >= 1024 && i < units.count - 1 { v /= 1024; i += 1 }
-        return String(format: "%.1f %@", v, units[i])
+        // Video format: one decimal, strip a trailing ".0"
+        // ("540 KB", "170 GB"; "1.1 GB" keeps the .1).
+        var number = String(format: "%.1f", v)
+        if number.hasSuffix(".0") { number.removeLast(2) }
+        return "\(number) \(units[i])"
+    }
+
+    /// Zero-padded HH:MM:SS uptime ("00:00:37"); hours may exceed 24
+    /// ("27:15:00"). Used by the Dashboard status card.
+    static func uptimeHMS(seconds: Int64) -> String {
+        let total = max(seconds, 0)
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        return String(format: "%02lld:%02lld:%02lld", hours, minutes, secs)
     }
 
     static func rate(_ bytesPerSecond: Int64) -> String {

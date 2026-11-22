@@ -10,6 +10,7 @@ struct ConnectionsView: View {
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var proxyStore: ProxyStore
+    @Environment(\.dismiss) private var dismiss
     @State private var detail: LiveConnection?
     @State private var detailIsLive = true
     /// The selected feed, persisted (upstream requests.dart persists
@@ -22,10 +23,17 @@ struct ConnectionsView: View {
     /// pushed from Tools; the Dashboard sheet keeps the default false.
     private let applyTabBarClearance: Bool
 
+    /// v0.2.68: MuYu sheet mode (Dashboard stats sheet). The view
+    /// renders its own sheet header (handle + ✕ + title + actions)
+    /// and a bottom floating search bar, with no navigation title,
+    /// toolbar or top .searchable. False = the pushed Tools page.
+    private let sheetChrome: Bool
+
     /// Opens the page on one feed (the dashboard's stat cells open
     /// it directly on live / recent); nil keeps the persisted feed.
-    init(initialFeed: ConnectionFeed? = nil, applyTabBarClearance: Bool = false) {
+    init(initialFeed: ConnectionFeed? = nil, applyTabBarClearance: Bool = false, sheetChrome: Bool = false) {
         self.applyTabBarClearance = applyTabBarClearance
+        self.sheetChrome = sheetChrome
         if let initialFeed {
             _feed = State(initialValue: initialFeed)
         }
@@ -43,10 +51,204 @@ struct ConnectionsView: View {
         feed == .live ? "正在运行" : "最近请求"
     }
 
+    /// Sheet-mode title (v0.2.68): the video calls the live feed
+    /// "运行中", not "正在运行".
+    private var sheetFeedTitle: String {
+        feed == .live ? "运行中" : "最近请求"
+    }
+
+    /// The MuYu sheet header (v0.2.68): drag handle, ✕ circle on
+    /// the left, centred feed-switcher title with a single ⌄, and
+    /// one action per own cardBackground circle on the right —
+    /// never a shared capsule. Live: disconnect-all (delete-sweep)
+    /// + ⋯ menu. Recent: ⋯ menu only. No refresh button (the video
+    /// has none on any of the three sheets).
+    private var sheetHeader: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(Color(.systemGray3))
+                .frame(width: 36, height: 5)
+                .padding(.top, 10)
+            ZStack {
+                Menu {
+                    Picker("请求", selection: $feed) {
+                        Text("运行中").tag(ConnectionFeed.live)
+                        Text("最近请求").tag(ConnectionFeed.recent)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(sheetFeedTitle)
+                            .font(.headline)
+                            .foregroundStyle(Color(.label))
+                        Image(systemName: "chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                HStack {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color(.label))
+                            .frame(width: 36, height: 36)
+                            .background(ConcordTheme.cardBackground, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("关闭")
+                    Spacer()
+                    HStack(spacing: 8) {
+                        if feed == .live {
+                            Button {
+                                Task { await connectionStore.closeAll() }
+                            } label: {
+                                DeleteSweepIcon(size: 18)
+                                    .frame(width: 36, height: 36)
+                                    .background(ConcordTheme.cardBackground, in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("断开全部连接")
+                        }
+                        Menu {
+                            filterMenuContent
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Color(.label))
+                                .frame(width: 36, height: 36)
+                                .background(ConcordTheme.cardBackground, in: Circle())
+                        }
+                        .accessibilityLabel("更多操作")
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+        }
+    }
+
+    /// Relative start time for live rows ("刚刚", "5 分钟前").
+    private static func relativeTime(_ date: Date) -> String {
+        let seconds = max(0, Int64(Date().timeIntervalSince(date)))
+        if seconds < 60 { return "刚刚" }
+        if seconds < 3600 { return "\(seconds / 60) 分钟前" }
+        if seconds < 86400 { return "\(seconds / 3600) 小时前" }
+        return "\(seconds / 86400) 天前"
+    }
+
+    /// Rule with its matched payload (same shape as the detail
+    /// page's ruleText: rule + " (payload)").
+    private static func ruleText(_ connection: LiveConnection) -> String {
+        guard let rule = connection.rule else { return "—" }
+        if let payload = connection.rulePayload, !payload.isEmpty {
+            return "\(rule) (\(payload))"
+        }
+        return rule
+    }
+
+    /// host:port for the bold row line (host when known, else the
+    /// destination "ip:port" the store already built).
+    private static func hostPort(_ connection: LiveConnection) -> String {
+        if let host = connection.host, !host.isEmpty {
+            return "\(host):\(connection.destinationPort)"
+        }
+        return connection.destination
+    }
+
+    /// Flag emoji for the node capsule (v0.2.68): the node name
+    /// itself often already carries a flag — then nothing is added.
+    /// Otherwise a leading region name ("香港") or 2-letter code
+    /// ("HK-01") is converted with the existing flagEmoji helper.
+    private static func flagPrefix(for nodeName: String) -> String {
+        if nodeName.unicodeScalars.contains(where: { (0x1F1E6...0x1F1FF).contains($0.value) }) {
+            return ""
+        }
+        let regions: [(String, String)] = [
+            ("香港", "HK"), ("台湾", "TW"), ("日本", "JP"), ("美国", "US"),
+            ("新加坡", "SG"), ("韩国", "KR"), ("英国", "GB"), ("德国", "DE"),
+            ("法国", "FR"), ("加拿大", "CA"), ("澳大利亚", "AU"), ("澳洲", "AU"),
+            ("荷兰", "NL"), ("俄罗斯", "RU"), ("印度", "IN"), ("巴西", "BR"),
+            ("土耳其", "TR"), ("泰国", "TH"), ("越南", "VN"),
+            ("马来西亚", "MY"), ("印尼", "ID"), ("菲律宾", "PH"),
+        ]
+        for (name, code) in regions where nodeName.hasPrefix(name) {
+            return flagEmoji(countryCode: code) ?? ""
+        }
+        let letters = String(nodeName.prefix(while: { $0.isLetter }))
+        if letters.count == 2, let flag = flagEmoji(countryCode: letters) {
+            return flag
+        }
+        return ""
+    }
+
+    /// One chain capsule; the last (node) capsule carries the
+    /// node's flag emoji in front of its name.
+    private func chainCapsule(_ name: String, isLast: Bool) -> some View {
+        let flag = isLast ? Self.flagPrefix(for: name) : ""
+        let label = flag.isEmpty ? name : "\(flag) \(name)"
+        return Text(label)
+            .font(.caption2.weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.secondary.opacity(0.15), in: Capsule())
+    }
+
     var body: some View {
         // No NavigationStack here on purpose: this page is pushed
         // from the Tools tab, whose stack provides the navigation bar.
         // (ConnectionDetailView keeps its own stack as a sheet.)
+        // v0.2.68: sheet mode draws its own MuYu header + bottom
+        // floating search bar; page mode keeps the nav bar.
+        Group {
+            if sheetChrome {
+                ZStack(alignment: .bottom) {
+                    VStack(spacing: 0) {
+                        sheetHeader
+                        contentStack
+                    }
+                    .background(ConcordTheme.pageBackground)
+                    ConnectionFloatingSearchBar(text: $connectionStore.searchText, prompt: "搜索域名、代理或规则")
+                }
+            } else {
+                contentStack
+                    .background(ConcordTheme.pageBackground)
+                    .navigationTitle("连接")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .searchable(text: $connectionStore.searchText, prompt: "搜索域名、代理或规则")
+                    .toolbar {
+                        pageToolbar
+                    }
+            }
+        }
+        .sheet(item: $detail) { connection in
+            ConnectionDetailView(connection: connection, isLive: detailIsLive)
+        }
+        .refreshable { await connectionStore.refresh() }
+        .onChange(of: feed) { _, newFeed in
+            UserDefaults.standard.set(newFeed.rawValue, forKey: "ConcordiOS.connections.feed.v1")
+        }
+        // Live feed (audit B30): poll every 1 s while this page
+        // is visible, like FlClash's Requests page — rows appear
+        // / disappear and durations tick. The task is cancelled
+        // when the page disappears; upstream polls when the core
+        // is connected, so the gate is the tunnel running OR the
+        // app-side core running (a delay test boots it) — not
+        // the tunnel alone.
+        .task {
+            if connectionStore.connections.isEmpty { await connectionStore.refresh() }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { break }
+                guard TunnelManager.shared.isRunning || AppCore.shared.isRunning else { continue }
+                await connectionStore.refresh()
+            }
+        }
+    }
+
+    /// The shared list content (stats row, facet chips, feed list),
+    /// used by both the pushed page and the MuYu sheet.
+    private var contentStack: some View {
         VStack(spacing: 0) {
                 if client.mode == .sample {
                     HStack {
@@ -148,140 +350,126 @@ struct ConnectionsView: View {
                         connectionList(connectionStore.recentFiltered, isLive: false)
                     }
                 }
-            }
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle("连接")
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $connectionStore.searchText, prompt: "搜索域名、代理或规则")
-            .toolbar {
-                // The feed switch is the title itself with a popup
-                // menu (upstream requests.dart: the title IS the feed
-                // label, 正在运行/最近请求, with a title popup menu).
-                ToolbarItem(placement: .principal) {
-                    Menu {
-                        Picker("请求", selection: $feed) {
-                            Text("正在运行").tag(ConnectionFeed.live)
-                            Text("最近请求").tag(ConnectionFeed.recent)
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(feedLabel)
-                                .font(.headline)
-                                .foregroundStyle(Color(.label))
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
+        }
+    }
+
+    /// The pushed page's navigation bar (feed switcher title,
+    /// filter menu, disconnect-all, refresh). The sheet header
+    /// reuses `filterMenuContent` below, not this toolbar.
+    @ToolbarContentBuilder
+    private var pageToolbar: some ToolbarContent {
+        // The feed switch is the title itself with a popup
+        // menu (upstream requests.dart: the title IS the feed
+        // label, 正在运行/最近请求, with a title popup menu).
+        ToolbarItem(placement: .principal) {
+            Menu {
+                Picker("请求", selection: $feed) {
+                    Text("正在运行").tag(ConnectionFeed.live)
+                    Text("最近请求").tag(ConnectionFeed.recent)
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Picker("排序", selection: $connectionStore.sort) {
-                            ForEach(ConnectionSort.allCases) { option in
-                                Text(option.rawValue).tag(option)
-                            }
-                        }
-                        Picker("分组", selection: $connectionStore.groupBy) {
-                            ForEach(ConnectionGroupBy.allCases) { option in
-                                Text(option.rawValue).tag(option)
-                            }
-                        }
-                        // Record-filter facets (upstream
-                        // trackerInfoFacets: network, rule, MITM,
-                        // app/process, proxy chains).
-                        Picker("网络", selection: Binding(
-                            get: { connectionStore.facetNetwork ?? "" },
-                            set: { connectionStore.facetNetwork = $0.isEmpty ? nil : $0 })) {
-                                Text("全部").tag("")
-                                ForEach(connectionStore.facetNetworks, id: \.self) { network in
-                                    Text(network.uppercased()).tag(network)
-                                }
-                            }
-                        Picker("规则", selection: Binding(
-                            get: { connectionStore.facetRule ?? "" },
-                            set: { connectionStore.facetRule = $0.isEmpty ? nil : $0 })) {
-                                Text("全部").tag("")
-                                ForEach(connectionStore.facetRules, id: \.self) { rule in
-                                    Text(rule).tag(rule)
-                                }
-                            }
-                        Picker("代理", selection: Binding(
-                            get: { connectionStore.facetProxy ?? "" },
-                            set: { connectionStore.facetProxy = $0.isEmpty ? nil : $0 })) {
-                                Text("全部").tag("")
-                                ForEach(connectionStore.facetProxies, id: \.self) { proxy in
-                                    Text(proxy).tag(proxy)
-                                }
-                            }
-                        Picker("进程", selection: Binding(
-                            get: { connectionStore.facetProcess ?? "" },
-                            set: { connectionStore.facetProcess = $0.isEmpty ? nil : $0 })) {
-                                Text("全部").tag("")
-                                ForEach(connectionStore.facetProcesses, id: \.self) { process in
-                                    Text(process).tag(process)
-                                }
-                            }
-                        Toggle("仅 MITM", isOn: $connectionStore.facetMitmOnly)
-                        if connectionStore.hasActiveFacets {
-                            Button("清除筛选") { connectionStore.clearFacets() }
-                        }
-                        Button("重置解析器连接（network.reset）") {
-                            Task { await connectionStore.resetNetwork() }
-                        }
-                        Button("通知核心网络已变化（network.update）") {
-                            Task { await connectionStore.networkUpdate(interfaceChanged: false) }
-                        }
-                        Button("通知核心网络接口已切换（network.update）") {
-                            Task { await connectionStore.networkUpdate(interfaceChanged: true) }
-                        }
-                        Button("清除最近请求记录", role: .destructive) {
-                            connectionStore.clearRecent()
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                }
-                // Close-all is an app-bar icon button, live feed only
-                // (upstream requests.dart:105-117).
-                if feed == .live {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            Task { await connectionStore.closeAll() }
-                        } label: {
-                            Image(systemName: "xmark.circle")
-                        }
-                        .accessibilityLabel("断开全部连接")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { Task { await connectionStore.refresh() } } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(feedLabel)
+                        .font(.headline)
+                        .foregroundStyle(Color(.label))
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                 }
             }
-            .sheet(item: $detail) { connection in
-                ConnectionDetailView(connection: connection, isLive: detailIsLive)
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                filterMenuContent
+            } label: {
+                Image(systemName: "ellipsis.circle")
             }
-            .refreshable { await connectionStore.refresh() }
-            .onChange(of: feed) { _, newFeed in
-                UserDefaults.standard.set(newFeed.rawValue, forKey: "ConcordiOS.connections.feed.v1")
+        }
+        // Close-all is an app-bar icon button, live feed only
+        // (upstream requests.dart:105-117).
+        if feed == .live {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await connectionStore.closeAll() }
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .accessibilityLabel("断开全部连接")
             }
-            // Live feed (audit B30): poll every 1 s while this page
-            // is visible, like FlClash's Requests page — rows appear
-            // / disappear and durations tick. The task is cancelled
-            // when the page disappears; upstream polls when the core
-            // is connected, so the gate is the tunnel running OR the
-            // app-side core running (a delay test boots it) — not
-            // the tunnel alone.
-            .task {
-                if connectionStore.connections.isEmpty { await connectionStore.refresh() }
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    guard !Task.isCancelled else { break }
-                    guard TunnelManager.shared.isRunning || AppCore.shared.isRunning else { continue }
-                    await connectionStore.refresh()
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { Task { await connectionStore.refresh() } } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+        }
+    }
+
+    /// The ⋯ filter menu, shared by the page toolbar and the MuYu
+    /// sheet header (sort, grouping, record-filter facets, network
+    /// actions, clear-recent).
+    @ViewBuilder
+    private var filterMenuContent: some View {
+        Picker("排序", selection: $connectionStore.sort) {
+            ForEach(ConnectionSort.allCases) { option in
+                Text(option.rawValue).tag(option)
+            }
+        }
+        Picker("分组", selection: $connectionStore.groupBy) {
+            ForEach(ConnectionGroupBy.allCases) { option in
+                Text(option.rawValue).tag(option)
+            }
+        }
+        // Record-filter facets (upstream
+        // trackerInfoFacets: network, rule, MITM,
+        // app/process, proxy chains).
+        Picker("网络", selection: Binding(
+            get: { connectionStore.facetNetwork ?? "" },
+            set: { connectionStore.facetNetwork = $0.isEmpty ? nil : $0 })) {
+                Text("全部").tag("")
+                ForEach(connectionStore.facetNetworks, id: \.self) { network in
+                    Text(network.uppercased()).tag(network)
                 }
             }
+        Picker("规则", selection: Binding(
+            get: { connectionStore.facetRule ?? "" },
+            set: { connectionStore.facetRule = $0.isEmpty ? nil : $0 })) {
+                Text("全部").tag("")
+                ForEach(connectionStore.facetRules, id: \.self) { rule in
+                    Text(rule).tag(rule)
+                }
+            }
+        Picker("代理", selection: Binding(
+            get: { connectionStore.facetProxy ?? "" },
+            set: { connectionStore.facetProxy = $0.isEmpty ? nil : $0 })) {
+                Text("全部").tag("")
+                ForEach(connectionStore.facetProxies, id: \.self) { proxy in
+                    Text(proxy).tag(proxy)
+                }
+            }
+        Picker("进程", selection: Binding(
+            get: { connectionStore.facetProcess ?? "" },
+            set: { connectionStore.facetProcess = $0.isEmpty ? nil : $0 })) {
+                Text("全部").tag("")
+                ForEach(connectionStore.facetProcesses, id: \.self) { process in
+                    Text(process).tag(process)
+                }
+            }
+        Toggle("仅 MITM", isOn: $connectionStore.facetMitmOnly)
+        if connectionStore.hasActiveFacets {
+            Button("清除筛选") { connectionStore.clearFacets() }
+        }
+        Button("重置解析器连接（network.reset）") {
+            Task { await connectionStore.resetNetwork() }
+        }
+        Button("通知核心网络已变化（network.update）") {
+            Task { await connectionStore.networkUpdate(interfaceChanged: false) }
+        }
+        Button("通知核心网络接口已切换（network.update）") {
+            Task { await connectionStore.networkUpdate(interfaceChanged: true) }
+        }
+        Button("清除最近请求记录", role: .destructive) {
+            connectionStore.clearRecent()
+        }
     }
 
     /// One active-facet chip with a clear button.
@@ -321,7 +509,7 @@ struct ConnectionsView: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             // v0.2.66: tab-bar clearance for pushed pages.
-            .contentMargins(.bottom, applyTabBarClearance ? ConcordTheme.tabBarClearance : 0)
+            .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
         } else {
             List {
                 ForEach(connectionStore.grouped(list, by: connectionStore.groupBy), id: \.key) { group in
@@ -345,41 +533,105 @@ struct ConnectionsView: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             // v0.2.66: tab-bar clearance for pushed pages.
-            .contentMargins(.bottom, applyTabBarClearance ? ConcordTheme.tabBarClearance : 0)
+            .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
         }
     }
 
-    /// One connection row, shared by the live and recent feeds.
-    /// Live rows show the per-second up/down speeds (upstream
-    /// downloadSpeed/uploadSpeed); finished rows show the cumulative
-    /// totals, like before.
+    /// One connection row, rebuilt to the video's card style
+    /// (v0.2.68): no 64pt time column, no "TCP · 规则 · 代理"
+    /// single line, no duration/speeds third line, no trailing
+    /// chevron. Live rows: relative time + network, speeds
+    /// top-right; host:port bold; rule → chain capsules (flag on
+    /// the node capsule); source ip:port. Recent rows: full
+    /// datetime + network; host:port bold + resolved IP; rule →
+    /// [final proxy capsule]; source ip:port.
     private func connectionRow(_ connection: LiveConnection, isLive: Bool) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(ConcordFormat.time(Int64(connection.start.timeIntervalSince1970 * 1000)))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: 64, alignment: .leading)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(connection.host ?? connection.destination)
-                    .font(.footnote)
+        VStack(alignment: .leading, spacing: 3) {
+            if isLive {
+                HStack {
+                    Text("\(Self.relativeTime(connection.start)) \(connection.network.uppercased())")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if connection.upSpeed > 0 || connection.downSpeed > 0 {
+                        // Per-second live speeds (upstream
+                        // downloadSpeed/uploadSpeed); each side
+                        // shown only while it is actually moving.
+                        HStack(spacing: 6) {
+                            if connection.upSpeed > 0 {
+                                Text("↑ \(ConcordFormat.rate(Int64(connection.upSpeed)))")
+                            }
+                            if connection.downSpeed > 0 {
+                                Text("↓ \(ConcordFormat.rate(Int64(connection.downSpeed)))")
+                            }
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+                Text(Self.hostPort(connection))
+                    .font(.footnote.weight(.semibold))
                     .lineLimit(1)
-                Text("\(connection.network.uppercased()) · \(connection.rule ?? "—") · \(connection.proxy ?? "—")")
+                chainLine(connection)
+                Text(connection.source)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                if isLive, connection.upSpeed > 0 || connection.downSpeed > 0 {
-                    Text("持续 \(ConcordFormat.duration(seconds: connection.durationSeconds)) · ↑ \(ConcordFormat.rate(Int64(connection.upSpeed))) ↓ \(ConcordFormat.rate(Int64(connection.downSpeed)))")
+            } else {
+                Text("\(connection.startFullText) \(connection.network.uppercased())")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(Self.hostPort(connection))
+                        .font(.footnote.weight(.semibold))
+                    if let resolved = connection.destinationIp, !resolved.isEmpty {
+                        Text(resolved)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(Self.ruleText(connection))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                } else {
-                    Text("持续 \(ConcordFormat.duration(seconds: connection.durationSeconds)) · ↑ \(ConcordFormat.bytes(connection.upload)) ↓ \(ConcordFormat.bytes(connection.download))")
+                        .lineLimit(1)
+                    Text("→")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    chainCapsule(connection.proxy ?? connection.chains.last ?? "—", isLast: true)
+                }
+                Text(connection.source)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+    }
+
+    /// Live chain line: rule name, arrow, then each chain element
+    /// as a capsule (upstream shows the chains reversed, group →
+    /// strategy group → node — same order as the detail page).
+    /// With no chains, the proxy itself is the single capsule.
+    private func chainLine(_ connection: LiveConnection) -> some View {
+        // The chains arrive node-first (see the detail page), so
+        // reverse them for display; the last capsule is the node.
+        let chains = Array(connection.chains.reversed())
+        return HStack(spacing: 6) {
+            Text(Self.ruleText(connection))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text("→")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if chains.isEmpty {
+                chainCapsule(connection.proxy ?? "—", isLast: true)
+            } else {
+                ForEach(Array(chains.enumerated()), id: \.offset) { index, chain in
+                    chainCapsule(chain, isLast: index == chains.count - 1)
                 }
             }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.tertiary)
         }
     }
 }
@@ -646,5 +898,41 @@ struct ConnectionDetailView: View {
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(epochMillis) / 1000))
+    }
+}
+
+/// The MuYu bottom floating search bar (v0.2.68): a rounded bar
+/// with a magnifier + TextField, overlaid at the bottom of the
+/// sheet list. Drives the store's searchText, same as the page's
+/// top .searchable did.
+private struct ConnectionFloatingSearchBar: View {
+    @Binding var text: String
+    let prompt: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.secondary)
+            TextField(prompt, text: $text)
+                .font(.footnote)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            if !text.isEmpty {
+                Button { text = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清除搜索")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 22))
+        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 2)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 12)
     }
 }

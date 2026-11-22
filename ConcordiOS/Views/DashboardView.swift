@@ -4,7 +4,7 @@ import UIKit
 // MARK: - Dashboard (reference screenshots IMG_1082 / IMG_1083)
 // Layout, top to bottom: big title + edit button; status card (big
 // blue play button); network speed; outbound mode pills; VPN card;
-// intranet IP + LAN proxy; service status (probe.services); the
+// service status (probe.services); the
 // active subscription card; proxy groups; stats row. The DATA wiring
 // is unchanged from the previous dashboard: proxyStore (running +
 // groups), trafficStore (speed + services + engine), connectionStore,
@@ -36,13 +36,11 @@ struct DashboardView: View {
     /// reads tunnelManager.unexpectedDisconnect.
     @ObservedObject private var onDemandStore = OnDemandStore.shared
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.scenePhase) private var scenePhase
 
     @AppStorage("ConcordiOS.dashboard.show.status") private var showStatus = true
     @AppStorage("ConcordiOS.dashboard.show.speed") private var showSpeed = true
     @AppStorage("ConcordiOS.dashboard.show.mode") private var showMode = true
     @AppStorage("ConcordiOS.dashboard.show.vpn") private var showVpn = true
-    @AppStorage("ConcordiOS.dashboard.show.intranet") private var showIntranet = true
     @AppStorage("ConcordiOS.dashboard.show.services") private var showServices = true
     @AppStorage("ConcordiOS.dashboard.show.profile") private var showProfile = true
     @AppStorage("ConcordiOS.dashboard.show.groups") private var showGroups = true
@@ -87,7 +85,6 @@ struct DashboardView: View {
     @State private var showGroupsSheet = false
     @State private var tunnelStartedAt: Date?
     @State private var subscription: ConcordSubscriptionInfo?
-    @State private var intranetIp: String?
     @State private var ipInfo: IPQualityInfo?
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
@@ -97,11 +94,6 @@ struct DashboardView: View {
     /// current_outbound.dart: organization ?? "AS{asn}").
     /// IPQualityInfo maps no `as` key, so it is decoded separately.
     @State private var ipAsn: String?
-    /// Intranet card (FlClash intranet_ip.dart): whether the first
-    /// local-IP read has finished — nil before that is "not read
-    /// yet", nil after it is "无网络".
-    @State private var intranetLoaded = false
-    @State private var intranetCopied = false
     /// Profile sync spinner (FlClash profiles.dart _SyncButton shows
     /// an activity indicator while the profile is updating).
     @State private var isSyncingProfile = false
@@ -202,7 +194,7 @@ struct DashboardView: View {
 
     private var uptimeText: String {
         guard let started = tunnelStartedAt else { return "—" }
-        return ConcordFormat.duration(seconds: max(0, Int64(Date().timeIntervalSince(started))))
+        return ConcordFormat.uptimeHMS(seconds: max(0, Int64(Date().timeIntervalSince(started))))
     }
 
     private func service(named name: String) -> ConcordServiceItem? {
@@ -235,12 +227,6 @@ struct DashboardView: View {
             let tested = group.nodes.compactMap { proxyStore.latency(forNodeNamed: $0.name, inGroup: group) }
             return !tested.isEmpty && tested.allSatisfy { $0 < 0 }
         }.count
-    }
-
-    private var groupInitials: [String] {
-        proxyStore.nonHiddenGroups.prefix(4).map { group in
-            group.name == "github" ? "GH" : String(group.name.prefix(1)).uppercased()
-        }
     }
 
     private var extraGroups: Int {
@@ -505,8 +491,6 @@ struct DashboardView: View {
                 await trafficStore.noteTunnelStarted(at: started)
             }
             tunnelManager.checkTunRestartNeeded()
-            intranetIp = DeviceNetwork.localIPv4Address()
-            intranetLoaded = true
             await fetchIPInfo()
             await trafficStore.refreshEngineStatus()
             await refreshSubscription()
@@ -514,16 +498,6 @@ struct DashboardView: View {
                let proxy = proxyStore.selectedOutbound,
                client.mode == .sample || tunnelManager.isRunning {
                 await trafficStore.probeServices(proxy: proxy)
-            }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            // C11: returning to the foreground while already on the
-            // dashboard never re-ran the .task above, so the intranet
-            // IP stayed stale after a network change. Re-read it on
-            // every return to active (same read as on appear).
-            if phase == .active {
-                intranetIp = DeviceNetwork.localIPv4Address()
-                intranetLoaded = true
             }
         }
         .onChange(of: proxyStore.isRunning) { _, running in
@@ -591,7 +565,6 @@ struct DashboardView: View {
                 showTraffic: $showTraffic,
                 showMode: $showMode,
                 showVpn: $showVpn,
-                showIntranet: $showIntranet,
                 showServices: $showServices,
                 showProfile: $showProfile,
                 showGroups: $showGroups,
@@ -625,7 +598,7 @@ struct DashboardView: View {
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.hidden)
-            .presentationBackground(Color(.systemGroupedBackground))
+            .presentationBackground(ConcordTheme.pageBackground)
             .presentationCornerRadius(28)
         }
         // v0.2.56: the traffic card opens the MuYu traffic sheet
@@ -636,7 +609,7 @@ struct DashboardView: View {
             TrafficStatsSheet()
                 .presentationDetents([.fraction(0.85), .large])
                 .presentationDragIndicator(.hidden)
-                .presentationBackground(Color(.systemGroupedBackground))
+                .presentationBackground(ConcordTheme.pageBackground)
                 .presentationCornerRadius(28)
         }
         // v0.2.56: the status card opens the 出站 IP sheet
@@ -644,7 +617,7 @@ struct DashboardView: View {
         .sheet(isPresented: $showOutboundIPSheet) {
             OutboundIPSheet(
                 displayIp: displayIp,
-                hideIp: settingsStore.hideIp,
+                hideIp: $settingsStore.hideIp,
                 assessed: assessedIpInfo,
                 ipAsn: ipAsn,
                 isChecking: ipChecking,
@@ -658,7 +631,7 @@ struct DashboardView: View {
             )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.hidden)
-            .presentationBackground(Color(.systemGroupedBackground))
+            .presentationBackground(ConcordTheme.pageBackground)
             .presentationCornerRadius(28)
         }
         // v0.2.56: the services card opens the 服务状态 sheet
@@ -667,7 +640,7 @@ struct DashboardView: View {
             ServiceStatusSheet()
                 .presentationDetents([.fraction(0.85), .large])
                 .presentationDragIndicator(.hidden)
-                .presentationBackground(Color(.systemGroupedBackground))
+                .presentationBackground(ConcordTheme.pageBackground)
                 .presentationCornerRadius(28)
         }
         // v0.2.56: the config card opens the rule-providers
@@ -676,7 +649,7 @@ struct DashboardView: View {
             ProvidersSheet(profileName: profileStore.activeProfile?.name ?? "配置", subscription: subscription)
                 .presentationDetents([.fraction(0.85), .large])
                 .presentationDragIndicator(.hidden)
-                .presentationBackground(Color(.systemGroupedBackground))
+                .presentationBackground(ConcordTheme.pageBackground)
                 .presentationCornerRadius(28)
         }
         // v0.2.64: the 策略组 card opens this sheet (upstream
@@ -686,42 +659,30 @@ struct DashboardView: View {
             groupsSheet
                 .presentationDetents([.fraction(0.85), .large])
                 .presentationDragIndicator(.hidden)
-                .presentationBackground(Color(.systemGroupedBackground))
+                .presentationBackground(ConcordTheme.pageBackground)
                 .presentationCornerRadius(28)
         }
         // D-M6: a stat cell opens its source page — live/recent
         // connections, or the DNS queries page for the DNS cell.
-        // These are full pages (search + toolbars), so they keep
-        // their NavigationStack; the sheet gets MuYu's drag
-        // handle and a leading ✕ instead of the card chrome.
+        // v0.2.68: MuYu sheet chrome — no NavigationStack, no
+        // system nav bar; each content view renders its own
+        // MuYu header (handle + ✕ + title + actions) and a
+        // bottom floating search bar.
         .sheet(item: $statsDestination) { destination in
-            NavigationStack {
-                Group {
-                    switch destination {
-                    case .live:
-                        ConnectionsView(initialFeed: .live)
-                            .navigationTitle("连接")
-                            .navigationBarTitleDisplayMode(.inline)
-                    case .recent:
-                        ConnectionsView(initialFeed: .recent)
-                            .navigationTitle("连接")
-                            .navigationBarTitleDisplayMode(.inline)
-                    case .dns:
-                        DnsQueriesView()
-                    }
-                }
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button { statsDestination = nil } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 14, weight: .semibold))
-                        }
-                        .accessibilityLabel("关闭")
-                    }
+            Group {
+                switch destination {
+                case .live:
+                    ConnectionsView(initialFeed: .live, sheetChrome: true)
+                case .recent:
+                    ConnectionsView(initialFeed: .recent, sheetChrome: true)
+                case .dns:
+                    DnsQueriesView(mode: .sheet)
                 }
             }
             .presentationDetents([.fraction(0.85), .large])
-            .presentationDragIndicator(.visible)
+            .presentationDragIndicator(.hidden)
+            .presentationBackground(ConcordTheme.pageBackground)
+            .presentationCornerRadius(28)
         }
         // D-M4: the status card's IP opens the IP-quality page for
         // that exact IP (upstream showIpQualitySheet is always
@@ -842,7 +803,6 @@ struct DashboardView: View {
         case .traffic: if showTraffic { trafficCard }
         case .mode: if showMode { modeCard }
         case .vpn: if showVpn { vpnCardSection }
-        case .intranet: if showIntranet { intranetCard }
         case .services: if showServices { servicesCard }
         case .profile: if showProfile { profileCard }
         case .groups: if showGroups { groupsCard }
@@ -955,20 +915,21 @@ struct DashboardView: View {
             } else if let ip = displayIp {
                 // FlClash _IpText: hideIp masks the IP as "*****
                 // (current_outbound.dart _ipMask).
+                // v0.2.68: 24pt bold, like the video (was 18pt semibold).
                 Text(settingsStore.hideIp ? "*****" : ip)
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 24, weight: .bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             } else if ipFetchFailed {
                 Text("服务失败")
-                    .font(.system(size: 18, weight: .semibold))
+                    .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(.red)
                     .lineLimit(1)
             } else {
                 SkeletonBar(width: 140, height: 18, animated: true)
             }
         }
-        .frame(height: 28, alignment: .leading)
+        .frame(height: 30, alignment: .leading)
     }
 
     /// Chips slot (FlClash _IpChips): two static grey bars while
@@ -984,7 +945,15 @@ struct DashboardView: View {
                 }
             } else if ipInfo != nil {
                 HStack(spacing: 8) {
-                    PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
+                    // v0.2.68: the first chip is the EXIT IP's type
+                    // (机房/住宅/… from the assessed lookup) when
+                    // known; the device network type is only the
+                    // fallback when there is no lookup yet.
+                    if let ipType = assessedIpInfo?.qualityType?.label {
+                        PillBadge(text: ipType, tint: .gray)
+                    } else {
+                        PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
+                    }
                     if let assessed = assessedIpInfo, let level = assessed.qualityLevel {
                         // D-D3: the quality pill comes from the real
                         // IP type/level (hosting → 普通, else 优),
@@ -1069,9 +1038,9 @@ struct DashboardView: View {
                             Spacer().frame(height: 4)
                             chipsSlot
                         }
-                        // v0.2.56: the IP-quality page moved to the
-                        // 出站 IP sheet ("查看完整 IP 质量"); the
-                        // whole status card opens that sheet.
+                        // v0.2.68: the whole status card opens the
+                        // 出站 IP sheet (the in-sheet "查看完整 IP 质量"
+                        // button is gone — the video's sheet has none).
                         .contentShape(Rectangle())
                     }
                     Spacer().frame(height: 16)
@@ -1100,9 +1069,9 @@ struct DashboardView: View {
                 } label: {
                     ZStack {
                         StartToggleMorphShape(progress: morphProgress)
-                            .fill(Color(red: 0, green: 0.478, blue: 1))
+                            .fill(ConcordTheme.accent)
                             .rotationEffect(.degrees(Double(morphProgress) * 40))
-                            .shadow(color: Color(red: 0, green: 0.478, blue: 1).opacity(0.35), radius: 9, x: 0, y: 6)
+                            .shadow(color: ConcordTheme.accent.opacity(0.35), radius: 9, x: 0, y: 6)
                         Image(systemName: proxyStore.isRunning ? "pause.fill" : "play.fill")
                             .font(.system(size: 21, weight: .bold))
                             .foregroundStyle(.white)
@@ -1131,8 +1100,9 @@ struct DashboardView: View {
         .onTapGesture { showOutboundIPSheet = true }
     }
 
-    /// Wave fill (_StatusWavePainter colours): not running #EFEDF0 /
-    /// running #E4EBFB in light mode; white 6% / #262F3E in dark mode.
+    /// Wave fill (_StatusWavePainter colours): v0.2.68 running is
+    /// the theme accent at low opacity (was blue-gray #E4EBFB);
+    /// not running #EFEDF0 in light mode; white 6% / #262F3E dark.
     private var waveColor: Color {
         if colorScheme == .dark {
             return proxyStore.isRunning
@@ -1140,7 +1110,7 @@ struct DashboardView: View {
                 : Color.white.opacity(0.06)
         }
         return proxyStore.isRunning
-            ? Color(red: 0.894, green: 0.922, blue: 0.984)
+            ? ConcordTheme.accent.opacity(0.14)
             : Color(red: 0.937, green: 0.929, blue: 0.941)
     }
 
@@ -1178,13 +1148,8 @@ struct DashboardView: View {
                 speedPanel(isUp: true)
                 speedPanel(isUp: false)
             }
-            // D-M5: speed sparkline from the sampled history
-            // (TrafficStore.history, one point per traffic poll) —
-            // download in accent, upload in orange.
-            if trafficStore.history.count > 1 {
-                TrafficSparkline(history: trafficStore.history)
-                    .frame(height: 44)
-            }
+            // v0.2.68: the waveform moved INSIDE each speed panel
+            // (SpeedPanelAreaWaveform) — no separate sparkline here.
         }
         .concordCard()
     }
@@ -1193,38 +1158,48 @@ struct DashboardView: View {
         let bytes = isUp ? trafficStore.current.up : trafficStore.current.down
         let total = isUp ? trafficStore.current.totalUp : trafficStore.current.totalDown
         let split = ConcordBytes.split(bytes)
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: isUp ? "arrow.up" : "arrow.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(isUp ? Color(.label) : ConcordTheme.accent)
-                Text(isUp ? "上传" : "下载")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
+        // v0.2.68: the area waveform is the panel's BACKGROUND
+        // (theme-tinted, numbers overlaid), like the video.
+        return ZStack(alignment: .leading) {
+            SpeedPanelAreaWaveform(
+                history: trafficStore.history,
+                value: isUp ? \.up : \.down,
+                color: isUp ? Color.orange : ConcordTheme.accent
+            )
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: isUp ? "arrow.up" : "arrow.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isUp ? Color(.label) : ConcordTheme.accent)
+                    Text(isUp ? "上传" : "下载")
+                        .font(.caption2)
+                        .fontWeight(.semibold)
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(split.number)
+                        .font(.system(size: bigNumberSize, weight: .bold))
+                    Text("\(split.unit)/s")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                }
+                // Compact density drops the subtitle (FlClash
+                // DashboardDensity.compact drops subtitles).
+                if !densityCompact {
+                    // Reference shows "累计 0 B" (no ".0"): ConcordFormat
+                    // formats 0 as "0.0 B", so special-case zero locally
+                    // (the shared formatter is used elsewhere and stays).
+                    Text("累计 \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.secondary)
+                }
             }
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(split.number)
-                    .font(.system(size: bigNumberSize, weight: .bold))
-                Text("\(split.unit)/s")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
-            }
-            // Compact density drops the subtitle (FlClash
-            // DashboardDensity.compact drops subtitles).
-            if !densityCompact {
-                // Reference shows "累计 0 B" (no ".0"): ConcordFormat
-                // formats 0 as "0.0 B", so special-case zero locally
-                // (the shared formatter is used elsewhere and stays).
-                Text("累计 \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
-                    .font(.caption2)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.secondary)
-            }
+            .padding(14)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
         .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .clipShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
     }
 
     // MARK: - Traffic statistics card (MuYu TrafficStatisticsCard, D-M8)
@@ -1247,7 +1222,7 @@ struct DashboardView: View {
         return Button { showTrafficDetail = true } label: {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
-                    CardTitleRow(icon: "chart.bar", title: "流量统计")
+                    CardTitleRow(icon: "chart.pie", title: "流量统计")
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
@@ -1263,7 +1238,9 @@ struct DashboardView: View {
                             trafficCardPill("↓ \(dashboardBytesNoSpace(today.down))")
                             trafficCardPill("↑ \(dashboardBytesNoSpace(today.up))")
                         }
-                        HStack(spacing: 12) {
+                        // v0.2.68: 代理/直连 are TWO LINES in the
+                        // video, not side-by-side in one row.
+                        VStack(alignment: .leading, spacing: 4) {
                             trafficSplitRow(dot: ConcordTheme.accent, label: "代理", value: dashboardBytesNoSpace(today.proxyBytes))
                             trafficSplitRow(dot: ConcordTheme.accent.opacity(0.45), label: "直连", value: dashboardBytesNoSpace(today.directBytes))
                         }
@@ -1531,93 +1508,6 @@ struct DashboardView: View {
         .onTapGesture { Task { await proxyStore.toggle() } }
     }
 
-    /// Intranet address (FlClash intranet_ip.dart: `IP:port` when
-    /// allowLan, bare IP otherwise; nil while unread / no network).
-    private var intranetAddress: String? {
-        guard let ip = intranetIp, !ip.isEmpty else { return nil }
-        return settingsStore.allowLan ? "\(ip):\(settingsStore.mixedPort)" : ip
-    }
-
-    private var intranetFigureText: String {
-        if !intranetLoaded { return "—" }
-        return intranetAddress ?? "无网络"
-    }
-
-    private func copyIntranetAddress() {
-        guard let address = intranetAddress else { return }
-        UIPasteboard.general.string = address
-        intranetCopied = true
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            intranetCopied = false
-        }
-    }
-
-    // MARK: - Intranet IP card
-
-    private var intranetCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 6) {
-                Image(systemName: "network")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("内网 IP")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                // FlClash intranet_ip.dart: header copy icon copies
-                // the address (IP:port when LAN is on); disabled
-                // with no address. The checkmark is the success
-                // feedback (FlClash shows a "复制成功" banner).
-                Button { copyIntranetAddress() } label: {
-                    Image(systemName: intranetCopied ? "checkmark" : "doc.on.doc")
-                        .font(.footnote)
-                        .foregroundStyle(intranetCopied ? .green : Color(.label))
-                }
-                .buttonStyle(.plain)
-                .disabled(intranetAddress == nil)
-                .accessibilityLabel("复制内网地址")
-            }
-            Text(intranetFigureText)
-                .font(.system(size: bigNumberSize, weight: .bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            HStack(spacing: 12) {
-                Image(systemName: "wifi")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color(.label))
-                    .frame(width: 40, height: 40)
-                    .background(Color.white, in: Circle())
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("局域网代理")
-                        .font(.footnote)
-                        .fontWeight(.semibold)
-                    // FlClash intranet_ip.dart: "端口 {port}" when on,
-                    // "已禁用" when off.
-                    Text(settingsStore.allowLan ? "端口 \(settingsStore.mixedPort)" : "已禁用")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Toggle("", isOn: $settingsStore.allowLan)
-                    .labelsHidden()
-                    .tint(ConcordTheme.accent)
-            }
-            .padding(10)
-            .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-        }
-        .concordCard()
-        // FlClash localIpProvider is live: re-read every 2s like the
-        // memory poll so a network change shows without reopening.
-        .task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
-                intranetIp = DeviceNetwork.localIPv4Address()
-                intranetLoaded = true
-            }
-        }
-    }
-
     // MARK: - Service status card
 
     private var servicesCard: some View {
@@ -1628,7 +1518,7 @@ struct DashboardView: View {
                 // expand (engine / TUN / DNS details).
                 Button { showServiceSheet = true } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: "shield.checkmark")
+                        Image(systemName: "target")
                             .font(.callout.weight(.semibold))
                         Text("服务状态")
                             .font(.caption.weight(.semibold))
@@ -1682,12 +1572,16 @@ struct DashboardView: View {
     private func servicePill(for service: ConcordServiceItem?) -> some View {
         HStack(spacing: 10) {
             ZStack(alignment: .bottomTrailing) {
-                Text(serviceTileText(service?.name))
-                    .font(.system(size: service?.name.lowercased() == "github" ? 14 : 20, weight: .bold))
-                    .foregroundStyle(Color(.label))
-                    .frame(width: 40, height: 40)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
-                    .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+                PackTileImage(
+                    name: service?.name ?? "",
+                    fallback: serviceTileText(service?.name),
+                    fontSize: service?.name.lowercased() == "github" ? 14 : 20
+                )
+                .foregroundStyle(Color(.label))
+                .frame(width: 40, height: 40)
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
                 if service?.status == "available" {
                     Circle()
                         .fill(Color.green)
@@ -1711,6 +1605,31 @@ struct DashboardView: View {
         if name.lowercased() == "github" { return "GH" }
         return String(name.prefix(1)).uppercased()
     }
+
+/// Brand tile from the user's imported icon pack (v0.2.68):
+/// IconPackStore matched by service/group name; the letter is
+/// the only fallback. No built-in brand icons, by standing rule.
+/// Internal so DashboardSheets' service rows can use it too.
+struct PackTileImage: View {
+    @ObservedObject private var iconPack = IconPackStore.shared
+    let name: String
+    let fallback: String
+    let fontSize: CGFloat
+
+    var body: some View {
+        Group {
+            if let url = iconPack.iconURL(for: name) {
+                CachedIconImage(url: url) {
+                    Text(fallback)
+                        .font(.system(size: fontSize, weight: .bold))
+                }
+            } else {
+                Text(fallback)
+                    .font(.system(size: fontSize, weight: .bold))
+            }
+        }
+    }
+}
 
     private var expandedServices: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1902,9 +1821,9 @@ struct DashboardView: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
             }
-            // FlClash profiles.dart _UsageMeter: warn colour at ≥90%
-            // used (the M3 wavy painter is skipped as too costly).
-            UsageMeterBar(fraction: usedFraction, warn: usedFraction >= 0.9)
+            // v0.2.68: the usage bar is the video's wavy line
+            // (WavyProgressBar); warn colour at ≥90% used.
+            WavyProgressBar(progress: usedFraction, color: usedFraction >= 0.9 ? Color.orange : ConcordTheme.accent)
             if subscription == nil {
                 Text("订阅流量信息：核心未提供（需订阅支持 subscription-userinfo，或先启动 VPN）。")
                     .font(.caption2)
@@ -1929,7 +1848,7 @@ struct DashboardView: View {
             // onTap is null when there are no groups).
             Button { if !proxyStore.nonHiddenGroups.isEmpty { showGroupsSheet = true } } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "square.stack.3d.up")
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
                         .font(.callout.weight(.semibold))
                     Text("策略组")
                         .font(.caption.weight(.semibold))
@@ -1961,13 +1880,17 @@ struct DashboardView: View {
                 }
                 Spacer()
                 HStack(spacing: -10) {
-                    ForEach(Array(groupInitials.enumerated()), id: \.offset) { _, letter in
-                        Text(letter)
-                            .font(.headline)
-                            .foregroundStyle(Color(.label))
-                            .frame(width: 40, height: 40)
-                            .background(ConcordTheme.softFill, in: Circle())
-                            .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    ForEach(proxyStore.nonHiddenGroups.prefix(4)) { group in
+                        PackTileImage(
+                            name: group.name,
+                            fallback: group.name == "github" ? "GH" : String(group.name.prefix(1)).uppercased(),
+                            fontSize: 17
+                        )
+                        .foregroundStyle(Color(.label))
+                        .frame(width: 40, height: 40)
+                        .background(ConcordTheme.softFill, in: Circle())
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
                     }
                     if extraGroups > 0 {
                         Text("+\(extraGroups)")
@@ -2045,19 +1968,12 @@ struct DashboardView: View {
     /// formatted with dashboardCount (grouped digits, compact ≥100k).
     private var statsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // v0.2.64: the header opens the 实时连接 sheet — the
-            // whole card must respond, not just the stat cells.
-            Button { statsDestination = .live } label: {
-                HStack(spacing: 8) {
-                    Text("连接统计")
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                }
-            }
-            .buttonStyle(.plain)
+            // v0.2.68: no title row — the video shows just the
+            // three numbers. The cells below still open their
+            // destination sheets.
             HStack(spacing: 0) {
                 statCell(value: dashboardCount(connectionStore.connections.count), label: "实时连接", destination: .live)
-                statCell(value: dashboardCount(eventStore.entries.count), label: "最近请求", destination: .recent)
+                statCell(value: dashboardCount(eventStore.totalEventCount), label: "最近请求", destination: .recent)
                 statCell(value: dashboardCount(dnsStore.entries.count), label: "DNS查询", destination: .dns)
             }
         }
@@ -2251,40 +2167,44 @@ private enum StatsDestination: String, Identifiable {
     var id: String { rawValue }
 }
 
-/// Speed sparkline (D-M5): the sampled traffic history as two
-/// polylines — download in accent, upload in orange — normalized
-/// to the largest sample so a flat line still reads.
-private struct TrafficSparkline: View {
+/// Area waveform inside a speed panel (v0.2.68): the sampled
+/// history (TrafficStore.history, one point per traffic poll) as
+/// a filled area in the theme tint with a thin stroke, drawn
+/// behind the panel's numbers.
+private struct SpeedPanelAreaWaveform: View {
     let history: [TrafficPoint]
+    let value: KeyPath<TrafficPoint, Int64>
+    let color: Color
 
     var body: some View {
         GeometryReader { geo in
-            let points = history.suffix(120)
-            let maxValue = max(1, points.map { max($0.up, $0.down) }.max() ?? 1)
+            let points = Array(history.suffix(120))
+            let maxValue = max(1, points.map { $0[keyPath: value] }.max() ?? 1)
+            let step = geo.size.width / CGFloat(max(points.count - 1, 1))
+            var area = Path()
+            var line = Path()
+            if points.count > 1 {
+                for (index, point) in points.enumerated() {
+                    let x = CGFloat(index) * step
+                    let y = geo.size.height - (CGFloat(point[keyPath: value]) / CGFloat(maxValue)) * geo.size.height
+                    if index == 0 {
+                        area.move(to: CGPoint(x: x, y: geo.size.height))
+                        area.addLine(to: CGPoint(x: x, y: y))
+                        line.move(to: CGPoint(x: x, y: y))
+                    } else {
+                        area.addLine(to: CGPoint(x: x, y: y))
+                        line.addLine(to: CGPoint(x: x, y: y))
+                    }
+                }
+                area.addLine(to: CGPoint(x: CGFloat(points.count - 1) * step, y: geo.size.height))
+                area.closeSubpath()
+            }
             ZStack {
-                sparkline(points: points, value: \.down, maxValue: maxValue, in: geo.size)
-                    .stroke(ConcordTheme.accent, lineWidth: 1.5)
-                sparkline(points: points, value: \.up, maxValue: maxValue, in: geo.size)
-                    .stroke(Color.orange, lineWidth: 1.5)
+                area.fill(color.opacity(0.14))
+                line.stroke(color.opacity(0.45), lineWidth: 1.5)
             }
         }
-        .accessibilityLabel("最近速度变化：下载蓝线，上传橙线")
-    }
-
-    private func sparkline(points: ArraySlice<TrafficPoint>, value: KeyPath<TrafficPoint, Int64>, maxValue: Int64, in size: CGSize) -> Path {
-        var path = Path()
-        guard points.count > 1 else { return path }
-        let step = size.width / CGFloat(points.count - 1)
-        for (index, point) in points.enumerated() {
-            let x = CGFloat(index) * step
-            let y = size.height - (CGFloat(point[keyPath: value]) / CGFloat(maxValue)) * size.height
-            if index == 0 {
-                path.move(to: CGPoint(x: x, y: y))
-            } else {
-                path.addLine(to: CGPoint(x: x, y: y))
-            }
-        }
-        return path
+        .accessibilityHidden(true)
     }
 }
 
@@ -2394,31 +2314,6 @@ private struct VpnBadge: View {
     }
 }
 
-/// Subscription usage meter (FlClash profiles.dart _UsageMeter):
-/// same capsule geometry as CapsuleProgressBar, but the fill turns
-/// warn-orange at ≥90% used. The M3 wavy painter is skipped.
-private struct UsageMeterBar: View {
-    let fraction: Double
-    let warn: Bool
-
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color(red: 0.898, green: 0.898, blue: 0.925))
-                Capsule()
-                    .fill(warn ? Color.orange : ConcordTheme.accent)
-                    .frame(width: max(geometry.size.width * CGFloat(min(max(fraction, 0), 1)), 8))
-                Circle()
-                    .fill(warn ? Color.orange : ConcordTheme.accent)
-                    .frame(width: 10, height: 10)
-                    .offset(x: geometry.size.width - 5)
-            }
-        }
-        .frame(height: 8)
-    }
-}
-
 /// The ip-api.com `as` field ("AS15169 Google LLC") — decoded
 /// separately because IPQualityInfo maps no `as` key.
 private struct IPApiAsField: Decodable {
@@ -2522,7 +2417,7 @@ private struct CloverBadge: View {
 /// Dashboard card identities (FlClash DashboardWidget): the order
 /// is user-editable, the visibility is the show/hide toggles.
 private enum DashboardCardID: String, CaseIterable {
-    case status, speed, traffic, mode, vpn, intranet, services, profile, groups, stats, memory, update
+    case status, speed, traffic, mode, vpn, services, profile, groups, stats, memory, update
 
     /// v0.2.56: the tail follows the MuYu iOS build (IMG_1181 /
     /// video): stats row, 策略组， 配置， 流量统计， 内存信息 — so
@@ -2531,7 +2426,7 @@ private enum DashboardCardID: String, CaseIterable {
     /// is untouched by this: it only sets the default for
     /// installs that never reordered.
     static let defaultOrder: [DashboardCardID] = [
-        .status, .speed, .mode, .vpn, .intranet, .services,
+        .status, .speed, .vpn, .mode, .services,
         .stats, .groups, .profile, .traffic, .memory, .update,
     ]
 
@@ -2542,7 +2437,6 @@ private enum DashboardCardID: String, CaseIterable {
         case .traffic: return "流量统计"
         case .mode: return "出站模式"
         case .vpn: return "VPN"
-        case .intranet: return "内网 IP"
         case .services: return "服务状态"
         case .profile: return "配置"
         case .groups: return "策略组"
@@ -2585,7 +2479,6 @@ private struct DashboardEditSheet: View {
     @Binding var showTraffic: Bool
     @Binding var showMode: Bool
     @Binding var showVpn: Bool
-    @Binding var showIntranet: Bool
     @Binding var showServices: Bool
     @Binding var showProfile: Bool
     @Binding var showGroups: Bool
@@ -2608,7 +2501,6 @@ private struct DashboardEditSheet: View {
                     Toggle("流量统计", isOn: $showTraffic)
                     Toggle("出站模式", isOn: $showMode)
                     Toggle("VPN", isOn: $showVpn)
-                    Toggle("内网 IP", isOn: $showIntranet)
                     Toggle("服务状态", isOn: $showServices)
                     Toggle("配置", isOn: $showProfile)
                     Toggle("策略组", isOn: $showGroups)

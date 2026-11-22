@@ -46,6 +46,7 @@ enum ThemeAccent: String, CaseIterable, Identifiable {
     case purple = "purple"
     case orange = "orange"
     case teal = "teal"
+    case magenta = "magenta"
 
     var id: String { rawValue }
 
@@ -56,6 +57,7 @@ enum ThemeAccent: String, CaseIterable, Identifiable {
         case .purple: return "紫色"
         case .orange: return "橙色"
         case .teal: return "青色"
+        case .magenta: return "品红"
         }
     }
 
@@ -66,6 +68,11 @@ enum ThemeAccent: String, CaseIterable, Identifiable {
         case .purple: return Color(red: 0.686, green: 0.322, blue: 0.863)
         case .orange: return Color(red: 1.0, green: 0.584, blue: 0.0)
         case .teal: return Color(red: 0.0, green: 0.663, blue: 0.678)
+        // v0.2.68: the MuYu video's theme — FlClash's magenta seed
+        // 0xFFCB30E0 renders as muted mauve #B86CA2 (184,108,162)
+        // in Material 3, so the stored colour is the RENDERED
+        // primary, not the vivid seed.
+        case .magenta: return Color(red: 184.0 / 255.0, green: 108.0 / 255.0, blue: 162.0 / 255.0)
         }
     }
 }

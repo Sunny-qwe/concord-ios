@@ -5,7 +5,8 @@ import SwiftUI
 // Every dashboard card opens a bottom sheet in the MuYu build:
 // a drawer sliding up from the bottom with a drag handle on top,
 // an ✕ close button top-left, a centred title, and action buttons
-// top-right (in one pill). DashboardBottomSheet is that chrome;
+// top-right (one action: its own circle; two actions: one pill).
+// DashboardBottomSheet is that chrome;
 // the sheets below are the card details. Every number in them
 // comes from a real source (core APIs / existing stores) — see
 // each sheet's notes. Nothing here invents data.
@@ -225,19 +226,25 @@ private struct SheetActionButton: View {
 /// .presentationBackground(Color(.systemGroupedBackground)).
 struct DashboardBottomSheet<Content: View, Actions: View>: View {
     let title: String
+    /// v0.2.68: one action renders as its own independent 36pt
+    /// circle (same style as the ✕); two actions render in the
+    /// shared SheetActionsPill capsule (call sites wrap them).
+    let singleAction: Bool
     let actions: Actions
     let content: Content
 
     @Environment(\.dismiss) private var dismiss
 
-    init(title: String, @ViewBuilder actions: () -> Actions, @ViewBuilder content: () -> Content) {
+    init(title: String, singleAction: Bool = false, @ViewBuilder actions: () -> Actions, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.singleAction = singleAction
         self.actions = actions()
         self.content = content()
     }
 
     init(title: String, @ViewBuilder content: () -> Content) where Actions == EmptyView {
         self.title = title
+        self.singleAction = false
         self.actions = EmptyView()
         self.content = content()
     }
@@ -263,7 +270,13 @@ struct DashboardBottomSheet<Content: View, Actions: View>: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("关闭")
                     Spacer()
-                    actions
+                    if singleAction {
+                        actions
+                            .frame(width: 36, height: 36)
+                            .background(ConcordTheme.cardBackground, in: Circle())
+                    } else {
+                        actions
+                    }
                 }
             }
             .padding(.horizontal, 16)
@@ -304,12 +317,19 @@ struct SheetInfoRow: View {
 // probe (displayIp); the level/type are the assessed ones
 // (hosting -> 机房， silence -> residential, inferred).
 // The IP row opens the full IP-quality page (MuYu taps the
-// IP line for the same page); the refresh button re-runs
+// IP line for the same page); v0.2.68 removed the in-sheet
+// "查看完整 IP 质量" button (the video's sheet has none), so
+// the dashboard's showIPQualitySheet presentation currently
+// has no trigger — the IP-quality page itself stays reachable
+// from Settings. The refresh button re-runs
 // both lookups. hideIp masks the address like the card does.
 
 struct OutboundIPSheet: View {
     let displayIp: String?
-    let hideIp: Bool
+    /// Bound to SettingsStore.hideIp (the sheet's 其他 toggle
+    /// writes the same setting the status card and the IP-quality
+    /// page read); saved on change.
+    @Binding var hideIp: Bool
     /// The assessed lookup (nil while no lookup has answered).
     let assessed: IPQualityInfo?
     /// The bare "AS<n>" token (parsed from the lookup's `as`
@@ -319,7 +339,7 @@ struct OutboundIPSheet: View {
     let fetchFailed: Bool
     let onRefresh: () -> Void
 
-    @State private var showFullQuality = false
+    @EnvironmentObject private var settingsStore: SettingsStore
 
     private var maskedIp: String? {
         guard let ip = displayIp else { return nil }
@@ -329,10 +349,11 @@ struct OutboundIPSheet: View {
     var body: some View {
         DashboardBottomSheet(
             title: "出站 IP",
+            // v0.2.68: ONE action renders as its own independent
+            // circle (like the ✕), not inside the shared capsule.
+            singleAction: true,
             actions: {
-                SheetActionsPill {
-                    SheetActionButton(systemImage: "arrow.clockwise", label: "刷新", disabled: isChecking, action: onRefresh)
-                }
+                SheetActionButton(systemImage: "arrow.clockwise", label: "刷新", disabled: isChecking, action: onRefresh)
             }
         ) {
             ScrollView {
@@ -346,37 +367,33 @@ struct OutboundIPSheet: View {
                         VStack(spacing: 0) {
                             infoRow(label: "IP 地址", value: maskedIp ?? "—")
                             Divider().padding(.leading, 0)
-                            infoRow(
-                                label: "等级",
-                                value: (assessed.qualityLevel?.label ?? "—")
-                                    + (assessed.typeInferred ? "（推断）" : ""))
+                            // v0.2.68: bare level, no "（推断）" suffix.
+                            infoRow(label: "等级", value: assessed.qualityLevel?.label ?? "—")
                             Divider()
-                            infoRow(label: "IP 类型", value: assessed.qualityType?.label ?? "—")
-                            Divider()
-                            infoRow(
-                                label: "国家",
-                                value: [flagEmoji(countryCode: assessed.countryCode), assessed.country]
-                                    .compactMap { $0 }.joined(separator: " "))
-                            Divider()
-                            infoRow(
-                                label: "城市",
-                                value: [assessed.regionName, assessed.city]
-                                    .compactMap { $0 }.joined(separator: " · "))
-                            Divider()
-                            infoRow(label: "组织", value: assessed.org ?? "—")
-                            Divider()
-                            infoRow(label: "运营商", value: assessed.isp ?? "—")
-                            Divider()
-                            infoRow(label: "ASN", value: assessed.asn ?? ipAsn ?? "—")
-                            Divider()
-                            infoRow(label: "时区", value: assessed.timezone ?? "—")
+                            // v0.2.68: label is "类型", not "IP 类型".
+                            infoRow(label: "类型", value: assessed.qualityType?.label ?? "—")
+                            // v0.2.68: NO 命中标记 row — no data source
+                            // for it in our code (IPQualityInfo has no
+                            // hit/marker field); it is omitted, not faked.
+                            // The video's extra rows (国家/城市/组织/
+                            // 运营商/时区） are also gone — that detail
+                            // lives on the IP-quality page.
                         }
                         .padding(16)
                         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-                        Button("查看完整 IP 质量") { showFullQuality = true }
-                            .buttonStyle(.bordered)
-                            .controlSize(.regular)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Text("网络")
+                            .font(.headline)
+                        VStack(spacing: 0) {
+                            infoRow(label: "组织", value: assessed.org ?? assessed.isp ?? "—")
+                            Divider()
+                            infoRow(label: "ASN", value: assessed.asn ?? ipAsn ?? "—")
+                            Divider()
+                            // The lookup the status card actually runs
+                            // (DashboardView.fetchIPInfo).
+                            infoRow(label: "采用来源", value: "ip-api.com")
+                        }
+                        .padding(16)
+                        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
                     } else if isChecking {
                         ProgressView("正在查询…")
                             .frame(maxWidth: .infinity, alignment: .center)
@@ -401,22 +418,21 @@ struct OutboundIPSheet: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 8)
                     }
+                    Text("其他")
+                        .font(.headline)
+                    VStack(spacing: 0) {
+                        Toggle("隐藏 IP", isOn: $hideIp)
+                            .font(.subheadline)
+                            .padding(.vertical, 10)
+                    }
+                    .padding(.horizontal, 16)
+                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 20)
             }
         }
-        .sheet(isPresented: $showFullQuality) {
-            NavigationStack {
-                if let ip = displayIp {
-                    IPQualityView(ip: ip)
-                } else {
-                    IPQualityView()
-                }
-            }
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-        }
+        .onChange(of: hideIp) { _, _ in settingsStore.save() }
     }
 
     private func infoRow(label: String, value: String) -> some View {
@@ -514,12 +530,16 @@ struct ServiceStatusSheet: View {
         } label: {
             HStack(spacing: 12) {
                 ZStack(alignment: .bottomTrailing) {
-                    Text(serviceTileText(service.name))
-                        .font(.system(size: service.name.lowercased() == "github" ? 13 : 20, weight: .bold))
-                        .foregroundStyle(Color(.label))
-                        .frame(width: 48, height: 48)
-                        .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
-                        .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+                    PackTileImage(
+                        name: service.name,
+                        fallback: serviceTileText(service.name),
+                        fontSize: service.name.lowercased() == "github" ? 13 : 20
+                    )
+                    .foregroundStyle(Color(.label))
+                    .frame(width: 48, height: 48)
+                    .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                    .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                     Circle()
                         .fill(dashboardServiceStatusColor(service.status))
                         .frame(width: 12, height: 12)
@@ -540,15 +560,6 @@ struct ServiceStatusSheet: View {
                     }
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    // Upstream 0c9788f (ServiceItem.ip): the address
-                    // the service saw the check come from — for a
-                    // node that sends a service out another way, not
-                    // the node's other traffic address.
-                    if let ip = service.ip, !ip.isEmpty {
-                        Text("服务所见出口 IP \(ip)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
                 }
                 Spacer()
                 Text(trailingText(for: service))
@@ -681,10 +692,20 @@ struct ProvidersSheet: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                // v0.2.68: wavy usage bar under the used/total line.
+                if let info = subscription, info.total > 0 {
+                    WavyProgressBar(
+                        progress: Double(info.upload + info.download) / Double(info.total),
+                        color: ConcordTheme.accent
+                    )
+                }
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text("配置")
                     .font(.headline)
+                // v0.2.68: "上次更新" only. The video's "扩展脚本 /
+                // FlClash" row has no data source in our code, so it
+                // is not added.
                 HStack {
                     Text("上次更新")
                         .font(.footnote)
@@ -708,10 +729,19 @@ struct ProvidersSheet: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // v0.2.68: white rounded-card backgrounds, like the video.
+        .padding(12)
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    private func refreshProviders() async {
+        isRefreshing = true
+        defer { isRefreshing = false }
+        await ruleStore.refresh()
     }
 
     private var groupCountText: String {
-        proxyStore.groups.isEmpty ? "—" : "\(proxyStore.nonHiddenGroups.count)"
+        proxyStore.groups.isEmpty ? "—" : "\(proxyStore.groups.count)"
     }
 
     private var nodeCountText: String {
@@ -754,14 +784,10 @@ struct ProvidersSheet: View {
             actions: {
                 SheetActionsPill {
                     SheetActionButton(systemImage: "arrow.clockwise", label: "刷新", disabled: isRefreshing) {
-                        Task {
-                            isRefreshing = true
-                            defer { isRefreshing = false }
-                            await ruleStore.refresh()
-                        }
+                        Task { await refreshProviders() }
                     }
                     SheetActionButton(
-                        systemImage: showAll ? "eye.slash" : "eye",
+                        systemImage: showAll ? "eye.slash.fill" : "eye.fill",
                         label: showAll ? "仅显示规则提供方" : "显示全部提供方",
                         disabled: false
                     ) {
@@ -774,6 +800,28 @@ struct ProvidersSheet: View {
                 VStack(alignment: .leading, spacing: 0) {
                     headerSection
                     Divider().padding(.horizontal, 16)
+                    // v0.2.68: the "外部资源" section title with its
+                    // own circle refresh button (same action as the
+                    // header refresh).
+                    HStack {
+                        Text("外部资源")
+                            .font(.headline)
+                        Spacer()
+                        Button { Task { await refreshProviders() } } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(Color(.label))
+                                .frame(width: 36, height: 36)
+                                .background(ConcordTheme.cardBackground, in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isRefreshing)
+                        .opacity(isRefreshing ? 0.4 : 1)
+                        .accessibilityLabel("刷新提供方")
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 4)
                     if providers.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(ruleStore.providers.isEmpty ? "暂无提供方" : "暂无规则提供方")
@@ -908,7 +956,7 @@ private struct TrafficTrendChart: View {
     let buckets: [Bucket]
 
     private var maxValue: Int64 {
-        max(buckets.map { max($0.down, $0.up) }.max() ?? 0, 1)
+        max(buckets.map { $0.down + $0.up }.max() ?? 0, 1)
     }
 
     var body: some View {
@@ -918,7 +966,7 @@ private struct TrafficTrendChart: View {
                     RoundedRectangle(cornerRadius: 8)
                         .fill(ConcordTheme.accent.opacity(0.15))
                         .frame(width: 28, height: 28)
-                    Image(systemName: "chart.bar")
+                    Image(systemName: "waveform.path.ecg")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(ConcordTheme.accent)
                 }
@@ -977,7 +1025,7 @@ private struct TrafficTrendChart: View {
 
     private func chartBody(width: CGFloat, height: CGFloat) -> some View {
         let groupWidth = width / CGFloat(max(buckets.count, 1))
-        let barWidth = max(2, (groupWidth - 3) / 2)
+        let barWidth = max(4, groupWidth - 6)
         return ZStack(alignment: .bottomLeading) {
             VStack(spacing: 0) {
                 dashedLine(width: width)
@@ -988,35 +1036,84 @@ private struct TrafficTrendChart: View {
                     .fill(Color(.separator))
                     .frame(height: 1)
             }
+            // v0.2.68: vertical dashed gridlines at 0/6/12/18.
+            HStack(spacing: 0) {
+                ForEach(buckets) { bucket in
+                    ZStack {
+                        if ["0", "6", "12", "18"].contains(bucket.label ?? "") {
+                            Path { path in
+                                path.move(to: CGPoint(x: groupWidth / 2, y: 0))
+                                path.addLine(to: CGPoint(x: groupWidth / 2, y: height))
+                            }
+                            .stroke(Color(.systemGray4), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                        }
+                    }
+                    .frame(width: groupWidth, height: height)
+                }
+            }
             HStack(alignment: .bottom, spacing: 0) {
                 ForEach(buckets) { bucket in
-                    HStack(alignment: .bottom, spacing: 1) {
-                        trendBar(value: bucket.down, color: ConcordTheme.accent, height: height, width: barWidth)
-                        trendBar(value: bucket.up, color: ConcordTheme.accent.opacity(0.45), height: height, width: barWidth)
-                    }
-                    .frame(width: groupWidth, alignment: .center)
+                    stackedColumn(bucket: bucket, height: height, width: barWidth)
+                        .frame(width: groupWidth, alignment: .center)
                 }
             }
         }
     }
 
-    private func dashedLine(width: CGFloat) -> some View {
-        Path { path in
-            path.move(to: CGPoint(x: 0, y: 0.5))
-            path.addLine(to: CGPoint(x: width, y: 0.5))
+    /// One stacked column (v0.2.68): download below, upload
+    /// stacked on top in the same column; the bar top is down+up.
+    /// Wide, with a fully rounded top (the top segment carries
+    /// the rounding; a lone download segment is rounded itself).
+    private func stackedColumn(bucket: Bucket, height: CGFloat, width: CGFloat) -> some View {
+        let downHeight: CGFloat = bucket.down <= 0 ? 0 : max(2, CGFloat(bucket.down) / CGFloat(maxValue) * height)
+        let upHeight: CGFloat = bucket.up <= 0 ? 0 : max(2, CGFloat(bucket.up) / CGFloat(maxValue) * height)
+        let radius = min(6, width / 2)
+        return VStack(spacing: 0) {
+            if bucket.up > 0 {
+                UnevenRoundedRectangle(topLeadingRadius: radius, topTrailingRadius: radius)
+                    .fill(ConcordTheme.accent.opacity(0.45))
+                    .frame(width: width, height: upHeight)
+            }
+            if bucket.down > 0 {
+                Group {
+                    if bucket.up > 0 {
+                        Rectangle().fill(ConcordTheme.accent)
+                    } else {
+                        UnevenRoundedRectangle(topLeadingRadius: radius, topTrailingRadius: radius)
+                            .fill(ConcordTheme.accent)
+                    }
+                }
+                .frame(width: width, height: downHeight)
+            }
         }
-        .stroke(Color(.systemGray4), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-        .frame(height: 1)
+        .frame(width: width, height: downHeight + upHeight, alignment: .bottom)
     }
+}
 
-    /// One bar: height proportional to the max bar value; a
-    /// positive value always gets at least 2pt so it stays
-    /// visible; zero draws nothing.
-    private func trendBar(value: Int64, color: Color, height: CGFloat, width: CGFloat) -> some View {
-        let barHeight: CGFloat = value <= 0 ? 0 : max(2, CGFloat(value) / CGFloat(maxValue) * height)
-        return RoundedRectangle(cornerRadius: 1.5)
-            .fill(color)
-            .frame(width: width, height: barHeight)
+/// Custom pill segmented control (v0.2.68, video): white
+/// rounded track, selected item = accent-filled pill with white
+/// text. Replaces the native segmented Pickers in the traffic
+/// sheet (range + ranking tabs).
+private struct PillSegmentedControl: View {
+    let titles: [String]
+    @Binding var selection: Int
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(Array(titles.enumerated()), id: \.offset) { index, title in
+                Button { selection = index } label: {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(selection == index ? .white : Color(.label))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(selection == index ? ConcordTheme.accent : Color.clear, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
     }
 }
 
@@ -1028,6 +1125,20 @@ struct TrafficStatsSheet: View {
     @State private var offset = 0
     @State private var rankingTab: TrafficRankingTab = .policy
     @State private var showClearConfirm = false
+
+    private var rangeSelection: Binding<Int> {
+        Binding(
+            get: { TrafficRange.allCases.firstIndex(of: range) ?? 0 },
+            set: { range = TrafficRange.allCases[$0]; offset = 0 }
+        )
+    }
+
+    private var rankingSelection: Binding<Int> {
+        Binding(
+            get: { TrafficRankingTab.allCases.firstIndex(of: rankingTab) ?? 0 },
+            set: { rankingTab = TrafficRankingTab.allCases[$0] }
+        )
+    }
 
     private var dates: [String] { trafficStore.rangeDates(range: range, offset: offset) }
     private var totals: DayTotals { trafficStore.totalsForDates(dates) }
@@ -1068,36 +1179,39 @@ struct TrafficStatsSheet: View {
                 }
             }
         ) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Picker("范围", selection: $range) {
-                        ForEach(TrafficRange.allCases, id: \.self) { range in
-                            Text(range.title).tag(range)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: range) { _, _ in offset = 0 }
+            // v0.2.68: the range picker + date navigator are PINNED
+            // below the sheet title; only the content below scrolls.
+            VStack(spacing: 0) {
+                VStack(spacing: 8) {
+                    PillSegmentedControl(titles: TrafficRange.allCases.map(\.title), selection: rangeSelection)
                     dateNavigator
-                    if totals.recordedDays == 0 {
-                        Text("暂无记录：该范围没有已记录的流量。自 v0.2.55 起记录每日流量，升级前的数据没有记录。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .padding(16)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-                    } else {
-                        summaryCard
-                        trendSection
-                        ruleHitsSection
-                        rankingSection
-                        Text("代理/直连、排行与规则命中按连接采样统计，仅含应用运行时观测到的流量；在两次采样之间开闭的短连接不会计入，拆分之和可能小于总流量。分时流量自 v0.2.57 起记录，升级前日期无分时数据。累计运行只统计应用观测到的隧道时段：在应用未运行时结束的会话无法计入，未观测到的日期显示 —。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
-                .padding(.bottom, 20)
+                .padding(.bottom, 8)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if totals.recordedDays == 0 {
+                            Text("暂无记录：该范围没有已记录的流量。自 v0.2.55 起记录每日流量，升级前的数据没有记录。")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .padding(16)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+                        } else {
+                            summaryCard
+                            trendSection
+                            ruleHitsSection
+                            rankingSection
+                            Text("代理/直连、排行与规则命中按连接采样统计，仅含应用运行时观测到的流量；在两次采样之间开闭的短连接不会计入，拆分之和可能小于总流量。分时流量自 v0.2.57 起记录，升级前日期无分时数据。累计运行只统计应用观测到的隧道时段：在应用未运行时结束的会话无法计入，未观测到的日期显示 —。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                    .padding(.bottom, 20)
+                }
             }
         }
         .alert("清空流量统计", isPresented: $showClearConfirm) {
@@ -1118,7 +1232,7 @@ struct TrafficStatsSheet: View {
             Button { offset += 1 } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color(.label))
+                    .foregroundStyle(offset >= range.maxOffset ? Color.gray : ConcordTheme.accent)
                     .frame(width: 40, height: 40)
             }
             .buttonStyle(.plain)
@@ -1132,7 +1246,7 @@ struct TrafficStatsSheet: View {
             Button { offset -= 1 } label: {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color(.label))
+                    .foregroundStyle(Color.gray)
                     .frame(width: 40, height: 40)
             }
             .buttonStyle(.plain)
@@ -1188,10 +1302,13 @@ struct TrafficStatsSheet: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                    Text(totals.uptimeText ?? "—")
-                        .font(.system(size: 17, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                    // v0.2.68: numbers big/bold, units small.
+                    if let uptime = totals.uptimeText {
+                        uptimeBigSmall(uptime)
+                    } else {
+                        Text("—")
+                            .font(.system(size: 17, weight: .semibold))
+                    }
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1223,6 +1340,42 @@ struct TrafficStatsSheet: View {
         }
         .padding(16)
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    /// Renders "18 小时 56 分钟" with the numbers big/bold and
+    /// the units small, like the video.
+    private func uptimeBigSmall(_ text: String) -> some View {
+        let segments = uptimeSegments(text)
+        return HStack(alignment: .firstTextBaseline, spacing: 2) {
+            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                Text(segment.value)
+                    .font(segment.isNumber
+                          ? .system(size: 20, weight: .bold)
+                          : .footnote)
+                    .foregroundStyle(segment.isNumber ? Color(.label) : .secondary)
+            }
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+
+    private func uptimeSegments(_ text: String) -> [(value: String, isNumber: Bool)] {
+        var segments: [(value: String, isNumber: Bool)] = []
+        var current = ""
+        var currentIsNumber: Bool? = nil
+        for ch in text {
+            let isNumber = ch.isNumber
+            if let flag = currentIsNumber, flag != isNumber {
+                segments.append((value: current, isNumber: flag))
+                current = ""
+            }
+            currentIsNumber = isNumber
+            current.append(ch)
+        }
+        if !current.isEmpty, let flag = currentIsNumber {
+            segments.append((value: current, isNumber: flag))
+        }
+        return segments
     }
 
     private func trafficPill(label: String) -> some View {
@@ -1379,12 +1532,7 @@ struct TrafficStatsSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("流量排行")
                 .font(.headline)
-            Picker("排行", selection: $rankingTab) {
-                ForEach(TrafficRankingTab.allCases, id: \.self) { tab in
-                    Text(tab.title).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
+            PillSegmentedControl(titles: TrafficRankingTab.allCases.map(\.title), selection: rankingSelection)
             if rankedRows.isEmpty {
                 Text("该范围没有排行数据。")
                     .font(.footnote)
@@ -1414,16 +1562,17 @@ struct TrafficStatsSheet: View {
     }
 
     private func rankingRow(_ row: TrafficRankingRow) -> some View {
-        HStack(spacing: 12) {
+        let share = totals.total > 0 ? Double(row.total) / Double(totals.total) : 0
+        return HStack(spacing: 12) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(ConcordTheme.softFill)
+                    .fill(ConcordTheme.accent.opacity(0.15))
                     .frame(width: 40, height: 40)
                 Image(systemName: "globe")
                     .font(.system(size: 17))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ConcordTheme.accent)
             }
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(row.id)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
@@ -1431,6 +1580,17 @@ struct TrafficStatsSheet: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                // v0.2.68: thin progress bar under the name (accent
+                // fill by share %, gray track).
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color(.systemGray5))
+                        Capsule()
+                            .fill(ConcordTheme.accent)
+                            .frame(width: max(0, geo.size.width * CGFloat(min(max(share, 0), 1))))
+                    }
+                }
+                .frame(height: 4)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 2) {
@@ -1460,42 +1620,70 @@ struct MemoryDetailSheet: View {
     @Binding var releaseMessage: String?
     let onRelease: () async -> Void
 
+    private var totalBytes: UInt64 { appBytes + (coreBytes ?? 0) }
+
     var body: some View {
-        DashboardBottomSheet(title: "内存信息") {
-            List {
-                Section("总计") {
-                    memoryRow("应用 + 核心", value: ConcordFormat.bytes(Int64(appBytes + (coreBytes ?? 0))))
-                    Text("应用与核心是两个进程（应用进程与 NetworkExtension 进程），两项相加是占用总和。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+        DashboardBottomSheet(
+            title: "内存信息",
+            // v0.2.68: ONE action — the broom — as its own
+            // independent circle, like the video (was: no button
+            // at all; the release lived as a text button in-body).
+            singleAction: true,
+            actions: {
+                Button { Task { await onRelease() } } label: {
+                    BroomIcon(size: 18, color: Color(.label))
+                        .frame(width: 34, height: 34)
+                        .contentShape(Circle())
                 }
-                Section("应用") {
-                    memoryRow("常驻内存", value: ConcordFormat.bytes(Int64(appBytes)))
-                }
-                Section("核心") {
-                    if let core = coreBytes {
-                        memoryRow("RSS", value: ConcordFormat.bytes(Int64(core)))
-                    } else {
-                        Text("核心未运行，无内存数据。")
-                            .font(.caption)
+                .buttonStyle(.plain)
+                .disabled(isReleasing || coreBytes == nil)
+                .opacity(isReleasing || coreBytes == nil ? 0.4 : 1)
+                .accessibilityLabel("释放核心内存")
+            }
+        ) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // v0.2.68: big total number (number big, unit small).
+                    let split = ConcordBytes.split(Int64(totalBytes))
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(split.number)
+                            .font(.system(size: 34, weight: .bold))
+                        Text(split.unit)
+                            .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                    Text("core.stats 只暴露 rss。NetworkExtension 进程内存上限很紧（历史约 15–50 MB），大规则集与 GeoIP 可能触发 Jetsam。")
+                    // Segmented bar: 2 segments only (app + core).
+                    // The video's third "扩展内核" segment has NO data
+                    // source in our code — it is not faked.
+                    MemoryDetailBar(appBytes: appBytes, coreBytes: coreBytes ?? 0)
+                    VStack(spacing: 0) {
+                        memoryRow("总计", value: ConcordFormat.bytes(Int64(totalBytes)))
+                        Divider()
+                        memoryRow("应用及共享", value: ConcordFormat.bytes(Int64(appBytes)))
+                        Divider()
+                        if let core = coreBytes {
+                            memoryRow("内核", value: ConcordFormat.bytes(Int64(core)))
+                        } else {
+                            memoryRow("内核", value: "核心未运行")
+                        }
+                    }
+                    .padding(16)
+                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+                    // v0.2.68: short honest two-process note. The
+                    // Jetsam warning paragraph is gone (the video has
+                    // none), and the percent rows (常驻内存 100%, heap
+                    // use/free) are omitted — no data source for them.
+                    Text("应用与核心是两个进程（应用进程与 NetworkExtension 进程），分别占用内存，相加为总和。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                }
-                Section {
-                    Button(isReleasing ? "释放中…" : "释放核心内存（core.releaseMemory）") {
-                        Task { await onRelease() }
-                    }
-                    .disabled(isReleasing || coreBytes == nil)
                     if let message = releaseMessage {
                         Text(message).font(.caption2).foregroundStyle(.secondary)
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 20)
             }
-            .font(.footnote.weight(.semibold))
-            .scrollContentBackground(.hidden)
         }
     }
 
@@ -1505,6 +1693,30 @@ struct MemoryDetailSheet: View {
             Spacer()
             Text(value).foregroundStyle(.secondary)
         }
+        .font(.footnote.weight(.semibold))
+        .padding(.vertical, 10)
+    }
+}
+
+/// Two-segment memory bar for the detail sheet (app in accent,
+/// core in the series2 tone, on a soft track).
+private struct MemoryDetailBar: View {
+    let appBytes: UInt64
+    let coreBytes: UInt64
+
+    var body: some View {
+        GeometryReader { geo in
+            let total = max(1, appBytes + coreBytes)
+            let appWidth = geo.size.width * CGFloat(appBytes) / CGFloat(total)
+            ZStack(alignment: .leading) {
+                Capsule().fill(ConcordTheme.softFill)
+                HStack(spacing: 2) {
+                    Capsule().fill(ConcordTheme.accent).frame(width: max(0, appWidth - 1))
+                    Capsule().fill(ConcordTheme.accent.opacity(0.45)).frame(width: max(0, geo.size.width - appWidth - 1))
+                }
+            }
+        }
+        .frame(height: 8)
     }
 }
 

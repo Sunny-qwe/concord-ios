@@ -6,9 +6,10 @@ import Darwin
 
 // MARK: - Design system (reference screenshots IMG_1082 / IMG_103)
 // One visual language for the whole app, matching the reference
-// dashboard: light-grey page, white cards with big rounded corners
-// and a soft shadow, blue #007AFF accent, big bold numbers, pale
-// capsule badges. Only the look changed here — no data logic lives
+// dashboard: theme-tinted page and cards (FlClash Material 3 seeded
+// scheme — surfaces are light tints of the accent colour), big
+// rounded corners and a soft shadow, blue #007AFF accent by default,
+// big bold numbers, pale capsule badges. Only the look changed here — no data logic lives
 // in this file (except the local intranet-IP read, which is device
 // info, not core data).
 //
@@ -55,21 +56,32 @@ import Darwin
 //     strictly closer to the first-level row style than 17 regular.
 
 enum ConcordTheme {
-    /// Page background: the system grouped background — #F2F2F7 in
-    /// light mode, dark in dark mode. (ThemeStore drives the colour
-    /// scheme; these semantic colours follow it automatically.)
-    /// With 纯黑模式 on in dark mode the page is pure black.
+    /// Page background (v0.2.68, FlClash Material 3 seeded scheme):
+    /// a light tint of the theme accent in light mode — accent 10%
+    /// over white. Blue #007AFF -> #E6F2FF (230,242,255); magenta
+    /// #B86CA2 -> #F4E7F0 (244,231,240), close to the MuYu
+    /// video's #F1E7EA page. Dark mode tints subtly too (accent 8%
+    /// into black); pure-black mode stays pure black.
     static var pageBackground: Color {
-        ThemeStore.shared.pureBlack && ThemeStore.shared.isDark
-            ? .black : Color(.systemGroupedBackground)
+        if ThemeStore.shared.pureBlack && ThemeStore.shared.isDark { return .black }
+        if ThemeStore.shared.isDark {
+            return Color.black.mixed(with: accent, amount: 0.08)
+        }
+        return Color.white.mixed(with: accent, amount: 0.16)
     }
-    /// Card background: secondary system grouped background — white
-    /// in light mode, dark grey in dark mode. Pure black mode keeps
-    /// cards a very dark grey so they stay distinguishable.
+    /// Card background: the same seeded tint, lighter — accent 8%
+    /// over white in light mode. Blue -> #EBF5FF (235,245,255);
+    /// magenta -> #F9F3F8 (249,243,248), near the video's #FBF4F3
+    /// card. Dark mode: accent 8% into #1C1C1E. Pure black mode
+    /// keeps cards very dark grey so they stay distinguishable.
     static var cardBackground: Color {
-        ThemeStore.shared.pureBlack && ThemeStore.shared.isDark
-            ? Color(red: 0.11, green: 0.11, blue: 0.12)
-            : Color(.secondarySystemGroupedBackground)
+        if ThemeStore.shared.pureBlack && ThemeStore.shared.isDark {
+            return Color(red: 0.11, green: 0.11, blue: 0.12)
+        }
+        if ThemeStore.shared.isDark {
+            return Color(red: 0.11, green: 0.11, blue: 0.12).mixed(with: accent, amount: 0.08)
+        }
+        return Color.white.mixed(with: accent, amount: 0.08)
     }
     /// Main card corner radius.
     static let cardRadius: CGFloat = 28
@@ -79,10 +91,20 @@ enum ConcordTheme {
     /// #007AFF). Read from ThemeStore so a theme change recolours
     /// every page that uses it.
     static var accent: Color { ThemeStore.shared.accentColor }
-    /// Pale grey fill for unselected pills / inner panels.
-    static let softFill = Color(.secondarySystemFill)
-    /// Selected-tab capsule fill in the floating bar.
-    static let tabSelectedFill = Color(.systemFill)
+    /// Pale fill for unselected pills / inner panels: theme-tinted
+    /// in light mode (accent 8% over white — blue #EBF5FF,
+    /// magenta #F9F3F8, like the video's warm-white pills); dark
+    /// mode keeps the system fill.
+    static var softFill: Color {
+        ThemeStore.shared.isDark
+            ? Color(.secondarySystemFill)
+            : Color.white.mixed(with: accent, amount: 0.08)
+    }
+    /// Selected-tab capsule fill in the floating bar (v0.2.68):
+    /// the theme accent — the video's selected tab is a solid
+    /// magenta capsule with a white icon + label (was grey
+    /// systemFill with a blue icon).
+    static var tabSelectedFill: Color { accent }
     /// Unselected tab icon/label grey.
     static let tabUnselected = Color(red: 0.25, green: 0.25, blue: 0.28)
     /// Bottom content clearance for the floating tab bar (v0.2.59,
@@ -105,6 +127,25 @@ enum ConcordTheme {
     static let tabBarClearance: CGFloat = 77
     /// Soft card shadow.
     static let cardShadow = Color.black.opacity(0.05)
+}
+
+extension Color {
+    /// Linear RGB mix: amount 0 returns self, 1 returns `other`.
+    /// Powers the theme-tinted surfaces (FlClash Material 3 seeded
+    /// scheme): e.g. white mixed 10% toward the accent is the page
+    /// background. Falls back to self for colours that cannot be
+    /// resolved to RGB components.
+    func mixed(with other: Color, amount: CGFloat) -> Color {
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+        var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+        guard UIColor(self).getRed(&r1, green: &g1, blue: &b1, alpha: &a1),
+              UIColor(other).getRed(&r2, green: &g2, blue: &b2, alpha: &a2) else { return self }
+        let t = min(max(amount, 0), 1)
+        return Color(red: r1 + (r2 - r1) * t,
+                     green: g1 + (g2 - g1) * t,
+                     blue: b1 + (b2 - b1) * t,
+                     opacity: a1 + (a2 - a1) * t)
+    }
 }
 
 // MARK: - Card
@@ -632,5 +673,97 @@ struct CloverShape: Shape {
         }
         path.closeSubpath()
         return path
+    }
+}
+
+// MARK: - Cached remote icon image (v0.2.68 perf fix)
+//
+// Why this exists: every proxy icon was loaded with bare
+// AsyncImage, which has NO decoded-image cache of its own — it
+// leans on URLSession's shared URLCache (512 KB memory on iOS).
+// A page with 40+ remote icons therefore re-reads from disk and
+// re-decodes its PNGs every time a row is recreated (scroll,
+// page rebuild, delay-test result landing), so icons pop in late
+// and stutter, and each pop triggers another body/layout pass
+// while the user is trying to tap. This cache downloads and
+// decodes each URL exactly once (decode off the main thread) and
+// serves the UIImage from memory thereafter. A cold icon still
+// waits on the network the first time — but only once, never
+// again on scroll or rebuild.
+
+/// In-memory decoded-image cache for remote icons. An actor so
+/// concurrent loads of the same URL coalesce into one download.
+actor IconImageCache {
+    static let shared = IconImageCache()
+
+    private let memory = NSCache<NSURL, UIImage>()
+    private var inFlight: [URL: Task<UIImage?, Never>] = [:]
+
+    private init() {
+        memory.countLimit = 300
+    }
+
+    /// Returns the decoded image for `url`, downloading and
+    /// decoding it once on a background thread when it is not
+    /// cached yet. Concurrent callers for the same URL share one
+    /// download; a failed load returns nil and is not cached, so
+    /// a later retry can succeed.
+    func image(for url: URL) async -> UIImage? {
+        if let hit = memory.object(forKey: url as NSURL) { return hit }
+        if let existing = inFlight[url] { return await existing.value }
+        let task = Task<UIImage?, Never> {
+            guard let (data, response) = try? await URLSession.shared.data(from: url),
+                  let http = response as? HTTPURLResponse,
+                  (200...299).contains(http.statusCode),
+                  !data.isEmpty else { return nil }
+            // Decode off the main thread: UIImage(data:) alone
+            // defers the bitmap decode to first draw, so force it
+            // through a renderer here.
+            return await Task.detached(priority: .userInitiated) {
+                guard let image = UIImage(data: data) else { return nil }
+                let size = image.size
+                guard size.width > 0, size.height > 0 else { return image }
+                let format = UIGraphicsImageRendererFormat()
+                format.scale = image.scale
+                format.opaque = false
+                let renderer = UIGraphicsImageRenderer(size: size, format: format)
+                return renderer.image { _ in image.draw(at: .zero) }
+            }.value
+        }
+        inFlight[url] = task
+        let result = await task.value
+        inFlight[url] = nil
+        if let result {
+            memory.setObject(result, forKey: url as NSURL)
+        }
+        return result
+    }
+}
+
+/// A remote icon that is downloaded and decoded exactly once per
+/// URL (see IconImageCache). Drop-in replacement for the AsyncImage
+/// call sites in GroupIconImageView / PackTileImage: the same
+/// placeholder while loading or on failure, the same resizable
+/// fill once loaded.
+struct CachedIconImage<Placeholder: View>: View {
+    let url: URL
+    @ViewBuilder let placeholder: () -> Placeholder
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url) {
+            if image == nil {
+                image = await IconImageCache.shared.image(for: url)
+            }
+        }
     }
 }

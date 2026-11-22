@@ -19,9 +19,10 @@ struct MitmModulesView: View {
     @EnvironmentObject private var tunnelManager: TunnelManager
 
     @State private var urlText = ""
-    @State private var showPasteImport = false
-    @State private var showBlankEditor = false
-    @State private var showFileImporter = false
+    /// v0.2.68 (MuYu): import lives behind the top-right ⊕ button,
+    /// presented as a sheet (MitmModuleImportSheet below) — the
+    /// paste / file / blank flows present from inside that sheet.
+    @State private var showImportSheet = false
     @State private var consentModule: MitmModule?
     @State private var showConsentAlert = false
     @State private var deleteModule: MitmModule?
@@ -76,89 +77,38 @@ struct MitmModulesView: View {
                     }
                 }
             }
-            Section {
-                Text("模块把一组规则、重写、脚本和解密域名打包在一起，整体开关、整体更新。支持 Surge 模块、Loon 插件、Quantumult X 片段和 Stash 覆写。模块内容会在下次启动 VPN 时生效；VPN 运行时改动会立即重新应用。")
-                    .font(.caption2)
+            if moduleStore.modules.isEmpty {
+                Text("暂无模块")
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
-                if let message = moduleStore.applyMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
-                }
-                if let message = moduleStore.statusMessage {
-                    Text(message).font(.caption2).foregroundStyle(.green)
-                }
-                if let error = moduleStore.lastError {
-                    Text(error).font(.caption2).foregroundStyle(.red)
-                }
             }
-
-            Section("导入模块") {
-                // FlClash mitm_modules.dart:174-205: multiple URLs
-                // (plus install links) in one import, skipping
-                // already-installed ones.
-                TextEditor(text: $urlText)
-                    .frame(minHeight: 56)
-                    .font(.system(.caption, design: .monospaced))
-                    .autocapitalization(.none)
-                    .autocorrectionDisabled()
-                    .overlay(alignment: .topLeading) {
-                        if urlText.isEmpty {
-                            Text("模块链接，每行一个；也支持 surge:// / loon:// 安装链接")
-                                .font(.footnote)
-                                .foregroundStyle(.tertiary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 8)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                HStack {
-                    Button("导入") {
-                        Task { await importURLs() }
-                    }
-                    .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || moduleStore.isBusy)
-                    Spacer()
-                    Button("从文件导入") { showFileImporter = true }
-                        .disabled(moduleStore.isBusy)
-                }
-                Button("粘贴模块文本导入") { showPasteImport = true }
-                Button("新建空白模块") { showBlankEditor = true }
-                if moduleStore.isBusy { ProgressView() }
-            }
-
-            Section("已安装的模块（\(moduleStore.modules.count)）") {
-                if moduleStore.modules.isEmpty {
-                    Text("还没有模块。粘贴一个 Surge / Loon / Quantumult X 模块链接导入。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(moduleStore.modules) { module in
-                    MitmModuleRow(
-                        module: module,
-                        status: statusByName[module.name],
-                        statusNote: statusNote,
-                        statusError: statusError,
-                        isLoadingStatus: isLoadingStatus,
-                        isRefetching: refetchingNames.contains(module.name),
-                        refetchError: refetchErrorByName[module.name],
-                        onToggle: { on in toggle(module, on: on) },
-                        onMoveUp: { Task { await moduleStore.moveUp(module) } },
-                        onMoveDown: { Task { await moduleStore.moveDown(module) } },
-                        onDelete: {
-                            deleteModule = module
-                            showDeleteConfirm = true
-                        },
-                        onAwaitingConsent: {
-                            consentModule = module
-                            showConsentAlert = true
-                        },
-                        onDismissAwaiting: {
-                            Task { await moduleStore.answerConsent(module, agreed: false) }
-                        },
-                        onShowDetail: { detailModule = module },
-                        onRefetch: { Task { await refetch(module) } },
-                        onExpand: { Task { await refreshStatusIfNeeded() } }
-                    )
-                }
+            ForEach(moduleStore.modules) { module in
+                MitmModuleRow(
+                    module: module,
+                    status: statusByName[module.name],
+                    statusNote: statusNote,
+                    statusError: statusError,
+                    isLoadingStatus: isLoadingStatus,
+                    isRefetching: refetchingNames.contains(module.name),
+                    refetchError: refetchErrorByName[module.name],
+                    onToggle: { on in toggle(module, on: on) },
+                    onMoveUp: { Task { await moduleStore.moveUp(module) } },
+                    onMoveDown: { Task { await moduleStore.moveDown(module) } },
+                    onDelete: {
+                        deleteModule = module
+                        showDeleteConfirm = true
+                    },
+                    onAwaitingConsent: {
+                        consentModule = module
+                        showConsentAlert = true
+                    },
+                    onDismissAwaiting: {
+                        Task { await moduleStore.answerConsent(module, agreed: false) }
+                    },
+                    onShowDetail: { detailModule = module },
+                    onRefetch: { Task { await refetch(module) } },
+                    onExpand: { Task { await refreshStatusIfNeeded() } }
+                )
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
@@ -167,8 +117,16 @@ struct MitmModulesView: View {
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
-        .navigationTitle("MITM 模块")
+        .navigationTitle("模块")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showImportSheet = true } label: {
+                    Image(systemName: "plus.circle")
+                }
+                .accessibilityLabel("导入模块")
+            }
+        }
         .task { await refreshStatus() }
         .refreshable { await refreshStatus() }
         .onChange(of: tunnelManager.isRunning) { _, running in
@@ -194,30 +152,12 @@ struct MitmModulesView: View {
         .navigationDestination(item: $detailModule) { module in
             MitmModuleDetailView(moduleId: module.id)
         }
-        .sheet(isPresented: $showPasteImport) {
-            MitmModulePasteImportView(onImported: { saved in
-                offerConsent(saved)
-            })
-        }
-        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.plainText]) { result in
-            switch result {
-            case .success(let url):
-                let accessing = url.startAccessingSecurityScopedResource()
-                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-                    moduleStore.lastError = "读取模块文件失败：不是 UTF-8 文本"
-                    return
-                }
-                Task { await importFile(text: text, fileName: url.lastPathComponent) }
-            case .failure(let error):
-                moduleStore.lastError = "选择文件失败：\(error.localizedDescription)"
-            }
-        }
-        .sheet(isPresented: $showBlankEditor) {
-            MitmModuleTextEditorView(
-                module: nil,
-                initialText: MitmModuleStore.blankTemplate(name: "新模块"),
-                onSaved: { saved in offerConsent(saved) }
+        .sheet(isPresented: $showImportSheet) {
+            MitmModuleImportSheet(
+                urlText: $urlText,
+                onImportURLs: { await importURLs() },
+                onImportFileText: { text, fileName in await importFile(text: text, fileName: fileName) },
+                onImported: { saved in offerConsent(saved) }
             )
         }
         // The consent prompt (fork `answerMitmModule`): what turning
@@ -466,94 +406,35 @@ private struct MitmModuleRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // v0.2.68 (MuYu): collapsed row = name + "远程"/"本地"
+            // subtitle + toggle on the RIGHT. Badges (链接 / N 脚本 /
+            // 待确认 / N 跳过）, sort arrows, description and update
+            // time move into the expanded detail below.
             HStack(spacing: 10) {
-                Toggle("", isOn: Binding(
-                    get: { module.enabled },
-                    set: { onToggle($0) }
-                ))
-                .labelsHidden()
                 Button(action: toggleExpand) {
                     VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text(module.name)
-                                .font(.footnote)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(Color(.label))
-                            if module.url != nil {
-                                Text("链接")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 1)
-                                    .background(Color.blue.opacity(0.12), in: Capsule())
-                            }
-                            if let content, content.declaredScripts > 0 {
-                                Text("\(content.declaredScripts) 脚本")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 1)
-                                    .background(Color.orange.opacity(0.14), in: Capsule())
-                                    .foregroundStyle(.orange)
-                            }
-                            // Fork 2d31f10: the module awaits consent —
-                            // off, never answered, asking about something.
-                            // The state lives in the row, so the badge
-                            // survives app restart. Tapping it opens the
-                            // consent prompt; the × declines it.
-                            if moduleStore.awaitsConsent(module) {
-                                Button("待确认", action: onAwaitingConsent)
-                                    .font(.caption2)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 1)
-                                    .background(Color.orange.opacity(0.14), in: Capsule())
-                                    .foregroundStyle(.orange)
-                                    .buttonStyle(.plain)
-                                Button(action: onDismissAwaiting) {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 9, weight: .bold))
-                                }
-                                .foregroundStyle(.secondary)
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("不再询问此模块")
-                            }
-                            if let content, !content.skipped.isEmpty {
-                                Text("\(content.skipped.count) 跳过")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 1)
-                                    .background(Color.gray.opacity(0.14), in: Capsule())
-                            }
-                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                        if !module.description.isEmpty {
-                            Text(module.description)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                        Text("更新于 \(ConcordRelativeTime.string(since: module.lastUpdateTime))")
+                        Text(module.name)
+                            .font(.footnote)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color(.label))
+                            .lineLimit(1)
+                        Text(module.url != nil ? "远程" : "本地")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
                 .buttonStyle(.plain)
-                VStack(spacing: 4) {
-                    Button(action: onMoveUp) {
-                        Image(systemName: "chevron.up").font(.footnote.weight(.semibold))
-                    }
-                    .disabled(moduleStore.modules.first?.id == module.id)
-                    Button(action: onMoveDown) {
-                        Image(systemName: "chevron.down").font(.footnote.weight(.semibold))
-                    }
-                    .disabled(moduleStore.modules.last?.id == module.id)
-                }
-                .foregroundStyle(.secondary)
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { module.enabled },
+                    set: { onToggle($0) }
+                ))
+                .labelsHidden()
             }
             if isExpanded {
                 Divider()
                     .padding(.top, 8)
-                statusArea
+                expandedDetail
                     .padding(.top, 8)
             }
         }
@@ -561,6 +442,77 @@ private struct MitmModuleRow: View {
             Button(role: .destructive, action: onDelete) {
                 Label("删除", systemImage: "trash")
             }
+        }
+    }
+
+    /// The expanded detail: the old collapsed-row badges and
+    /// sort arrows, the description / update time, and the core's
+    /// live status (kept per the 2026-11-20 user decision).
+    private var expandedDetail: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                if module.url != nil {
+                    Text("链接")
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.blue.opacity(0.12), in: Capsule())
+                }
+                if let content, content.declaredScripts > 0 {
+                    Text("\(content.declaredScripts) 脚本")
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.orange.opacity(0.14), in: Capsule())
+                        .foregroundStyle(.orange)
+                }
+                // Fork 2d31f10: the module awaits consent — off,
+                // never answered, asking about something. Tapping
+                // opens the consent prompt; the × declines it.
+                if moduleStore.awaitsConsent(module) {
+                    Button("待确认", action: onAwaitingConsent)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.orange.opacity(0.14), in: Capsule())
+                        .foregroundStyle(.orange)
+                        .buttonStyle(.plain)
+                    Button(action: onDismissAwaiting) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("不再询问此模块")
+                }
+                if let content, !content.skipped.isEmpty {
+                    Text("\(content.skipped.count) 跳过")
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.gray.opacity(0.14), in: Capsule())
+                }
+                Spacer()
+                Button(action: onMoveUp) {
+                    Image(systemName: "chevron.up").font(.footnote.weight(.semibold))
+                }
+                .disabled(moduleStore.modules.first?.id == module.id)
+                Button(action: onMoveDown) {
+                    Image(systemName: "chevron.down").font(.footnote.weight(.semibold))
+                }
+                .disabled(moduleStore.modules.last?.id == module.id)
+            }
+            .foregroundStyle(.secondary)
+            if !module.description.isEmpty {
+                Text(module.description)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Text("更新于 \(ConcordRelativeTime.string(since: module.lastUpdateTime))")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            statusArea
         }
     }
 
@@ -1543,6 +1495,111 @@ struct MitmModuleTextEditorView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("取消") { dismiss() }
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Import sheet (v0.2.68, MuYu ⊕ button)
+//
+// The import UI that used to be an in-page section, now presented
+// as a sheet from the top-right ⊕ button. Same flows: multiple
+// URLs (plus install links) in one import, file import, paste
+// import, blank module. The paste / blank sheets present from
+// inside this sheet; import errors surface here via
+// moduleStore.lastError.
+private struct MitmModuleImportSheet: View {
+    @Binding var urlText: String
+    let onImportURLs: () async -> Void
+    let onImportFileText: (String, String) async -> Void
+    let onImported: (MitmModule?) -> Void
+
+    @EnvironmentObject private var moduleStore: MitmModuleStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var showPasteImport = false
+    @State private var showBlankEditor = false
+    @State private var showFileImporter = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    // FlClash mitm_modules.dart:174-205: multiple
+                    // URLs (plus install links) in one import,
+                    // skipping already-installed ones.
+                    TextEditor(text: $urlText)
+                        .frame(minHeight: 56)
+                        .font(.system(.caption, design: .monospaced))
+                        .autocapitalization(.none)
+                        .autocorrectionDisabled()
+                        .overlay(alignment: .topLeading) {
+                            if urlText.isEmpty {
+                                Text("模块链接，每行一个；也支持 surge:// / loon:// 安装链接")
+                                    .font(.footnote)
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 8)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    HStack {
+                        Button("导入") {
+                            Task { await onImportURLs() }
+                        }
+                        .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || moduleStore.isBusy)
+                        Spacer()
+                        Button("从文件导入") { showFileImporter = true }
+                            .disabled(moduleStore.isBusy)
+                    }
+                    Button("粘贴模块文本导入") { showPasteImport = true }
+                    Button("新建空白模块") { showBlankEditor = true }
+                    if moduleStore.isBusy { ProgressView() }
+                    if let error = moduleStore.lastError {
+                        Text(error).font(.caption2).foregroundStyle(.red)
+                    }
+                } footer: {
+                    Text("模块把一组规则、重写、脚本和解密域名打包在一起，整体开关、整体更新。支持 Surge 模块、Loon 插件、Quantumult X 片段和 Stash 覆写。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+            .scrollContentBackground(.hidden)
+            .font(.footnote.weight(.semibold))
+            .background(ConcordTheme.pageBackground)
+            .navigationTitle("导入模块")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            .sheet(isPresented: $showPasteImport) {
+                MitmModulePasteImportView(onImported: { saved in
+                    onImported(saved)
+                })
+            }
+            .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.plainText]) { result in
+                switch result {
+                case .success(let url):
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                    guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                        moduleStore.lastError = "读取模块文件失败：不是 UTF-8 文本"
+                        return
+                    }
+                    Task { await onImportFileText(text, url.lastPathComponent) }
+                case .failure(let error):
+                    moduleStore.lastError = "选择文件失败：\(error.localizedDescription)"
+                }
+            }
+            .sheet(isPresented: $showBlankEditor) {
+                MitmModuleTextEditorView(
+                    module: nil,
+                    initialText: MitmModuleStore.blankTemplate(name: "新模块"),
+                    onSaved: { saved in onImported(saved) }
+                )
             }
         }
     }

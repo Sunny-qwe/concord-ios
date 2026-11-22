@@ -29,12 +29,36 @@ final class DnsStore: ObservableObject {
         }
     }
 
+    /// Cutoff for the broom (v0.2.68): entries at or before this
+    /// `time` were cleared from the displayed list and must not
+    /// come back on the next snapshot refresh. 0 = no clear yet.
+    /// The core keeps its own DNS log (dns.watch returns the whole
+    /// snapshot; there is no core-side clear), so the clear is a
+    /// display cutoff, not a core wipe — queries after the clear
+    /// still appear.
+    private var clearedBeforeTime: Int64 = 0
+
+    /// Clear the displayed record list (the broom in the DNS sheet
+    /// header, MuYu cleaning_services). Entries at or before now
+    /// are dropped and filtered out of later refreshes; new queries
+    /// after the clear still appear. Does NOT clear the DNS cache
+    /// (that is clearCache) or the Fake-IP mappings.
+    @MainActor
+    func clearEntries() {
+        clearedBeforeTime = entries.map(\.time).max() ?? 0
+        entries = []
+        lastActionMessage = "记录已清除"
+        lastError = nil
+    }
+
     @MainActor
     func refresh() async {
         do {
             let fresh = try await client.dnsEntries()
+            let cutoff = clearedBeforeTime
+            let visible = cutoff > 0 ? fresh.filter { $0.time > cutoff } : fresh
             var merged = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
-            for entry in fresh { merged[entry.id] = entry }
+            for entry in visible { merged[entry.id] = entry }
             entries = merged.values.sorted { $0.time > $1.time }
             lastError = nil
         } catch {

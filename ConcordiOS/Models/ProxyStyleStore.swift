@@ -163,6 +163,15 @@ final class IconPackStore: ObservableObject {
     private var lowerMap: [String: String] = [:]
     private var normMap: [String: String] = [:]
     private var orderedNorm: [(norm: String, url: String)] = []
+    /// Memoized iconURL results (v0.2.68 perf fix): the fallback
+    /// scan in step (d) walks the whole pack, and the lookup runs
+    /// once per icon per page rebuild — so a name that misses the
+    /// pack rescanned the entire pack on every evaluation. The
+    /// memo makes every repeat lookup O(1), including misses
+    /// (stored as nil). Cleared whenever the pack is rebuilt or
+    /// cleared. Main-thread only: all callers are view bodies or
+    /// the @MainActor import path.
+    private var urlMemo: [String: URL?] = [:]
 
     private struct StoredPack: Codable {
         var url: String
@@ -219,6 +228,7 @@ final class IconPackStore: ObservableObject {
         lowerMap = lower
         normMap = norm
         orderedNorm = ordered
+        urlMemo = [:]
     }
 
     /// Normalizes a name for matching: lowercase, keep only
@@ -248,7 +258,16 @@ final class IconPackStore: ObservableObject {
     /// single-character name would match almost anything ("x" is
     /// contained in "netflix"), and 1-character names are already
     /// handled exactly by (a)–(c) above.
+    /// Results are memoized (see urlMemo): the step-(d) scan is
+    /// O(pack) and this runs once per icon per page rebuild.
     func iconURL(for groupName: String) -> URL? {
+        if let hit = urlMemo[groupName] { return hit }
+        let result = resolveIconURL(for: groupName)
+        urlMemo[groupName] = result
+        return result
+    }
+
+    private func resolveIconURL(for groupName: String) -> URL? {
         if let raw = exactMap[groupName], let url = URL(string: raw) { return url }
         let lower = groupName.lowercased()
         if let raw = lowerMap[lower], let url = URL(string: raw) { return url }
@@ -347,6 +366,7 @@ final class IconPackStore: ObservableObject {
         lowerMap = [:]
         normMap = [:]
         orderedNorm = []
+        urlMemo = [:]
         packName = nil
         iconCount = 0
         fetchedAt = nil

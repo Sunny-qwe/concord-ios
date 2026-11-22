@@ -1,31 +1,102 @@
 import SwiftUI
 
 // MARK: - Advanced config hub (FlClash: Tools -> 进阶配置)
-// A hub of the advanced pages. 脚本 is NOT here: concord has no
+// v0.2.68 (MuYu): THREE cards, no per-row subtitles (except the
+// 模块 / 主机名 "N 项" counts):
+//   [网络 / DNS / 附加规则 / 脚本]
+//   自定义 [代理 / 规则集 / 筛选 / 图标集]
+//   MITM [HTTPS 解密 toggle / 模块 "N 项" / 主机名 "N 项" / 选项]
+// Labels follow the video: 规则集 (not 规则提供方）, 筛选 (not
+// 过滤器）. Icons follow the video's glyphs (see advancedRow
+// call sites).
+//
+// 脚本 is a real row that opens an honest alert: concord has no
 // script-loading API (only MITM scripts, which live under MITM
-// 模块）, so there is nothing real to put behind that row.
+// 模块）, so there is no scripts list to show — nothing is faked.
+//
+// 编辑配置 (YAML) is KEPT: the Advanced row edits the current
+// (merged) config text via ConfigEditorView(), and the only other
+// YAML editor (Profiles → edit → file row) edits one profile's
+// own file — a different target. So this row is the only entry
+// point for the current config text.
 
 struct AdvancedConfigView: View {
     /// Navigate through the Tools page's single NavigationStack —
-    /// no nested stacks.
+    /// no nested stacks. Used for the rows whose destinations are
+    /// ToolsDestination cases; the MITM rows navigate directly
+    /// with NavigationLink (same stack).
     let navigate: (ToolsDestination) -> Void
+
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var moduleStore: MitmModuleStore
+    @State private var showScriptAlert = false
+
+    private var moduleCountText: String { "\(moduleStore.modules.count) 项" }
+
+    private var hostnameCountText: String {
+        let count = settingsStore.mitmHostnames
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }.count
+        return "\(count) 项"
+    }
 
     var body: some View {
         List {
-            Section("进阶配置") {
-                advancedRow(icon: "network", title: "网络", subtitle: "TUN、MTU、DNS、IPv6、路由", destination: .advancedNetwork)
-                advancedRow(icon: "globe", title: "DNS", subtitle: "上游 DNS、Fake-IP", destination: .advancedDns)
-                advancedRow(icon: "list.bullet", title: "附加规则", subtitle: "排在订阅规则之前的自定义规则", destination: .advancedRules)
-                advancedRow(icon: "server.rack", title: "代理", subtitle: "自定义节点", destination: .advancedProxies)
-                advancedRow(icon: "square.stack.3d.up", title: "规则提供方", subtitle: "远程规则集与本地规则", destination: .advancedProviders)
-                advancedRow(icon: "line.3.horizontal.decrease.circle", title: "过滤器", subtitle: "代理组节点过滤", destination: .advancedFilters)
-                advancedRow(icon: "photo.on.rectangle.angled", title: "图标集", subtitle: "代理组与节点的图标", destination: .iconSets)
-                advancedRow(icon: "doc.text", title: "编辑配置 (YAML)", subtitle: "直接编辑当前配置文本", destination: .configEditor)
-            }
             Section {
-                Text("脚本：上游 FlClash 有这个入口，但 concord 核心没有加载 Clash 脚本的接口，无法实现——不在此列出。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                advancedRow(icon: "key", title: "网络", destination: .advancedNetwork)
+                advancedRow(icon: "server.rack", title: "DNS", destination: .advancedDns)
+                advancedRow(icon: "list.bullet.rectangle", title: "附加规则", destination: .advancedRules)
+                Button {
+                    showScriptAlert = true
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "chevron.left.forwardslash.chevron.right")
+                            .font(.system(size: 18, weight: .regular))
+                            .foregroundStyle(ConcordTheme.accent)
+                            .frame(width: 24)
+                        Text("脚本")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+            }
+            Section("自定义") {
+                advancedRow(icon: "globe", title: "代理", destination: .advancedProxies)
+                advancedRow(icon: "archivebox", title: "规则集", destination: .advancedProviders)
+                advancedRow(icon: "line.3.horizontal.decrease", title: "筛选", destination: .advancedFilters)
+                advancedRow(icon: "photo.on.rectangle.angled", title: "图标集", destination: .iconSets)
+                advancedRow(icon: "doc.text", title: "编辑配置 (YAML)", destination: .configEditor)
+            }
+            Section("MITM") {
+                HStack(spacing: 12) {
+                    Image(systemName: "lock.open")
+                        .font(.system(size: 18, weight: .regular))
+                        .foregroundStyle(ConcordTheme.accent)
+                        .frame(width: 24)
+                    Toggle("HTTPS 解密", isOn: $settingsStore.mitmEnabled)
+                        .disabled(!settingsStore.mitmAvailable)
+                        .onChange(of: settingsStore.mitmEnabled) { _, _ in settingsStore.save() }
+                }
+                NavigationLink {
+                    MitmModulesView()
+                } label: {
+                    mitmRow(icon: "puzzlepiece", title: "模块", value: moduleCountText)
+                }
+                NavigationLink {
+                    MitmHostnameEditorView()
+                } label: {
+                    mitmRow(icon: "scope", title: "主机名", value: hostnameCountText)
+                }
+                NavigationLink {
+                    MitmOptionsView()
+                } label: {
+                    mitmRow(icon: "slider.horizontal.3", title: "选项", value: nil)
+                }
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
@@ -33,9 +104,14 @@ struct AdvancedConfigView: View {
         .font(.footnote.weight(.semibold))
         .navigationTitle("进阶配置")
         .navigationBarTitleDisplayMode(.inline)
+        .alert("脚本", isPresented: $showScriptAlert) {
+            Button("common.ok".l10n, role: .cancel) {}
+        } message: {
+            Text("核心没有加载 Clash 脚本的接口，无法提供脚本列表。脚本只存在于 MITM 模块里（MITM 模块页）。")
+        }
     }
 
-    private func advancedRow(icon: String, title: String, subtitle: String, destination: ToolsDestination) -> some View {
+    private func advancedRow(icon: String, title: String, destination: ToolsDestination) -> some View {
         Button {
             navigate(destination)
         } label: {
@@ -44,12 +120,7 @@ struct AdvancedConfigView: View {
                     .font(.system(size: 18, weight: .regular))
                     .foregroundStyle(ConcordTheme.accent)
                     .frame(width: 24)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                    Text(subtitle)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+                Text(title)
                 Spacer()
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
@@ -58,5 +129,23 @@ struct AdvancedConfigView: View {
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
+    }
+
+    /// One MITM-card row: glyph + title + optional "N 项" value.
+    private func mitmRow(icon: String, title: String, value: String?) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(ConcordTheme.accent)
+                .frame(width: 24)
+            Text(title)
+                .foregroundStyle(Color(.label))
+            Spacer()
+            if let value {
+                Text(value)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }

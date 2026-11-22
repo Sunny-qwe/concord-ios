@@ -20,11 +20,12 @@ struct ThemePickerView: View {
     @State private var showResetConfirm = false
 
     /// FlClash defaultPrimaryColors (common/constant.dart:196-205)
-    /// not covered by the 5 ThemeAccent presets: pink, red, yellow,
+    /// not covered by the 6 ThemeAccent presets: pink, red, yellow,
     /// grey. They are applied as a custom hex (ThemeStore's accent
     /// enum is owned by the store file), bringing the preset total
-    /// to 9 — upstream's 8 plus the teal preset this app already
-    /// shipped (kept, not removed).
+    /// to 10 — upstream's 8 plus the teal preset this app already
+    /// shipped (kept, not removed) plus the magenta preset (#B86CA2,
+    /// the video's rendered primary) added in v0.2.68.
     private static let extraPresets: [(label: String, hex: String)] = [
         ("粉色", "#FF2D55"),
         ("红色", "#FF383C"),

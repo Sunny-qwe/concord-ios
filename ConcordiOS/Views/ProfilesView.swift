@@ -125,36 +125,32 @@ struct ProfilesView: View {
                     Text("title.profiles".l10n)
                         .font(.system(size: 24, weight: .semibold))
                 }
-                if !picker {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { navPath.append(.nodeSources) } label: {
-                            Image(systemName: "globe")
-                        }
-                        .accessibilityLabel("节点来源")
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { navPath.append(.visualConfig) } label: {
-                            Image(systemName: "slider.horizontal.3")
-                        }
-                        .accessibilityLabel("可视化配置")
-                    }
-                }
                 if hasProfiles && !picker {
+                    // MuYu (v0.2.68): ONE capsule holding refresh +
+                    // sort, plus a SEPARATE ＋ circle button. The
+                    // globe (节点来源） and slider (可视化配置） move
+                    // into the ＋ menu (see addProfileMenuItems) —
+                    // no feature is lost.
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button { Task { await updateAll() } } label: {
-                            Image(systemName: "arrow.clockwise")
+                        HStack(spacing: 4) {
+                            Button { Task { await updateAll() } } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .accessibilityLabel("更新")
+                            .disabled(isUpdatingAll)
+                            Divider()
+                                .frame(height: 16)
+                            Button {
+                                reorderDraft = profileStore.profiles
+                                showReorder = true
+                            } label: {
+                                Image(systemName: "line.3.horizontal.decrease")
+                            }
+                            .accessibilityLabel("排序")
                         }
-                        .accessibilityLabel("更新")
-                        .disabled(isUpdatingAll)
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            reorderDraft = profileStore.profiles
-                            showReorder = true
-                        } label: {
-                            Image(systemName: "arrow.up.arrow.down")
-                        }
-                        .accessibilityLabel("排序")
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(ConcordTheme.cardBackground, in: Capsule())
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
@@ -315,8 +311,15 @@ struct ProfilesView: View {
 
     @ViewBuilder
     private var addProfileMenuItems: some View {
+        // v0.2.68 (MuYu): 节点来源 / 可视化配置 moved here from
+        // the top bar — the top bar now holds only the
+        // refresh+sort capsule and the ＋ button.
         Button { navPath.append(.nodeSources) } label: {
-            Label("节点来源", systemImage: "list.bullet")
+            Label("节点来源", systemImage: "globe")
+                .font(.subheadline)
+        }
+        Button { navPath.append(.visualConfig) } label: {
+            Label("可视化配置", systemImage: "slider.horizontal.3")
                 .font(.subheadline)
         }
         Button { showScanImport = true } label: {
@@ -438,7 +441,7 @@ struct ProfilesView: View {
                 }
             }
             .padding(16)
-            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
+            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
             .shadow(color: ConcordTheme.cardShadow, radius: 6, x: 0, y: 2)
         }
         .buttonStyle(.plain)
@@ -467,9 +470,9 @@ struct ProfilesView: View {
         } label: {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
-                    // FlClash ChipTitle (profiles.dart:562-567):
-                    // expiry renders inline with the title, not as
-                    // a separate line under the subtitle.
+                    // MuYu (v0.2.68): expiry renders as a DATE
+                    // pill ("2026-12-03", accent text on accent
+                    // low-opacity background), not "剩余 N 天".
                     HStack(spacing: 6) {
                         Text(profile.name)
                             .font(.headline)
@@ -477,10 +480,13 @@ struct ProfilesView: View {
                             .lineLimit(1)
                         if let info = profile.subscriptionInfo,
                            profile.kind == .url,
-                           let expiry = info.expiryLine() {
-                            Text(expiry.text)
-                                .font(.footnote)
-                                .foregroundStyle(expiry.warning ? .red : .secondary)
+                           let dateText = info.expiryDateString {
+                            Text(dateText)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(ConcordTheme.accent.opacity(0.12), in: Capsule())
+                                .foregroundStyle(ConcordTheme.accent)
                                 .lineLimit(1)
                         }
                     }
@@ -515,11 +521,10 @@ struct ProfilesView: View {
                 }
             }
             .padding(16)
-            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
+            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
             .shadow(color: ConcordTheme.cardShadow, radius: 6, x: 0, y: 2)
         }
         .buttonStyle(.plain)
-        // FlClash profiles.dart:614: no menu while updating.
         .contextMenu {
             if !updatingIDs.contains(profile.id) && !isUpdatingAll {
                 Button { navPath.append(.edit(profile.id)) } label: {
@@ -665,8 +670,9 @@ struct ProfilesView: View {
         return "「\(profile.name)」正被以下自定义订阅用作提供方：\(users.joined(separator: "、"))。删除后这些订阅的提供方引用会失效。确定删除当前\(profile.name)吗？"
     }
 
-    /// Card subtitle for one profile: "已用 X / 共 Y" when the
-    /// provider sent subscription-userinfo, else 远程 / 本地.
+    /// Card subtitle for one profile: bare "X / Y" (MuYu,
+    /// v0.2.68 — no "已用"/"共" prefixes) when the provider sent
+    /// subscription-userinfo, else 远程 / 本地.
     private func profileSubtitle(_ profile: Profile) -> String {
         if profile.kind == .url, let line = profile.subscriptionInfo?.usageLine {
             return line

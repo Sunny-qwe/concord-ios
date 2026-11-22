@@ -49,11 +49,26 @@ struct SubscriptionInfo: Codable, Equatable {
         expire > 0 ? Date(timeIntervalSince1970: TimeInterval(expire)) : nil
     }
 
-    /// "已用 1.2 GB / 共 10 GB" (FlClash card subtitle); nil when
-    /// the provider sent no usable totals.
+    /// "1.2 GB / 10 GB" — bare numbers only (MuYu profile card,
+    /// v0.2.68): no "已用"/"共" prefixes. The Dashboard card builds
+    /// its own bare "X / Y" line (DashboardView trafficText), so
+    /// this helper is only used by the Profiles card.
     var usageLine: String? {
-        guard total > 0 else { return usedBytes > 0 ? "已用 \(Self.byteCount(usedBytes))" : nil }
-        return "已用 \(Self.byteCount(usedBytes)) / 共 \(Self.byteCount(total))"
+        guard total > 0 else { return usedBytes > 0 ? Self.byteCount(usedBytes) : nil }
+        return "\(Self.byteCount(usedBytes)) / \(Self.byteCount(total))"
+    }
+
+    /// Expiry as a plain date pill ("2026-12-03", MuYu profile
+    /// card, v0.2.68); nil when the provider sent no expiry.
+    /// The old "剩余 N 天" text (expiryLine below) is kept for
+    /// callers that still need the countdown.
+    var expiryDateString: String? {
+        guard let date = expireDate else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone.current
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        guard let year = parts.year, let month = parts.month, let day = parts.day else { return nil }
+        return String(format: "%04d-%02d-%02d", year, month, day)
     }
 
     /// ("剩余 12 天", warning) — warning when ≤ 7 days left or

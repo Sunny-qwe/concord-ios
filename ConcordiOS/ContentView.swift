@@ -72,6 +72,13 @@ struct ContentView: View {
     /// fade reuses the 0.3 s slide duration.
     private var tabAnimationFade: Bool { themeStore.tabAnimation == .fade }
 
+    /// App version from the bundle (Info.plist
+    /// CFBundleShortVersionString) for the environment watermark —
+    /// never hardcoded, so it tracks the bumped version.
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
     var body: some View {
         Group {
             if themeStore.navBarStyle == .docked {
@@ -95,16 +102,31 @@ struct ContentView: View {
                     .toolbar(.hidden, for: .tabBar)
                     .tint(themeStore.accentColor)
                     .safeAreaInset(edge: .bottom) {
-                        floatingTabBar
-                            .padding(.horizontal, 16)
-                            // Reference bar bottom sits 34pt above the screen
-                            // bottom (810pt on an 844pt screen); the safe-area
-                            // inset already supplies those 34pt on a home-
-                            // indicator phone, so only 4pt extra padding is
-                            // needed. (Fixed 4pt: there is no safe-area
-                            // environment value in SwiftUI, so the previous
-                            // property wrapper did not compile.)
-                            .padding(.bottom, 4)
+                        VStack(spacing: 6) {
+                            // Environment watermark (FlClash 显示环境水印）:
+                            // a faint version label just above the
+                            // floating bar. The toggle itself lives in
+                            // SettingsStore.showEnvironmentWatermark
+                            // (default true); non-interactive so it
+                            // never blocks taps on the pages below.
+                            if settingsStore.showEnvironmentWatermark {
+                                Text("Concord iOS v\(appVersion)")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(Color(.label))
+                                    .opacity(0.35)
+                                    .allowsHitTesting(false)
+                            }
+                            floatingTabBar
+                                .padding(.horizontal, 16)
+                                // Reference bar bottom sits 34pt above the screen
+                                // bottom (810pt on an 844pt screen); the safe-area
+                                // inset already supplies those 34pt on a home-
+                                // indicator phone, so only 4pt extra padding is
+                                // needed. (Fixed 4pt: there is no safe-area
+                                // environment value in SwiftUI, so the previous
+                                // property wrapper did not compile.)
+                                .padding(.bottom, 4)
+                        }
                     }
             }
         }
@@ -362,7 +384,9 @@ struct ContentView: View {
     }
 
     /// Floating white capsule bar (reference bottom bar): the selected
-    /// tab gets a pale capsule behind a blue icon + label.
+    /// tab gets a solid accent capsule with a white icon + label
+    /// (v0.2.68 — was a grey capsule with a blue icon; the video's
+    /// selected tab is a solid magenta capsule, white on it).
     private var floatingTabBar: some View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.self) { tab in
@@ -382,7 +406,7 @@ struct ContentView: View {
                                 .matchedGeometryEffect(id: "tabPill", in: tabPillNamespace)
                         }
                     }
-                    .foregroundStyle(selectedTab == tab ? ConcordTheme.accent : ConcordTheme.tabUnselected)
+                    .foregroundStyle(selectedTab == tab ? .white : ConcordTheme.tabUnselected)
                 }
                 .buttonStyle(.plain)
             }

@@ -188,11 +188,22 @@ struct MitmCertificateView: View {
                     }
                 Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
                     .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
+                // v0.2.68 (MuYu): the trusted-server-certificate
+                // fingerprint input moved here from the 常规 MITM
+                // 选项 section — the 选项 page (MitmOptionsView)
+                // has no such row in the video.
+                TextField("受信任的服务器证书指纹（可选）", text: $settingsStore.mitmTrustedFingerprint)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save() }
+                Text("填入某个服务器证书的 SHA-256 指纹后，只信任该指纹的证书（解密 TLS 随之开启）；留空则用本应用 CA 的指纹。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 NavigationLink {
                     MitmHostnameEditorView()
                 } label: {
                     HStack {
-                        Text("解密主机名")
+                        Text("主机名")
                         Spacer()
                         Text(mitmHostnameSummary)
                             .foregroundStyle(.secondary)
@@ -266,7 +277,7 @@ struct MitmCertificateView: View {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }.count
-        return count == 0 ? "未设置" : "\(count) 个域名"
+        return "\(count) 项"
     }
 
     /// MuYu showMitmRestartTip's gate, on iOS: only when the VPN
@@ -434,74 +445,14 @@ struct MitmCertificateView: View {
         }
         isCheckingTrust = true
         defer { isCheckingTrust = false }
-        do {
-            let leafPem: String
-            if TunnelManager.shared.isRunning {
-                leafPem = try await settingsStore.client
-                    .mitmIssueCertificate(host: MitmTrustResult.checkHost).pem
-            } else {
-                // VPN off: issue the leaf from the in-app core.
-                do {
-                    try await AppCore.shared.ensureStarted()
-                    leafPem = try await AppCore.shared
-                        .mitmIssueCertificate(host: MitmTrustResult.checkHost).pem
-                } catch {
-                    if case AppCoreError.tunnelRunning = error {
-                        // The tunnel started mid-check: use it.
-                        leafPem = try await settingsStore.client
-                            .mitmIssueCertificate(host: MitmTrustResult.checkHost).pem
-                    } else {
-                        // Keep a good result: the CA was already
-                        // proven trusted and the AppCore failure
-                        // says nothing about trust.
-                        if trustResult?.isReady != true {
-                            trustResult = MitmTrustResult(
-                                isReady: false,
-                                message: "无法检测：应用内核心签发叶证书失败：\(error.localizedDescription)")
-                        }
-                        return
-                    }
-                }
-            }
-            guard let leafData = Self.derData(fromPEM: leafPem),
-                  let leaf = SecCertificateCreateWithData(nil, leafData as CFData) else {
-                trustResult = MitmTrustResult(
-                    isReady: false,
-                    message: "无法检测：核心签发的叶证书读不出来")
-                return
-            }
-            var trust: SecTrust?
-            let policy = SecPolicyCreateSSL(true, MitmTrustResult.checkHost as CFString)
-            guard SecTrustCreateWithCertificates(leaf, policy, &trust) == errSecSuccess,
-                  let trust else {
-                trustResult = MitmTrustResult(
-                    isReady: false,
-                    message: "无法检测：系统信任评估创建失败")
-                return
-            }
-            var error: CFError?
-            if SecTrustEvaluateWithError(trust, &error) {
-                trustResult = MitmTrustResult(
-                    isReady: true,
-                    message: "CA 已安装并受信任：HTTPS 可以解密")
-            } else {
-                trustResult = MitmTrustResult(
-                    isReady: false,
-                    message: "CA 未受信任：还没安装，或安装后没在「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任")
-            }
-        } catch {
+        // A failed check never overwrites a previous good result.
+        if let checked = await mitmTrustCheckResult(settingsStore: settingsStore) {
+            trustResult = checked
+        } else if trustResult?.isReady != true {
             trustResult = MitmTrustResult(
                 isReady: false,
-                message: "无法检测：\(error.localizedDescription)")
+                message: "无法检测：应用内核心签发叶证书失败")
         }
-    }
-
-    /// PEM text to DER bytes (strip the armor lines, base64-decode).
-    private static func derData(fromPEM pem: String) -> Data? {
-        let body = pem.components(separatedBy: .newlines)
-            .filter { !$0.hasPrefix("-----") && !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            .joined()
-        return Data(base64Encoded: body)
     }
 
     private func labeled(_ title: String, _ value: String) -> some View {
@@ -529,6 +480,74 @@ private struct MitmTrustResult {
     var message: String
 }
 
+/// Shared trust evaluation (FlClash IOSMitmTrustStore.check),
+/// used by both MitmCertificateView and MitmOptionsView: issue a
+/// leaf for the check host and evaluate it against the system
+/// trust store, all locally. Returns nil when the leaf cannot be
+/// issued at all (e.g. the in-app core fails to boot) — callers
+/// keep their previous result instead of overwriting a good one
+/// with "无法检测". Callers guard live mode / CA presence first.
+private func mitmTrustCheckResult(settingsStore: SettingsStore) async -> MitmTrustResult? {
+    do {
+        let leafPem: String
+        if TunnelManager.shared.isRunning {
+            leafPem = try await settingsStore.client
+                .mitmIssueCertificate(host: MitmTrustResult.checkHost).pem
+        } else {
+            // VPN off: issue the leaf from the in-app core.
+            do {
+                try await AppCore.shared.ensureStarted()
+                leafPem = try await AppCore.shared
+                    .mitmIssueCertificate(host: MitmTrustResult.checkHost).pem
+            } catch {
+                if case AppCoreError.tunnelRunning = error {
+                    // The tunnel started mid-check: use it.
+                    leafPem = try await settingsStore.client
+                        .mitmIssueCertificate(host: MitmTrustResult.checkHost).pem
+                } else {
+                    return nil
+                }
+            }
+        }
+        guard let leafData = mitmDerData(fromPEM: leafPem),
+              let leaf = SecCertificateCreateWithData(nil, leafData as CFData) else {
+            return MitmTrustResult(
+                isReady: false,
+                message: "无法检测：核心签发的叶证书读不出来")
+        }
+        var trust: SecTrust?
+        let policy = SecPolicyCreateSSL(true, MitmTrustResult.checkHost as CFString)
+        guard SecTrustCreateWithCertificates(leaf, policy, &trust) == errSecSuccess,
+              let trust else {
+            return MitmTrustResult(
+                isReady: false,
+                message: "无法检测：系统信任评估创建失败")
+        }
+        var error: CFError?
+        if SecTrustEvaluateWithError(trust, &error) {
+            return MitmTrustResult(
+                isReady: true,
+                message: "CA 已安装并受信任：HTTPS 可以解密")
+        } else {
+            return MitmTrustResult(
+                isReady: false,
+                message: "CA 未受信任：还没安装，或安装后没在「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任")
+        }
+    } catch {
+        return MitmTrustResult(
+            isReady: false,
+            message: "无法检测：\(error.localizedDescription)")
+    }
+}
+
+/// PEM text to DER bytes (strip the armor lines, base64-decode).
+private func mitmDerData(fromPEM pem: String) -> Data? {
+    let body = pem.components(separatedBy: .newlines)
+        .filter { !$0.hasPrefix("-----") && !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        .joined()
+    return Data(base64Encoded: body)
+}
+
 // MARK: - MITM hostname list editor (FlClash: _MitmHostnameView,
 // lib/views/config/mitm.dart:682-760)
 // One hostname per row: in-place edit, swipe delete, drag reorder,
@@ -538,67 +557,31 @@ private struct MitmTrustResult {
 
 struct MitmHostnameEditorView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
-    @EnvironmentObject private var moduleStore: MitmModuleStore
     @State private var hostnames: [String] = []
     @State private var newHostname = ""
     @State private var addError: String?
+    @State private var showAddSheet = false
     @State private var showBulkEdit = false
     @State private var bulkText = ""
     @State private var searchText = ""
-    @State private var isSelecting = false
-    @State private var selectedIndices: Set<Int> = []
 
-    private var invalidHostnames: [String] {
-        hostnames.filter { !Self.isValidHostname($0) }
-    }
-
-    /// The rows the search shows, as indices into `hostnames`
-    /// (selection and delete translate through them).
+    /// The rows the search shows, as indices into `hostnames`.
     private var visibleIndices: [Int] {
         hostnames.indices.filter {
             searchText.isEmpty || hostnames[$0].localizedCaseInsensitiveContains(searchText)
         }
     }
 
-    /// Upstream mitm.dart:596-608 (`noHost`): MITM on, capture on,
-    /// every hostname line `-`-prefixed (or none at all), and no
-    /// module enabled — capture will catch nothing.
-    private var showNoHostsWarning: Bool {
-        settingsStore.mitmEnabled && settingsStore.mitmCapture
-            && hostnames.allSatisfy { $0.hasPrefix("-") }
-            && !moduleStore.modules.contains(where: \.enabled)
-    }
-
     var body: some View {
-        List {
-            Section {
-                Text("解密这些域名的 HTTPS 流量：支持 *.example.com 这样的通配符。以 - 开头表示排除，第一条匹配的生效。改动后保存，下次启动 VPN 时生效（VPN 运行时在 常规 页点「应用 MITM 设置」立即生效）。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section("解密主机名（\(hostnames.count) 个）") {
-                if showNoHostsWarning {
-                    Text("未列出任何主机，捕获不会记录内容。请在下方添加解密主机名，或启用一个 MITM 模块。")
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                }
+        ZStack(alignment: .bottom) {
+            List {
                 if hostnames.isEmpty {
-                    Text("还没有域名：MITM 开启后只解密这里列出的域名。")
+                    Text("暂无主机名")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 ForEach(visibleIndices, id: \.self) { index in
-                    HStack {
-                        if isSelecting {
-                            Button(action: { toggleSelection(index) }) {
-                                Image(systemName: selectedIndices.contains(index) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(selectedIndices.contains(index) ? ConcordTheme.accent : .secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(selectedIndices.contains(index) ? "取消选择 \(hostnames[index])" : "选择 \(hostnames[index])")
-                        }
-                        HostnameRowView(hostnames: $hostnames, index: index)
-                    }
+                    HostnameRowView(hostnames: $hostnames, index: index)
                 }
                 .onDelete { offsets in
                     // Offsets are positions in the visible list;
@@ -615,56 +598,41 @@ struct MitmHostnameEditorView: View {
                     hostnames.move(fromOffsets: from, toOffset: to)
                     save()
                 }
-                HStack {
-                    TextField("添加域名", text: $newHostname)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    Button("添加") {
-                        addHostname()
-                    }
-                    .disabled(newHostname.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                if let addError {
-                    Text(addError)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
                 if !invalidHostnames.isEmpty {
                     Text("格式不对的域名（不会生效）：\(invalidHostnames.joined(separator: "、"))")
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
-            }
-            if isSelecting {
+                // Ours-only extra (no equivalent in the video):
+                // bulk edit stays reachable here.
                 Section {
-                    Button("删除所选（\(selectedIndices.count)）", role: .destructive) {
-                        deleteSelected()
+                    Button("批量编辑（每行一个）") {
+                        bulkText = hostnames.joined(separator: "\n")
+                        showBulkEdit = true
                     }
-                    .disabled(selectedIndices.isEmpty)
                 }
             }
-            Section {
-                Button("批量编辑（每行一个）") {
-                    bulkText = hostnames.joined(separator: "\n")
-                    showBulkEdit = true
-                }
-            }
+            // v0.2.68 (MuYu): the search is a BOTTOM floating pill,
+            // not a top .searchable.
+            bottomSearchPill
+                .padding(.horizontal, 16)
+                .padding(.bottom, ConcordTheme.tabBarClearance + 8)
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
         .font(.footnote.weight(.semibold))
-        .navigationTitle("解密主机名")
+        .navigationTitle("主机名")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, prompt: "搜索域名")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button(isSelecting ? "完成" : "选择") {
-                    isSelecting.toggle()
-                    if !isSelecting { selectedIndices.removeAll() }
+                Button {
+                    newHostname = ""
+                    addError = nil
+                    showAddSheet = true
+                } label: {
+                    Image(systemName: "plus.circle")
                 }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                EditButton()
+                .accessibilityLabel("添加主机名")
             }
         }
         .onAppear {
@@ -674,6 +642,40 @@ struct MitmHostnameEditorView: View {
                 .filter { !$0.isEmpty }
         }
         .onChange(of: hostnames) { _, _ in save() }
+        .sheet(isPresented: $showAddSheet) {
+            NavigationStack {
+                List {
+                    Section {
+                        TextField("域名，如 *.example.com", text: $newHostname)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        if let addError {
+                            Text(addError)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+                        Text("以 - 开头表示排除该域名（不解密）。支持 *.example.com 这样的通配符。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Section {
+                        Button("添加") {
+                            addHostname()
+                            if newHostname.isEmpty { showAddSheet = false }
+                        }
+                        .disabled(newHostname.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+                .font(.footnote.weight(.semibold))
+                .navigationTitle("添加主机名")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("取消") { showAddSheet = false }
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showBulkEdit) {
             NavigationStack {
                 List {
@@ -710,6 +712,36 @@ struct MitmHostnameEditorView: View {
         }
     }
 
+    /// Bottom floating search pill (MuYu): a capsule with a
+    /// magnifier, a text field and a clear button, floating above
+    /// the list instead of a top .searchable bar.
+    private var bottomSearchPill: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("搜索", text: $searchText)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            if !searchText.isEmpty {
+                Button { searchText = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("清除搜索")
+            }
+        }
+        .font(.footnote.weight(.semibold))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(ConcordTheme.cardBackground, in: Capsule())
+        .shadow(color: ConcordTheme.cardShadow, radius: 8, x: 0, y: 2)
+    }
+
+    private var invalidHostnames: [String] {
+        hostnames.filter { !Self.isValidHostname($0) }
+    }
+
     private func addHostname() {
         let value = newHostname.trimmingCharacters(in: .whitespaces)
         guard !value.isEmpty else { return }
@@ -727,33 +759,18 @@ struct MitmHostnameEditorView: View {
         save()
     }
 
-    private func toggleSelection(_ index: Int) {
-        if selectedIndices.contains(index) {
-            selectedIndices.remove(index)
-        } else {
-            selectedIndices.insert(index)
-        }
-    }
-
-    /// Deletes the selected rows (upstream ListEditorPage
-    /// multi-select delete) and leaves selection mode.
-    private func deleteSelected() {
-        for index in selectedIndices.sorted(by: >) {
-            hostnames.remove(at: index)
-        }
-        selectedIndices.removeAll()
-        isSelecting = false
-        save()
-    }
-
     private func save() {
         settingsStore.mitmHostnames = hostnames.joined(separator: ", ")
         settingsStore.save()
     }
 
-    /// A hostname, optionally with a "*." wildcard prefix.
+    /// A hostname, optionally with a "*." wildcard prefix and an
+    /// optional "-" exclusion prefix.
     static func isValidHostname(_ value: String) -> Bool {
         var host = value
+        if host.hasPrefix("-") {
+            host = String(host.dropFirst())
+        }
         if host.hasPrefix("*.") {
             host = String(host.dropFirst(2))
         }
@@ -775,15 +792,40 @@ struct MitmHostnameEditorView: View {
 /// One MITM hostname row, extracted into its own view so the List
 /// body stays trivial for the type checker (the inline row previously
 /// timed out type-checking).
+///
+/// v0.2.68 (MuYu): a per-row radio — filled circle = selected
+/// (decrypt this host), hollow circle = unselected (excluded).
+/// The radio maps to the existing "-" prefix mechanism: tapping it
+/// adds/removes the "-" prefix on the stored entry. The text field
+/// shows the hostname without the prefix; editing keeps the
+/// prefix state.
 private struct HostnameRowView: View {
     @Binding var hostnames: [String]
     let index: Int
 
+    private var isExcluded: Bool { hostnames[index].hasPrefix("-") }
+
+    private var displayName: String {
+        isExcluded ? String(hostnames[index].dropFirst()) : hostnames[index]
+    }
+
     var body: some View {
         HStack {
+            Button {
+                if isExcluded {
+                    hostnames[index] = displayName
+                } else {
+                    hostnames[index] = "-" + hostnames[index]
+                }
+            } label: {
+                Image(systemName: isExcluded ? "circle" : "circle.fill")
+                    .foregroundStyle(isExcluded ? .secondary : ConcordTheme.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isExcluded ? "排除，不解密 \(displayName)" : "解密 \(displayName)")
             TextField("域名，如 *.example.com", text: Binding(
-                get: { hostnames[index] },
-                set: { hostnames[index] = $0 }
+                get: { displayName },
+                set: { hostnames[index] = isExcluded ? "-" + $0 : $0 }
             ))
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
@@ -792,6 +834,183 @@ private struct HostnameRowView: View {
                 Image(systemName: "exclamationmark.circle.fill")
                     .foregroundStyle(.red)
             }
+        }
+    }
+}
+
+// MARK: - MITM options (MuYu 选项 page, v0.2.68)
+// An independent page reached from 进阶配置 → MITM → 选项:
+//   card 1: 抓包 status row (tap toggles) + 重启隧道 row
+//   card 2: CA card (Concord CA, trust status, regenerate)
+//   card 3: the four toggles in the video's order
+// The video has no "解密 TLS" toggle and no trusted-fingerprint
+// input here — 解密 TLS stays on the certificate page, and the
+// fingerprint input moved to the certificate page too.
+// Labels renamed to the video's wording: 跳过服务器证书验证
+// (was 跳过服务端证书验证）, HTTP/2 (was 启用 HTTP/2（h2)),
+// 本机未信任时也解密 (was 解密不受信任的证书）.
+struct MitmOptionsView: View {
+    @EnvironmentObject private var settingsStore: SettingsStore
+    // h2 / decrypt-untrusted live in UserDefaults (@AppStorage in
+    // SettingsView too, same keys) — the core reads them via
+    // SettingsStore.mitmConfig.
+    @AppStorage("ConcordiOS.mitmH2") private var mitmH2 = false
+    @AppStorage("ConcordiOS.mitmDecryptUntrusted") private var mitmDecryptUntrusted = false
+
+    @State private var isRestartingVpn = false
+    @State private var restartMessage: String?
+    @State private var trustResult: MitmTrustResult?
+    @State private var isCheckingTrust = false
+    @State private var showRegenerateConfirm = false
+    @State private var regenerateNote: String?
+
+    private var captureStatusText: String {
+        settingsStore.mitmCapture ? "已开启" : "未开启"
+    }
+
+    private var trustStatusText: String {
+        guard let trustResult else { return "未检测" }
+        return trustResult.isReady ? "已信任" : "未信任"
+    }
+
+    var body: some View {
+        List {
+            Section {
+                // 抓包 is a status row in the video, not a toggle:
+                // tapping the row flips the capture switch.
+                Button {
+                    settingsStore.mitmCapture.toggle()
+                    settingsStore.save()
+                } label: {
+                    HStack {
+                        Text("抓包")
+                            .foregroundStyle(Color(.label))
+                        Spacer()
+                        Text(captureStatusText)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!settingsStore.mitmAvailable)
+                Button(isRestartingVpn ? "重启中…" : "重启隧道") {
+                    Task { await restartVpn() }
+                }
+                .disabled(isRestartingVpn)
+                if let restartMessage {
+                    Text(restartMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } footer: {
+                Text("MITM 的改动需重启隧道后生效。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                HStack(spacing: 12) {
+                    // The video's CA icon is a green certificate
+                    // with a ribbon seal; SF has no equivalent —
+                    // checkmark.seal is the closest honest
+                    // approximation.
+                    Image(systemName: "checkmark.seal")
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(.green)
+                        .frame(width: 36, height: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Concord CA")
+                            .font(.footnote.weight(.semibold))
+                        Text(trustStatusText)
+                            .font(.caption)
+                            .foregroundStyle(trustResult?.isReady == true ? .green : .secondary)
+                    }
+                    Spacer()
+                    if isCheckingTrust {
+                        ProgressView()
+                    } else {
+                        Button("检测") {
+                            Task { await checkTrust() }
+                        }
+                        .font(.caption)
+                        .disabled(settingsStore.mitmCertificate == nil)
+                    }
+                }
+                if let trustResult, !trustResult.isReady {
+                    Text(trustResult.message)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Button("重新生成证书", role: .destructive) {
+                    showRegenerateConfirm = true
+                }
+                .disabled(!settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
+                .alert("重新生成 CA 证书吗？", isPresented: $showRegenerateConfirm) {
+                    Button("重新生成", role: .destructive) {
+                        Task {
+                            await settingsStore.generateMitmCertificate()
+                            regenerateNote = "已重新生成 CA 证书。旧 CA 还留在 iPhone「设置 → 通用 → VPN 与设备管理」里，请先删掉旧的，再安装并完全信任新的 CA，否则 HTTPS 解密会失败。"
+                            await checkTrust()
+                        }
+                    }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("旧 CA 会失效，所有用旧 CA 解密过的配置都要换新 CA。生成后需要重新安装并信任新 CA。")
+                }
+                if let regenerateNote {
+                    Text(regenerateNote)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            Section {
+                Toggle("跳过服务器证书验证", isOn: $settingsStore.mitmSkipServerCertVerify)
+                    .disabled(!settingsStore.mitmAvailable)
+                    .onChange(of: settingsStore.mitmSkipServerCertVerify) { _, _ in settingsStore.save() }
+                Toggle("阻止 QUIC", isOn: $settingsStore.mitmAutoQuicBlock)
+                    .disabled(!settingsStore.mitmAvailable)
+                    .onChange(of: settingsStore.mitmAutoQuicBlock) { _, _ in settingsStore.save() }
+                Toggle("HTTP/2", isOn: $mitmH2)
+                    .disabled(!settingsStore.mitmAvailable)
+                    .onChange(of: mitmH2) { _, _ in settingsStore.save() }
+                Toggle("本机未信任时也解密", isOn: $mitmDecryptUntrusted)
+                    .disabled(!settingsStore.mitmAvailable)
+                    .onChange(of: mitmDecryptUntrusted) { _, _ in settingsStore.save() }
+            }
+        }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .font(.footnote.weight(.semibold))
+        .navigationTitle("选项")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await settingsStore.refreshMitmStatus()
+            await checkTrust()
+        }
+    }
+
+    private func checkTrust() async {
+        guard settingsStore.client.mode == .live,
+              settingsStore.mitmCertificate != nil else { return }
+        isCheckingTrust = true
+        defer { isCheckingTrust = false }
+        if let checked = await mitmTrustCheckResult(settingsStore: settingsStore) {
+            trustResult = checked
+        }
+    }
+
+    /// Restarts the tunnel (stop, then start) so MITM changes
+    /// take effect — same action as the restart tip elsewhere.
+    private func restartVpn() async {
+        isRestartingVpn = true
+        defer { isRestartingVpn = false }
+        restartMessage = nil
+        await TunnelManager.shared.stop()
+        do {
+            try await TunnelManager.shared.start()
+            restartMessage = "隧道已重启，MITM 改动已生效。"
+        } catch {
+            restartMessage = "重启隧道失败：\(error.localizedDescription)"
         }
     }
 }

@@ -123,11 +123,10 @@ struct AboutView: View {
     @State private var lastLogoTap: Date?
     @State private var releaseResult: UpdateChecker.ReleaseResult?
     @State private var isCheckingUpdate = false
-    /// A-M5: success/failure banner shown in-page (not an alert),
-    /// auto-dismissed after 3 s.
-    @State private var bannerMessage: String?
-    @State private var bannerIsError = false
-    @State private var bannerTask: Task<Void, Never>?
+    /// v0.2.68 (MuYu): the update result is a MODAL dialog, not a
+    /// top banner + persistent "更新" Section.
+    @State private var showUpdateDialog = false
+    @State private var updateCheckFailed = false
 
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.24"
@@ -146,41 +145,33 @@ struct AboutView: View {
         return nil
     }
 
-    private func showBanner(_ message: String, isError: Bool = false) {
-        bannerMessage = message
-        bannerIsError = isError
-        bannerTask?.cancel()
-        bannerTask = Task {
-            try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled else { return }
-            bannerMessage = nil
-        }
-    }
-
     private func checkForUpdate() async {
         isCheckingUpdate = true
         defer { isCheckingUpdate = false }
         if let result = await UpdateChecker.checkRelease(currentVersion: version) {
             releaseResult = result
-            showBanner(result.isNew ? "发现新版本 \(result.tag)" : "已是最新版本")
+            updateCheckFailed = false
         } else {
-            showBanner("检查更新失败（网络或 GitHub API 不可用）", isError: true)
+            releaseResult = nil
+            updateCheckFailed = true
         }
+        showUpdateDialog = true
+    }
+
+    /// The update dialog's message (MuYu f_069): up to date, a new
+    /// version, or a failed check.
+    private var updateDialogMessage: String {
+        if updateCheckFailed {
+            return "检查更新失败（网络或 GitHub API 不可用）。"
+        }
+        if let result = releaseResult {
+            return result.isNew ? "发现新版本 \(result.tag)" : "当前应用已经是最新版了"
+        }
+        return "当前应用已经是最新版了"
     }
 
     var body: some View {
         List {
-            if let bannerMessage {
-                Section {
-                    HStack(spacing: 8) {
-                        Image(systemName: bannerIsError ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-                            .foregroundStyle(bannerIsError ? .red : .green)
-                        Text(bannerMessage)
-                            .font(.footnote)
-                    }
-                }
-                .listRowBackground((bannerIsError ? Color.red : Color.green).opacity(0.1))
-            }
             Section {
                 VStack(spacing: 12) {
                     Button {
@@ -195,9 +186,10 @@ struct AboutView: View {
                         }
                         lastLogoTap = now
                         if logoTaps >= 5 {
+                            // v0.2.68: the 5-tap trigger stays, but
+                            // silently — no toast, no hint line.
                             settingsStore.developerMode = true
                             settingsStore.save()
-                            showBanner("开发者模式已开启")
                             logoTaps = 0
                         }
                     } label: {
@@ -260,70 +252,31 @@ struct AboutView: View {
                 .frame(maxWidth: .infinity)
                 .listRowBackground(Color.clear)
             }
-            Section("更新") {
-                if let result = releaseResult {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("最新版本 \(result.tag)")
-                            .font(.footnote)
-                        if let name = result.name, !name.isEmpty, name != result.tag {
-                            Text(name)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                        if !result.publishedAt.isEmpty {
-                            Text(result.publishedAt)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    if result.isNew {
-                        if let urlString = result.htmlUrl, let url = URL(string: urlString) {
-                            Link("前往下载新版本", destination: url)
-                        } else {
-                            Text("新版本需在 GitHub Actions 重新构建 IPA 后手动安装，本应用内无法直接更新。")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Text("当前已是最新版本。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text("尚未检查过更新。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("链接") {
+            Section("更多") {
                 aboutLink(
                     title: "项目主页",
                     urlString: "https://github.com/Sunny-qwe/concord-ios",
-                    icon: "folder",
-                    tint: ConcordTheme.accent
+                    icon: "chevron.left.forwardslash.chevron.right"
                 )
                 aboutLink(
                     title: "核心仓库 (chen08209/concord)",
                     urlString: "https://github.com/chen08209/concord",
-                    icon: "chevron.left.forwardslash.chevron.right",
-                    tint: .orange
+                    icon: "cpu"
                 )
                 aboutLink(
                     title: "FlClash Telegram 频道",
                     urlString: "https://t.me/FlClash",
-                    icon: "paperplane.fill",
-                    tint: .blue
+                    icon: "paperplane"
                 )
             }
-            Section("贡献者") {
+            Section("其他贡献者") {
                 // A-M2: one row per contributor — an initial circle,
                 // the name, and the role — instead of one line of
-                // comma-separated text.
+                // comma-separated text. Real photos would need
+                // GitHub avatar assets we do not have (flagged as
+                // unmatchable, v0.2.68).
                 contributorRow(initial: "J", name: "June2", role: "FlClash 应用图标设计")
                 contributorRow(initial: "A", name: "Arue", role: "FlClash 应用图标设计")
-                Text("点图标 5 次可开启开发者模式。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages.
@@ -331,18 +284,65 @@ struct AboutView: View {
         .font(.footnote.weight(.semibold))
         .navigationTitle("关于")
         .navigationBarTitleDisplayMode(.inline)
+        .overlay {
+            if showUpdateDialog {
+                updateDialog
+            }
+        }
+    }
+
+    /// The update-result modal dialog (MuYu f_069): dimmed
+    /// backdrop, centered card, "检查更新" title, the result
+    /// message, a download button when a new version exists, and
+    /// a single full-width accent "确定" button.
+    private var updateDialog: some View {
+        ZStack {
+            Color.black.opacity(0.4)
+                .ignoresSafeArea()
+                .onTapGesture { showUpdateDialog = false }
+            VStack(alignment: .leading, spacing: 16) {
+                Text("检查更新")
+                    .font(.headline)
+                Text(updateDialogMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if let result = releaseResult, result.isNew,
+                   let urlString = result.htmlUrl, let url = URL(string: urlString) {
+                    Link("前往下载新版本", destination: url)
+                        .font(.footnote.weight(.semibold))
+                } else if let result = releaseResult, result.isNew {
+                    Text("新版本需在 GitHub Actions 重新构建 IPA 后手动安装，本应用内无法直接更新。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Button("确定") { showUpdateDialog = false }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(ConcordTheme.accent, in: RoundedRectangle(cornerRadius: 12))
+            }
+            .padding(20)
+            .frame(maxWidth: 320)
+            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
+            .shadow(radius: 16)
+            .padding(.horizontal, 32)
+        }
     }
 
     /// A-M4: a link row with a glyph badge, the URL as subtitle,
     /// and the external-link glyph (upstream AboutView's link rows).
-    private func aboutLink(title: String, urlString: String, icon: String, tint: Color) -> some View {
+    /// v0.2.68 (MuYu): NEUTRAL gray rounded-square tiles, not
+    /// accent/colored ones; external-link glyph is
+    /// arrow.up.right.square.
+    private func aboutLink(title: String, urlString: String, icon: String) -> some View {
         Link(destination: URL(string: urlString)!) {
             HStack(spacing: 12) {
                 Image(systemName: icon)
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Color(.label))
                     .frame(width: 28, height: 28)
-                    .background(tint, in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.footnote)
@@ -353,7 +353,7 @@ struct AboutView: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                Image(systemName: "arrow.up.forward.app")
+                Image(systemName: "arrow.up.right.square")
                     .font(.footnote)
                     .foregroundStyle(.tertiary)
             }

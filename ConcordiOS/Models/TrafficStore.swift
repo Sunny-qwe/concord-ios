@@ -19,7 +19,7 @@ struct TrafficPoint: Identifiable {
 /// sampled by `ExternalTrafficSampler`: per-connection byte deltas
 /// over the sample interval, attributed to every name in the
 /// connection's chain).
-struct NodeSpeed {
+struct NodeSpeed: Equatable {
     let up: Double
     let down: Double
 
@@ -1363,7 +1363,14 @@ final class TrafficStore: ObservableObject {
                 }
             }
             nodeSeen = nodeSeen.filter { currentIds.contains($0.key) }
-            nodeSpeeds = speeds
+            // v0.2.68 perf fix: the 1 s tick reassigns nodeSpeeds
+            // every second even when nothing is flowing (VPN off /
+            // idle), and every @Published fire re-renders the
+            // expanded cards' speed rows. Skip the publish when
+            // the map is unchanged.
+            if nodeSpeeds != speeds {
+                nodeSpeeds = speeds
+            }
         } catch {
             // Stale snapshot while the tunnel is down
             // (connection.watch throws past its 10 s max-age):

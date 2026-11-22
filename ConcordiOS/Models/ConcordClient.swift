@@ -788,8 +788,10 @@ struct ConcordOutboundIp: Codable {
     /// The routing decisions this probe recorded (upstream
     /// crates/engine/src/probe/hits.rs). route.check re-validates
     /// them later; nil on cores that do not report hits.
-    let hits: [ConcordRouteHit]? = nil
-    let nodeHits: [ConcordRouteHit]? = nil
+    /// `var`, not `let`: a defaulted `let` is never decoded on
+    /// Swift 6.2, so these stayed nil even when the core sent them.
+    var hits: [ConcordRouteHit]? = nil
+    var nodeHits: [ConcordRouteHit]? = nil
 }
 
 enum ConcordTunSource: Codable {
@@ -936,7 +938,8 @@ struct ConcordMitmIssue: Codable {
     /// syntax, missing, unknown, unsupported, invalid, pattern, jq,
     /// resource, script). The core returns it since 01d7a13; optional
     /// so a result that omits it still decodes.
-    let kind: String? = nil
+    /// `var`, not `let`: a defaulted `let` is never decoded on Swift 6.2.
+    var kind: String? = nil
     let message: String
 }
 
@@ -946,7 +949,8 @@ struct ConcordMitmValidateResult: Codable {
     /// ConcordMitmModuleView.views (upstream MitmValidateResult.views,
     /// default {}). Optional: the core returns it since 01d7a13 and
     /// older results omit it.
-    let views: [String: [ConcordMitmLineEntry]]? = nil
+    /// `var`, not `let`: a defaulted `let` is never decoded on Swift 6.2.
+    var views: [String: [ConcordMitmLineEntry]]? = nil
 }
 
 // MARK: - mitm.readModule (upstream 165154c, the 69th method)
@@ -1015,7 +1019,10 @@ struct ConcordMitmModuleRule: Codable {
     /// A SCRIPT rule's script reads the address the host resolves to
     /// (upstream b0806a8). The core serializes it only when true, so
     /// the false default keeps decoding working when it is absent.
-    let requiresResolve: Bool = false
+    /// `var`, not `let`: a defaulted `let` is never decoded on Swift 6.2,
+    /// so a SCRIPT rule the core sent with requiresResolve: true was
+    /// read back as false and lost the flag when re-emitted.
+    var requiresResolve: Bool = false
 }
 
 struct ConcordMitmModuleIgnored: Codable {
@@ -1167,7 +1174,9 @@ struct ConcordIssue: Codable {
     /// The position of the offending item (validate.filters /
     /// validate.proxies, upstream IndexedIssue). Nil for config
     /// validation issues, which carry path/line/column instead.
-    let index: UInt32? = nil
+    /// `var`, not `let`: a defaulted `let` is never decoded on Swift 6.2,
+    /// so RulesView always showed "？" instead of the position number.
+    var index: UInt32? = nil
 }
 
 struct ConcordConfigValidateResult: Codable {

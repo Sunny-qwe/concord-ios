@@ -1228,31 +1228,6 @@ struct DashboardView: View {
         )
     }
 
-/// Brand tile from the user's imported icon pack (v0.2.68):
-/// IconPackStore matched by service/group name; the letter is
-/// the only fallback. No built-in brand icons, by standing rule.
-/// Internal so DashboardSheets' service rows can use it too.
-struct PackTileImage: View {
-    @ObservedObject private var iconPack = IconPackStore.shared
-    let name: String
-    let fallback: String
-    let fontSize: CGFloat
-
-    var body: some View {
-        Group {
-            if let url = iconPack.iconURL(for: name) {
-                CachedIconImage(url: url) {
-                    Text(fallback)
-                        .font(.system(size: fontSize, weight: .bold))
-                }
-            } else {
-                Text(fallback)
-                    .font(.system(size: fontSize, weight: .bold))
-            }
-        }
-    }
-}
-
     // MARK: - Subscription card
 
     private var profileCard: some View {
@@ -2844,6 +2819,31 @@ private struct IPQualitySheetRoot: View {
                 IPQualityView(ip: ip)
             } else {
                 IPQualityView()
+            }
+        }
+    }
+}
+
+/// Brand tile from the user's imported icon pack (v0.2.68):
+/// IconPackStore matched by service/group name; the letter is
+/// the only fallback. No built-in brand icons, by standing rule.
+/// Internal so DashboardSheets' service rows can use it too.
+struct PackTileImage: View {
+    @ObservedObject private var iconPack = IconPackStore.shared
+    let name: String
+    let fallback: String
+    let fontSize: CGFloat
+
+    var body: some View {
+        Group {
+            if let url = iconPack.iconURL(for: name) {
+                CachedIconImage(url: url) {
+                    Text(fallback)
+                        .font(.system(size: fontSize, weight: .bold))
+                }
+            } else {
+                Text(fallback)
+                    .font(.system(size: fontSize, weight: .bold))
             }
         }
     }

@@ -1023,6 +1023,18 @@ private struct TrafficTrendChart: View {
             .frame(width: 8, height: 8)
     }
 
+    /// Dashed horizontal grid line for the trend chart (restored v0.2.69:
+    /// the v0.2.68 stacked-bar rewrite deleted this helper but left its
+    /// two call sites in chartBody).
+    private func dashedLine(width: CGFloat) -> some View {
+        Path { path in
+            path.move(to: CGPoint(x: 0, y: 0.5))
+            path.addLine(to: CGPoint(x: width, y: 0.5))
+        }
+        .stroke(Color(.systemGray4), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+        .frame(height: 1)
+    }
+
     private func chartBody(width: CGFloat, height: CGFloat) -> some View {
         let groupWidth = width / CGFloat(max(buckets.count, 1))
         let barWidth = max(4, groupWidth - 6)

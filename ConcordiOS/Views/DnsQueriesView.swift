@@ -317,7 +317,7 @@ struct DnsQueriesView: View {
                         DnsFloatingSearchBar(text: $dnsStore.searchText, prompt: "搜索域名或上游")
                     }
                 } else {
-                    pageList
+                    pageList(proxy: proxy)
                         .background(ConcordTheme.pageBackground)
                         .listStyle(.insetGrouped)
                         .navigationTitle("DNS 查询")
@@ -351,7 +351,7 @@ struct DnsQueriesView: View {
 
     /// The pushed page's full list (manual query, cache actions,
     /// filter segment, follow toggle, facet menus, records).
-    private var pageList: some View {
+    private func pageList(proxy: ScrollViewProxy) -> some View {
         List {
             if client.mode == .sample {
                 HStack {

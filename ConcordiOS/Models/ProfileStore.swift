@@ -1833,38 +1833,84 @@ final class ProfileStore: ObservableObject {
     }
 
     /// Builds the repair-ALL plan for a profile (v0.2.49,
-    /// detector rewritten v0.2.58): collect every missing set by
-    /// TEXT (collectMissingRuleSets), then decide each one's
-    /// action against the ORIGINAL text — a set the text already
-    /// defines is core-invisible (the core still reports it
-    /// missing), so it is deleted with an explanation instead of
-    /// completed; the rest are completed from sibling templates
-    /// when inferable, else deleted. A name whose rule lives only
-    /// in the baked custom subscription (no line in the file) is
-    /// offered as a delete of the subscription's rule — the repair
-    /// is the store removal at confirm, not a file edit. The
-    /// combined text (all edits applied) is re-checked TEXTUALLY
-    /// on the simulated post-confirm bytes (baked, minus the
-    /// bake-source lines confirm will delete from the
-    /// subscription); when anything is still missing, the plan
-    /// falls back to the all-deleted candidate. Nil when the file
-    /// cannot be read or nothing is missing.
+    /// detector rewritten v0.2.58, core-invisible fix v0.2.59):
+    /// collect every missing set by TEXT (collectMissingRuleSets),
+    /// then decide each one's action against the ORIGINAL text.
+    /// `coreReportedMissing` is the set the core's current error
+    /// names (ProxyStore.missingRuleSetName, from testError): a
+    /// set the text already defines is core-invisible — the core
+    /// still reports it missing (v0.2.58 150G/TikTok: the core
+    /// said "rule set [TikTok] not found" while the text detector
+    /// found nothing missing, so the plan came back nil and the
+    /// banner could only say "未找到缺失的规则集"). A
+    /// textually-missing set can never also be defined, so the
+    /// invisible case can only enter through this parameter —
+    /// without it the `invisible` branch below is dead code. An
+    /// invisible set is deleted with an explanation instead of
+    /// completed (completion would only add a duplicate key); the
+    /// rest are completed from sibling templates when inferable,
+    /// else deleted. A name whose rule lives only in the baked
+    /// custom subscription (no line in the file) is offered as a
+    /// delete of the subscription's rule — the repair is the store
+    /// removal at confirm, not a file edit. The combined text
+    /// (all edits applied) is re-checked TEXTUALLY on the
+    /// simulated post-confirm bytes (baked, minus the bake-source
+    /// lines confirm will delete from the subscription); when
+    /// anything is still missing, the plan falls back to the
+    /// all-deleted candidate. Nil when the file cannot be read
+    /// or nothing is missing (and the core named nothing the
+    /// text defines).
     @MainActor
-    func ruleSetRepairAllPlan(for profile: Profile) async -> RuleSetRepairAllPlan? {
+    func ruleSetRepairAllPlan(for profile: Profile, coreReportedMissing: String? = nil) async -> RuleSetRepairAllPlan? {
         guard let url = fileURL(for: profile),
               let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let collected = await collectMissingRuleSets(for: profile)
-        guard !collected.missing.isEmpty else { return nil }
         // Names the BAKED text defines (textual scan on what the
         // core applies — a provider defined only in a baked block
-        // counts): the core reports these missing anyway, so their
-        // definitions are invisible to the core — completion would
-        // only add a duplicate key.
+        // counts) and references: the core-reported set is
+        // core-invisible exactly when it is referenced AND defined
+        // here — the core says "not found" anyway (dead URL,
+        // invalid/empty fetched content, fetch failure, or a
+        // definition the core cannot load), so it is repaired by
+        // deleting the referencing rule(s), not by completing a
+        // definition that already exists. Without this step the
+        // plan is nil for exactly the case the user is hitting.
         let bakedText = String(data: reapplyLocalOverrides(to: Data(text.utf8), for: profile), encoding: .utf8) ?? text
         let definedNames = Self.definedRuleProviderNames(in: bakedText)
+        let referencedNames = Self.referencedRuleSetNames(in: bakedText)
+        var allMissing = collected.missing
+        var invisibleNames: [String] = []
+        if let coreName = coreReportedMissing?.trimmingCharacters(in: .whitespaces),
+           !coreName.isEmpty, !allMissing.contains(coreName),
+           referencedNames.contains(coreName), definedNames.contains(coreName) {
+            allMissing.append(coreName)
+            invisibleNames.append(coreName)
+        }
+        guard !allMissing.isEmpty else { return nil }
+        // Deleted lines / all-deleted candidate for EVERY name in
+        // the plan, not just the textually-missing ones: the
+        // collected maps only cover collected.missing, so an
+        // invisible name's lines are computed here from the baked
+        // bytes (the fallback writes the baked candidate).
+        var deletedLines = collected.deletedLines
+        var finalCandidate = collected.finalCandidate
+        if !invisibleNames.isEmpty {
+            let bakedLines = bakedText.components(separatedBy: "\n")
+            if let rulesSection = Self.topLevelSection(named: "rules", in: bakedLines), !rulesSection.isFlowStyle {
+                var toDelete = Set<Int>()
+                for name in allMissing {
+                    let matched = Self.ruleSetRuleLineIndices(in: bakedLines, section: rulesSection, missingName: name)
+                    deletedLines[name] = matched.map { bakedLines[$0] }
+                    toDelete.formUnion(matched)
+                }
+                var candidateLines = bakedLines
+                for index in toDelete.sorted().reversed() { candidateLines.remove(at: index) }
+                finalCandidate = candidateLines.joined(separator: "\n")
+            }
+        }
         var combinedText = text
         var items: [RuleSetRepairItem] = []
-        for name in collected.missing {
+        for name in allMissing {
             let invisible = definedNames.contains(name)
             let plan = Self.ruleSetRepairPlan(text: combinedText, missingName: name, coreInvisibleNames: invisible ? [name] : [])
             items.append(RuleSetRepairItem(missingName: name, kind: plan.kind, previewLines: plan.previewLines))
@@ -1879,15 +1925,15 @@ final class ProfileStore: ObservableObject {
         // subscription) is unrepairable as a file edit, but
         // repairable as a store removal: offer it as a delete of
         // the subscription's rule lines.
-        let bakeSources = bakeSourceInfo(for: profile, missing: collected.missing)
+        let bakeSources = bakeSourceInfo(for: profile, missing: allMissing)
         let bakeSourceNames = Set(bakeSources.map { $0.name })
         for (index, item) in items.enumerated() where bakeSourceNames.contains(item.missingName) {
             if case .unrepairable = item.kind,
                bakeSources.contains(where: { $0.name == item.missingName }) {
                 items[index] = RuleSetRepairItem(
                     missingName: item.missingName,
-                    kind: .delete(ruleCount: collected.deletedLines[item.missingName]?.count ?? 0),
-                    previewLines: collected.deletedLines[item.missingName] ?? [])
+                    kind: .delete(ruleCount: deletedLines[item.missingName]?.count ?? 0),
+                    previewLines: deletedLines[item.missingName] ?? [])
             }
         }
         // Re-check the combined text: completions add new provider
@@ -1904,11 +1950,11 @@ final class ProfileStore: ObservableObject {
         var blockingIssue = collected.blockingIssue
         func applyDeleteAllFallback(reason: String) {
             fellBackToDeleteAll = true
-            finalText = collected.finalCandidate
+            finalText = finalCandidate
             blockingIssue = reason
             items = items.map { item in
                 if case .complete = item.kind,
-                   let deleted = collected.deletedLines[item.missingName], !deleted.isEmpty {
+                   let deleted = deletedLines[item.missingName], !deleted.isEmpty {
                     return RuleSetRepairItem(missingName: item.missingName, kind: .delete(ruleCount: deleted.count), previewLines: deleted)
                 }
                 return item
@@ -1937,10 +1983,23 @@ final class ProfileStore: ObservableObject {
         } catch {
             applyDeleteAllFallback(reason: "修复后校验失败（\(error.localizedDescription)），已改为删除全部引用规则")
         }
-        let names = collected.missing.map { "「\($0)」" }.joined(separator: "、")
-        var summary = collected.missing.count == 1
-            ? "核心拒绝配置，因为规则引用了未定义的规则集\(names)。下面是按规则文本收集到的全部缺失项，一次修复全部。"
-            : "核心拒绝配置，因为规则引用了 \(collected.missing.count) 个未定义的规则集（\(names)）。核心一次只报第一个，下面的列表是按规则文本收集到的全部缺失项，一次修复全部。"
+        let names = allMissing.map { "「\($0)」" }.joined(separator: "、")
+        // An invisible set is NOT "未定义" — the definition is
+        // in the text, the core just cannot load it — so the
+        // summary must not call it undefined, or the sheet
+        // contradicts what the user sees in their own file.
+        var summary: String
+        if invisibleNames.count == allMissing.count {
+            summary = "核心拒绝配置，因为核心加载不到规则集\(names)：订阅里虽然写了它的定义，但链接失效、内容无效或拉取失败时核心认不到它，删掉引用它的规则后配置才能生效。下面是一次修复全部的方案。"
+        } else if !invisibleNames.isEmpty {
+            let missingBits = allMissing.filter { !invisibleNames.contains($0) }.map { "「\($0)」" }.joined(separator: "、")
+            let invisibleBits = invisibleNames.map { "「\($0)」" }.joined(separator: "、")
+            summary = "核心拒绝配置：规则引用了未定义的规则集\(missingBits)，且核心加载不到\(invisibleBits)（订阅里有定义，链接失效、内容无效或拉取失败都有可能，对它只删引用、不补定义）。核心一次只报第一个，下面的列表是按规则文本收集到的全部缺失项，一次修复全部。"
+        } else if allMissing.count == 1 {
+            summary = "核心拒绝配置，因为规则引用了未定义的规则集\(names)。下面是按规则文本收集到的全部缺失项，一次修复全部。"
+        } else {
+            summary = "核心拒绝配置，因为规则引用了 \(allMissing.count) 个未定义的规则集（\(names)）。核心一次只报第一个，下面的列表是按规则文本收集到的全部缺失项，一次修复全部。"
+        }
         if !bakeSources.isEmpty {
             let bits = bakeSources.map { "「\($0.name)」来自自定义订阅「\($0.subscriptionName)」" }.joined(separator: "、")
             summary += "其中\(bits)：确认后将同时从该订阅里删除这条规则，否则下次切换或更新订阅时会把它重新补回来。"
@@ -1977,7 +2036,7 @@ final class ProfileStore: ObservableObject {
                 let entries = ruleProviderEntries(in: lines, section: section)
                 if entries.contains(where: { $0.name == missingName }) {
                     if coreInvisibleNames.contains(missingName) {
-                        completionBlocker = "「\(missingName)」在 rule-providers 里有一条，但核心校验时找不到它（定义可能写在了核心读不到的位置，或字段不完整），无法通过补全修复"
+                        completionBlocker = "「\(missingName)」在 rule-providers 里有一条，但核心加载不到它（链接失效、内容无效或拉取失败），无法通过补全修复"
                     } else {
                         completionBlocker = "「\(missingName)」已在 rule-providers 中定义，无法再补全"
                     }

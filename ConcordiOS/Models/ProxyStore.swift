@@ -417,7 +417,15 @@ final class ProxyStore: ObservableObject {
     /// the `rule set [...] not found` regex), and let the next
     /// test bring the banner back. Rendered as its own dismissible
     /// notice in ProxiesView; the TikTok error stays visible.
+    /// The notice names the profile it was raised on: refresh()
+    /// clears it when the active profile changes (v0.2.59:
+    /// IMG_1191 showed the 150G notice still on 顺畅网络 after
+    /// a switch). testError needs no such clearing — the new
+    /// profile's own test result replaces it.
     @Published var repairNotice: String?
+    /// Profile the last refresh() ran for (non-nil calls only —
+    /// a nil refresh from another tab must not clear the notice).
+    private var lastRefreshProfileID: UUID?
 
     /// One timestamped repair-attempt line for
     /// AppCore.recordRepairAttempt (names only — never a
@@ -445,7 +453,13 @@ final class ProxyStore: ObservableObject {
         repairNotice = nil
         isRepairingRuleSet = true
         defer { isRepairingRuleSet = false }
-        guard let plan = await store.ruleSetRepairAllPlan(for: profile) else {
+        // The banner's name goes in as coreReportedMissing: a set
+        // the text already defines is core-invisible (v0.2.58
+        // 150G/TikTok — the text detector alone finds nothing
+        // missing, so without the name the plan is nil and this
+        // branch reports "未找到缺失的规则集"). With the name the
+        // plan offers deleting the referencing rule(s) instead.
+        guard let plan = await store.ruleSetRepairAllPlan(for: profile, coreReportedMissing: bannerMissing) else {
             // No plan — and the diagnosis must survive: the old
             // noteTestMessage here overwrote testError, which hid
             // the TikTok error and its 修复 button.
@@ -492,7 +506,12 @@ final class ProxyStore: ObservableObject {
         // offer was built (subscription update, another edit). A
         // plan that no longer matches is refused, never written
         // stale — the refusal is shown inline in the sheet.
-        guard let fresh = await store.ruleSetRepairAllPlan(for: profile),
+        // The same core-reported name goes in again: the offer was
+        // built with it, so a fresh plan without it would differ
+        // (an invisible set would drop out) and be refused as a
+        // stale change. testError is still the original error
+        // here — no re-test runs until after the write.
+        guard let fresh = await store.ruleSetRepairAllPlan(for: profile, coreReportedMissing: missingRuleSetName),
               fresh.isRepairable,
               fresh.newText == offerText,
               fresh.items.map({ $0.missingName }) == offer.items.map({ $0.missingName }) else {
@@ -694,6 +713,15 @@ final class ProxyStore: ObservableObject {
 
     @MainActor
     func refresh(activeProfile: Profile? = nil) async {
+        // A repair notice names the profile it was raised on: a
+        // switch makes it stale (v0.2.58 IMG_1191 — the 150G
+        // notice was still showing on 顺畅网络). Clear it on the
+        // switch only; a nil refresh (another tab's onAppear) or
+        // a pull-to-refresh on the same profile keeps it.
+        if let id = activeProfile?.id, id != lastRefreshProfileID {
+            repairNotice = nil
+            lastRefreshProfileID = id
+        }
         isLoading = true
         defer { isLoading = false }
         do {

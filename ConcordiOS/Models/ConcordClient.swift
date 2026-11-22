@@ -3,9 +3,12 @@ import Combine
 
 // MARK: - Concord JSON-RPC 2.0 client
 //
-// Types are modelled on upstream Concord's schema/api.json (71 methods,
-// checked 2026-11-20 against commit b0806a8 — mitm.moduleStatus /
-// mitm.fetchModule added).
+// Types are modelled on upstream Concord's schema/api.json (72 methods,
+// checked 2026-11-22 against commit 0c9788f — mitm.query added as the
+// 72nd method; ConnectionInfo gains ruleIndex / failure / timing /
+// dnsQueries, ConnectionDelta gains ended with final counters,
+// CoreEvent.scriptNotification gains at / connection / exchange,
+// DnsEntry gains id, ServiceItem gains ip).
 // See TUN_INVESTIGATION.md for the full method map.
 //
 // Two modes:
@@ -64,7 +67,7 @@ import Combine
 //   MITM                      mitm.certificate / generateCertificate /
 //                             validate / readModule / moduleStatus /
 //                             fetchModule / issueCertificate / runScript /
-//                             exchanges / exchange / body — live when the
+//                             exchanges / exchange / body / query — live when the
 //                             core reports features.mitm (core.capabilities).
 //                             The local CA must be installed in the system
 //                             trust store by the user (see SettingsView);
@@ -436,6 +439,52 @@ struct ConcordTraffic: Codable {
     let totalDown: Int64
 }
 
+/// Why a connection's dial failed (upstream 0c9788f
+/// ConnectionFailure). Present only on a connection whose dial
+/// failed; `connection.watch` sends it in `opened` and `closed` of
+/// the same delta, with zero traffic. `kind` is one of timeout /
+/// refused / unreachable / dns / handshake / other.
+struct ConcordConnectionFailure: Codable {
+    let kind: String
+    let message: String
+
+    var kindLabel: String { Self.label(for: kind) }
+
+    static func label(for kind: String) -> String {
+        switch kind {
+        case "timeout": return "连接超时"
+        case "refused": return "连接被拒"
+        case "unreachable": return "目标不可达"
+        case "dns": return "DNS 失败"
+        case "handshake": return "握手失败"
+        default: return "其他错误"
+        }
+    }
+}
+
+/// When each step of setting a connection up happened, in
+/// microseconds after `accepted` (upstream 0c9788f
+/// ConnectionTiming). A step the connection did not take is absent;
+/// all are fixed by the time it is opened.
+struct ConcordConnectionTiming: Codable {
+    let accepted: Int64
+    var dnsStart: UInt32? = nil
+    var dnsEnd: UInt32? = nil
+    var routed: UInt32? = nil
+    var dialStart: UInt32? = nil
+    var connected: UInt32? = nil
+    var tls: UInt32? = nil
+    var dialEnd: UInt32? = nil
+    var targetTls: UInt32? = nil
+    var decrypted: UInt32? = nil
+}
+
+/// Why a connection ended and when (upstream 0c9788f ConnectionEnd,
+/// the `ended` list of a ConnectionDelta). Every id in `closed` has
+/// one. `reason` is one of local / remote / finished / timeout /
+/// reset / core / error / failed; `message` is the error's text for
+/// timeout, reset and error, for display only.
+
 struct ConcordConnection: Codable, Identifiable {
     var id: UInt64 { connectionId }
     let connectionId: UInt64
@@ -462,7 +511,13 @@ struct ConcordConnection: Codable, Identifiable {
     let proxy: String?
     /// Present since the upstream 83bfbae schema (ConnectionInfo
     /// `rematchName`); older cores omit it and it decodes as nil.
-    let rematchName: String? = nil
+    /// A `var` on purpose: on this toolchain a `let` with a default
+    /// is never decoded from the wire (Swift 6.2: "immutable
+    /// property will not be decoded because it is declared with an
+    /// initial value which cannot be overwritten"), so every
+    /// optional-with-default field below is a `var` — the same
+    /// applies to the new 0c9788f fields.
+    var rematchName: String? = nil
     /// Audit A5: the fields below were decoded out of
     /// ConnectionInfo (upstream crates/proto/src/types/live.rs).
     /// All optional-with-default so older cores / sample data that
@@ -470,58 +525,109 @@ struct ConcordConnection: Codable, Identifiable {
     /// can now show the exit chain, MITM flags and geo/ASN.
     /// `chains` is the exit chain (Vec<String>); `rulePayload` is
     /// the matched rule's payload; `mitm`/`mitmRefused` are bools.
-    let chains: [String]? = nil
-    let providerChains: [String]? = nil
-    let rulePayload: String? = nil
-    let mitm: Bool? = nil
-    let mitmRefused: Bool? = nil
-    let remoteDestination: String? = nil
-    let sourceGeoIp: [String]? = nil
-    let destinationGeoIp: [String]? = nil
-    let sourceAsn: String? = nil
-    let destinationAsn: String? = nil
-    let specialRules: String? = nil
-    let specialProxy: String? = nil
+    /// (v0.2.60: these were `let`s and therefore never decoded —
+    /// see the note on `rematchName` — hence `var` now.)
+    var chains: [String]? = nil
+    var providerChains: [String]? = nil
+    var rulePayload: String? = nil
+    var mitm: Bool? = nil
+    var mitmRefused: Bool? = nil
+    var remoteDestination: String? = nil
+    var sourceGeoIp: [String]? = nil
+    var destinationGeoIp: [String]? = nil
+    var sourceAsn: String? = nil
+    var destinationAsn: String? = nil
+    var specialRules: String? = nil
+    var specialProxy: String? = nil
+    /// Upstream 0c9788f (ConnectionInfo): the deciding rule's
+    /// position, from 0, in the list `rule.list` gave for the config
+    /// the connection was routed by. Absent when no rule decided
+    /// (the final fallback, a global or direct mode, a named proxy)
+    /// or when matching started in a sub-rule list.
+    var ruleIndex: UInt32? = nil
+    /// Upstream 0c9788f: why this connection's dial failed. Only
+    /// on a failed dial (opened + closed in the same delta).
+    var failure: ConcordConnectionFailure? = nil
+    /// Upstream 0c9788f: per-step setup timing, microseconds after
+    /// `accepted`.
+    var timing: ConcordConnectionTiming? = nil
+    /// Upstream 0c9788f: the `id`s of the `dns.watch` entries that
+    /// gave out the destination's address (every lookup the core
+    /// made for it, cache hits included). Resolve them against
+    /// DnsStore entries by their numeric `id`.
+    var dnsQueries: [UInt64]? = nil
 
     // Wire keys are snake_case (upstream crates/proto/src/types/live.rs:
-    // ConnectionInfo). Explicit keys because the synthesized ones would
-    // be camelCase and would not match the live wire format.
+    // ConnectionInfo). The raw values below are camelCase on purpose:
+    // the live decoder uses .convertFromSnakeCase, which converts
+    // "source_ip" to "sourceIp" BEFORE matching — a snake_case raw
+    // value never matches and the whole entry silently fails to
+    // decode (the tolerant snapshot then drops it). Verified on
+    // Swift 6.2: explicit snake_case CodingKeys + convertFromSnakeCase
+    // = keyNotFound for every snake_case field. The sample path
+    // encodes this struct with a plain encoder, so camelCase keys
+    // round-trip there too. Only `id` needs a rename (the property
+    // is connectionId, the wire key is "id").
     enum CodingKeys: String, CodingKey {
         case connectionId = "id"
-        case start, network
-        case sourceIp = "source_ip"
-        case sourcePort = "source_port"
-        case destinationIp = "destination_ip"
-        case destinationPort = "destination_port"
-        case host
-        case sniffHost = "sniff_host"
-        case inboundType = "inbound_type"
-        case inboundIp = "inbound_ip"
-        case inboundPort = "inbound_port"
-        case inboundName = "inbound_name"
-        case inboundUser = "inbound_user"
-        case dnsMode = "dns_mode"
-        case uid, process
-        case processPath = "process_path"
-        case upload, download, rule, proxy
-        case rematchName = "rematch_name"
-        case chains
-        case providerChains = "provider_chains"
-        case rulePayload = "rule_payload"
-        case mitm
-        case mitmRefused = "mitm_refused"
-        case remoteDestination = "remote_destination"
-        case sourceGeoIp = "source_geo_ip"
-        case destinationGeoIp = "destination_geo_ip"
-        case sourceAsn = "source_asn"
-        case destinationAsn = "destination_asn"
-        case specialRules = "special_rules"
-        case specialProxy = "special_proxy"
+        case start, network, sourceIp, sourcePort, destinationIp,
+             destinationPort, host, sniffHost, inboundType, inboundIp,
+             inboundPort, inboundName, inboundUser, dnsMode, uid,
+             process, processPath, upload, download, rule, proxy,
+             rematchName, chains, providerChains, rulePayload, mitm,
+             mitmRefused, remoteDestination, sourceGeoIp,
+             destinationGeoIp, sourceAsn, destinationAsn, specialRules,
+             specialProxy, ruleIndex, failure, timing, dnsQueries
+    }
+}
+
+/// One entry of the `ended` list the extension forwards in the
+/// connections snapshot: the connection's final ConnectionInfo
+/// (with the core's final totals already applied) plus why and
+/// when it ended. The extension writes it nested — the ConnectionInfo
+/// under `connection`, the end fields as `end_reason` / `ended_at` /
+/// `end_message` — so both the live (convertFromSnakeCase) and the
+/// sample (plain) decoders read it with these camelCase keys.
+struct ConcordEndedConnection: Codable {
+    let connection: ConcordConnection
+    let reason: String
+    let endedAt: Int64
+    let message: String?
+
+    var reasonLabel: String { Self.label(for: reason) }
+
+    static func label(for reason: String) -> String {
+        switch reason {
+        case "local": return "本地先结束"
+        case "remote": return "远端先结束"
+        case "finished": return "双方结束"
+        case "timeout": return "超时"
+        case "reset": return "被重置"
+        case "core": return "核心关闭"
+        case "error": return "出错"
+        case "failed": return "拨号失败"
+        default: return reason
+        }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case connection
+        case reason = "endReason"
+        case endedAt
+        case message = "endMessage"
     }
 }
 
 struct ConcordConnectionSnapshot: Codable {
     let connections: [ConcordConnection]
+    /// Recently ended connections with their final totals and end
+    /// reason (upstream 0c9788f ConnectionDelta.ended, forwarded by
+    /// the extension — see PacketTunnelProvider.applyConnectionDelta).
+    /// Optional: old snapshots have no such key, and on this
+    /// toolchain a non-optional `var` with a default still requires
+    /// the key to decode (see the note on
+    /// ConcordConnection.rematchName).
+    var ended: [ConcordEndedConnection]? = nil
 }
 
 /// connection.watch decoded leniently (C9): each entry is decoded
@@ -531,20 +637,35 @@ struct ConcordConnectionSnapshot: Codable {
 /// so a failure here cannot desync the following entries.
 private struct TolerantConnectionSnapshot: Decodable {
     let connections: [ConcordConnection]
+    /// Ended connections with final totals (upstream 0c9788f
+    /// ConnectionDelta.ended, forwarded by the extension). Absent
+    /// in snapshots from older extensions; a malformed entry is
+    /// skipped like a malformed connection.
+    let ended: [ConcordEndedConnection]
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let entries = try container.decode([LossyConnection].self, forKey: .connections)
         connections = entries.compactMap(\.connection)
+        let endedEntries = try container.decodeIfPresent([LossyEndedConnection].self, forKey: .ended) ?? []
+        ended = endedEntries.compactMap(\.ended)
     }
 
-    enum CodingKeys: String, CodingKey { case connections }
+    enum CodingKeys: String, CodingKey { case connections, ended }
 
     private struct LossyConnection: Decodable {
         let connection: ConcordConnection?
         init(from decoder: Decoder) throws {
             let container = try decoder.singleValueContainer()
             connection = try? container.decode(ConcordConnection.self)
+        }
+    }
+
+    private struct LossyEndedConnection: Decodable {
+        let ended: ConcordEndedConnection?
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            ended = try? container.decode(ConcordEndedConnection.self)
         }
     }
 }
@@ -572,6 +693,19 @@ struct ConcordDnsEntry: Codable, Identifiable {
     let error: String?
     let delay: Int64
     let time: Int64
+    /// Upstream 0c9788f (DnsEntry.id): counts up from 1 over the
+    /// core process; a connection's `dnsQueries` names entries by
+    /// it. 0 when the core omits it (older cores, sample data).
+    /// A `var` so it actually decodes (see the note on
+    /// ConcordConnection.rematchName: a `let` with a default is
+    /// never decoded on this toolchain).
+    var dnsId: UInt64 = 0
+
+    enum CodingKeys: String, CodingKey {
+        case domain, type, initiator, upstream, cached, answers,
+             rcode, error, delay, time
+        case dnsId = "id"
+    }
 }
 
 /// The core omits `upstream` when it is empty (upstream
@@ -596,6 +730,7 @@ extension ConcordDnsEntry {
         error = try container.decodeIfPresent(String.self, forKey: .error)
         delay = try container.decode(Int64.self, forKey: .delay)
         time = try container.decode(Int64.self, forKey: .time)
+        dnsId = try container.decodeIfPresent(UInt64.self, forKey: .dnsId) ?? 0
     }
 }
 
@@ -1167,6 +1302,12 @@ struct ConcordServiceItem: Codable, Identifiable {
     let epoch: UInt64
     let version: UInt64
     let hits: [ConcordRouteHit]?
+    /// Upstream 0c9788f: the address the service saw the check come
+    /// from, which a node that sends the service out another way
+    /// does not share with its other traffic. Only checks whose
+    /// answer names it carry one. A `var` so it actually decodes
+    /// (see the note on ConcordConnection.rematchName).
+    var ip: String? = nil
 }
 
 struct ConcordServiceList: Codable {
@@ -1231,12 +1372,22 @@ struct ConcordCoreEvent: Codable {
     let change: JSONValue?
     /// scriptNotification only (upstream b0806a8): what a MITM script
     /// posted with `$notification.post`. `url` above is what opening
-    /// it opens. All four default nil so existing memberwise
-    /// constructions keep compiling unchanged.
-    let script: String? = nil
-    let title: String? = nil
-    let subtitle: String? = nil
-    let body: String? = nil
+    /// it opens. All default nil so existing memberwise
+    /// constructions keep compiling unchanged. `var`, not `let`:
+    /// on this toolchain a `let` with a default is never decoded
+    /// (see the note on ConcordConnection.rematchName) — as `let`s
+    /// these four never carried the script's title at all.
+    /// Upstream 0c9788f adds `at` (when the script posted it, unix
+    /// millis), `connection` (the connection.watch id of the
+    /// upstream connection the request went out on) and `exchange`
+    /// (the mitm.exchanges id of the request, while capture is on).
+    var script: String? = nil
+    var title: String? = nil
+    var subtitle: String? = nil
+    var body: String? = nil
+    var at: Int64? = nil
+    var connection: UInt64? = nil
+    var exchange: Int64? = nil
 
     /// One-line summary for the events feed.
     var summary: String {
@@ -1254,7 +1405,15 @@ struct ConcordCoreEvent: Codable {
         case "fatal":
             return "致命错误：\(message ?? "—")"
         case "scriptNotification":
-            return "脚本通知：\(title ?? "—")"
+            // Upstream 0c9788f: the notification names the connection
+            // and exchange it came from, when the core knows them.
+            var base = "脚本通知：\(title ?? "—")"
+            if let connection {
+                base += "（连接 #\(connection)"
+                if let exchange { base += "，请求 #\(exchange)" }
+                base += "）"
+            }
+            return base
         case "stateChanged":
             return "状态变化 #\(seq.map { "\($0)" } ?? "—")（来自 \(origin ?? "—")）"
         default:
@@ -1336,6 +1495,28 @@ struct MitmExchangeSummary: Codable, Identifiable {
     let requestSize: Int64
     let responseSize: Int64
     let error: String?
+    /// Upstream 0c9788f: the schema now names this shape
+    /// (MitmExchangeSummary) with the fields the core already sent
+    /// for `mitm.exchanges` plus the app behind the exchange. All
+    /// optional-with-default so older cores / sample data that omit
+    /// them still decode. `var`, not `let`: a `let` with a default
+    /// is never decoded on this toolchain (see the note on
+    /// ConcordConnection.rematchName).
+    var host: String? = nil
+    /// With its query.
+    var path: String? = nil
+    /// The response's content type, without parameters, in lower case.
+    var contentType: String? = nil
+    /// 1xx / 2xx / 3xx / 4xx / 5xx, or failed / pending.
+    var statusClass: String? = nil
+    /// json / html / script / css / image / font / media / text / other.
+    var kind: String? = nil
+    /// A rewrite, a local map or a script acted on it.
+    var rewritten: Bool? = nil
+    /// The connection it went out on, as `connection.watch` numbers it.
+    var connectionId: UInt64? = nil
+    /// The process behind that connection, kept after it closed.
+    var app: ConcordMitmApp? = nil
 
     enum CodingKeys: String, CodingKey {
         case exchangeId = "id"
@@ -1343,6 +1524,28 @@ struct MitmExchangeSummary: Codable, Identifiable {
         case requestSize = "request-size"
         case responseSize = "response-size"
         case error
+        case host, path
+        case contentType = "content-type"
+        case statusClass = "status-class"
+        case kind, rewritten
+        case connectionId = "connection-id"
+        case app
+    }
+}
+
+/// The process behind the connection an exchange went out on
+/// (upstream 0c9788f MitmApp). `process-path` is empty when the
+/// core does not know it; `uid` is absent for a connection the
+/// core never attributed.
+struct ConcordMitmApp: Codable {
+    let process: String
+    var processPath: String? = nil
+    let uid: UInt32?
+
+    enum CodingKeys: String, CodingKey {
+        case process
+        case processPath = "process-path"
+        case uid
     }
 }
 
@@ -1350,6 +1553,119 @@ struct MitmExchangeList: Codable {
     let capturing: Bool
     let since: String?
     let exchanges: [MitmExchangeSummary]
+}
+
+// MARK: - MITM query types (mitm.query, upstream 0c9788f)
+//
+// One page of the capture across connections, newest first, with
+// what a view of the capture needs besides. The filter and params
+// wire keys are camelCase (upstream crates/proto/src/types/probe.rs:
+// the `dto!` macro applies `rename_all = "camelCase"`), so the
+// params must be encoded with a PLAIN encoder — the client's shared
+// requestEncoder (.convertToSnakeCase) would turn `slowMs` into
+// `slow_ms` and `rateFrom` into `rate_from`, which the core
+// silently drops as unknown fields. mitmQuery therefore goes
+// through callRaw (see below). The answer's keys are kebab-case
+// for the multi-word ones ("median-duration") and plain words
+// otherwise, so both decoders read them.
+
+/// Which exchanges a mitm.query keeps. An empty list or an absent
+/// field lets every exchange through; a list keeps the exchanges
+/// that match any of its items. All lists default empty, all
+/// scalars default nil — an empty filter matches everything.
+struct ConcordMitmFilter: Codable {
+    var statuses: [String] = []
+    /// Compared without case.
+    var methods: [String] = []
+    var kinds: [String] = []
+    /// The URL's host, without its port, compared whole and without case.
+    var hosts: [String] = []
+    /// The `process` of the exchange's connection as
+    /// `connection.watch` lists it, compared without case; `""` for none.
+    var apps: [String] = []
+    /// Whether a rewrite, a local map or a script acted on it.
+    var rewritten: Bool? = nil
+    /// Took at least this long, in milliseconds.
+    var slowMs: Int64? = nil
+    /// Found without case in the URL, method, content type, error or app.
+    var text: String? = nil
+    /// Started at or after, in Unix milliseconds.
+    var from: Int64? = nil
+    /// Started before, in Unix milliseconds.
+    var to: Int64? = nil
+}
+
+/// Params for mitm.query. To page through the capture, pass each
+/// answer's `next` as `before`. To follow it, pass the `version` of
+/// the first page of a pass as `since` with no `before`.
+struct ConcordMitmQueryParams: Codable {
+    var filter: ConcordMitmFilter = ConcordMitmFilter()
+    /// Only exchanges with a lower id: the `next` of the page before.
+    var before: Int64? = nil
+    /// At most this many, from 1 to 64; absent, 64.
+    var limit: UInt32? = nil
+    /// Only exchanges added or changed after the `version` of an
+    /// earlier answer, and every exchange still in progress.
+    var since: UInt64? = nil
+    /// Also count the held exchanges by status, method, kind and app.
+    var facets: Bool = false
+    /// Also count the matches by the second they started in, from
+    /// this time on (Unix milliseconds).
+    var rateFrom: Int64? = nil
+}
+
+/// One page of mitm.query.
+struct ConcordMitmQueryAnswer: Codable {
+    let capturing: Bool
+    /// When the oldest held exchange started, or capture was turned
+    /// on (RFC 3339).
+    let since: String?
+    /// The `since` that asks for what is added or changed after this answer.
+    let version: UInt64
+    /// The lowest id held; a client keeping earlier answers drops the ids below it.
+    let oldest: Int64
+    let held: UInt64
+    /// How many held exchanges match the filter.
+    let matched: UInt64
+    let exchanges: [MitmExchangeSummary]
+    /// The `before` of the next page; absent when this page holds the last match.
+    let next: Int64?
+    /// Changed since `since` and no longer matching, so a client drops them.
+    /// Optional (not a defaulted array): the core omits the key when
+    /// it is empty, and on this toolchain a non-optional `var` with a
+    /// default still requires the key to decode — see the note on
+    /// ConcordConnection.rematchName.
+    var unmatched: [Int64]? = nil
+    let facets: ConcordMitmFacets?
+    let rate: [ConcordMitmRateBucket]?
+    /// Of the finished matches, in milliseconds.
+    let medianDuration: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case capturing, since, version, oldest, held, matched,
+             exchanges, next, unmatched, facets, rate
+        case medianDuration = "median-duration"
+    }
+}
+
+/// Counts of the held matches by status, method, kind and app
+/// (upstream 0c9788f MitmFacets). Status keys are MitmStatus names,
+/// method keys upper case, kind keys MitmKind names, app keys are
+/// process names ("" holds the exchanges of no known app).
+struct ConcordMitmFacets: Codable {
+    let status: [String: UInt64]
+    let method: [String: UInt64]
+    let kind: [String: UInt64]
+    let app: [String: UInt64]
+}
+
+/// Matches by the second they started in (upstream 0c9788f
+/// MitmRateBucket). `errors` are the failed ones, or the ones
+/// answered 4xx or 5xx.
+struct ConcordMitmRateBucket: Codable {
+    let t: Int64
+    let requests: UInt64
+    let errors: UInt64
 }
 
 struct MitmBody: Codable {
@@ -1565,6 +1881,15 @@ final class ConcordClient: ObservableObject {
 
     func call<Result: Decodable>(method: String, params: Encodable, resultType: Result.Type) async throws -> Result {
         let paramsData = try Self.requestEncoder.encode(AnyEncodable(params))
+        return try await transport.send(method: method, paramsData: paramsData, resultType: resultType)
+    }
+
+    /// Like `call`, but the params are already encoded — for methods
+    /// whose wire keys are camelCase, which the shared
+    /// .convertToSnakeCase requestEncoder would mangle (mitm.query:
+    /// `slowMs`, `rateFrom`). The caller encodes with a plain
+    /// JSONEncoder so the keys go over verbatim.
+    func callRaw<Result: Decodable>(method: String, paramsData: Data, resultType: Result.Type) async throws -> Result {
         return try await transport.send(method: method, paramsData: paramsData, resultType: resultType)
     }
 
@@ -1936,9 +2261,11 @@ final class ConcordClient: ObservableObject {
         // C9: one malformed entry must not drop the whole list —
         // decode each entry on its own and skip the ones that fail,
         // instead of failing the whole refresh (which left the list
-        // stale). The ConcordConnection model is unchanged.
+        // stale). The ConcordConnection model is unchanged. The
+        // `ended` list rides along: recently ended connections with
+        // their final totals and end reason (upstream 0c9788f).
         let tolerant = try await call(method: "connection.watch", resultType: TolerantConnectionSnapshot.self)
-        return ConcordConnectionSnapshot(connections: tolerant.connections)
+        return ConcordConnectionSnapshot(connections: tolerant.connections, ended: tolerant.ended)
     }
 
     func connectionClose(id: UInt64) async throws {
@@ -2119,6 +2446,21 @@ final class ConcordClient: ObservableObject {
             let name: String?
         }
         _ = try await call(method: "mitm.fetchModule", params: MitmFetchModuleParams(name: name), resultType: EmptyResult.self)
+    }
+
+    /// Queries the MITM capture across connections (upstream
+    /// 0c9788f, the 72nd method): one page of exchanges, newest
+    /// first, with what a view of the capture needs besides
+    /// (matched / held counts, the `next` page cursor, facets and
+    /// rate buckets when asked). Pass each answer's `next` as
+    /// `before` to page; pass a first page's `version` as `since`
+    /// with no `before` to follow new and changed exchanges. The
+    /// params go over with a plain encoder (see callRaw): their
+    /// wire keys are camelCase, not snake_case.
+    func mitmQuery(filter: ConcordMitmFilter = ConcordMitmFilter(), before: Int64? = nil, limit: UInt32? = nil, since: UInt64? = nil, facets: Bool = false, rateFrom: Int64? = nil) async throws -> ConcordMitmQueryAnswer {
+        let params = ConcordMitmQueryParams(filter: filter, before: before, limit: limit, since: since, facets: facets, rateFrom: rateFrom)
+        let paramsData = try JSONEncoder().encode(params)
+        return try await callRaw(method: "mitm.query", paramsData: paramsData, resultType: ConcordMitmQueryAnswer.self)
     }
 
     func mitmIssueCertificate(host: String) async throws -> ConcordMitmPem {

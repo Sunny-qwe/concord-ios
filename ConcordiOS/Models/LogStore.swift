@@ -22,6 +22,10 @@ final class LogStore: ObservableObject {
     @Published var autoScroll = true
     @Published var warnings: [ConcordWarning] = []
     @Published var lastError: String?
+    /// Connection diagnostics for the export (LogStore does not own
+    /// the connections — LogsView sets this from ConnectionStore
+    /// before exporting). Nil = no section in the export.
+    var connectionDiagnosticText: String?
 
     let client: ConcordClient
 
@@ -95,6 +99,13 @@ final class LogStore: ObservableObject {
         // already tried, so the user (and the next diagnosis)
         // does not repeat them blindly.
         sections.append("== 修复记录 ==\n" + (AppCore.lastRepairAttemptsText() ?? "暂无记录（尚未尝试修复）"))
+        // Connection diagnostics (v0.2.60, upstream 0c9788f): failed
+        // dials with the core's error text, and recently ended
+        // connections with their end reason and final totals —
+        // set by LogsView from ConnectionStore before exporting.
+        if let connectionDiagnosticText, !connectionDiagnosticText.isEmpty {
+            sections.append("== 连接诊断 ==\n" + connectionDiagnosticText)
+        }
         sections.append("== VPN 启动诊断 ==\n" + (TunnelManager.shared.lastStartupDiagnostic() ?? "暂无最近的 VPN 启动诊断（扩展未写入或已超过 180 秒）"))
         if let lastError {
             sections.append("== 日志拉取错误 ==\n\(lastError)")

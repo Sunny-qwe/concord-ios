@@ -114,6 +114,57 @@ struct MitmView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // Cross-connection search (mitm.query, upstream
+            // 0c9788f): the capture across ALL connections, newest
+            // first — no connection id needed, unlike mitm.exchanges
+            // below. An empty search matches everything; results
+            // page through the answer's `next` cursor.
+            Section("搜索拦截记录（mitm.query）") {
+                HStack {
+                    TextField("搜索 URL、方法、内容类型、错误或应用", text: $mitmStore.queryText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit { Task { await mitmStore.runQuery() } }
+                    Button("搜索") {
+                        Task { await mitmStore.runQuery() }
+                    }
+                    .disabled(mitmStore.isQuerying)
+                }
+                if mitmStore.isQuerying {
+                    ProgressView()
+                }
+                if mitmStore.hasQueried {
+                    if let matched = mitmStore.queryMatched, let held = mitmStore.queryHeld {
+                        Text("共 \(matched) 条匹配（已保留 \(held) 条）· 已加载 \(mitmStore.queryResults.count) 条")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let message = mitmStore.queryMessage {
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(mitmStore.queryResults) { exchange in
+                    Button { detailSummary = exchange } label: {
+                        exchangeRow(exchange)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        MitmExchangeMenuButtons(summary: exchange, model: menuModel)
+                    }
+                }
+                if mitmStore.queryNext != nil {
+                    Button("加载更多") {
+                        Task { await mitmStore.runQuery(loadMore: true) }
+                    }
+                    .disabled(mitmStore.isQuerying)
+                }
+                Text("按最新排序；空搜索列出全部。结果来自核心的 MITM 捕获，需要 MITM 已开启并正在捕获。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
             // Live all-connections list (audit B45): FlClash's MITM
             // page lists the captured requests live. mitm.exchanges
             // is per connection, so this polls connection.watch and
@@ -281,7 +332,7 @@ struct MitmView: View {
                             .foregroundStyle(exchange.status >= 400 ? .red : .green)
                     }
                 }
-                Text("↑ \(ConcordFormat.bytes(exchange.requestSize)) · ↓ \(ConcordFormat.bytes(exchange.responseSize)) · \(exchange.duration) ms")
+                Text("↑ \(ConcordFormat.bytes(exchange.requestSize)) · ↓ \(ConcordFormat.bytes(exchange.responseSize)) · \(exchange.duration) ms\(exchangeRowMeta(exchange))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if let error = exchange.error, !error.isEmpty {
@@ -289,6 +340,17 @@ struct MitmView: View {
                 }
             }
         }
+    }
+
+    /// Kind + app for an exchange row (upstream 0c9788f
+    /// MitmExchangeSummary): the response kind and the process
+    /// behind the connection, when the core reports them.
+    private func exchangeRowMeta(_ exchange: MitmExchangeSummary) -> String {
+        var parts: [String] = []
+        if let kind = exchange.kind, !kind.isEmpty { parts.append(kind) }
+        if let app = exchange.app?.process, !app.isEmpty { parts.append(app) }
+        if exchange.rewritten == true { parts.append("已改写") }
+        return parts.isEmpty ? "" : " · " + parts.joined(separator: " · ")
     }
 
     /// Merges every live connection's exchanges into allExchanges.

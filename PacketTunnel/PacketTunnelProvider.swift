@@ -228,6 +228,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // Live tables behind the snapshot files (see header comment).
     private var connectionTable: [UInt64: [String: Any]] = [:]
+    /// Recently ended connections (upstream 0c9788f
+    /// ConnectionDelta.ended): the closed connection's final
+    /// ConnectionInfo plus why/when it ended, newest first, capped
+    /// like the other buffers. The app merges these into its 最近请求
+    /// feed with the core's final totals — a connection that opened
+    /// and closed between two polls (a failed dial, zero traffic)
+    /// only ever arrives this way.
+    private var endedBuffer: [[String: Any]] = []
     private var logBuffer: [[String: Any]] = []
     private var dnsBuffer: [[String: Any]] = []
     private var eventBuffer: [[String: Any]] = []
@@ -508,6 +516,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         proxyGroups = []
         proxyNodes = []
         connectionTable.removeAll()
+        endedBuffer.removeAll()
         logBuffer.removeAll()
         dnsBuffer.removeAll()
         eventBuffer.removeAll()
@@ -1136,7 +1145,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 writeSnapshot(name: "traffic", data: last)
             }
         case .connection:
-            // Each event is a ConnectionDelta {opened, closed, counters}.
+            // Each event is a ConnectionDelta {opened, closed,
+            // counters, ended} (upstream 0c9788f: `ended` carries
+            // why each closed connection ended, and `counters`
+            // carries every closed id's FINAL totals).
             for item in items {
                 guard let delta = item as? [String: Any] else { continue }
                 applyConnectionDelta(delta)
@@ -1144,7 +1156,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let connections = connectionTable.values.sorted {
                 (($0["start"] as? NSNumber)?.int64Value ?? 0) > (($1["start"] as? NSNumber)?.int64Value ?? 0)
             }
-            writeSnapshot(name: "connections", data: ["connections": connections])
+            writeSnapshot(name: "connections", data: ["connections": connections, "ended": endedBuffer])
         case .log:
             for item in items {
                 guard let entry = item as? [String: Any] else { continue }
@@ -1279,6 +1291,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     connectionTable[id] = connection
                 }
             }
+            // A fresh snapshot replaces the table; the ended history
+            // from before the resync belongs to the old table.
+            endedBuffer.removeAll()
             writeSnapshot(name: "connections", data: ["connections": connections])
         case .log, .dns, .events:
             // log/dns/events.watch have no snapshot; nothing to apply.
@@ -1296,17 +1311,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
+    /// Applies one ConnectionDelta to the live table, in the order
+    /// upstream documents (ConnectionDelta, 0c9788f): `opened` first,
+    /// then `counters` and `ended`, then `closed`. The old order
+    /// (opened, closed, counters) dropped the final totals of every
+    /// closed connection — the counters guard needs the row still in
+    /// the table — and `ended` was ignored entirely. Each `ended`
+    /// entry is kept in endedBuffer with the connection's final
+    /// ConnectionInfo (final totals already applied) nested under
+    /// `connection`, so the app can show why it ended and its exact
+    /// final up/down; a failed dial (opened + closed in the same
+    /// delta) is captured here before the row is removed.
     private func applyConnectionDelta(_ delta: [String: Any]) {
         if let opened = delta["opened"] as? [[String: Any]] {
             for connection in opened {
                 if let id = (connection["id"] as? NSNumber)?.uint64Value {
                     connectionTable[id] = connection
                 }
-            }
-        }
-        if let closed = delta["closed"] as? [NSNumber] {
-            for id in closed {
-                connectionTable.removeValue(forKey: id.uint64Value)
             }
         }
         if let counters = delta["counters"] as? [[String: Any]] {
@@ -1316,6 +1337,36 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 if let upload = counter["upload"] { connection["upload"] = upload }
                 if let download = counter["download"] { connection["download"] = download }
                 connectionTable[id] = connection
+            }
+        }
+        if let ended = delta["ended"] as? [[String: Any]] {
+            for entry in ended {
+                guard let id = (entry["id"] as? NSNumber)?.uint64Value else { continue }
+                // The connection may already be gone from the table
+                // (a repeat delta, or a failed dial whose row a
+                // previous batch removed) — without its ConnectionInfo
+                // there is nothing to show, so skip it.
+                guard let connection = connectionTable[id] else { continue }
+                var record: [String: Any] = ["connection": connection]
+                record["end_reason"] = entry["reason"] ?? "finished"
+                record["ended_at"] = entry["ended_at"] ?? 0
+                if let message = entry["message"] { record["end_message"] = message }
+                // A repeat delta re-reports the same close: keep one
+                // record per id, the newest.
+                endedBuffer.removeAll {
+                    guard let prior = $0["connection"] as? [String: Any],
+                          let priorId = (prior["id"] as? NSNumber)?.uint64Value else { return false }
+                    return priorId == id
+                }
+                endedBuffer.insert(record, at: 0)
+            }
+            if endedBuffer.count > 200 {
+                endedBuffer.removeLast(endedBuffer.count - 200)
+            }
+        }
+        if let closed = delta["closed"] as? [NSNumber] {
+            for id in closed {
+                connectionTable.removeValue(forKey: id.uint64Value)
             }
         }
     }

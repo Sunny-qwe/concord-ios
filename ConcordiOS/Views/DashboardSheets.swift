@@ -540,6 +540,15 @@ struct ServiceStatusSheet: View {
                     }
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    // Upstream 0c9788f (ServiceItem.ip): the address
+                    // the service saw the check come from — for a
+                    // node that sends a service out another way, not
+                    // the node's other traffic address.
+                    if let ip = service.ip, !ip.isEmpty {
+                        Text("服务所见出口 IP \(ip)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
                 Text(trailingText(for: service))

@@ -45,6 +45,28 @@ struct LiveConnection: Identifiable {
     let destinationAsn: String?
     let specialRules: String?
     let specialProxy: String?
+    /// Upstream 0c9788f (ConnectionInfo): the deciding rule's
+    /// position, from 0, in the list `rule.list` gave for the config
+    /// the connection was routed by. Nil when no rule decided.
+    var ruleIndex: UInt32?
+    /// Upstream 0c9788f: why this connection's dial failed (kind +
+    /// the error as the core logs it). Only on a failed dial.
+    var failureKind: String?
+    var failureMessage: String?
+    /// Upstream 0c9788f: per-step setup timing, microseconds after
+    /// the core accepted the flow.
+    var timing: ConcordConnectionTiming?
+    /// Upstream 0c9788f: the `id`s of the `dns.watch` entries that
+    /// gave out the destination's address. Resolve against
+    /// DnsStore entries by their numeric `id`.
+    var dnsQueries: [UInt64] = []
+    /// Upstream 0c9788f (ConnectionDelta.ended, forwarded by the
+    /// extension): why this finished connection ended, when, and
+    /// the error text for timeout / reset / error. Set only on
+    /// 最近请求 rows; the live feed has none of these.
+    var endReason: String?
+    var endedAt: Int64?
+    var endMessage: String?
     /// Live up/down rates in bytes/s (upstream tracker_info_table
     /// downloadSpeed/uploadSpeed, ranked by TrackerSpeedRanker):
     /// per-connection byte deltas over the poll interval, computed
@@ -96,6 +118,23 @@ struct LiveConnection: Identifiable {
         destinationAsn = c.destinationAsn
         specialRules = c.specialRules
         specialProxy = c.specialProxy
+        ruleIndex = c.ruleIndex
+        failureKind = c.failure?.kind
+        failureMessage = c.failure?.message
+        timing = c.timing
+        dnsQueries = c.dnsQueries ?? []
+    }
+
+    /// Builds a finished row from an `ended` entry the extension
+    /// forwarded (upstream 0c9788f): the ConnectionInfo carries the
+    /// core's FINAL totals, plus why and when it ended. A failed
+    /// dial (opened + closed in the same delta, zero traffic) only
+    /// ever arrives this way — the live snapshots never hold it.
+    init(ended: ConcordEndedConnection) {
+        self.init(ended.connection)
+        endReason = ended.reason
+        endedAt = ended.endedAt
+        endMessage = ended.message
     }
 
     /// Full creation time for the detail page (upstream
@@ -312,17 +351,49 @@ final class ConnectionStore: ObservableObject {
             }
             let liveIds = Set(next.map(\.id))
             previousBytes = previousBytes.filter { liveIds.contains($0.key) }
+            // Ended connections with final totals (upstream 0c9788f
+            // ConnectionDelta.ended, forwarded by the extension):
+            // apply them FIRST, so a connection the core closed with
+            // its final totals keeps those exact totals instead of
+            // the last-seen ones from the diff below. An id already
+            // recorded is updated in place (final totals + end
+            // reason); a new one is inserted. A failed dial only
+            // ever arrives this way.
+            for ended in snapshot.ended ?? [] {
+                // A connection the core re-opened after closing it
+                // (an `opened` repeat) is live again, not recent.
+                guard !liveIds.contains(ended.connection.connectionId) else { continue }
+                let record = LiveConnection(ended: ended)
+                if let index = recentConnections.firstIndex(where: { $0.id == record.id }) {
+                    recentConnections[index] = record
+                } else {
+                    recentConnections.append(record)
+                }
+            }
             // Record what finished since the last poll: ids that were
             // live and are gone now. (A connection the user closed by
             // hand is recorded too — it did finish.)
             let nextIds = liveIds
             let finished = connections.filter { !nextIds.contains($0.id) }
             if !finished.isEmpty {
-                recentConnections = (finished + recentConnections)
+                // Ids the `ended` list already covered keep the
+                // core's record (final totals + end reason); the
+                // diff only adds the ones the core did not report
+                // (e.g. closed by connection.close before the
+                // extension saw the delta).
+                let endedIds = Set((snapshot.ended ?? []).map { $0.connection.connectionId })
+                let uncovered = finished.filter { !endedIds.contains($0.id) }
+                recentConnections = (uncovered + recentConnections)
                     .sorted { $0.start > $1.start }
                 if recentConnections.count > 200 {
                     recentConnections = Array(recentConnections.prefix(200))
                 }
+            }
+            // The `ended` inserts above are unsorted and uncapped
+            // when nothing finished by diffing; sort + cap them too.
+            recentConnections.sort { $0.start > $1.start }
+            if recentConnections.count > 200 {
+                recentConnections = Array(recentConnections.prefix(200))
             }
             connections = next
             lastUpdated = Date()
@@ -335,6 +406,30 @@ final class ConnectionStore: ObservableObject {
     /// Clear the recorded history.
     func clearRecent() {
         recentConnections.removeAll()
+    }
+
+    /// One-line-per-record diagnostics for the log export
+    /// (LogStore "连接诊断" section): failed dials first (kind +
+    /// the core's error text), then the other recently ended
+    /// connections with their end reason and final totals. Nil
+    /// when there is nothing to report. Newest first, capped at
+    /// 50 lines so the export stays readable.
+    var diagnosticExportText: String? {
+        let failed = recentConnections.filter { $0.failureKind != nil }
+        let ended = recentConnections.filter { $0.failureKind == nil && $0.endReason != nil }
+        guard !failed.isEmpty || !ended.isEmpty else { return nil }
+        var lines: [String] = []
+        for connection in failed.prefix(50) {
+            let when = ConcordFormat.time(Int64(connection.start.timeIntervalSince1970 * 1000))
+            let kind = connection.failureKind.map(ConcordConnectionFailure.label) ?? ""
+            lines.append("[\(when)] \(connection.host ?? connection.destination) 拨号失败（\(kind)）：\(connection.failureMessage ?? "")")
+        }
+        for connection in ended.prefix(50) {
+            let when = connection.endedAt.map { ConcordFormat.time($0) } ?? ConcordFormat.time(Int64(connection.start.timeIntervalSince1970 * 1000))
+            let reason = connection.endReason.map(ConcordEndedConnection.label) ?? ""
+            lines.append("[\(when)] \(connection.host ?? connection.destination) 结束（\(reason)）：↑ \(ConcordFormat.bytes(connection.upload)) ↓ \(ConcordFormat.bytes(connection.download))")
+        }
+        return lines.joined(separator: "\n")
     }
 
     @MainActor

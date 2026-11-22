@@ -382,6 +382,7 @@ struct ConnectionDetailView: View {
     var isLive: Bool = true
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var dnsStore: DnsStore
     @Environment(\.dismiss) private var dismiss
 
     private enum DetailTab: String, CaseIterable {
@@ -425,6 +426,9 @@ struct ConnectionDetailView: View {
                     Button("完成") { dismiss() }
                 }
             }
+            // Load the DNS entries so the DNS 查询 row above can
+            // resolve the connection's dnsQueries ids to domains.
+            .task { await dnsStore.refresh() }
         }
     }
 
@@ -452,6 +456,11 @@ struct ConnectionDetailView: View {
             }
             Section("路由") {
                 LabeledContent("规则", value: ruleText)
+                if let ruleIndex = connection.ruleIndex {
+                    // Upstream 0c9788f: the deciding rule's position,
+                    // from 0, in the list `rule.list` gave.
+                    LabeledContent("规则序号", value: "#\(ruleIndex)")
+                }
                 LabeledContent("代理", value: connection.proxy ?? "—")
                 LabeledContent("持续", value: ConcordFormat.duration(seconds: connection.durationSeconds))
                 LabeledContent("上行", value: ConcordFormat.bytes(connection.upload))
@@ -459,11 +468,60 @@ struct ConnectionDetailView: View {
                 if let dnsMode = connection.dnsMode, !dnsMode.isEmpty {
                     LabeledContent("DNS 模式", value: dnsMode)
                 }
+                if !connection.dnsQueries.isEmpty {
+                    // Upstream 0c9788f: the dns.watch entries that
+                    // gave out the destination's address, by their
+                    // numeric id; resolved to domain + type when the
+                    // DNS page has loaded them, bare #id otherwise.
+                    LabeledContent("DNS 查询", value: dnsQueryText)
+                }
                 if let specialProxy = connection.specialProxy, !specialProxy.isEmpty {
                     LabeledContent("特殊代理", value: specialProxy)
                 }
                 if let specialRules = connection.specialRules, !specialRules.isEmpty {
                     LabeledContent("特殊规则", value: specialRules)
+                }
+            }
+            if let failureKind = connection.failureKind {
+                // Upstream 0c9788f: a failed dial only ever arrives
+                // via the `ended` list (opened + closed in the same
+                // delta, zero traffic) — see ConnectionStore.
+                Section("拨号失败") {
+                    LabeledContent("原因", value: ConcordConnectionFailure.label(for: failureKind))
+                    if let message = connection.failureMessage, !message.isEmpty {
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            if let timing = connection.timing {
+                // Upstream 0c9788f ConnectionTiming: each step in
+                // microseconds after the core accepted the flow.
+                Section("建立耗时") {
+                    ForEach(timingRows(timing), id: \.0) { label, microseconds in
+                        LabeledContent(label, value: Self.timingText(microseconds))
+                    }
+                }
+            }
+            if let endReason = connection.endReason {
+                // Upstream 0c9788f ConnectionDelta.ended: why this
+                // finished connection ended and when. The 上行/下行
+                // above are already the core's final totals.
+                Section("结束") {
+                    LabeledContent("原因", value: ConcordEndedConnection.label(for: endReason))
+                    if let endedAt = connection.endedAt {
+                        LabeledContent("结束时间", value: Self.fullTime(endedAt))
+                    }
+                    LabeledContent("最终上行", value: ConcordFormat.bytes(connection.upload))
+                    LabeledContent("最终下行", value: ConcordFormat.bytes(connection.download))
+                    if let message = connection.endMessage, !message.isEmpty {
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                 }
             }
             Section("地址") {
@@ -538,5 +596,46 @@ struct ConnectionDetailView: View {
             return "\(rule) (\(payload))"
         }
         return rule
+    }
+
+    /// The connection's DNS queries, resolved to domain + type
+    /// against the DNS store when it has loaded them.
+    private var dnsQueryText: String {
+        connection.dnsQueries.map { id in
+            if let entry = dnsStore.entries.first(where: { $0.dnsId == id }) {
+                return "#\(id) \(entry.domain) \(entry.type)"
+            }
+            return "#\(id)"
+        }.joined(separator: " · ")
+    }
+
+    /// The setup steps the connection actually took, in order
+    /// (upstream ConnectionTiming: microseconds after `accepted`).
+    private func timingRows(_ timing: ConcordConnectionTiming) -> [(String, UInt32)] {
+        var rows: [(String, UInt32)] = []
+        if let value = timing.dnsStart { rows.append(("DNS 查询开始", value)) }
+        if let value = timing.dnsEnd { rows.append(("DNS 查询完成", value)) }
+        if let value = timing.routed { rows.append(("路由决定", value)) }
+        if let value = timing.dialStart { rows.append(("开始拨号", value)) }
+        if let value = timing.connected { rows.append(("首跳接通", value)) }
+        if let value = timing.tls { rows.append(("握手完成", value)) }
+        if let value = timing.dialEnd { rows.append(("拨号完成", value)) }
+        if let value = timing.targetTls { rows.append(("目标 TLS 完成", value)) }
+        if let value = timing.decrypted { rows.append(("解密就绪", value)) }
+        return rows
+    }
+
+    /// Microseconds after `accepted`, as milliseconds with one decimal.
+    private static func timingText(_ microseconds: UInt32) -> String {
+        String(format: "%.1f ms", Double(microseconds) / 1000)
+    }
+
+    /// Full date-time for the end timestamp (same shape as the
+    /// start time above).
+    private static func fullTime(_ epochMillis: Int64) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(epochMillis) / 1000))
     }
 }

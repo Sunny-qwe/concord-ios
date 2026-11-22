@@ -156,7 +156,7 @@ final class OverrideStore: ObservableObject {
                 OverrideKeySpec(key: "fake-ip-range", label: "Fake-IP 段", kind: .text, defaultValue: .string("198.18.0.1/16")),
                 OverrideKeySpec(key: "fake-ip-range6", label: "Fake-IP 段（IPv6）", kind: .text, defaultValue: .string("")),
                 OverrideKeySpec(key: "fake-ip-filter", label: "Fake-IP 过滤", kind: .stringList,
-                                defaultValue: .array(["dns.msftnsci.com", "www.msftnsci.com", "www.msftconnecttest.com"].map(JSONValue.string))),
+                                defaultValue: .array(["dns.msftncsi.com", "www.msftncsi.com", "www.msftconnecttest.com"].map(JSONValue.string))),
                 OverrideKeySpec(key: "fake-ip-filter-mode", label: "Fake-IP 过滤模式", kind: .options, defaultValue: .string("blacklist"),
                                 options: ["blacklist", "whitelist", "rule"],
                                 optionLabels: ["blacklist": "黑名单", "whitelist": "白名单", "rule": "规则"]),

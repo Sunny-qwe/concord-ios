@@ -106,6 +106,8 @@ enum ConcordSampleData {
             ])))
         case "mitm.exchanges":
             result = AnyEncodable(ConcordMitmResult(result: jsonValue(sampleExchangeList)))
+        case "mitm.query":
+            result = AnyEncodable(sampleMitmQuery(paramsData: paramsData))
         case "mitm.exchange":
             result = AnyEncodable(ConcordMitmResult(result: sampleExchangeDetail))
         case "mitm.body":
@@ -135,7 +137,7 @@ enum ConcordSampleData {
         case "traffic.watch":
             result = AnyEncodable(sampleTraffic)
         case "connection.watch":
-            result = AnyEncodable(ConcordConnectionSnapshot(connections: sampleConnections))
+            result = AnyEncodable(ConcordConnectionSnapshot(connections: sampleConnections, ended: sampleEndedConnections))
         case "connection.close":
             result = AnyEncodable(EmptyResultJSON())
         case "log.watch":
@@ -255,7 +257,7 @@ enum ConcordSampleData {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         return [
             ConcordServiceItem(name: "google", status: "available", region: "US", delay: 132, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: [ConcordRouteHit(host: "www.google.com:443", exit: "\"示例节点-香港-01\" Shadowsocks 203.0.113.42")]),
-            ConcordServiceItem(name: "github", status: "available", region: "", delay: 98, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil),
+            ConcordServiceItem(name: "github", status: "available", region: "", delay: 98, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil, ip: "20.205.243.166"),
             ConcordServiceItem(name: "youtube", status: "restricted", region: "HK", delay: 210, chains: ["示例节点-香港-01"], checkedAt: now, epoch: 1, version: 1, hits: nil),
             ConcordServiceItem(name: "netflix", status: "blocked", region: nil, delay: nil, chains: nil, checkedAt: now, epoch: 1, version: 1, hits: nil),
         ]
@@ -263,9 +265,56 @@ enum ConcordSampleData {
 
     static var sampleExchangeList: MitmExchangeList {
         MitmExchangeList(capturing: true, since: nil, exchanges: [
-            MitmExchangeSummary(exchangeId: 1, start: "2026-11-17T09:00:00Z", pending: false, duration: 87, method: "GET", url: "https://www.google.com/", status: 200, requestSize: 512, responseSize: 2048, error: nil),
-            MitmExchangeSummary(exchangeId: 2, start: "2026-11-17T09:00:05Z", pending: true, duration: 0, method: "POST", url: "https://api.github.com/user", status: 0, requestSize: 128, responseSize: 0, error: nil),
+            MitmExchangeSummary(exchangeId: 1, start: "2026-11-17T09:00:00Z", pending: false, duration: 87, method: "GET", url: "https://www.google.com/", status: 200, requestSize: 512, responseSize: 2048, error: nil, host: "www.google.com", path: "/?gws_rd=ssl", contentType: "text/html", statusClass: "2xx", kind: "html", rewritten: false, connectionId: 1, app: ConcordMitmApp(process: "Safari", processPath: nil, uid: nil)),
+            MitmExchangeSummary(exchangeId: 2, start: "2026-11-17T09:00:05Z", pending: true, duration: 0, method: "POST", url: "https://api.github.com/user", status: 0, requestSize: 128, responseSize: 0, error: nil, host: "api.github.com", path: "/user", contentType: nil, statusClass: "pending", kind: "other", rewritten: true, connectionId: 2, app: ConcordMitmApp(process: "Safari", processPath: nil, uid: nil)),
         ])
+    }
+
+    /// Sample mitm.query answer (upstream 0c9788f): the sample
+    /// exchanges filtered by the query text, like the core filters
+    /// by filter.text (without case, in the URL / method / content
+    /// type / error / app).
+    static func sampleMitmQuery(paramsData: Data) -> ConcordMitmQueryAnswer {
+        let params = (try? JSONDecoder().decode(ConcordMitmQueryParams.self, from: paramsData)) ?? ConcordMitmQueryParams()
+        let all = sampleExchangeList.exchanges
+        let text = (params.filter.text ?? "").lowercased()
+        let matched: [MitmExchangeSummary]
+        if text.isEmpty {
+            matched = all
+        } else {
+            matched = all.filter {
+                $0.url.lowercased().contains(text)
+                    || $0.method.lowercased().contains(text)
+                    || ($0.contentType?.lowercased().contains(text) ?? false)
+                    || ($0.error?.lowercased().contains(text) ?? false)
+                    || ($0.app?.process.lowercased().contains(text) ?? false)
+            }
+        }
+        return ConcordMitmQueryAnswer(
+            capturing: true, since: sampleExchangeList.since, version: 42,
+            oldest: 1, held: UInt64(all.count), matched: UInt64(matched.count),
+            exchanges: matched, next: nil, facets: nil, rate: nil, medianDuration: 87)
+    }
+
+    /// Sample ended connections (upstream 0c9788f): one failed dial
+    /// (refused, zero traffic) and one finished connection with
+    /// final totals, for the 最近请求 feed in sample mode.
+    static var sampleEndedConnections: [ConcordEndedConnection] {
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let failed = ConcordConnection(
+            connectionId: 5, start: now - 9000, network: "tcp",
+            sourceIp: "10.0.0.2", sourcePort: 51238,
+            destinationIp: "5.6.7.8", destinationPort: 443,
+            host: "bad.example.com", sniffHost: "bad.example.com",
+            inboundType: "tun", inboundIp: nil, inboundPort: nil,
+            inboundName: nil, inboundUser: nil, dnsMode: "fake-ip",
+            uid: nil, process: "Safari", processPath: nil,
+            upload: 0, download: 0, rule: "PROXY", proxy: "示例节点-香港-01",
+            failure: ConcordConnectionFailure(kind: "refused", message: "连接被拒：5.6.7.8:443"))
+        return [
+            ConcordEndedConnection(connection: failed, reason: "failed", endedAt: now - 8000, message: "连接被拒：5.6.7.8:443"),
+            ConcordEndedConnection(connection: sampleConnections[0], reason: "finished", endedAt: now - 5000, message: nil),
+        ]
     }
 
     static var sampleExchangeDetail: JSONValue {
@@ -369,7 +418,7 @@ enum ConcordSampleData {
     static var sampleConnections: [ConcordConnection] {
         let now = Int64(Date().timeIntervalSince1970)
         return [
-            ConcordConnection(connectionId: 1, start: now - 42, network: "tcp", sourceIp: "10.0.0.2", sourcePort: 51234, destinationIp: "142.250.72.14", destinationPort: 443, host: "www.google.com", sniffHost: "www.google.com", inboundType: "tun", inboundIp: nil, inboundPort: nil, inboundName: nil, inboundUser: nil, dnsMode: "fake-ip", uid: nil, process: "Safari", processPath: nil, upload: 12_400, download: 480_000, rule: "GEOSITE,google", proxy: "示例节点-香港-01"),
+            ConcordConnection(connectionId: 1, start: now - 42, network: "tcp", sourceIp: "10.0.0.2", sourcePort: 51234, destinationIp: "142.250.72.14", destinationPort: 443, host: "www.google.com", sniffHost: "www.google.com", inboundType: "tun", inboundIp: nil, inboundPort: nil, inboundName: nil, inboundUser: nil, dnsMode: "fake-ip", uid: nil, process: "Safari", processPath: nil, upload: 12_400, download: 480_000, rule: "GEOSITE,google", proxy: "示例节点-香港-01", ruleIndex: 3, timing: ConcordConnectionTiming(accepted: (now - 42) * 1000, dnsStart: 1200, dnsEnd: 5400, routed: 6100, dialStart: 6200, connected: 45000, tls: 90000, dialEnd: 91000), dnsQueries: [1]),
             ConcordConnection(connectionId: 2, start: now - 180, network: "tcp", sourceIp: "10.0.0.2", sourcePort: 51235, destinationIp: "104.18.32.7", destinationPort: 443, host: "github.com", sniffHost: "github.com", inboundType: "tun", inboundIp: nil, inboundPort: nil, inboundName: nil, inboundUser: nil, dnsMode: "fake-ip", uid: nil, process: "Safari", processPath: nil, upload: 8_200, download: 210_000, rule: "DOMAIN-KEYWORD,github", proxy: "示例节点-香港-01"),
             ConcordConnection(connectionId: 3, start: now - 12, network: "udp", sourceIp: "10.0.0.2", sourcePort: 51236, destinationIp: "8.8.8.8", destinationPort: 53, host: nil, sniffHost: nil, inboundType: "tun", inboundIp: nil, inboundPort: nil, inboundName: nil, inboundUser: nil, dnsMode: "normal", uid: nil, process: nil, processPath: nil, upload: 512, download: 1_024, rule: "GEOIP,private", proxy: "DIRECT"),
             ConcordConnection(connectionId: 4, start: now - 300, network: "tcp", sourceIp: "10.0.0.2", sourcePort: 51237, destinationIp: "151.101.1.140", destinationPort: 443, host: "www.youtube.com", sniffHost: "www.youtube.com", inboundType: "tun", inboundIp: nil, inboundPort: nil, inboundName: nil, inboundUser: nil, dnsMode: "fake-ip", uid: nil, process: "YouTube", processPath: nil, upload: 22_000, download: 2_400_000, rule: "DOMAIN-SUFFIX,youtube.com", proxy: "示例节点-日本-02"),
@@ -390,10 +439,10 @@ enum ConcordSampleData {
     static var sampleDns: [ConcordDnsEntry] {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         return [
-            ConcordDnsEntry(domain: "www.google.com", type: "A", initiator: "10.0.0.2:51234", upstream: "8.8.8.8", cached: false, answers: ["142.250.72.14"], rcode: "NOERROR", error: "", delay: 24, time: now - 4000),
-            ConcordDnsEntry(domain: "github.com", type: "A", initiator: "10.0.0.2:51235", upstream: "1.1.1.1", cached: true, answers: ["140.82.112.4"], rcode: "NOERROR", error: "", delay: 3, time: now - 3000),
-            ConcordDnsEntry(domain: "www.youtube.com", type: "AAAA", initiator: "10.0.0.2:51237", upstream: "8.8.4.4", cached: false, answers: ["2607:f8b0:4004:800::200e"], rcode: "NOERROR", error: "", delay: 41, time: now - 2000),
-            ConcordDnsEntry(domain: "ads.example.com", type: "A", initiator: "10.0.0.2:51238", upstream: "fake-ip", cached: false, answers: ["198.18.0.1"], rcode: "NOERROR", error: "", delay: 1, time: now - 1000),
+            ConcordDnsEntry(domain: "www.google.com", type: "A", initiator: "10.0.0.2:51234", upstream: "8.8.8.8", cached: false, answers: ["142.250.72.14"], rcode: "NOERROR", error: "", delay: 24, time: now - 4000, dnsId: 1),
+            ConcordDnsEntry(domain: "github.com", type: "A", initiator: "10.0.0.2:51235", upstream: "1.1.1.1", cached: true, answers: ["140.82.112.4"], rcode: "NOERROR", error: "", delay: 3, time: now - 3000, dnsId: 2),
+            ConcordDnsEntry(domain: "www.youtube.com", type: "AAAA", initiator: "10.0.0.2:51237", upstream: "8.8.4.4", cached: false, answers: ["2607:f8b0:4004:800::200e"], rcode: "NOERROR", error: "", delay: 41, time: now - 2000, dnsId: 3),
+            ConcordDnsEntry(domain: "ads.example.com", type: "A", initiator: "10.0.0.2:51238", upstream: "fake-ip", cached: false, answers: ["198.18.0.1"], rcode: "NOERROR", error: "", delay: 1, time: now - 1000, dnsId: 4),
         ]
     }
 }

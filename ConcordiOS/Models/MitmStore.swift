@@ -42,6 +42,29 @@ final class MitmStore: ObservableObject {
     @Published var exchangesSince: String?
     @Published var exchangesMissingNotice = false
 
+    // MARK: - Cross-connection query (mitm.query, upstream 0c9788f)
+    // The capture across connections, newest first: a text search
+    // over URL / method / content type / error / app, with paging
+    // through the answer's `next` cursor. Unlike mitm.exchanges
+    // (per connection), this needs no connection id.
+
+    /// The search text the user typed (matched without case in the
+    /// URL, method, content type, error or app).
+    @Published var queryText = ""
+    /// The current page's exchanges, newest first; paging appends.
+    @Published var queryResults: [MitmExchangeSummary] = []
+    /// How many held exchanges match the filter (all pages, not
+    /// just the ones loaded).
+    @Published var queryMatched: UInt64?
+    /// How many exchanges the core still holds in total.
+    @Published var queryHeld: UInt64?
+    /// The `before` of the next page; nil when this page holds the
+    /// last match.
+    @Published var queryNext: Int64?
+    @Published var isQuerying = false
+    @Published var queryMessage: String?
+    @Published var hasQueried = false
+
     /// Whether the privacy warning before copy/export was accepted
     /// once (upstream `mitmExportWarnedProvider`).
     var exportWarned: Bool {
@@ -72,6 +95,53 @@ final class MitmStore: ObservableObject {
         } catch {
             scriptResult = nil
             scriptMessage = "运行失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// Runs a cross-connection capture query (mitm.query). An empty
+    /// search text matches everything. `loadMore: true` pages with
+    /// the last answer's `next` cursor and appends; otherwise the
+    /// first page replaces the results.
+    @MainActor
+    func runQuery(loadMore: Bool = false) async {
+        if loadMore {
+            guard let next = queryNext else { return }
+            await runQueryPage(before: next, append: true)
+            return
+        }
+        await runQueryPage(before: nil, append: false)
+    }
+
+    @MainActor
+    private func runQueryPage(before: Int64?, append: Bool) async {
+        isQuerying = true
+        defer { isQuerying = false }
+        do {
+            var filter = ConcordMitmFilter()
+            let text = queryText.trimmingCharacters(in: .whitespaces)
+            if !text.isEmpty { filter.text = text }
+            let answer = try await client.mitmQuery(filter: filter, before: before)
+            hasQueried = true
+            queryMatched = answer.matched
+            queryHeld = answer.held
+            queryNext = answer.next
+            if append {
+                var seen = Set(queryResults.map(\.exchangeId))
+                for exchange in answer.exchanges where !seen.contains(exchange.exchangeId) {
+                    seen.insert(exchange.exchangeId)
+                    queryResults.append(exchange)
+                }
+            } else {
+                queryResults = answer.exchanges
+            }
+            if queryResults.isEmpty {
+                queryMessage = answer.capturing ? "没有匹配的拦截记录" : "MITM 捕获未开启（config.apply 的 options.mitmCapture）"
+            } else {
+                queryMessage = nil
+            }
+        } catch {
+            if !append { queryResults = [] }
+            queryMessage = "查询失败：\(error.localizedDescription)"
         }
     }
 

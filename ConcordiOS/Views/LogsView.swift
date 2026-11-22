@@ -11,6 +11,7 @@ struct LogsView: View {
     @EnvironmentObject private var logStore: LogStore
     @EnvironmentObject private var eventStore: EventStore
     @EnvironmentObject private var client: ConcordClient
+    @EnvironmentObject private var connectionStore: ConnectionStore
     @State private var showShare = false
     @State private var exportURL: URL?
     @State private var exportError: String?
@@ -414,6 +415,9 @@ struct LogsView: View {
     /// nothing is uploaded anywhere by the app itself.
     private func exportAndShare() {
         do {
+            // Connection diagnostics for the export (v0.2.60):
+            // failed dials + recently ended connections.
+            logStore.connectionDiagnosticText = connectionStore.diagnosticExportText
             exportURL = try logStore.exportLogFile()
             showShare = true
         } catch {
@@ -425,6 +429,7 @@ struct LogsView: View {
     /// Copies the same bundled export text to the clipboard, so the
     /// user can paste it straight into a chat message.
     private func copyLogs() {
+        logStore.connectionDiagnosticText = connectionStore.diagnosticExportText
         UIPasteboard.general.string = logStore.fullExportText
         showCopiedAlert = true
     }

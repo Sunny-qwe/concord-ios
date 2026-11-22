@@ -62,7 +62,11 @@ final class EventStore: ObservableObject {
     }
 
     /// Content key for merge/dedupe. `change` is excluded (see the
-    /// header comment); `seq` identifies stateChanged events.
+    /// header comment); `seq` identifies stateChanged events. The
+    /// script-notification fields are included: two notifications
+    /// with the same title from different connections or exchanges
+    /// are different rows (upstream 0c9788f adds `at` / `connection`
+    /// / `exchange` to scriptNotification).
     private static func key(for event: ConcordCoreEvent) -> String {
         [
             event.type,
@@ -75,6 +79,13 @@ final class EventStore: ObservableObject {
             event.message ?? "",
             event.seq.map(String.init) ?? "",
             event.origin ?? "",
+            event.script ?? "",
+            event.title ?? "",
+            event.subtitle ?? "",
+            event.body ?? "",
+            event.at.map(String.init) ?? "",
+            event.connection.map(String.init) ?? "",
+            event.exchange.map(String.init) ?? "",
         ].joined(separator: "|")
     }
 

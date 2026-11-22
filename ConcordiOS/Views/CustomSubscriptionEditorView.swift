@@ -907,6 +907,22 @@ private struct CustomGroupFormView: View {
                         .multilineTextAlignment(.trailing)
                         .frame(width: 80)
                     }
+                    // Smart groups only (v0.2.60, upstream c4bc31d):
+                    // per-site pick weights, `pattern:factor` pairs
+                    // separated by `;` — a pattern is a regex when
+                    // it compiles, a substring otherwise. Stored
+                    // verbatim; the core skips invalid pairs.
+                    if group.type == "smart" {
+                        TextField("策略优先（policy-priority，如 hk:1.5; jp:0.5）", text: Binding(
+                            get: { group.policyPriority ?? "" },
+                            set: { group.policyPriority = $0.isEmpty ? nil : $0 }
+                        ))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        Text("按站点选节点时的加权偏好：系数越大，匹配的节点越优先。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     Toggle("用时才测速（lazy）", isOn: $group.lazy)
                     Toggle("在列表中隐藏", isOn: $group.hidden)
                     Toggle("禁用 UDP", isOn: $group.disableUDP)

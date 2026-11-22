@@ -57,6 +57,7 @@ final class IconSetStore: ObservableObject {
         "url-test": "speedometer",
         "fallback": "arrow.triangle.2.circlepath",
         "load-balance": "square.stack.3d.up.fill",
+        "smart": "sparkles",
         "relay": "link",
         "direct": "arrow.up.right",
         "reject": "nosign",
@@ -82,6 +83,7 @@ final class IconSetStore: ObservableObject {
         "url-test": .green,
         "fallback": .yellow,
         "load-balance": .purple,
+        "smart": .mint,
         "relay": .gray,
         "direct": .green,
         "reject": .red,
@@ -89,7 +91,7 @@ final class IconSetStore: ObservableObject {
     ]
 
     /// The proxy types shown in the preview grid.
-    static let previewTypes = ["shadowsocks", "vmess", "vless", "trojan", "hysteria2", "tuic", "socks5", "http", "snell", "wireguard", "select", "url-test", "fallback", "load-balance", "relay", "direct", "reject", "dns"]
+    static let previewTypes = ["shadowsocks", "vmess", "vless", "trojan", "hysteria2", "tuic", "socks5", "http", "snell", "wireguard", "select", "url-test", "fallback", "load-balance", "smart", "relay", "direct", "reject", "dns"]
 
     static let packs: [Pack] = [
         Pack(id: "default", name: "默认", description: "系统图标，按主题色显示", symbols: typeSymbols, colors: nil),

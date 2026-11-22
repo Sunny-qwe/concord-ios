@@ -169,7 +169,7 @@ struct ProxiesView: View {
     @State private var showGroupPicker = false
     @State private var pillsContentWidth: CGFloat = 0
 
-    private static let groupTypes: Set<String> = ["select", "url-test", "fallback", "load-balance", "relay"]
+    private static let groupTypes: Set<String> = ["select", "url-test", "fallback", "load-balance", "relay", "smart"]
     /// Built-in adapters whose delay probe always fails, so a timeout
     /// says nothing (FlClash _unprobeableProxyTypes,
     /// common/compute.dart:60-64). DIRECT is deliberately absent:
@@ -413,7 +413,9 @@ struct ProxiesView: View {
 
     /// MuYu GroupType.displayName (enum.dart), uppercased for the
     /// card subtitle: URLTest has no hyphen, unlike the raw
-    /// "url-test" the core reports.
+    /// "url-test" the core reports. Smart is the v0.2.60 upstream
+    /// group kind (c4bc31d): per-site picks like url-test, with a
+    /// `fixed` pin as its default.
     private static func typeDisplayName(_ type: String) -> String {
         switch type.lowercased() {
         case "select": return "SELECTOR"
@@ -421,6 +423,7 @@ struct ProxiesView: View {
         case "fallback": return "FALLBACK"
         case "load-balance": return "LOADBALANCE"
         case "relay": return "RELAY"
+        case "smart": return "SMART"
         default: return type.uppercased()
         }
     }
@@ -1996,8 +1999,11 @@ private struct SelectedNodeSpeedsView: View {
             let pinned = group.fixed == node.name
             let selected = group.selectedNodeName == node.name
             // FlClash card.dart:120-145: a constant label ("选择" for
-            // Selector, "首选" for url-test/fallback) with a checkmark
-            // on the current state — the label never toggles.
+            // Selector, "首选" for url-test/fallback/smart) with a
+            // checkmark on the current state — the label never
+            // toggles. Smart pins like url-test (upstream
+            // is_selectable includes Smart; the pin is its
+            // per-site default).
             if group.type == "select" {
                 Button { Task { await selectNode(node, in: group) } } label: {
                     HStack {
@@ -2006,7 +2012,7 @@ private struct SelectedNodeSpeedsView: View {
                         if selected { Image(systemName: "checkmark") }
                     }
                 }
-            } else if group.type == "url-test" || group.type == "fallback" {
+            } else if group.type == "url-test" || group.type == "fallback" || group.type == "smart" {
                 Button { Task { await selectNode(node, in: group) } } label: {
                     HStack {
                         Text("首选")
@@ -2056,6 +2062,16 @@ private struct SelectedNodeSpeedsView: View {
     // MARK: - Actions
 
     private func selectNode(_ node: ProxyNode, in group: ProxyGroup) async {
+        // Smart groups pin like url-test/fallback (see
+        // ProxyStore.selectSmart): ProxyStore.select is byte-frozen
+        // for the v0.2.60 rebase, so smart taps route here instead
+        // of through its switch.
+        if group.type == "smart" {
+            if let note = await proxyStore.selectSmart(node: node, in: group, profileID: profileStore.activeProfile?.id) {
+                showNotice(note)
+            }
+            return
+        }
         if let note = await proxyStore.select(node: node, in: group, profileID: profileStore.activeProfile?.id) {
             showNotice(note)
         }

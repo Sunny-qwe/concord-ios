@@ -49,6 +49,13 @@ struct CustomGroup: Codable, Equatable, Identifiable {
     var emptyFallback: String?
     var defaultSelected: String?
     var hashKey: String?
+    /// Smart-group only (v0.2.60, upstream c4bc31d): the
+    /// `policy-priority:` string — `pattern:factor` pairs separated
+    /// by `;` (e.g. `hk:1.5; (?i)jp.*:0.5`), weighting the
+    /// per-site pick toward matching members. Nil = unset, bakes
+    /// nothing. Stored verbatim; the core parses it leniently
+    /// (invalid pairs are skipped with a warning).
+    var policyPriority: String?
 
     init(id: String = UUID().uuidString, name: String = "", type: String = "select",
          members: [String] = [], useProviders: [String] = [],
@@ -56,7 +63,8 @@ struct CustomGroup: Codable, Equatable, Identifiable {
          lazy: Bool = false, hidden: Bool = false, disableUDP: Bool = false,
          filter: String = "", excludeFilter: String = "", strategy: String = "",
          icon: String = "", maxFailedTimes: Int? = nil, expectedStatus: String? = nil,
-         emptyFallback: String? = nil, defaultSelected: String? = nil, hashKey: String? = nil) {
+         emptyFallback: String? = nil, defaultSelected: String? = nil, hashKey: String? = nil,
+         policyPriority: String? = nil) {
         self.id = id
         self.name = name
         self.type = type
@@ -78,6 +86,7 @@ struct CustomGroup: Codable, Equatable, Identifiable {
         self.emptyFallback = emptyFallback
         self.defaultSelected = defaultSelected
         self.hashKey = hashKey
+        self.policyPriority = policyPriority
     }
 
     // Tolerant decode: files saved before v0.2.54 have no `icon`
@@ -87,7 +96,7 @@ struct CustomGroup: Codable, Equatable, Identifiable {
         case id, name, type, members, useProviders, url, interval, timeout,
              tolerance, lazy, hidden, disableUDP, filter, excludeFilter,
              strategy, icon, maxFailedTimes, expectedStatus, emptyFallback,
-             defaultSelected, hashKey
+             defaultSelected, hashKey, policyPriority
     }
 
     init(from decoder: Decoder) throws {
@@ -113,9 +122,10 @@ struct CustomGroup: Codable, Equatable, Identifiable {
         emptyFallback = try c.decodeIfPresent(String.self, forKey: .emptyFallback)
         defaultSelected = try c.decodeIfPresent(String.self, forKey: .defaultSelected)
         hashKey = try c.decodeIfPresent(String.self, forKey: .hashKey)
+        policyPriority = try c.decodeIfPresent(String.self, forKey: .policyPriority)
     }
 
-    static let types = ["select", "url-test", "fallback", "load-balance", "relay", "direct", "reject"]
+    static let types = ["select", "url-test", "fallback", "load-balance", "smart", "relay", "direct", "reject"]
     static let strategies = ["consistent-hashing", "round-robin"]
     static let reservedTargets = ["DIRECT", "REJECT", "REJECT-DROP", "PASS"]
 }
@@ -1320,6 +1330,7 @@ final class CustomSubscriptionStore: ObservableObject {
         if group.interval > 0 { lines.append("    interval: \(group.interval)") }
         if group.timeout > 0 { lines.append("    timeout: \(group.timeout)") }
         if group.tolerance > 0 { lines.append("    tolerance: \(group.tolerance)") }
+        if let policyPriority = group.policyPriority, !policyPriority.isEmpty { lines.append("    policy-priority: \(CustomProxy.quote(policyPriority))") }
         if group.type == "load-balance" && !group.strategy.isEmpty { lines.append("    strategy: \(group.strategy)") }
         if group.lazy { lines.append("    lazy: true") }
         if group.hidden { lines.append("    hidden: true") }

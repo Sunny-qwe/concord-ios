@@ -29,9 +29,11 @@ struct ProxyGroup: Identifiable {
     var nodes: [ProxyNode]
     var selectedNodeName: String?
     var testUrl: String
-    /// Manual override for url-test / fallback groups (Clash
-    /// `fixed`): the node pinned as 首选； nil/"" = the pick is
-    /// computed by the group itself.
+    /// Manual override for url-test / fallback / smart groups
+    /// (Clash `fixed`): the node pinned as 首选； nil/"" = the pick
+    /// is computed by the group itself. Smart reports `fixed` like
+    /// url-test (upstream views.rs: the pin is the per-site
+    /// default the group falls back to).
     var fixed: String?
     /// Group icon from the profile (URL or short text); "" = none,
     /// the list header falls back to the name's first character.
@@ -637,7 +639,7 @@ final class ProxyStore: ObservableObject {
     /// selection is recorded here too, so the local fallback keeps
     /// showing the same pick after the tunnel stops. The value is
     /// the proxy.select argument: a node name, or "" to clear a
-    /// url-test/fallback pin.
+    /// url-test/fallback/smart pin.
     private let pendingSelectionsKey = "concord.pendingSelections"
 
     private func loadPendingSelections() -> [String: [String: String]] {
@@ -759,6 +761,29 @@ final class ProxyStore: ObservableObject {
         }
     }
 
+    /// Group-kind spelling, normalized once at the fetch boundary
+    /// (v0.2.60): the core reports kinds by display name —
+    /// "Selector", "URLTest", "Smart", "Fallback", "LoadBalance",
+    /// "Relay" (upstream crates/group/src/group.rs type_name,
+    /// wired through GroupInfo.kind as "type") — while the profile
+    /// YAML and the whole UI spell them "select", "url-test",
+    /// "smart", "fallback", "load-balance", "relay". Without this
+    /// every type comparison below (selection, pinning, member
+    /// icons, isAddable) silently missed in live mode and only
+    /// matched the offline YAML / sample spellings. Unknown
+    /// spellings pass through lowercased, never invented.
+    static func normalizedGroupType(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "selector", "select": return "select"
+        case "urltest", "url-test": return "url-test"
+        case "smart": return "smart"
+        case "fallback": return "fallback"
+        case "loadbalance", "load-balance": return "load-balance"
+        case "relay": return "relay"
+        default: return raw.lowercased()
+        }
+    }
+
     /// One core read (proxy.watch snapshot, fallback proxy.groups),
     /// shared by refresh() and the post-apply re-fetch. An empty
     /// result (no groups at all) is treated as a failure, not as a
@@ -784,20 +809,25 @@ final class ProxyStore: ObservableObject {
         }
         let nodeTypes = Dictionary(uniqueKeysWithValues: result.nodes.map { ($0.name, $0) })
         // The core's node list holds only real nodes — a member that is
-        // itself a group (a nested Selector / URLTest / Fallback) is
-        // absent from it, so its type used to fall through to
-        // "unknown" (v0.2.56 IMG_1178: 自动选择 / unknown, 故障转移 /
-        // unknown). Resolve it from the group's own type instead —
-        // the same type the core reports for that group. MuYu's
-        // Proxy.type comes from the core's /proxies table, where
-        // groups ARE proxies (Selector / URLTest / Fallback), so
-        // MuYu never shows "unknown" for a nested group.
-        let groupTypeByName = Dictionary(uniqueKeysWithValues: result.groups.map { ($0.name, $0.type) })
+        // itself a group (a nested Selector / URLTest / Smart /
+        // Fallback) is absent from it, so its type used to fall
+        // through to "unknown" (v0.2.56 IMG_1178: 自动选择 /
+        // unknown, 故障转移 / unknown). Resolve it from the
+        // group's own type instead — the same type the core reports
+        // for that group, normalized to the YAML spelling (see
+        // normalizedGroupType). MuYu's Proxy.type comes from the
+        // core's /proxies table, where groups ARE proxies (Selector
+        // / URLTest / Smart / Fallback), so MuYu never shows
+        // "unknown" for a nested group.
+        let groupTypeByName = Dictionary(uniqueKeysWithValues: result.groups.map { ($0.name, Self.normalizedGroupType($0.type)) })
         groups = result.groups.map { g in
-            // v0.2.57: a never-tested url-test/fallback group reports
-            // an empty `now` — live it showed an empty subtitle while
-            // MuYu shows the pinned pick. Display-only: `now` wins
-            // when present; else the core's `fixed` pin, else the
+            // v0.2.57: a never-tested url-test/fallback/smart group
+            // reports an empty `now` — live it showed an empty
+            // subtitle while MuYu shows the pinned pick. (Smart is
+            // url-test-like here: the core reports `now` — its
+            // per-site default pick — and `fixed` for it, so the
+            // same chain applies.) Display-only: `now` wins when
+            // present; else the core's `fixed` pin, else the
             // remembered pick (a pin saved while off, or one the core
             // has not applied yet). Nothing is selected here and no
             // delay-test state is touched — only the displayed pick
@@ -818,7 +848,7 @@ final class ProxyStore: ObservableObject {
             }
             return ProxyGroup(
                 name: g.name,
-                type: g.type,
+                type: Self.normalizedGroupType(g.type),
                 nodes: (g.all ?? []).map { name in
                     let info = nodeTypes[name]
                     return ProxyNode(name: name, type: info?.type ?? groupTypeByName[name] ?? "unknown", provider: info?.provider, latencyMs: nil)
@@ -852,25 +882,28 @@ final class ProxyStore: ObservableObject {
         // Offline, a member that is itself a group is absent from the
         // parsed node list too, so resolve its type from the parsed
         // groups — same "unknown" fix as the live path above.
-        let groupTypeByName = Dictionary(uniqueKeysWithValues: local.groups.map { ($0.name, $0.type) })
+        // Normalized like the live path, so a YAML spelling such as
+        // "Smart" still matches the UI's "smart".
+        let groupTypeByName = Dictionary(uniqueKeysWithValues: local.groups.map { ($0.name, Self.normalizedGroupType($0.type)) })
         groups = local.groups.map { g in
             let pending = pendingSelection(profileID: profileID, group: g.name)
+            let type = Self.normalizedGroupType(g.type)
             return ProxyGroup(
                 name: g.name,
-                type: g.type,
+                type: type,
                 nodes: g.nodeNames.map { name in
                     ProxyNode(name: name, type: typeByName[name] ?? groupTypeByName[name] ?? localBuiltinType(name), provider: providerByName[name], latencyMs: nil)
                 },
-                // MuYu selectedProxyName for url-test / fallback:
-                // the core's now when present, else the saved pick.
-                // Offline there is no now, so the remembered pick IS
-                // the current selection — show it (header subtitle,
-                // card selected row, scroll target) instead of
-                // nothing. `fixed` keeps the pin, as before; for
-                // Selector groups this line is unchanged.
+                // MuYu selectedProxyName for url-test / fallback /
+                // smart: the core's now when present, else the saved
+                // pick. Offline there is no now, so the remembered
+                // pick IS the current selection — show it (header
+                // subtitle, card selected row, scroll target)
+                // instead of nothing. `fixed` keeps the pin, as
+                // before; for Selector groups this line is unchanged.
                 selectedNodeName: pending,
                 testUrl: g.testURL,
-                fixed: g.type == "select" ? nil : pending,
+                fixed: type == "select" ? nil : pending,
                 icon: g.icon,
                 hidden: g.hidden
             )
@@ -968,6 +1001,23 @@ final class ProxyStore: ObservableObject {
         default:
             return "该策略组（\(group.type)）不可手动选择"
         }
+    }
+
+    /// Select a node in a smart group (v0.2.60, upstream c4bc31d):
+    /// the core's is_selectable includes Smart, and it pins like
+    /// url-test/fallback — tap pins the node as 首选； tapping the
+    /// pinned node again clears the pin (proxy.select with ""). The
+    /// pin is the group's per-site default: the core still picks
+    /// per site around it, and redials the next member on failure.
+    /// `select(node:in:)` above is byte-frozen for the v0.2.60
+    /// rebase work, so smart routing lives here (called from
+    /// ProxiesView.selectNode) instead of in its switch. It reuses
+    /// applySelect, so the live/offline, pending-selection and
+    /// refresh behaviour is identical to url-test/fallback.
+    @MainActor
+    func selectSmart(node: ProxyNode, in group: ProxyGroup, profileID: UUID? = nil) async -> String? {
+        let pinned = group.fixed == node.name
+        return await applySelect(group: group, proxy: pinned ? "" : node.name, profileID: profileID)
     }
 
     @MainActor

@@ -397,11 +397,12 @@ private struct NodeSourcesEditorView: View {
         localGroups = groups
         if selectedGroupNames.isEmpty {
             // Smart defaults (FlClash _selectedGroups): groups with
-            // `use:` first, else Selector / URLTest.
+            // `use:` first, else Selector / URLTest / Smart (smart
+            // picks like url-test, so it belongs in the same set).
             let withUse = groups.filter { !$0.useProviders.isEmpty }
             selectedGroupNames = Set(
                 withUse.isEmpty
-                    ? groups.filter { $0.type == "select" || $0.type == "url-test" }.map { $0.name }
+                    ? groups.filter { $0.type == "select" || $0.type == "url-test" || $0.type == "smart" }.map { $0.name }
                     : withUse.map { $0.name }
             )
         }

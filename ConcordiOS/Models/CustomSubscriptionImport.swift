@@ -76,15 +76,17 @@ enum CustomSubscriptionImporter {
         let ignored = top.keys.filter { !knownKeys.contains($0) }.sorted()
 
         var groups: [CustomGroup] = []
+        var notes: [String] = []
         if let rawGroups = top["proxy-groups"] {
             guard case .array(let items) = rawGroups else {
                 throw CustomSubscriptionImportError(message: "proxy-groups 必须是列表")
             }
             for (idx, item) in items.enumerated() {
-                groups.append(try mapGroup(item, index: idx))
+                let (group, groupNotes) = try mapGroup(item, index: idx)
+                groups.append(group)
+                notes.append(contentsOf: groupNotes)
             }
         }
-        var notes: [String] = []
         var proxyProviders: [CustomProvider] = []
         if let rawProviders = top["proxy-providers"] {
             guard case .object(let dict) = rawProviders else {
@@ -136,9 +138,29 @@ enum CustomSubscriptionImporter {
         "tolerance", "lazy", "hidden", "disable-udp", "filter",
         "exclude-filter", "strategy", "icon", "max-failed-times",
         "expected-status", "empty-fallback", "default-selected", "hash-key",
+        // Smart groups (v0.2.60, upstream c4bc31d): policy-priority
+        // is stored; the model keys are core-warn-only (the core
+        // notes them and ignores them), so they are accepted and
+        // reported in notes, never stored and never a hard error.
+        "policy-priority", "uselightgbm", "collectdata", "sample-rate",
+        "prefer-asn",
     ]
 
-    private static func mapGroup(_ value: JSONValue, index: Int) throws -> CustomGroup {
+    /// Mirrors upstream crates/config/src/raw.rs asks_for_something:
+    /// null / empty string / empty list / empty map ask for nothing;
+    /// any bool or number asks for something. The core's
+    /// ignore_switch additionally stays silent for exactly `false`.
+    private static func asksForSomething(_ value: JSONValue) -> Bool {
+        switch value {
+        case .null: return false
+        case .string(let text): return !text.isEmpty
+        case .array(let items): return !items.isEmpty
+        case .object(let map): return !map.isEmpty
+        case .bool, .int, .double: return true
+        }
+    }
+
+    private static func mapGroup(_ value: JSONValue, index: Int) throws -> (CustomGroup, [String]) {
         guard case .object(let dict) = value else {
             throw CustomSubscriptionImportError(message: "分组 #\(index + 1) 必须是映射")
         }
@@ -184,7 +206,21 @@ enum CustomSubscriptionImporter {
         if let hashKey = try optionalStringField(dict, key: "hash-key", context: "分组「\(name)」的 hash-key") {
             group.hashKey = hashKey
         }
-        return group
+        if let policyPriority = try optionalStringField(dict, key: "policy-priority", context: "分组「\(name)」的 policy-priority") {
+            group.policyPriority = policyPriority
+        }
+        // Smart model keys (upstream read_smart / ignore_switch):
+        // noted only when they ask for something (`false` stays
+        // silent, like the core); never stored, never an error.
+        var notes: [String] = []
+        let ignoredModelKeys = ["uselightgbm", "collectdata", "sample-rate", "prefer-asn"].filter { key in
+            guard let value = dict[key] else { return false }
+            return value != .bool(false) && asksForSomething(value)
+        }
+        if !ignoredModelKeys.isEmpty {
+            notes.append("分组「\(name)」的 \(ignoredModelKeys.joined(separator: "、")) 未保存（核心不支持模型训练，仅作提示）")
+        }
+        return (group, notes)
     }
 
     // MARK: - 提供方

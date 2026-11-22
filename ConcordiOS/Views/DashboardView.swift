@@ -72,8 +72,15 @@ struct DashboardView: View {
     /// Stat-cell destination sheet (D-M6): live / recent
     /// connections, or the DNS queries page.
     @State private var statsDestination: StatsDestination?
-    /// Traffic statistics detail sheet (D-M8).
+    /// Traffic statistics detail sheet (D-M8, v0.2.56 MuYu
+    /// TrafficStatisticsView).
     @State private var showTrafficDetail = false
+    /// Outbound-IP sheet (status card, MuYu key_3).
+    @State private var showOutboundIPSheet = false
+    /// Service-status sheet (services card, MuYu key_7).
+    @State private var showServiceSheet = false
+    /// Rule-providers sheet (config card, MuYu key_25).
+    @State private var showProvidersSheet = false
     @State private var tunnelStartedAt: Date?
     @State private var subscription: ConcordSubscriptionInfo?
     @State private var intranetIp: String?
@@ -192,19 +199,6 @@ struct DashboardView: View {
     private var uptimeText: String {
         guard let started = tunnelStartedAt else { return "—" }
         return ConcordFormat.duration(seconds: max(0, Int64(Date().timeIntervalSince(started))))
-    }
-
-    /// Week/month totals for the traffic card (combined up + down).
-    /// "暂无数据" while no day has been recorded yet (history starts
-    /// with v0.2.55 — pre-upgrade traffic is not invented).
-    private var weekTrafficText: String {
-        guard trafficStore.weekRecordedDays > 0 else { return "暂无数据" }
-        return ConcordFormat.bytes(trafficStore.weekUp + trafficStore.weekDown)
-    }
-
-    private var monthTrafficText: String {
-        guard trafficStore.monthRecordedDays > 0 else { return "暂无数据" }
-        return ConcordFormat.bytes(trafficStore.monthUp + trafficStore.monthDown)
     }
 
     private func service(named name: String) -> ConcordServiceItem? {
@@ -455,6 +449,9 @@ struct DashboardView: View {
         // zero on every app restart while the VPN keeps running).
         if proxyStore.isRunning, let extStarted = tunnelManager.readTunnelStartedAt() {
             tunnelStartedAt = extStarted
+            // The traffic card's cumulative uptime counts this
+            // session from the extension's start time.
+            await trafficStore.noteTunnelStarted(at: extStarted)
         }
         await proxyStore.refresh()
         await connectionStore.refresh()
@@ -497,6 +494,12 @@ struct DashboardView: View {
             if proxyStore.isRunning && tunnelStartedAt == nil {
                 tunnelStartedAt = tunnelManager.readTunnelStartedAt() ?? Date()
             }
+            // v0.2.56: the traffic card's cumulative uptime counts
+            // the live session from its start (the extension's
+            // start time, so it survives an app restart).
+            if proxyStore.isRunning, let started = tunnelStartedAt {
+                await trafficStore.noteTunnelStarted(at: started)
+            }
             tunnelManager.checkTunRestartNeeded()
             intranetIp = DeviceNetwork.localIPv4Address()
             intranetLoaded = true
@@ -526,6 +529,16 @@ struct DashboardView: View {
             // only the fallback when the extension has not written
             // the file yet.
             tunnelStartedAt = running ? (tunnelStartedAt ?? tunnelManager.readTunnelStartedAt() ?? Date()) : nil
+            // v0.2.56: the traffic card's cumulative uptime counts
+            // finished sessions; settle the session that just
+            // ended (or start the one that just began).
+            if running {
+                if let started = tunnelStartedAt {
+                    Task { await trafficStore.noteTunnelStarted(at: started) }
+                }
+            } else {
+                Task { await trafficStore.noteTunnelStopped() }
+            }
             // D-M7: hold the service/IP-probe results through the
             // start — a stale pre-start result must not flash as
             // current. The next services probe clears the hold
@@ -606,39 +619,95 @@ struct DashboardView: View {
                     }
                 }
             )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.hidden)
+            .presentationBackground(Color(.systemGroupedBackground))
+            .presentationCornerRadius(28)
         }
+        // v0.2.56: the traffic card opens the MuYu traffic sheet
+        // (日/周/月， date navigator, 流量概括， rankings) — it
+        // reads TrafficStore directly, so its figures always
+        // match the card's.
         .sheet(isPresented: $showTrafficDetail) {
-            TrafficStatsDetailSheet(
-                todayUp: trafficStore.todayUp,
-                todayDown: trafficStore.todayDown,
-                weekUp: trafficStore.weekUp,
-                weekDown: trafficStore.weekDown,
-                weekRecordedDays: trafficStore.weekRecordedDays,
-                monthUp: trafficStore.monthUp,
-                monthDown: trafficStore.monthDown,
-                monthRecordedDays: trafficStore.monthRecordedDays,
-                totalUp: trafficStore.current.totalUp,
-                totalDown: trafficStore.current.totalDown,
-                uptimeText: uptimeText
+            TrafficStatsSheet()
+                .presentationDetents([.fraction(0.85), .large])
+                .presentationDragIndicator(.hidden)
+                .presentationBackground(Color(.systemGroupedBackground))
+                .presentationCornerRadius(28)
+        }
+        // v0.2.56: the status card opens the 出站 IP sheet
+        // (MuYu key_3).
+        .sheet(isPresented: $showOutboundIPSheet) {
+            OutboundIPSheet(
+                displayIp: displayIp,
+                hideIp: settingsStore.hideIp,
+                assessed: assessedIpInfo,
+                ipAsn: ipAsn,
+                isChecking: ipChecking,
+                fetchFailed: ipFetchFailed,
+                onRefresh: {
+                    Task {
+                        await fetchIPInfo()
+                        await trafficStore.probe()
+                    }
+                }
             )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.hidden)
+            .presentationBackground(Color(.systemGroupedBackground))
+            .presentationCornerRadius(28)
+        }
+        // v0.2.56: the services card opens the 服务状态 sheet
+        // (MuYu key_7).
+        .sheet(isPresented: $showServiceSheet) {
+            ServiceStatusSheet()
+                .presentationDetents([.fraction(0.85), .large])
+                .presentationDragIndicator(.hidden)
+                .presentationBackground(Color(.systemGroupedBackground))
+                .presentationCornerRadius(28)
+        }
+        // v0.2.56: the config card opens the rule-providers
+        // sheet (MuYu key_25).
+        .sheet(isPresented: $showProvidersSheet) {
+            ProvidersSheet(profileName: profileStore.activeProfile?.name ?? "配置")
+                .presentationDetents([.fraction(0.85), .large])
+                .presentationDragIndicator(.hidden)
+                .presentationBackground(Color(.systemGroupedBackground))
+                .presentationCornerRadius(28)
         }
         // D-M6: a stat cell opens its source page — live/recent
         // connections, or the DNS queries page for the DNS cell.
+        // These are full pages (search + toolbars), so they keep
+        // their NavigationStack; the sheet gets MuYu's drag
+        // handle and a leading ✕ instead of the card chrome.
         .sheet(item: $statsDestination) { destination in
             NavigationStack {
-                switch destination {
-                case .live:
-                    ConnectionsView(initialFeed: .live)
-                        .navigationTitle("连接")
-                        .navigationBarTitleDisplayMode(.inline)
-                case .recent:
-                    ConnectionsView(initialFeed: .recent)
-                        .navigationTitle("连接")
-                        .navigationBarTitleDisplayMode(.inline)
-                case .dns:
-                    DnsQueriesView()
+                Group {
+                    switch destination {
+                    case .live:
+                        ConnectionsView(initialFeed: .live)
+                            .navigationTitle("连接")
+                            .navigationBarTitleDisplayMode(.inline)
+                    case .recent:
+                        ConnectionsView(initialFeed: .recent)
+                            .navigationTitle("连接")
+                            .navigationBarTitleDisplayMode(.inline)
+                    case .dns:
+                        DnsQueriesView()
+                    }
+                }
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { statsDestination = nil } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
+                        .accessibilityLabel("关闭")
+                    }
                 }
             }
+            .presentationDetents([.fraction(0.85), .large])
+            .presentationDragIndicator(.visible)
         }
         // D-M4: the status card's IP opens the IP-quality page for
         // that exact IP (upstream showIpQualitySheet is always
@@ -651,10 +720,12 @@ struct DashboardView: View {
                     IPQualityView()
                 }
             }
+            .presentationDragIndicator(.visible)
         }
         // D-M3: manage the probe-service targets (order + enabled).
         .sheet(isPresented: $showServiceManageSheet) {
             ServiceManageSheet()
+                .presentationDragIndicator(.visible)
         }
         // The dashboard's consent prompt (fork 0a55a31): the same
         // prompt the modules page uses, asked over the dashboard
@@ -984,12 +1055,10 @@ struct DashboardView: View {
                             Spacer().frame(height: 4)
                             chipsSlot
                         }
-                        // D-M4: tapping the IP block opens the
-                        // IP-quality page for that exact IP.
+                        // v0.2.56: the IP-quality page moved to the
+                        // 出站 IP sheet ("查看完整 IP 质量"); the
+                        // whole status card opens that sheet.
                         .contentShape(Rectangle())
-                        .onTapGesture {
-                            if displayIp != nil { showIPQualitySheet = true }
-                        }
                     }
                     Spacer().frame(height: 16)
                     HStack(spacing: 24) {
@@ -1041,6 +1110,11 @@ struct DashboardView: View {
         // .concordCard() 本来就没有描边,此处应与之一致。
         .accessibilityLabel("状态")
         .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
+        // v0.2.56: tapping the card (outside the play button and
+        // the clover refresh, which keep their own taps) opens
+        // the 出站 IP sheet (MuYu key_3).
+        .contentShape(Rectangle())
+        .onTapGesture { showOutboundIPSheet = true }
     }
 
     /// Wave fill (_StatusWavePainter colours): not running #EFEDF0 /
@@ -1141,15 +1215,22 @@ struct DashboardView: View {
 
     // MARK: - Traffic statistics card (MuYu TrafficStatisticsCard, D-M8)
     //
-    // Today's up/down come from TrafficStore's day-start baseline
-    // (cumulative core totals minus the midnight baseline); uptime
-    // is the tunnel start time. Week/month totals come from the
-    // daily history TrafficStore records since v0.2.55 (rolling
-    // last 7 days incl. today / current calendar month); ranges
-    // with no recorded day show "暂无数据", never invented numbers.
+    // v0.2.56 rework to MuYu IMG_1181 / video key_28: total, down/up
+    // pills, 代理/直连 split rows, a 64pt proxy-share ring, and the
+    // 累计运行 row. All figures are TODAY's, from one source —
+    // TrafficStore.todayTotals (the daily-history accumulator):
+    // total = up + down, the split is the observed connection-feed
+    // split (proxy + direct can be less than the total — see
+    // TrafficStore's split notes), the ring is proxy / total, and
+    // uptime is the day's cumulative tunnel time. The v0.2.55
+    // 本周/本月 row is GONE from the card — MuYu's card has no
+    // week/month row; those totals live in the detail sheet's
+    // 日/周/月 segmented view instead. The persisted daily history
+    // is unchanged (the sheet still reads it).
 
     private var trafficCard: some View {
-        Button { showTrafficDetail = true } label: {
+        let today = trafficStore.todayTotals
+        return Button { showTrafficDetail = true } label: {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     CardTitleRow(icon: "chart.bar", title: "流量统计")
@@ -1158,14 +1239,39 @@ struct DashboardView: View {
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.tertiary)
                 }
-                HStack(spacing: 0) {
-                    trafficStatCell(value: ConcordFormat.bytes(trafficStore.todayUp), label: "今日上传")
-                    trafficStatCell(value: ConcordFormat.bytes(trafficStore.todayDown), label: "今日下载")
-                    trafficStatCell(value: uptimeText, label: "运行时间")
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(dashboardBytesNoSpace(today.total))
+                            .font(.system(size: bigNumberSize, weight: .bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        HStack(spacing: 8) {
+                            trafficCardPill("↓ \(dashboardBytesNoSpace(today.down))")
+                            trafficCardPill("↑ \(dashboardBytesNoSpace(today.up))")
+                        }
+                        HStack(spacing: 12) {
+                            trafficSplitRow(dot: ConcordTheme.accent, label: "代理", value: dashboardBytesNoSpace(today.proxyBytes))
+                            trafficSplitRow(dot: ConcordTheme.accent.opacity(0.45), label: "直连", value: dashboardBytesNoSpace(today.directBytes))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    ProxyRatioRing(ratio: today.proxyRatio)
                 }
-                HStack(spacing: 0) {
-                    trafficStatCell(value: weekTrafficText, label: "本周流量")
-                    trafficStatCell(value: monthTrafficText, label: "本月流量")
+                HStack(spacing: 6) {
+                    Image(systemName: "clock")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    // The 1 s traffic tick re-renders the card
+                    // while the core answers; the TimelineView
+                    // keeps the uptime ticking through a transient
+                    // probe failure too (same pattern as the status
+                    // card's 运行时间).
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Text("累计运行 \(trafficStore.todayUptimeText)")
+                            .font(.footnote)
+                            .foregroundStyle(Color(.label))
+                            .lineLimit(1)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1174,17 +1280,26 @@ struct DashboardView: View {
         .concordCard()
     }
 
-    private func trafficStatCell(value: String, label: String) -> some View {
-        VStack(spacing: 4) {
-            Text(value)
-                .font(.system(size: statNumberSize, weight: .bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+    private func trafficCardPill(_ label: String) -> some View {
+        Text(label)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(ConcordTheme.softFill, in: Capsule())
+    }
+
+    private func trafficSplitRow(dot: Color, label: String, value: String) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(dot)
+                .frame(width: 8, height: 8)
             Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.footnote)
+            Text(value)
+                .font(.footnote)
         }
-        .frame(maxWidth: .infinity)
+        .foregroundStyle(Color(.label))
     }
 
     // MARK: - Outbound mode card
@@ -1489,24 +1604,33 @@ struct DashboardView: View {
 
     private var servicesCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button { withAnimation { servicesExpanded.toggle() } } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "shield.checkmark")
-                        .font(.callout.weight(.semibold))
-                    Text("服务状态")
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                    if let badge = serviceBadge {
-                        PillBadge(text: badge.text, tint: badge.tint)
+            HStack(spacing: 8) {
+                // v0.2.56: the title + badge open the 服务状态
+                // sheet (MuYu key_7); the chevron keeps the inline
+                // expand (engine / TUN / DNS details).
+                Button { showServiceSheet = true } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "shield.checkmark")
+                            .font(.callout.weight(.semibold))
+                        Text("服务状态")
+                            .font(.caption.weight(.semibold))
+                        if let badge = serviceBadge {
+                            PillBadge(text: badge.text, tint: badge.tint)
+                        }
                     }
+                    .foregroundStyle(Color(.label))
+                }
+                .buttonStyle(.plain)
+                Spacer()
+                Button { withAnimation { servicesExpanded.toggle() } } label: {
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(servicesExpanded ? 90 : 0))
                 }
-                .foregroundStyle(Color(.label))
+                .buttonStyle(.plain)
+                .accessibilityLabel(servicesExpanded ? "收起服务详情" : "展开服务详情")
             }
-            .buttonStyle(.plain)
             // D-M3: the card shows the first two *enabled* services
             // (TrafficStore.enabledServiceNames), not a hardcoded
             // google/github pair.
@@ -1763,6 +1887,11 @@ struct DashboardView: View {
             }
         }
         .concordCard()
+        // v0.2.56: tapping the card (outside the sync and
+        // chevron buttons, which keep their own taps) opens the
+        // rule-providers sheet (MuYu key_25).
+        .contentShape(Rectangle())
+        .onTapGesture { showProvidersSheet = true }
     }
 
     // MARK: - Proxy groups card
@@ -2090,174 +2219,6 @@ private struct TrafficSparkline: View {
     }
 }
 
-/// Service management sheet (D-M3): reorder the probe-service
-/// targets and enable/disable them. The last enabled service
-/// cannot be disabled (upstream falls back to all-enabled when
-/// everything is disabled, so the lock keeps the intent explicit).
-private struct ServiceManageSheet: View {
-    @EnvironmentObject private var trafficStore: TrafficStore
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var order: [String] = []
-
-    private var enabledCount: Int {
-        order.filter { !trafficStore.disabledServices.contains($0) }.count
-    }
-
-    private func isEnabled(_ name: String) -> Bool {
-        !trafficStore.disabledServices.contains(name)
-    }
-
-    private func toggleBinding(for name: String) -> Binding<Bool> {
-        Binding(
-            get: { isEnabled(name) },
-            set: { enabled in
-                // Refuse to disable the last enabled service.
-                if !enabled, enabledCount <= 1 { return }
-                trafficStore.setServiceDisabled(name, disabled: !enabled)
-            }
-        )
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("服务顺序") {
-                    ForEach(order, id: \.self) { name in
-                        HStack(spacing: 8) {
-                            Text(name)
-                            Spacer()
-                            if let service = trafficStore.services.first(where: { $0.name.lowercased() == name.lowercased() }) {
-                                Text(serviceStatusText(service.status))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            // The last enabled service's toggle is
-                            // locked (see toggleBinding's guard).
-                            Toggle("", isOn: toggleBinding(for: name))
-                                .labelsHidden()
-                                .disabled(isEnabled(name) && enabledCount <= 1)
-                        }
-                    }
-                    .onMove { from, to in
-                        order.move(fromOffsets: from, toOffset: to)
-                        trafficStore.setServiceOrder(order)
-                    }
-                }
-                Section {
-                    Text("拖动右侧手柄调整检测顺序；关闭的服务不参与「检测」，「全部检测」仍会检测全部服务。至少保留 1 个启用服务。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .environment(\.editMode, .constant(.active))
-            .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle("管理服务")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
-            .onAppear { order = trafficStore.orderedServiceNames }
-        }
-    }
-
-    private func serviceStatusText(_ status: String) -> String {
-        switch status {
-        case "available": return "可用"
-        case "unavailable": return "不可用"
-        case "blocked": return "被墙"
-        case "timeout": return "超时"
-        case "failed": return "失败"
-        case "": return "未判断"
-        default: return status
-        }
-    }
-}
-
-/// Traffic statistics detail sheet (D-M8): today's figures, the
-/// week/month totals from the daily history recorded since v0.2.55
-/// (rolling last 7 days incl. today / current calendar month), plus
-/// the cumulative totals since the core started. Days with no
-/// recorded history contribute zero and are labelled as such —
-/// pre-upgrade traffic was never recorded and is not invented.
-private struct TrafficStatsDetailSheet: View {
-    let todayUp: Int64
-    let todayDown: Int64
-    let weekUp: Int64
-    let weekDown: Int64
-    let weekRecordedDays: Int
-    let monthUp: Int64
-    let monthDown: Int64
-    let monthRecordedDays: Int
-    let totalUp: Int64
-    let totalDown: Int64
-    let uptimeText: String
-
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("今日") {
-                    LabeledContent("今日上传", value: ConcordFormat.bytes(todayUp))
-                    LabeledContent("今日下载", value: ConcordFormat.bytes(todayDown))
-                    LabeledContent("运行时间", value: uptimeText)
-                    Text("今日流量 = 核心累计流量减去今日零点时的基线；核心重启或流量清零后基线会重新校准。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Section("本周（近 7 天，含今日）") {
-                    LabeledContent("本周上传", value: ConcordFormat.bytes(weekUp))
-                    LabeledContent("本周下载", value: ConcordFormat.bytes(weekDown))
-                    if weekRecordedDays > 0 {
-                        Text("近 7 天中有 \(weekRecordedDays) 天有记录；没有记录的日子按 0 计。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("暂无记录。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Section("本月") {
-                    LabeledContent("本月上传", value: ConcordFormat.bytes(monthUp))
-                    LabeledContent("本月下载", value: ConcordFormat.bytes(monthDown))
-                    if monthRecordedDays > 0 {
-                        Text("本月有 \(monthRecordedDays) 天有记录；没有记录的日子按 0 计。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("暂无记录。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Section("累计（核心启动以来）") {
-                    LabeledContent("累计上传", value: ConcordFormat.bytes(totalUp))
-                    LabeledContent("累计下载", value: ConcordFormat.bytes(totalDown))
-                }
-                Section {
-                    Text("自 v0.2.55 起记录每日流量；升级前的数据没有记录，不计入统计。每天结束时保存一次当日总流量。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .font(.footnote.weight(.semibold))
-            .navigationTitle("流量统计")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
 /// FlClash AppGlyphs.vpn (app_glyphs.dart:1427-1444): a shield outline
 /// (polyline) with a keyhole — solid dot + stem — drawn on a 24pt
 /// grid and scaled to 22pt. No SF Symbol matches.
@@ -2494,9 +2455,15 @@ private struct CloverBadge: View {
 private enum DashboardCardID: String, CaseIterable {
     case status, speed, traffic, mode, vpn, intranet, services, profile, groups, stats, memory, update
 
+    /// v0.2.56: the tail follows the MuYu iOS build (IMG_1181 /
+    /// video): stats row, 策略组， 配置， 流量统计， 内存信息 — so
+    /// the traffic card sits directly below 配置 and directly
+    /// above 内存信息. A saved custom order (cardOrderString)
+    /// is untouched by this: it only sets the default for
+    /// installs that never reordered.
     static let defaultOrder: [DashboardCardID] = [
-        .status, .speed, .traffic, .mode, .vpn, .intranet, .services,
-        .profile, .groups, .stats, .memory, .update,
+        .status, .speed, .mode, .vpn, .intranet, .services,
+        .stats, .groups, .profile, .traffic, .memory, .update,
     ]
 
     var title: String {
@@ -2537,71 +2504,6 @@ private struct MemoryBar: View {
             }
         }
         .frame(height: 8)
-    }
-}
-
-/// Memory detail sheet (FlClash MemoryDetailSheet): app resident,
-/// core RSS, and the core.releaseMemory action.
-private struct MemoryDetailSheet: View {
-    let appBytes: UInt64
-    let coreBytes: UInt64?
-    @Binding var isReleasing: Bool
-    @Binding var releaseMessage: String?
-    let onRelease: () async -> Void
-
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("总计") {
-                    memoryRow("应用 + 核心", value: ConcordFormat.bytes(Int64(appBytes + (coreBytes ?? 0))))
-                    Text("应用与核心是两个进程（应用进程与 NetworkExtension 进程），两项相加是占用总和。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Section("应用") {
-                    memoryRow("常驻内存", value: ConcordFormat.bytes(Int64(appBytes)))
-                }
-                Section("核心") {
-                    if let core = coreBytes {
-                        memoryRow("RSS", value: ConcordFormat.bytes(Int64(core)))
-                    } else {
-                        Text("核心未运行，无内存数据。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("core.stats 只暴露 rss。NetworkExtension 进程内存上限很紧（历史约 15–50 MB），大规则集与 GeoIP 可能触发 Jetsam。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Section {
-                    Button(isReleasing ? "释放中…" : "释放核心内存（core.releaseMemory）") {
-                        Task { await onRelease() }
-                    }
-                    .disabled(isReleasing || coreBytes == nil)
-                    if let message = releaseMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .font(.footnote.weight(.semibold))
-            .navigationTitle("内存")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
-        }
-    }
-
-    private func memoryRow(_ title: String, value: String) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(value).foregroundStyle(.secondary)
-        }
     }
 }
 

@@ -26,6 +26,54 @@ struct NodeSpeed {
     static let zero = NodeSpeed(up: 0, down: 0)
 }
 
+/// The traffic sheet's range (MuYu TrafficStatisticsRange).
+enum TrafficRange: String, CaseIterable {
+    case day, week, month
+
+    var title: String {
+        switch self {
+        case .day: return "日"
+        case .week: return "周"
+        case .month: return "月"
+        }
+    }
+
+    /// Navigator limit (MuYu maxTrafficStatisticsOffset).
+    var maxOffset: Int {
+        switch self {
+        case .day: return 89
+        case .week: return 12
+        case .month: return 2
+        }
+    }
+}
+
+/// One range's summed traffic (traffic sheet): core totals plus
+/// the observed proxy/direct split and ranking buckets.
+struct DayTotals {
+    var up: Int64 = 0
+    var down: Int64 = 0
+    var proxyUp: Int64 = 0
+    var proxyDown: Int64 = 0
+    var directUp: Int64 = 0
+    var directDown: Int64 = 0
+    var groups: [String: TrafficStore.DaySplit] = [:]
+    var nodes: [String: TrafficStore.DaySplit] = [:]
+    var domains: [String: TrafficStore.DaySplit] = [:]
+    var recordedDays: Int = 0
+
+    var total: Int64 { up + down }
+    var proxyBytes: Int64 { proxyUp + proxyDown }
+    var directBytes: Int64 { directUp + directDown }
+    /// Proxy share of the REAL total (MuYu's ring: proxy / total).
+    /// The split is observed, so proxy + direct can be less than
+    /// the total; the remainder is unclassified, never invented.
+    var proxyRatio: Double {
+        guard total > 0 else { return 0 }
+        return Double(proxyBytes) / Double(total)
+    }
+}
+
 final class TrafficStore: ObservableObject {
     @Published var current = ConcordTraffic(up: 0, down: 0, totalUp: 0, totalDown: 0)
     @Published var history: [TrafficPoint] = []
@@ -94,43 +142,20 @@ final class TrafficStore: ObservableObject {
 
     // MARK: - Today traffic (MuYu TrafficStatisticsCard)
     //
-    // The core's totals are cumulative since the core started, so
-    // "today" is current totals minus a day-start baseline kept in
-    // UserDefaults. The baseline resets at midnight and whenever
-    // the totals drop below it (core restart / traffic.reset).
-
-    private static let todayDateKey = "ConcordiOS.traffic.today.date.v1"
-    private static let todayUpKey = "ConcordiOS.traffic.today.up.v1"
-    private static let todayDownKey = "ConcordiOS.traffic.today.down.v1"
+    // The core's totals are cumulative since the core started.
+    // "Today" is the daily-history accumulator below
+    // (todayAccumulatedUp/Down, todayTotals): per-tick deltas
+    // added while the app runs, so a mid-day core restart or
+    // traffic.reset does not restart the day from zero. The
+    // v0.2.55 day-start baseline (todayUp/todayDown) was removed
+    // in v0.2.56 — it measured the same day a second way and
+    // restarted from zero after a core restart, so the card and
+    // the sheet could disagree about "today".
 
     private static func todayString() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: Date())
-    }
-
-    private func maintainTodayBaseline() {
-        let today = Self.todayString()
-        let storedDate = UserDefaults.standard.string(forKey: Self.todayDateKey)
-        let storedUp = Int64(UserDefaults.standard.integer(forKey: Self.todayUpKey))
-        let storedDown = Int64(UserDefaults.standard.integer(forKey: Self.todayDownKey))
-        if storedDate != today
-            || current.totalUp < storedUp
-            || current.totalDown < storedDown {
-            UserDefaults.standard.set(today, forKey: Self.todayDateKey)
-            UserDefaults.standard.set(current.totalUp, forKey: Self.todayUpKey)
-            UserDefaults.standard.set(current.totalDown, forKey: Self.todayDownKey)
-        }
-    }
-
-    var todayUp: Int64 {
-        guard UserDefaults.standard.string(forKey: Self.todayDateKey) == Self.todayString() else { return 0 }
-        return max(0, current.totalUp - Int64(UserDefaults.standard.integer(forKey: Self.todayUpKey)))
-    }
-
-    var todayDown: Int64 {
-        guard UserDefaults.standard.string(forKey: Self.todayDateKey) == Self.todayString() else { return 0 }
-        return max(0, current.totalDown - Int64(UserDefaults.standard.integer(forKey: Self.todayDownKey)))
     }
 
     // MARK: - Daily traffic history (v0.2.55)
@@ -141,8 +166,8 @@ final class TrafficStore: ObservableObject {
     // days including today (not the locale calendar week, so no
     // week-start rule is needed); "本月" is the current calendar
     // month. Both derive from the same cumulative core counters
-    // (current.totalUp / totalDown) as todayUp / todayDown — there
-    // is no second source of truth.
+    // (current.totalUp / totalDown) — there is no second source
+    // of truth.
     //
     // HOW A DAY IS RECORDED — one value per date, never a sum of
     // snapshots, so a second write of the same day can only
@@ -155,10 +180,7 @@ final class TrafficStore: ObservableObject {
     //   counters re-based; the negative delta is dropped (never a
     //   negative day) and the new total becomes the base. Traffic
     //   before a mid-day core restart therefore stays in the day's
-    //   total, unlike the day-start baseline behind todayUp, which
-    //   re-calibrates and restarts from zero — after such a restart
-    //   the week/month today figure is the more complete one,
-    //   while 今日 keeps its existing baseline behaviour.
+    //   total.
     //   (A baseline-difference snapshot at rollover was considered
     //   and rejected: at the first tick after midnight the current
     //   totals already include the new day's traffic so far, so
@@ -193,7 +215,7 @@ final class TrafficStore: ObservableObject {
     //     had, and the new (lower) total becomes the base — the day
     //     can never go negative or count the same bytes twice.
     // (4) Clock / timezone change: every day is the device's local
-    //     calendar day (todayString(), same as the today baseline).
+    //     calendar day (todayString()).
     //     A jump to a new date finalises the old day from the
     //     accumulator first; a final entry is never overwritten by
     //     a later snapshot, so a clock moved backwards cannot
@@ -205,14 +227,81 @@ final class TrafficStore: ObservableObject {
     // only the observed part. That is honest under-counting, not
     // invented data.
 
+    /// One day's up/down split, also one ranking bucket (a group, a
+    /// node or a domain) in the traffic sheet's rankings.
+    struct DaySplit: Codable {
+        var up: Int64 = 0
+        var down: Int64 = 0
+    }
+
     /// One recorded day: bytes moved that day. `partial` is true for
     /// a provisional snapshot of an in-progress day (written on
     /// backgrounding); a rollover writes the same date again with
     /// partial false, overwriting the provisional value.
+    ///
+    /// v0.2.56 adds the proxy/direct split and the per-group /
+    /// per-node / per-domain rankings (traffic sheet, MuYu
+    /// TrafficStatisticsData + rankBy). The new keys are all
+    /// optional on decode — a v0.2.55 file without them still
+    /// decodes, with the split/rankings reading as zero/empty
+    /// instead of wiping the day's totals. The memberwise init
+    /// keeps defaults for the new fields so existing call sites
+    /// stay short; `init(from:)` is explicit for the same reason.
     struct DailyTraffic: Codable {
         let up: Int64
         let down: Int64
         let partial: Bool
+        /// Proxy bytes (chains.first != "DIRECT") / direct bytes
+        /// (chains.first == "DIRECT") — see the split notes below.
+        let proxyUp: Int64
+        let proxyDown: Int64
+        let directUp: Int64
+        let directDown: Int64
+        /// Ranking buckets: group = connection chains.last, node =
+        /// chains.first, domain = connection host. Each connection's
+        /// bytes count once per bucket map (MuYu records proxy =
+        /// chains.last and node = chains.first the same way).
+        let groups: [String: DaySplit]
+        let nodes: [String: DaySplit]
+        let domains: [String: DaySplit]
+
+        init(up: Int64, down: Int64, partial: Bool,
+             proxyUp: Int64 = 0, proxyDown: Int64 = 0,
+             directUp: Int64 = 0, directDown: Int64 = 0,
+             groups: [String: DaySplit] = [:],
+             nodes: [String: DaySplit] = [:],
+             domains: [String: DaySplit] = [:]) {
+            self.up = up
+            self.down = down
+            self.partial = partial
+            self.proxyUp = proxyUp
+            self.proxyDown = proxyDown
+            self.directUp = directUp
+            self.directDown = directDown
+            self.groups = groups
+            self.nodes = nodes
+            self.domains = domains
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case up, down, partial
+            case proxyUp, proxyDown, directUp, directDown
+            case groups, nodes, domains
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            up = try container.decode(Int64.self, forKey: .up)
+            down = try container.decode(Int64.self, forKey: .down)
+            partial = try container.decode(Bool.self, forKey: .partial)
+            proxyUp = try container.decodeIfPresent(Int64.self, forKey: .proxyUp) ?? 0
+            proxyDown = try container.decodeIfPresent(Int64.self, forKey: .proxyDown) ?? 0
+            directUp = try container.decodeIfPresent(Int64.self, forKey: .directUp) ?? 0
+            directDown = try container.decodeIfPresent(Int64.self, forKey: .directDown) ?? 0
+            groups = try container.decodeIfPresent([String: DaySplit].self, forKey: .groups) ?? [:]
+            nodes = try container.decodeIfPresent([String: DaySplit].self, forKey: .nodes) ?? [:]
+            domains = try container.decodeIfPresent([String: DaySplit].self, forKey: .domains) ?? [:]
+        }
     }
 
     private static let dailyHistoryFileName = "daily-history-v1.json"
@@ -238,6 +327,133 @@ final class TrafficStore: ObservableObject {
     private var accumDown: Int64 = 0
     private var accumDate: String?
     private var accumulatorSeeded = false
+
+    // MARK: - Proxy/direct split + rankings (v0.2.56, MuYu
+    // TrafficStatisticsCard / TrafficStatisticsView)
+    //
+    // The core exposes NO proxy/direct totals: traffic.watch
+    // carries only up/down/totalUp/totalDown, so the split is
+    // built from the same 1 s connection.watch feed as the
+    // per-node speeds (refreshNodeSpeeds), with MuYu's rule
+    // (ExternalTrafficSampler.sampleProxyOnly + the recorder's
+    // `direct: chains.firstOrNull == 'DIRECT'`): a connection
+    // counts as DIRECT when its chain starts with DIRECT, and
+    // as proxy otherwise — including an empty chain, and a
+    // connection whose chain is missing but whose `proxy` is
+    // DIRECT (the sample data carries no chains; live core data
+    // does). The ranking buckets use the same per-connection
+    // deltas: group = chains.last, node = chains.first, domain =
+    // host (MuYu's recorder stores proxy = chains.last and node
+    // = chains.first the same way).
+    //
+    // HONEST UNDERCOUNT — the split/rankings are observed, not
+    // complete, and the card/sheet say so:
+    // * a connection that opens AND closes between two 1 s polls
+    //   is never seen and contributes nothing (MuYu's recorder
+    //   also sees opens via core events, so it loses less);
+    // * a connection already open when sampling starts is a
+    //   baseline — its bytes so far are never attributed;
+    // * only positive per-direction deltas count (a counter
+    //   reset / reused id contributes nothing, never negative);
+    // * traffic while the app is suspended is not observed;
+    // * the split therefore sums to LESS than the day's core
+    //   total (proxy + direct <= total); the ring is the proxy
+    //   share of the real total, so the unclassified remainder
+    //   reads as ring gap, not as proxy or direct traffic.
+    //
+    // The accumulators share the day accumulator's lifecycle
+    // (seeded from today's provisional entry, finalised at
+    // rollover, snapshotted on backgrounding) so a same-day
+    // restart continues the split instead of restarting it.
+
+    /// Today's proxy/direct byte totals (up + down are kept
+    /// separate so the sheet can show each direction).
+    private var splitProxyUp: Int64 = 0
+    private var splitProxyDown: Int64 = 0
+    private var splitDirectUp: Int64 = 0
+    private var splitDirectDown: Int64 = 0
+    /// Today's ranking buckets, keyed by group / node / domain.
+    private var groupAccum: [String: DaySplit] = [:]
+    private var nodeAccum: [String: DaySplit] = [:]
+    private var domainAccum: [String: DaySplit] = [:]
+
+    // MARK: - Cumulative uptime today (v0.2.56, MuYu
+    // "累计运行": the traffic card/sheet show the day's total
+    // tunnel time, not just the current session — MuYu sums its
+    // tunnel_sessions rows for the day. There is no session
+    // table here: finished sessions are accumulated into
+    // UserDefaults keyed by local date, and the live session
+    // adds its elapsed time on top. DashboardView reports the
+    // session starts/stops it already observes (isRunning
+    // transitions + the extension's start time on launch).
+    //
+    // LIMIT: a session that ends while the app is dead is never
+    // observed stopping, so its time is lost; a session spanning
+    // midnight counts only its post-midnight part toward today
+    // (the pre-midnight part has nowhere to go — there is no
+    // per-day uptime history yet).
+
+    private static let uptimeTodayDateKey = "ConcordiOS.traffic.uptimeToday.date.v1"
+    private static let uptimeTodaySecondsKey = "ConcordiOS.traffic.uptimeToday.seconds.v1"
+    /// Start of the live tunnel session, if one is running.
+    private var uptimeSessionStart: Date?
+
+    /// Finished-session seconds recorded for today (0 when the
+    /// stored date is not today).
+    private var uptimeFinishedSecondsToday: Int64 {
+        guard UserDefaults.standard.string(forKey: Self.uptimeTodayDateKey) == Self.todayString() else { return 0 }
+        return Int64(UserDefaults.standard.integer(forKey: Self.uptimeTodaySecondsKey))
+    }
+
+    /// Cumulative tunnel time today: finished sessions plus the
+    /// live session's elapsed time so far (clipped to today).
+    var todayUptimeSeconds: Int64 {
+        var seconds = uptimeFinishedSecondsToday
+        if let start = uptimeSessionStart {
+            let todayStart = Calendar.current.startOfDay(for: Date())
+            seconds += Int64(max(0, Date().timeIntervalSince(max(start, todayStart))))
+        }
+        return seconds
+    }
+
+    /// "18 小时 56 分钟" / "56 分钟" (MuYu
+    /// trafficStatisticsUptimeText: hours + minutes, minutes
+    /// alone below one hour, "0 分钟" at zero).
+    var todayUptimeText: String {
+        formatCumulativeUptime(seconds: todayUptimeSeconds)
+    }
+
+    /// Records a tunnel session start. Idempotent for the same
+    /// start time; a different start settles the previous
+    /// session first (the extension restarted under the app).
+    @MainActor
+    func noteTunnelStarted(at date: Date) {
+        if let current = uptimeSessionStart, current == date { return }
+        settleUptimeSession()
+        uptimeSessionStart = date
+    }
+
+    /// Records a tunnel session stop: its elapsed time today is
+    /// added to the finished-sessions total.
+    @MainActor
+    func noteTunnelStopped() {
+        settleUptimeSession()
+    }
+
+    private func settleUptimeSession(now: Date = Date()) {
+        guard let start = uptimeSessionStart else { return }
+        uptimeSessionStart = nil
+        let today = Self.todayString()
+        if UserDefaults.standard.string(forKey: Self.uptimeTodayDateKey) != today {
+            UserDefaults.standard.set(today, forKey: Self.uptimeTodayDateKey)
+            UserDefaults.standard.set(0, forKey: Self.uptimeTodaySecondsKey)
+        }
+        let todayStart = Calendar.current.startOfDay(for: now)
+        let elapsed = Int64(max(0, now.timeIntervalSince(max(start, todayStart))))
+        UserDefaults.standard.set(
+            Int(uptimeFinishedSecondsToday + elapsed),
+            forKey: Self.uptimeTodaySecondsKey)
+    }
 
     /// The App Group file for the history (same container the
     /// engine snapshots live in). Falls back to a UserDefaults copy
@@ -299,22 +515,25 @@ final class TrafficStore: ObservableObject {
     }
 
     /// Advances the daily-history accumulator from the same
-    /// cumulative counters behind todayUp/todayDown. Runs on the
-    /// 1 s tick, after `current` is refreshed.
+    /// cumulative counters (current.totalUp / totalDown). Runs on
+    /// the 1 s tick, after `current` is refreshed.
     private func maintainDailyHistory() {
         let today = Self.todayString()
         // First tick of this process: seed the accumulator. A
         // provisional snapshot of today from an earlier backgrounding
         // carries the traffic recorded before a same-day restart, so
-        // the day is continued, not restarted (case 1).
+        // the day is continued, not restarted (case 1). The split
+        // and ranking accumulators seed from the same entry.
         if !accumulatorSeeded {
             accumulatorSeeded = true
             accumDate = today
             accumUp = 0
             accumDown = 0
+            resetSplitAndRankings()
             if let partial = dailyHistory[today], partial.partial {
                 accumUp = partial.up
                 accumDown = partial.down
+                seedSplitAndRankings(from: partial)
             }
             lastSeenUp = current.totalUp
             lastSeenDown = current.totalDown
@@ -327,14 +546,16 @@ final class TrafficStore: ObservableObject {
             // before resetting it. A final entry is never overwritten
             // (case 4: the clock moved backwards onto a finished day).
             if dailyHistory[previousDate]?.partial != false {
-                finalizeDay(previousDate, up: accumUp, down: accumDown)
+                finalizeDay(previousDate)
             }
             accumDate = today
             accumUp = 0
             accumDown = 0
+            resetSplitAndRankings()
             if let partial = dailyHistory[today], partial.partial {
                 accumUp = partial.up
                 accumDown = partial.down
+                seedSplitAndRankings(from: partial)
             }
             lastSeenUp = current.totalUp
             lastSeenDown = current.totalDown
@@ -356,13 +577,19 @@ final class TrafficStore: ObservableObject {
         lastSeenDown = current.totalDown
     }
 
-    /// Writes a day's final total, keyed by date. Idempotent:
+    /// Writes a day's final total, keyed by date, from the live
+    /// accumulators (totals + split + rankings). Idempotent:
     /// writing the same date again overwrites with the same value,
     /// never adds. A final entry is never overwritten by a
     /// provisional snapshot.
-    private func finalizeDay(_ date: String, up: Int64, down: Int64) {
+    private func finalizeDay(_ date: String) {
         if dailyHistory[date]?.partial == false { return }
-        dailyHistory[date] = DailyTraffic(up: max(0, up), down: max(0, down), partial: false)
+        dailyHistory[date] = DailyTraffic(
+            up: max(0, accumUp), down: max(0, accumDown), partial: false,
+            proxyUp: splitProxyUp, proxyDown: splitProxyDown,
+            directUp: splitDirectUp, directDown: splitDirectDown,
+            groups: groupAccum, nodes: nodeAccum,
+            domains: Self.cappedDomains(domainAccum))
         saveDailyHistory()
     }
 
@@ -373,13 +600,97 @@ final class TrafficStore: ObservableObject {
     func snapshotCurrentDayPartial() {
         guard let date = accumDate, date == Self.todayString() else { return }
         if dailyHistory[date]?.partial == false { return }
-        dailyHistory[date] = DailyTraffic(up: max(0, accumUp), down: max(0, accumDown), partial: true)
+        dailyHistory[date] = DailyTraffic(
+            up: max(0, accumUp), down: max(0, accumDown), partial: true,
+            proxyUp: splitProxyUp, proxyDown: splitProxyDown,
+            directUp: splitDirectUp, directDown: splitDirectDown,
+            groups: groupAccum, nodes: nodeAccum,
+            domains: Self.cappedDomains(domainAccum))
         saveDailyHistory()
     }
 
+    /// Zeroes the split and ranking accumulators (rollover and
+    /// totals reset); the caller seeds them from today's
+    /// provisional entry when one exists.
+    private func resetSplitAndRankings() {
+        splitProxyUp = 0
+        splitProxyDown = 0
+        splitDirectUp = 0
+        splitDirectDown = 0
+        groupAccum = [:]
+        nodeAccum = [:]
+        domainAccum = [:]
+    }
+
+    private func seedSplitAndRankings(from day: DailyTraffic) {
+        splitProxyUp = day.proxyUp
+        splitProxyDown = day.proxyDown
+        splitDirectUp = day.directUp
+        splitDirectDown = day.directDown
+        groupAccum = day.groups
+        nodeAccum = day.nodes
+        domainAccum = day.domains
+    }
+
+    /// Bounds the persisted per-domain map: hosts are unbounded
+    /// in principle, so only the 100 heaviest survive a write.
+    /// The live accumulator is uncapped (it only lives a day).
+    private static func cappedDomains(_ domains: [String: DaySplit], limit: Int = 100) -> [String: DaySplit] {
+        guard domains.count > limit else { return domains }
+        let top = domains.sorted { ($0.value.up + $0.value.down) > ($1.value.up + $1.value.down) }.prefix(limit)
+        return Dictionary(uniqueKeysWithValues: top.map { ($0.key, $0.value) })
+    }
+
+    /// Attributes one connection's positive per-direction deltas
+    /// to the split and the ranking buckets (called from
+    /// refreshNodeSpeeds, after the first-sighting baseline).
+    /// Only positive deltas count per direction; a negative
+    /// delta is a counter reset / reused id and adds nothing.
+    private func attributeConnectionTraffic(_ connection: ConcordConnection, upDelta: Int64, downDelta: Int64) {
+        guard accumDate == Self.todayString() else { return }
+        let up = max(0, upDelta)
+        let down = max(0, downDelta)
+        guard up > 0 || down > 0 else { return }
+        if Self.isDirectConnection(connection) {
+            splitDirectUp += up
+            splitDirectDown += down
+        } else {
+            splitProxyUp += up
+            splitProxyDown += down
+        }
+        if let group = connection.chains?.last, !group.isEmpty {
+            var bucket = groupAccum[group] ?? DaySplit()
+            bucket.up += up
+            bucket.down += down
+            groupAccum[group] = bucket
+        }
+        if let node = connection.chains?.first, !node.isEmpty {
+            var bucket = nodeAccum[node] ?? DaySplit()
+            bucket.up += up
+            bucket.down += down
+            nodeAccum[node] = bucket
+        }
+        if let host = connection.host, !host.isEmpty {
+            var bucket = domainAccum[host] ?? DaySplit()
+            bucket.up += up
+            bucket.down += down
+            domainAccum[host] = bucket
+        }
+    }
+
+    /// MuYu's direct rule: the chain starts with DIRECT. When
+    /// the chain is missing entirely, the `proxy` field decides
+    /// (the sample data carries no chains; live core data does).
+    static func isDirectConnection(_ connection: ConcordConnection) -> Bool {
+        if let first = connection.chains?.first { return first == "DIRECT" }
+        return connection.proxy == "DIRECT"
+    }
+
     /// Today's accumulated traffic so far (the live contribution of
-    /// today to the week/month totals). Unlike todayUp/todayDown it
-    /// survives a mid-day core restart — see the history notes above.
+    /// today to the week/month totals). A mid-day core restart
+    /// does not restart it — the negative delta is dropped and
+    /// the pre-restart bytes stay in the day (see the history
+    /// notes above).
     var todayAccumulatedUp: Int64 { accumUp }
     var todayAccumulatedDown: Int64 { accumDown }
 
@@ -406,30 +717,156 @@ final class TrafficStore: ObservableObject {
     }
 
     /// Sums the given local dates. Today always contributes the live
-    /// accumulator — never a stored entry for today, so a stale
+    /// accumulators — never a stored entry for today, so a stale
     /// provisional snapshot can neither double-count nor go stale
     /// after a same-day restart or a totals reset. Past days
     /// contribute their stored final (or provisional) total; days
     /// with no entry contribute zero.
-    private func totals(for dates: [String]) -> (up: Int64, down: Int64, recordedDays: Int) {
-        var up: Int64 = 0
-        var down: Int64 = 0
-        var recorded = 0
+    func totalsForDates(_ dates: [String]) -> DayTotals {
+        var result = DayTotals()
         let today = Self.todayString()
         for date in dates {
             if date == today {
-                up += accumUp
-                down += accumDown
+                result.up += accumUp
+                result.down += accumDown
+                result.proxyUp += splitProxyUp
+                result.proxyDown += splitProxyDown
+                result.directUp += splitDirectUp
+                result.directDown += splitDirectDown
+                mergeRankings(into: &result, groups: groupAccum, nodes: nodeAccum, domains: domainAccum)
                 if accumUp > 0 || accumDown > 0 || dailyHistory[today] != nil {
-                    recorded += 1
+                    result.recordedDays += 1
                 }
             } else if let day = dailyHistory[date] {
-                up += day.up
-                down += day.down
-                recorded += 1
+                result.up += day.up
+                result.down += day.down
+                result.proxyUp += day.proxyUp
+                result.proxyDown += day.proxyDown
+                result.directUp += day.directUp
+                result.directDown += day.directDown
+                mergeRankings(into: &result, groups: day.groups, nodes: day.nodes, domains: day.domains)
+                result.recordedDays += 1
             }
         }
-        return (up, down, recorded)
+        return result
+    }
+
+    private func mergeRankings(
+        into result: inout DayTotals,
+        groups: [String: DaySplit],
+        nodes: [String: DaySplit],
+        domains: [String: DaySplit]
+    ) {
+        for (name, split) in groups {
+            var bucket = result.groups[name] ?? DaySplit()
+            bucket.up += split.up
+            bucket.down += split.down
+            result.groups[name] = bucket
+        }
+        for (name, split) in nodes {
+            var bucket = result.nodes[name] ?? DaySplit()
+            bucket.up += split.up
+            bucket.down += split.down
+            result.nodes[name] = bucket
+        }
+        for (name, split) in domains {
+            var bucket = result.domains[name] ?? DaySplit()
+            bucket.up += split.up
+            bucket.down += split.down
+            result.domains[name] = bucket
+        }
+    }
+
+    /// Today's totals (live accumulators) — the traffic card and
+    /// the traffic sheet's day view read this one source so the
+    /// two can never disagree.
+    var todayTotals: DayTotals { totalsForDates([Self.todayString()]) }
+
+    private func totals(for dates: [String]) -> (up: Int64, down: Int64, recordedDays: Int) {
+        let totals = totalsForDates(dates)
+        return (totals.up, totals.down, totals.recordedDays)
+    }
+
+    /// Clears the recorded daily history (traffic sheet trash
+    /// button, MuYu trafficStatisticsClear): stored days and
+    /// today's live accumulators — so today restarts from zero
+    /// everywhere. The core counters are NOT reset (no
+    /// traffic.reset call); traffic after the clear is recorded
+    /// fresh.
+    @MainActor
+    func clearDailyHistory() {
+        dailyHistory = [:]
+        saveDailyHistory()
+        accumUp = 0
+        accumDown = 0
+        resetSplitAndRankings()
+        lastSeenUp = current.totalUp
+        lastSeenDown = current.totalDown
+    }
+
+    /// The traffic sheet's range (MuYu TrafficStatisticsRange):
+    /// day = one local date, week = the rolling 7 days ending on
+    /// the selected date (our week has always been rolling, not
+    /// the calendar week), month = the calendar month. `offset`
+    /// counts back from today (0 = current).
+    func rangeDates(range: TrafficRange, offset: Int) -> [String] {
+        let calendar = Calendar.current
+        switch range {
+        case .day:
+            let date = calendar.date(byAdding: .day, value: -offset, to: Date()) ?? Date()
+            return [Self.string(for: date)]
+        case .week:
+            let end = calendar.date(byAdding: .day, value: -offset * 7, to: Date()) ?? Date()
+            return (0..<7).compactMap { delta in
+                calendar.date(byAdding: .day, value: -delta, to: end)
+            }.map { Self.string(for: $0) }
+        case .month:
+            guard let monthStart = calendar.date(
+                byAdding: .month, value: -offset,
+                to: calendar.date(from: calendar.dateComponents([.year, .month], from: Date())) ?? Date()
+            ) else { return [Self.todayString()] }
+            var result: [String] = []
+            var date = monthStart
+            let today = Date()
+            while date <= today {
+                result.append(Self.string(for: date))
+                guard let next = calendar.date(byAdding: .day, value: 1, to: date) else { break }
+                date = next
+                // A past month ends at its last day; the loop's
+                // `date <= today` guard stops a current month at
+                // today. A past month would run past its end
+                // without this month check.
+                if offset > 0, calendar.component(.month, from: date) != calendar.component(.month, from: monthStart) { break }
+            }
+            return result
+        }
+    }
+
+    /// The navigator label for a range (MuYu
+    /// trafficStatisticsRangeLabel): "2026-11-20" for a day,
+    /// "11-14 ~ 11-20" for a week window, "2026-11" for a month.
+    func rangeLabel(range: TrafficRange, offset: Int) -> String {
+        let calendar = Calendar.current
+        switch range {
+        case .day:
+            return rangeDates(range: range, offset: offset).first ?? Self.todayString()
+        case .week:
+            let dates = rangeDates(range: range, offset: offset)
+            guard let first = dates.last, let last = dates.first else { return "" }
+            return "\(String(first.dropFirst(5))) ~ \(String(last.dropFirst(5)))"
+        case .month:
+            guard let monthStart = calendar.date(
+                byAdding: .month, value: -offset,
+                to: calendar.date(from: calendar.dateComponents([.year, .month], from: Date())) ?? Date()
+            ) else { return "" }
+            return String(Self.string(for: monthStart).prefix(7))
+        }
+    }
+
+    private static func string(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 
     private static func dayStrings(count: Int) -> [String] {
@@ -573,7 +1010,6 @@ final class TrafficStore: ObservableObject {
             current = traffic
             history.append(TrafficPoint(date: Date(), up: traffic.up, down: traffic.down))
             if history.count > maxHistory { history.removeFirst(history.count - maxHistory) }
-            maintainTodayBaseline()
             maintainDailyHistory()
             consecutiveRefreshFailures = 0
             lastError = nil
@@ -627,6 +1063,13 @@ final class TrafficStore: ObservableObject {
                 let upDelta = (c.upload ?? 0) - previous.upload
                 let downDelta = (c.download ?? 0) - previous.download
                 guard upDelta > 0 || downDelta > 0 else { continue }
+                // Same deltas feed the proxy/direct split and the
+                // traffic sheet's rankings (group/node/domain) —
+                // the split is observed from this feed only, so it
+                // shares the sampler's limits (see the split notes
+                // above: short-lived connections between polls and
+                // traffic while suspended are never attributed).
+                attributeConnectionTraffic(c, upDelta: upDelta, downDelta: downDelta)
                 let up = upDelta > 0 ? Double(upDelta) / elapsed : 0
                 let down = downDelta > 0 ? Double(downDelta) / elapsed : 0
                 for name in Set(c.chains ?? []) {
@@ -693,6 +1136,7 @@ final class TrafficStore: ObservableObject {
             // entry cannot leak into the totals meanwhile).
             accumUp = 0
             accumDown = 0
+            resetSplitAndRankings()
             lastSeenUp = 0
             lastSeenDown = 0
         } catch {

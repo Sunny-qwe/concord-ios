@@ -85,6 +85,24 @@ enum ConcordTheme {
     static let tabSelectedFill = Color(.systemFill)
     /// Unselected tab icon/label grey.
     static let tabUnselected = Color(red: 0.25, green: 0.25, blue: 0.28)
+    /// Bottom content clearance for the floating tab bar (v0.2.59,
+    /// IMG_1191): the total bottom padding every tab-page scroll
+    /// view must carry so its last row can scroll fully above the
+    /// bar. Measured on a 390×844pt phone: the bar spans y 745–806
+    /// (61pt tall) with its bottom 38pt above the screen bottom
+    /// (34pt home-indicator safe area + 4pt bottom margin). The
+    /// ScrollViews' automatic bottom inset is only that 34pt — the
+    /// root safeAreaInset does not reach them through the sliding
+    /// container's GeometryReader — so at max scroll the content
+    /// bottom sits at 844 − 34 = 810 and a last row ends at
+    /// 810 − padding; 77pt of padding puts it at 733, i.e. 12pt
+    /// above the bar top (745). 77 = 61 (bar) + 4 (bar bottom
+    /// margin) + 12 (breathing gap). The same value covers the
+    /// shorter docked bar (49pt) and a no-home-indicator phone
+    /// (bar top and content bottom both rise 34pt, gap unchanged).
+    /// It is a TOTAL bottom padding/margin, not an addition: each
+    /// page replaces its old 12/16pt bottom value with this.
+    static let tabBarClearance: CGFloat = 77
     /// Soft card shadow.
     static let cardShadow = Color.black.opacity(0.05)
 }

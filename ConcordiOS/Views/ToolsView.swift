@@ -175,7 +175,7 @@ struct ToolsView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 20)
-                .padding(.bottom, 12)
+                .padding(.bottom, ConcordTheme.tabBarClearance)
                 .id("toolsTop")
                 }
                 .background(ConcordTheme.pageBackground)

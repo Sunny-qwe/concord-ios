@@ -1177,7 +1177,9 @@ struct ProxiesView: View {
                                     .id(scrollID(nodeName: node.name, groupName: group.name))
                             }
                         }
-                        .padding(16)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 16)
+                        .padding(.bottom, ConcordTheme.tabBarClearance)
                     }
                     .onChange(of: scrollNonce) { _, _ in
                         if let target = scrollTargetName {
@@ -1274,7 +1276,8 @@ struct ProxiesView: View {
                     .background(ConcordTheme.pageBackground)
                     .coordinateSpace(name: "proxiesList")
                     .listSectionSpacing(12)
-                    .contentMargins(.vertical, 12)
+                    .contentMargins(.top, 12)
+                    .contentMargins(.bottom, ConcordTheme.tabBarClearance)
                     .onPreferenceChange(SectionHeaderPositionKey.self) { positions in
                         // iOS 17: onScrollGeometryChange is iOS 18+,
                         // so the scrolled flag comes from the header
@@ -1340,7 +1343,8 @@ struct ProxiesView: View {
                                 }
                             }
                             .padding(.horizontal, 10)
-                            .padding(.vertical, 12)
+                            .padding(.top, 12)
+                            .padding(.bottom, ConcordTheme.tabBarClearance)
                         }
                         .onChange(of: scrollNonce) { _, _ in
                             if let target = scrollTargetName {
@@ -1382,7 +1386,8 @@ struct ProxiesView: View {
                                 }
                             }
                             .padding(.horizontal, 10)
-                            .padding(.vertical, 12)
+                            .padding(.top, 12)
+                            .padding(.bottom, ConcordTheme.tabBarClearance)
                         }
                         .onChange(of: scrollNonce) { _, _ in
                             if let target = scrollTargetName {

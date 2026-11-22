@@ -101,7 +101,9 @@ struct ProfilesView: View {
                             profileGrid
                         }
                     }
-                    .padding(16)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+                    .padding(.bottom, ConcordTheme.tabBarClearance)
                 }
                 .onAppear {
                     if !picker, let active = profileStore.activeProfile {

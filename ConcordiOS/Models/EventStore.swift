@@ -68,25 +68,27 @@ final class EventStore: ObservableObject {
     /// are different rows (upstream 0c9788f adds `at` / `connection`
     /// / `exchange` to scriptNotification).
     private static func key(for event: ConcordCoreEvent) -> String {
-        [
-            event.type,
-            event.kind ?? "",
-            event.name ?? "",
-            event.phase ?? "",
-            event.error ?? "",
-            event.url ?? "",
-            event.value.map(String.init) ?? "",
-            event.message ?? "",
-            event.seq.map(String.init) ?? "",
-            event.origin ?? "",
-            event.script ?? "",
-            event.title ?? "",
-            event.subtitle ?? "",
-            event.body ?? "",
-            event.at.map(String.init) ?? "",
-            event.connection.map(String.init) ?? "",
-            event.exchange.map(String.init) ?? "",
-        ].joined(separator: "|")
+        // Built with appends, not one big array literal: a 17-element
+        // literal made the type-checker time out (CI run 44994989058).
+        var parts: [String] = []
+        parts.append(event.type)
+        parts.append(event.kind ?? "")
+        parts.append(event.name ?? "")
+        parts.append(event.phase ?? "")
+        parts.append(event.error ?? "")
+        parts.append(event.url ?? "")
+        parts.append(event.value.map(String.init) ?? "")
+        parts.append(event.message ?? "")
+        parts.append(event.seq.map(String.init) ?? "")
+        parts.append(event.origin ?? "")
+        parts.append(event.script ?? "")
+        parts.append(event.title ?? "")
+        parts.append(event.subtitle ?? "")
+        parts.append(event.body ?? "")
+        parts.append(event.at.map(String.init) ?? "")
+        parts.append(event.connection.map(String.init) ?? "")
+        parts.append(event.exchange.map(String.init) ?? "")
+        return parts.joined(separator: "|")
     }
 
     @MainActor

@@ -2633,6 +2633,28 @@ private struct RuleSetRepairSheet: View {
                         }
                     }
                 }
+                // After a confirmed repair, a remaining missing-set
+                // error (v0.2.62, 150G: TikTok fixed, Netflix next
+                // — the core only reports one missing set at a
+                // time) offers the next repair right here, instead
+                // of making the user close the sheet and tap 修复
+                // again from the banner. The new plan replaces the
+                // offer in place; prepareRuleSetRepair clears the
+                // old outcome first.
+                if plan.isRepairable, proxyStore.ruleSetRepairOutcome != nil, !proxyStore.ruleSetRepairOutcomeIsSuccess,
+                   let next = proxyStore.missingRuleSetName,
+                   !plan.items.map({ $0.missingName }).contains(next) {
+                    ToolbarItem(placement: .confirmationAction) {
+                        if proxyStore.isRepairingRuleSet {
+                            ProgressView()
+                        } else {
+                            Button("继续修复「\(next)」") {
+                                Task { await proxyStore.prepareRuleSetRepair() }
+                            }
+                            .fontWeight(.semibold)
+                        }
+                    }
+                }
             }
         }
     }

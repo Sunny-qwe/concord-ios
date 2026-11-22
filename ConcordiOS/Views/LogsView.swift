@@ -17,10 +17,6 @@ struct LogsView: View {
     @State private var exportError: String?
     @State private var showExportError = false
     @State private var showCopiedAlert = false
-    /// Search is a magnifier button in the bar (upstream
-    /// AppBarSearchState), not a permanent row: the field only
-    /// appears while isSearching is true.
-    @State private var isSearching = false
     @Environment(\.dismiss) private var dismiss
     @State private var tab = LogsTab.logs
     /// The log row tapped for its detail sheet (C8).
@@ -56,6 +52,38 @@ struct LogsView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 6)
                 }
+                // Search is a permanent row now (v0.2.62): the
+                // system `.searchable` field left a large white
+                // gap above the segment on the Events tab
+                // (IMG_1194) — the search controller's blank
+                // area, not our page background — and pushed the
+                // segment to the middle of the page. A plain row
+                // keeps the segment directly below the search box
+                // on both tabs, on the page background like the
+                // Logs tab. Same bindings as the old searchable
+                // field, so filtering is unchanged.
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField(tab == .logs ? "搜索日志" : "搜索事件", text: tab == .logs ? $logStore.searchText : $eventStore.searchText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if !(tab == .logs ? logStore.searchText : eventStore.searchText).isEmpty {
+                        Button {
+                            if tab == .logs { logStore.searchText = "" } else { eventStore.searchText = "" }
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal)
+                .padding(.vertical, 4)
+
                 Picker("内容", selection: $tab) {
                     ForEach(LogsTab.allCases, id: \.self) { tab in
                         Text(tab.rawValue).tag(tab)
@@ -229,7 +257,6 @@ struct LogsView: View {
             // Upstream has no "返回" text: the leading slot holds a
             // back chevron glyph only (scaffold.dart _buildPopButton).
             .navigationBarBackButtonHidden(true)
-            .searchable(text: tab == .logs ? $logStore.searchText : $eventStore.searchText, isPresented: $isSearching, prompt: tab == .logs ? "搜索日志" : "搜索事件")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                 Button { dismiss() } label: {

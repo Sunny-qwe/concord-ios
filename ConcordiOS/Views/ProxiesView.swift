@@ -530,8 +530,15 @@ struct ProxiesView: View {
                             // shows the exact lines; nothing is
                             // written without confirmation.
                             if let missing = proxyStore.missingRuleSetName {
-                                Button("修复") {
+                                Button {
                                     Task { await proxyStore.prepareRuleSetRepair() }
+                                } label: {
+                                    if proxyStore.isRepairingRuleSet {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                    } else {
+                                        Text("修复")
+                                    }
                                 }
                                 .buttonStyle(.plain)
                                 .font(.caption.weight(.semibold))
@@ -543,6 +550,31 @@ struct ProxiesView: View {
                                     .font(.caption2)
                             }
                             .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 4)
+                    }
+                    // Repair notice (v0.2.58): a repair attempt that
+                    // could not build a plan (or found nothing
+                    // missing) reports HERE, as its own dismissible
+                    // notice — never by overwriting testError, so
+                    // the TikTok error and its 修复 button stay
+                    // visible above after a failed plan.
+                    if let repairNotice = proxyStore.repairNotice {
+                        HStack {
+                            Text(repairNotice)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button { proxyStore.repairNotice = nil } label: {
+                                Image(systemName: "xmark")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("关闭修复提示")
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)

@@ -410,27 +410,51 @@ final class ProxyStore: ObservableObject {
     /// True while a repair plan is being collected or a confirmed
     /// repair is writing + re-applying.
     @Published var isRepairingRuleSet = false
+    /// A repair attempt that could not build a plan (or found
+    /// nothing missing) reports HERE (v0.2.58) — never by writing
+    /// into testError: overwriting testError hid the TikTok error,
+    /// dropped the 修复 button (the new message no longer matches
+    /// the `rule set [...] not found` regex), and let the next
+    /// test bring the banner back. Rendered as its own dismissible
+    /// notice in ProxiesView; the TikTok error stays visible.
+    @Published var repairNotice: String?
+
+    /// One timestamped repair-attempt line for
+    /// AppCore.recordRepairAttempt (names only — never a
+    /// subscription URL or a token).
+    private static func repairAttemptLine(profileName: String, missingNames: [String], result: String) -> String {
+        let names = missingNames.isEmpty ? "未知" : missingNames.map { "「\($0)」" }.joined(separator: "、")
+        return "[\(reportTimestamp(Date()))] 修复尝试：订阅「\(profileName)」，缺失：\(names)，结果：\(result)"
+    }
 
     /// Builds the repair-ALL plan for the banner's error and
     /// presents the confirmation sheet. Never writes anything.
-    /// Async: collecting every missing set needs the core
-    /// (validate loop), so the banner button calls this in a Task.
+    /// Async: the plan needs one core YAML-parse sanity check
+    /// (validateCandidateText), so the banner button calls this
+    /// in a Task; the missing-set discovery itself is textual.
     @MainActor
     func prepareRuleSetRepair() async {
-        guard missingRuleSetName != nil, !isRepairingRuleSet else { return }
+        guard let bannerMissing = missingRuleSetName, !isRepairingRuleSet else { return }
         guard let store = profileStore, let profile = store.activeProfile else {
-            noteTestMessage("没有已激活的订阅，无法修复缺失的规则集")
+            repairNotice = "没有已激活的订阅，无法修复缺失的规则集"
+            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: "未知订阅", missingNames: [bannerMissing], result: "没有已激活的订阅，未做任何修改"))
             return
         }
         ruleSetRepairOutcome = nil
         ruleSetRepairOutcomeIsSuccess = false
+        repairNotice = nil
         isRepairingRuleSet = true
         defer { isRepairingRuleSet = false }
         guard let plan = await store.ruleSetRepairAllPlan(for: profile) else {
-            noteTestMessage("当前订阅「\(profile.name)」没有缺失的规则集（或文件无法读取）")
+            // No plan — and the diagnosis must survive: the old
+            // noteTestMessage here overwrote testError, which hid
+            // the TikTok error and its 修复 button.
+            repairNotice = "未能生成修复方案：当前订阅「\(profile.name)」没有找到缺失的规则集（或文件无法读取），未做任何修改。原来的报错还在上面，可以再点一次「修复」重试。"
+            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: [bannerMissing], result: "未找到缺失的规则集，未做任何修改"))
             return
         }
         ruleSetRepairOffer = plan
+        AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: plan.items.map { $0.missingName }, result: "已生成修复方案，等待确认"))
     }
 
     /// Dismisses the repair sheet (clears the offer and the inline
@@ -459,6 +483,7 @@ final class ProxyStore: ObservableObject {
         guard let store = profileStore, let profile = store.activeProfile else {
             ruleSetRepairOutcome = "没有已激活的订阅，无法修复"
             ruleSetRepairOutcomeIsSuccess = false
+            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: "未知订阅", missingNames: offer.items.map { $0.missingName }, result: "没有已激活的订阅，未做任何修改"))
             return
         }
         isRepairingRuleSet = true
@@ -473,13 +498,27 @@ final class ProxyStore: ObservableObject {
               fresh.items.map({ $0.missingName }) == offer.items.map({ $0.missingName }) else {
             ruleSetRepairOutcome = "配置文件在确认前已变化，请关闭后重新点「修复」再确认"
             ruleSetRepairOutcomeIsSuccess = false
+            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: offer.items.map { $0.missingName }, result: "配置文件在确认前已变化，未写入"))
             return
         }
-        let names = offer.items.map { "「\($0.missingName)」" }.joined(separator: "、")
-        noteTestMessage("正在修复缺失的规则集\(names)…")
+        let missingNames = offer.items.map { $0.missingName }
+        // Bake-source rules must go from the subscription BEFORE
+        // the file is written: updateProfileFile re-bakes the
+        // subscription into the shared config on apply, so a
+        // file-only delete would be resurrected on the next
+        // switch / update. Only .delete items are removed from
+        // the store — a .complete item's rule stays, its provider
+        // is now defined. (The old noteTestMessage("正在修复…")
+        // here is gone: it overwrote testError with a progress
+        // line, hiding the original diagnosis; the sheet's own
+        // spinner shows progress instead.)
+        let deleteNames = offer.items.filter { if case .delete = $0.kind { return true }; return false }.map { $0.missingName }
+        let bakeRemovals = store.removeBakedRuleSetRules(deleteNames, for: profile)
+        let bakeRemovalNote = bakeRemovals.map { "同时从自定义订阅「\($0.subscriptionName)」删除了引用「\($0.name)」的 \($0.removedCount) 条规则，下次切换或更新不会再补回来。" }.joined(separator: "")
         guard let newData = offerText.data(using: .utf8) else {
             ruleSetRepairOutcome = "修复内容不是有效的 UTF-8 文本，无法写入"
             ruleSetRepairOutcomeIsSuccess = false
+            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "修复内容不是有效的 UTF-8 文本，未写入"))
             return
         }
         // The normal update path: sanity check + profile file +
@@ -488,8 +527,9 @@ final class ProxyStore: ObservableObject {
         // verbatim; nil means the write + apply succeeded.
         await store.updateProfileFile(profile, data: newData)
         if let failure = store.lastError {
-            ruleSetRepairOutcome = failure
+            ruleSetRepairOutcome = failure + (bakeRemovalNote.isEmpty ? "" : "（\(bakeRemovalNote)）")
             ruleSetRepairOutcomeIsSuccess = false
+            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "写入或应用失败：\(failure)" + (bakeRemovalNote.isEmpty ? "" : "；\(bakeRemovalNote)")))
             return
         }
         if TunnelManager.shared.isRunning {
@@ -498,11 +538,13 @@ final class ProxyStore: ObservableObject {
             // that failed.
             await rerunLastTest()
             if testError == nil {
-                ruleSetRepairOutcome = offer.successMessage
+                ruleSetRepairOutcome = offer.successMessage + bakeRemovalNote
                 ruleSetRepairOutcomeIsSuccess = true
+                AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "已修复并重新应用，测速已恢复" + (bakeRemovalNote.isEmpty ? "" : "；\(bakeRemovalNote)")))
             } else if let error = testError {
                 ruleSetRepairOutcome = "配置已修复并应用，但测速仍有问题：\(error)"
                 ruleSetRepairOutcomeIsSuccess = false
+                AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "配置已修复并应用，但测速仍有问题：\(error)"))
             }
             return
         }
@@ -516,15 +558,18 @@ final class ProxyStore: ObservableObject {
             noteTestError(error)
             ruleSetRepairOutcome = error.localizedDescription
             ruleSetRepairOutcomeIsSuccess = false
+            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "配置已写入，但重新启动核心失败：\(error.localizedDescription)"))
             return
         }
         await rerunLastTest()
         if testError == nil {
-            ruleSetRepairOutcome = offer.successMessage
+            ruleSetRepairOutcome = offer.successMessage + bakeRemovalNote
             ruleSetRepairOutcomeIsSuccess = true
+            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "已修复并重新应用，测速已恢复" + (bakeRemovalNote.isEmpty ? "" : "；\(bakeRemovalNote)")))
         } else if let error = testError {
             ruleSetRepairOutcome = "配置已修复并应用，但测速仍有问题：\(error)"
             ruleSetRepairOutcomeIsSuccess = false
+            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "配置已修复并应用，但测速仍有问题：\(error)"))
         }
     }
 
@@ -1509,6 +1554,11 @@ final class ProxyStore: ObservableObject {
         /// tell grinding from stuck — these counts can.
         var guardTimedOutCount = 0
         var transportThrowCount = 0
+        /// Names of the nodes whose delay.test call threw on the
+        /// transport layer (v0.2.58): they are recorded as -2 like a
+        /// core failure, but the names tell the report which -2s are
+        /// call failures, not dead nodes.
+        var transportFailedNames: [String] = []
         var throwError: Error?
         var preloadNote: String?
         var channelNote: String?
@@ -1563,6 +1613,10 @@ final class ProxyStore: ObservableObject {
             }
             if transportThrowCount > 0 {
                 lines.append("传输失败（调用抛错）：\(transportThrowCount) 次")
+            }
+            if !transportFailedNames.isEmpty {
+                let transportNamesText = transportFailedNames.prefix(8).joined(separator: "、") + (transportFailedNames.count > 8 ? "…" : "")
+                lines.append("传输层失败节点（前 8，调用抛错而非核心 -2）：\(transportNamesText)")
             }
             var phaseBits: [String] = []
             if let bootSeconds { phaseBits.append("启动 \(bootSeconds)s") }
@@ -1702,6 +1756,7 @@ final class ProxyStore: ObservableObject {
                         // failed (-2) instead of silently untested.
                         recordLatency(name: target.proxyName, url: target.testUrl, value: -2)
                         transportThrowCount += 1
+                        transportFailedNames.append(target.proxyName)
                         if firstTransportError == nil { firstTransportError = DelayTransportFailure(message: message) }
                         if transportThrowCount >= 3 { cancelledByTransport = true }
                     }

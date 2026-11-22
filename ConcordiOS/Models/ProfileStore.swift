@@ -209,8 +209,9 @@ struct RuleSetRepairPlan: Identifiable {
     }
 }
 
-/// One missing rule set inside a repair-all plan: what the core
-/// reported, what will be done about it, and the exact lines.
+/// One missing rule set inside a repair-all plan: what the
+/// text scan found missing, what will be done about it, and the
+/// exact lines.
 struct RuleSetRepairItem: Identifiable {
     let id = UUID()
     let missingName: String
@@ -234,13 +235,14 @@ struct RuleSetRepairItem: Identifiable {
     }
 }
 
-/// The repair-ALL plan (v0.2.49): every rule set the core
-/// reports missing, collected in one pass with the core as the
-/// oracle (see collectMissingRuleSets), each with its own
-/// action — so one confirmation fixes the whole config instead
-/// of the old one-at-a-time whack-a-mole (fix TikTok → the next
-/// error is Disney → the sheet pops again). `newText` is the
-/// full repaired file; `blockingIssue` names a non-rule-set
+/// The repair-ALL plan (v0.2.49, detector rewritten v0.2.58):
+/// every missing rule set, collected in one pass by TEXT (see
+/// collectMissingRuleSets — the core's config.validate only
+/// parses YAML and never reports a missing set), each with its
+/// own action — so one confirmation fixes the whole config
+/// instead of the old one-at-a-time whack-a-mole (fix TikTok →
+/// the next error is Disney → the sheet pops again). `newText`
+/// is the full repaired file; `blockingIssue` names a non-rule-set
 /// problem found while collecting (e.g. another parse error),
 /// if any. `completedCount` / `deletedCount` summarise the
 /// actions for the sheet.
@@ -1721,88 +1723,145 @@ final class ProfileStore: ObservableObject {
         return try await AppCore.shared.configValidate(profilePath: tempURL.path)
     }
 
-    /// Collects EVERY rule set the core reports missing for one
-    /// profile, with the core as the oracle (v0.2.49 repair-all):
-    /// validate the (baked) candidate, take the first issue,
-    /// delete the rules referencing that set from the candidate,
-    /// and re-validate until the config is clean or a non-rule-set
-    /// issue appears. The core reports only rules[0], so one
-    /// validation can never list them all — the loop is what makes
-    /// the repair one-shot instead of whack-a-mole. Returns the
-    /// missing names in discovery order, the final candidate (the
-    /// all-deleted text, proven clean by its last validation),
-    /// the rule lines deleted per name (for the all-delete
-    /// fallback preview), and a blocking issue when the loop had
-    /// to stop early (a different parse error, or a name that
-    /// reappears after its rules were deleted — e.g. the reference
-    /// lives in a re-baked block, not in the profile file itself).
+    /// Collects EVERY rule set missing for one profile, by TEXT
+    /// (v0.2.58): the rule-set names referenced in `rules:` minus
+    /// the names defined in `rule-providers:`, computed on the
+    /// BAKED bytes (reapplyLocalOverrides — what the core actually
+    /// applies, so a rule re-inserted by a baked custom
+    /// subscription counts). The old loop used config.validate as
+    /// the oracle, but validate only parses YAML and never checks
+    /// cross-references — `rule set [X] not found` is raised at
+    /// compile time (load_raw), which validate never calls — so
+    /// the loop always found nothing and the repair never opened.
+    /// validateCandidateText is kept only as a YAML-parse sanity
+    /// check: any issue it reports is a parse error (never a
+    /// rule-set verdict) and becomes the blockingIssue, while the
+    /// text-computed missing list is still returned. Returns the
+    /// missing names in first-reference order, the final candidate
+    /// (the baked text with every referencing line deleted), the
+    /// rule lines deleted per name (for the all-delete fallback
+    /// preview), and a blocking issue when the sanity check
+    /// failed.
     @MainActor
     func collectMissingRuleSets(for profile: Profile) async -> (missing: [String], finalCandidate: String, deletedLines: [String: [String]], blockingIssue: String?) {
         guard let url = fileURL(for: profile),
               let text = try? String(contentsOf: url, encoding: .utf8) else {
             return ([], "", [:], "无法读取当前订阅「\(profile.name)」的文件")
         }
-        var candidate = text
-        var missing: [String] = []
+        // Discover on the baked bytes, not the raw file: a rule
+        // re-inserted by a baked custom subscription is missing
+        // in the baked text even when the file's own rules are
+        // clean, and a provider defined only in a baked block
+        // counts as defined.
+        let bakedText = String(data: reapplyLocalOverrides(to: Data(text.utf8), for: profile), encoding: .utf8) ?? text
+        let missing = Self.missingRuleSetNames(in: bakedText)
+        let bakedLines = bakedText.components(separatedBy: "\n")
         var deletedLines: [String: [String]] = [:]
-        for _ in 0..<20 {
-            let issues: [ConcordIssue]
-            do {
-                issues = try await validateCandidateText(candidate, for: profile)
-            } catch {
-                return (missing, candidate, deletedLines, "校验失败：\(error.localizedDescription)")
+        var toDelete = Set<Int>()
+        if let rulesSection = Self.topLevelSection(named: "rules", in: bakedLines), !rulesSection.isFlowStyle {
+            for name in missing {
+                let matched = Self.ruleSetRuleLineIndices(in: bakedLines, section: rulesSection, missingName: name)
+                deletedLines[name] = matched.map { bakedLines[$0] }
+                toDelete.formUnion(matched)
             }
-            guard let first = issues.first else {
-                return (missing, candidate, deletedLines, nil)
-            }
-            guard let name = Self.missingRuleSetName(from: first.message) else {
-                return (missing, candidate, deletedLines, first.message)
-            }
-            if missing.contains(name) {
-                return (missing, candidate, deletedLines, "规则集「\(name)」反复出现：它的引用不在订阅文件里（可能在自动补回的内容中），无法继续收集")
-            }
-            missing.append(name)
-            let lines = candidate.components(separatedBy: "\n")
-            guard let rulesSection = Self.topLevelSection(named: "rules", in: lines) else {
-                return (missing, candidate, deletedLines, "rules 一节无法读取，无法继续收集")
-            }
-            let matched = Self.ruleSetRuleLineIndices(in: lines, section: rulesSection, missingName: name)
-            guard !matched.isEmpty else {
-                return (missing, candidate, deletedLines, "rules 里没有引用「\(name)」的规则行，无法继续收集")
-            }
-            deletedLines[name] = matched.map { lines[$0] }
-            var newLines = lines
-            for index in matched.reversed() { newLines.remove(at: index) }
-            candidate = newLines.joined(separator: "\n")
         }
-        return (missing, candidate, deletedLines, "缺失的规则集超过 20 个，只收集了前 \(missing.count) 个")
+        var candidateLines = bakedLines
+        for index in toDelete.sorted().reversed() { candidateLines.remove(at: index) }
+        let finalCandidate = candidateLines.joined(separator: "\n")
+        // YAML-parse sanity check only (see the doc comment):
+        // validateCandidateText bakes the candidate itself, so
+        // the raw text is the right input here.
+        do {
+            let issues = try await validateCandidateText(text, for: profile)
+            if let first = issues.first {
+                return (missing, finalCandidate, deletedLines, first.message)
+            }
+        } catch {
+            return (missing, finalCandidate, deletedLines, "校验失败：\(error.localizedDescription)")
+        }
+        return (missing, finalCandidate, deletedLines, nil)
     }
 
-    /// Builds the repair-ALL plan for a profile (v0.2.49):
-    /// collect every missing set with the core as the oracle, then
-    /// decide each one's action against the ORIGINAL text — a set
-    /// the text already defines is core-invisible (the core still
-    /// reports it missing), so it is deleted with an explanation
-    /// instead of completed; the rest are completed from sibling
-    /// templates when inferable, else deleted. The combined text
-    /// (all edits applied) is re-validated; when it fails, the
-    /// plan falls back to the all-deleted candidate the loop
-    /// already proved clean. Nil when the file cannot be read or
-    /// nothing is missing.
+    /// Which of `missing` originate in the custom subscription
+    /// baked into this profile (bake map → CustomSubscriptionStore):
+    /// the referencing RULE-SET rule lives in that subscription's
+    /// `rules`, so the file alone cannot fix it — the next bake
+    /// (switch / update / re-apply) re-inserts it. Read-only; the
+    /// confirmed repair removes these via removeBakedRuleSetRules.
+    /// Empty when nothing is baked into this profile, or when the
+    /// baked subscription holds no such rule. A rule whose line is
+    /// also in the profile file (the baked marker block) is still
+    /// listed here: the file delete alone would be resurrected.
+    @MainActor
+    func bakeSourceInfo(for profile: Profile, missing: [String]) -> [(name: String, subscriptionName: String, ruleCount: Int)] {
+        guard !missing.isEmpty,
+              let subID = CustomSubscriptionStore.bakedSubscriptionID(for: profile.id) else { return [] }
+        let store = CustomSubscriptionStore()
+        guard let sub = store.subscriptions.first(where: { $0.id == subID }) else { return [] }
+        var out: [(name: String, subscriptionName: String, ruleCount: Int)] = []
+        for name in missing {
+            let count = sub.rules.filter { $0.type.uppercased() == "RULE-SET" && $0.content == name }.count
+            if count > 0 { out.append((name: name, subscriptionName: sub.name, ruleCount: count)) }
+        }
+        return out
+    }
+
+    /// Removes the RULE-SET rules for `names` from the custom
+    /// subscription baked into this profile, persisted via
+    /// CustomSubscriptionStore.update (the store's JSON file).
+    /// Only call for names the confirmed plan DELETES — a
+    /// completed name's rule must stay, its provider is now
+    /// defined. Returns what was removed, per name, for the sheet
+    /// outcome + the repair log. Empty when nothing is baked, or
+    /// when the baked subscription holds no such rule.
+    @MainActor
+    func removeBakedRuleSetRules(_ names: [String], for profile: Profile) -> [(name: String, subscriptionName: String, removedCount: Int)] {
+        guard !names.isEmpty else { return [] }
+        let store = CustomSubscriptionStore()
+        guard let subID = CustomSubscriptionStore.bakedSubscriptionID(for: profile.id),
+              var sub = store.subscriptions.first(where: { $0.id == subID }) else { return [] }
+        var removed: [(name: String, subscriptionName: String, removedCount: Int)] = []
+        for name in names {
+            let count = sub.rules.filter { $0.type.uppercased() == "RULE-SET" && $0.content == name }.count
+            guard count > 0 else { continue }
+            sub.rules.removeAll { $0.type.uppercased() == "RULE-SET" && $0.content == name }
+            removed.append((name: name, subscriptionName: sub.name, removedCount: count))
+        }
+        guard !removed.isEmpty else { return [] }
+        store.update(sub)
+        return removed
+    }
+
+    /// Builds the repair-ALL plan for a profile (v0.2.49,
+    /// detector rewritten v0.2.58): collect every missing set by
+    /// TEXT (collectMissingRuleSets), then decide each one's
+    /// action against the ORIGINAL text — a set the text already
+    /// defines is core-invisible (the core still reports it
+    /// missing), so it is deleted with an explanation instead of
+    /// completed; the rest are completed from sibling templates
+    /// when inferable, else deleted. A name whose rule lives only
+    /// in the baked custom subscription (no line in the file) is
+    /// offered as a delete of the subscription's rule — the repair
+    /// is the store removal at confirm, not a file edit. The
+    /// combined text (all edits applied) is re-checked TEXTUALLY
+    /// on the simulated post-confirm bytes (baked, minus the
+    /// bake-source lines confirm will delete from the
+    /// subscription); when anything is still missing, the plan
+    /// falls back to the all-deleted candidate. Nil when the file
+    /// cannot be read or nothing is missing.
     @MainActor
     func ruleSetRepairAllPlan(for profile: Profile) async -> RuleSetRepairAllPlan? {
         guard let url = fileURL(for: profile),
               let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let collected = await collectMissingRuleSets(for: profile)
         guard !collected.missing.isEmpty else { return nil }
-        // Names the text defines (textual scan): the core reports
-        // these missing anyway, so their definitions are invisible
-        // to the core — completion would only add a duplicate key.
-        let lines = text.components(separatedBy: "\n")
-        var definedNames = Set<String>()
-        if let section = Self.topLevelSection(named: "rule-providers", in: lines) {
-            definedNames = Set(Self.ruleProviderEntries(in: lines, section: section).map { $0.name })
-        }
+        // Names the BAKED text defines (textual scan on what the
+        // core applies — a provider defined only in a baked block
+        // counts): the core reports these missing anyway, so their
+        // definitions are invisible to the core — completion would
+        // only add a duplicate key.
+        let bakedText = String(data: reapplyLocalOverrides(to: Data(text.utf8), for: profile), encoding: .utf8) ?? text
+        let definedNames = Self.definedRuleProviderNames(in: bakedText)
         var combinedText = text
         var items: [RuleSetRepairItem] = []
         for name in collected.missing {
@@ -1811,30 +1870,42 @@ final class ProfileStore: ObservableObject {
             items.append(RuleSetRepairItem(missingName: name, kind: plan.kind, previewLines: plan.previewLines))
             if let newText = plan.newText { combinedText = newText }
         }
-        // Re-validate the combined text: completions add new
-        // provider definitions, so the result must be checked
-        // again before it is offered for writing.
+        // Bake-source names (v0.2.58): their rule lives in the
+        // custom subscription baked into this profile. Confirm
+        // removes those rules from the subscription
+        // (removeBakedRuleSetRules), so they must not count as
+        // "still missing" in the re-check below — and a name with
+        // no line in the file at all (rule only in the
+        // subscription) is unrepairable as a file edit, but
+        // repairable as a store removal: offer it as a delete of
+        // the subscription's rule lines.
+        let bakeSources = bakeSourceInfo(for: profile, missing: collected.missing)
+        let bakeSourceNames = Set(bakeSources.map { $0.name })
+        for (index, item) in items.enumerated() where bakeSourceNames.contains(item.missingName) {
+            if case .unrepairable = item.kind,
+               bakeSources.contains(where: { $0.name == item.missingName }) {
+                items[index] = RuleSetRepairItem(
+                    missingName: item.missingName,
+                    kind: .delete(ruleCount: collected.deletedLines[item.missingName]?.count ?? 0),
+                    previewLines: collected.deletedLines[item.missingName] ?? [])
+            }
+        }
+        // Re-check the combined text: completions add new provider
+        // definitions, so the result must be checked again before
+        // it is offered for writing. The verdict is TEXTUAL —
+        // config.validate only parses YAML and cannot see a
+        // missing rule-set — on the simulated post-confirm bytes
+        // (baked, minus the bake-source lines confirm deletes
+        // from the subscription). A parse check runs alongside it
+        // (a completion that broke the YAML must still be caught).
+        // Any failure falls back to the all-deleted candidate.
         var fellBackToDeleteAll = false
         var finalText: String? = combinedText
         var blockingIssue = collected.blockingIssue
-        do {
-            let issues = try await validateCandidateText(combinedText, for: profile)
-            if let first = issues.first {
-                fellBackToDeleteAll = true
-                finalText = collected.finalCandidate
-                blockingIssue = "补全的定义未通过校验（\(first.message)），已改为删除全部引用规则"
-                items = items.map { item in
-                    if case .complete = item.kind,
-                       let deleted = collected.deletedLines[item.missingName], !deleted.isEmpty {
-                        return RuleSetRepairItem(missingName: item.missingName, kind: .delete(ruleCount: deleted.count), previewLines: deleted)
-                    }
-                    return item
-                }
-            }
-        } catch {
+        func applyDeleteAllFallback(reason: String) {
             fellBackToDeleteAll = true
             finalText = collected.finalCandidate
-            blockingIssue = "修复后校验失败（\(error.localizedDescription)），已改为删除全部引用规则"
+            blockingIssue = reason
             items = items.map { item in
                 if case .complete = item.kind,
                    let deleted = collected.deletedLines[item.missingName], !deleted.isEmpty {
@@ -1843,10 +1914,37 @@ final class ProfileStore: ObservableObject {
                 return item
             }
         }
+        do {
+            let parseIssues = try await validateCandidateText(combinedText, for: profile)
+            if let first = parseIssues.first {
+                applyDeleteAllFallback("补全的定义未通过校验（\(first.message)），已改为删除全部引用规则")
+            } else {
+                let bakedCombined = String(data: reapplyLocalOverrides(to: Data(combinedText.utf8), for: profile), encoding: .utf8) ?? combinedText
+                var simulatedLines = bakedCombined.components(separatedBy: "\n")
+                if let rulesSection = Self.topLevelSection(named: "rules", in: simulatedLines), !rulesSection.isFlowStyle {
+                    var drop = Set<Int>()
+                    for name in bakeSourceNames {
+                        drop.formUnion(Self.ruleSetRuleLineIndices(in: simulatedLines, section: rulesSection, missingName: name))
+                    }
+                    for index in drop.sorted().reversed() { simulatedLines.remove(at: index) }
+                }
+                let remaining = Self.missingRuleSetNames(in: simulatedLines.joined(separator: "\n"))
+                if !remaining.isEmpty {
+                    let remainingNames = remaining.map { "「\($0)」" }.joined(separator: "、")
+                    applyDeleteAllFallback("修复后仍缺失规则集\(remainingNames)，已改为删除全部引用规则")
+                }
+            }
+        } catch {
+            applyDeleteAllFallback("修复后校验失败（\(error.localizedDescription)），已改为删除全部引用规则")
+        }
         let names = collected.missing.map { "「\($0)」" }.joined(separator: "、")
-        let summary = collected.missing.count == 1
-            ? "核心拒绝配置，因为规则引用了未定义的规则集\(names)。下面是校验收集到的全部缺失项，一次修复全部。"
-            : "核心拒绝配置，因为规则引用了 \(collected.missing.count) 个未定义的规则集（\(names)）。核心一次只报第一个，下面的列表是逐个校验收集到的全部缺失项，一次修复全部。"
+        var summary = collected.missing.count == 1
+            ? "核心拒绝配置，因为规则引用了未定义的规则集\(names)。下面是按规则文本收集到的全部缺失项，一次修复全部。"
+            : "核心拒绝配置，因为规则引用了 \(collected.missing.count) 个未定义的规则集（\(names)）。核心一次只报第一个，下面的列表是按规则文本收集到的全部缺失项，一次修复全部。"
+        if !bakeSources.isEmpty {
+            let bits = bakeSources.map { "「\($0.name)」来自自定义订阅「\($0.subscriptionName)」" }.joined(separator: "、")
+            summary += "其中\(bits)：确认后将同时从该订阅里删除这条规则，否则下次切换或更新订阅时会把它重新补回来。"
+        }
         return RuleSetRepairAllPlan(
             profileName: profile.name,
             items: items,
@@ -2075,6 +2173,63 @@ final class ProfileStore: ObservableObject {
         ].joined(separator: "\n")
     }
 
+    /// The rule-set name on one `rules:` line, when the line is
+    /// a RULE-SET rule (`- RULE-SET,<name>,…`, quoted or not).
+    /// Nil otherwise. Shared by the line matcher below and the
+    /// reference scanner (missingRuleSetNames) so the two can
+    /// never drift apart: the name is exactly the second comma
+    /// field, compared exactly.
+    private static func ruleSetNameOnLine(_ rawLine: String) -> String? {
+        let trimmed = rawLine.replacingOccurrences(of: "\r", with: "").trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("- ") || trimmed == "-" else { return nil }
+        var rest = trimmed == "-" ? "" : String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+        if (rest.hasPrefix("\"") && rest.hasSuffix("\"") && rest.count >= 2) ||
+            (rest.hasPrefix("'") && rest.hasSuffix("'") && rest.count >= 2) {
+            rest = String(rest.dropFirst().dropLast())
+        }
+        let fields = rest.split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard fields.count >= 2,
+              fields[0].uppercased() == "RULE-SET" else { return nil }
+        let name = fields[1]
+        return name.isEmpty ? nil : name
+    }
+
+    /// Every rule-set name referenced by `rules:` in `text`, in
+    /// first-reference order, deduped. A flow-style `rules:` line
+    /// yields nothing (it is not safely editable line-by-line).
+    private static func referencedRuleSetNames(in text: String) -> [String] {
+        let lines = text.components(separatedBy: "\n")
+        guard let section = topLevelSection(named: "rules", in: lines), !section.isFlowStyle else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        for index in (section.headerIndex + 1)..<section.endIndex {
+            guard let name = ruleSetNameOnLine(lines[index]), !seen.contains(name) else { continue }
+            seen.insert(name)
+            out.append(name)
+        }
+        return out
+    }
+
+    /// Rule-set names referenced by `rules:` but never defined in
+    /// `rule-providers:` — the missing sets, by pure text
+    /// (v0.2.58). `text` must be the BAKED bytes (what the core
+    /// applies): a reference re-inserted by a baked custom
+    /// subscription counts, and a provider defined only in a
+    /// baked block counts as defined.
+    private static func missingRuleSetNames(in text: String) -> [String] {
+        let defined = definedRuleProviderNames(in: text)
+        return referencedRuleSetNames(in: text).filter { !defined.contains($0) }
+    }
+
+    /// Rule-provider names defined in `rule-providers:` in `text`
+    /// (mapping-style entries; a flow-style section yields none).
+    private static func definedRuleProviderNames(in text: String) -> Set<String> {
+        let lines = text.components(separatedBy: "\n")
+        guard let section = topLevelSection(named: "rule-providers", in: lines), !section.isFlowStyle else { return [] }
+        return Set(ruleProviderEntries(in: lines, section: section).map { $0.name })
+    }
+
     /// Indices of the `rules:` lines that reference the missing
     /// set: `- RULE-SET,<name>,…` block lines and quoted lines
     /// (`- 'RULE-SET,<name>,…'` / `- "…"`). The name must match
@@ -2082,19 +2237,7 @@ final class ProfileStore: ObservableObject {
     private static func ruleSetRuleLineIndices(in lines: [String], section: TopLevelSection, missingName: String) -> [Int] {
         var matched: [Int] = []
         for index in (section.headerIndex + 1)..<section.endIndex {
-            let trimmed = lines[index].replacingOccurrences(of: "\r", with: "").trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("- ") || trimmed == "-" else { continue }
-            var rest = trimmed == "-" ? "" : String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-            if (rest.hasPrefix("\"") && rest.hasSuffix("\"") && rest.count >= 2) ||
-                (rest.hasPrefix("'") && rest.hasSuffix("'") && rest.count >= 2) {
-                rest = String(rest.dropFirst().dropLast())
-            }
-            let fields = rest.split(separator: ",", omittingEmptySubsequences: false)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-            guard fields.count >= 2,
-                  fields[0].uppercased() == "RULE-SET",
-                  fields[1] == missingName else { continue }
-            matched.append(index)
+            if ruleSetNameOnLine(lines[index]) == missingName { matched.append(index) }
         }
         return matched
     }

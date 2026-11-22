@@ -2,22 +2,24 @@ import SwiftUI
 import UIKit
 
 // MARK: - App icon picker (alternate icons, public API only)
-// iOS alternate icons MUST be loose PNG files in the bundle — they
-// cannot live in an asset catalog. The three alternates are declared
-// in ConcordiOS/Info.plist under CFBundleIcons > CFBundleAlternateIcons
-// and their files live in ConcordiOS/AppIcons/ (registered in the app
-// target's Resources phase). This view uses only the public
+// v0.2.67: the 7 alternates now live in the asset catalog as
+// Dark/Emerald/Neon/Purple/Sakura/Sunset/Titanium .appiconset folders
+// (Xcode generates CFBundleAlternateIcons from them at build time) —
+// the earlier loose-PNG + hand-written Info.plist setup failed at the
+// system call with NSOSStatusErrorDomain -54 on the self-signed
+// install, and the catalog is Apple's supported path. The picker
+// previews come from AppIconPreview-* .imageset entries in the same
+// catalog. This view uses only the public
 // UIApplication.shared.setAlternateIconName API — no private APIs.
-// The user previously hit error -54 in another app, so a failure shows
-// the full NSError (domain + code + description + underlying error)
-// instead of a generic "切换失败".
+// A failure shows the full NSError (domain + code + description +
+// underlying error) instead of a generic "切换失败".
 
 struct AppIconOption: Identifiable {
     /// Name passed to setAlternateIconName; nil = the primary icon.
     let iconName: String?
     let title: String
     let subtitle: String
-    /// 180px preview file (without extension) in the main bundle.
+    /// Preview image-set name in the asset catalog (AppIconPreview-*).
     let previewResource: String
 
     var id: String { iconName ?? "default" }
@@ -27,14 +29,14 @@ struct AppIconPickerView: View {
     @Environment(\.dismiss) private var dismiss
 
     private static let options: [AppIconOption] = [
-        AppIconOption(iconName: nil, title: "经典原版", subtitle: "蓝紫渐变 · 当前主图标", previewResource: "AppIcon-Default@3x"),
-        AppIconOption(iconName: "Dark", title: "黑曜暗金", subtitle: "近黑底 · 金 C", previewResource: "AppIcon-Dark@3x"),
-        AppIconOption(iconName: "Neon", title: "赛博霓虹", subtitle: "深蓝底 · 青品渐变 C", previewResource: "AppIcon-Neon@3x"),
-        AppIconOption(iconName: "Sunset", title: "落日晚霞", subtitle: "蜜桃底 · 橙红渐变 C", previewResource: "AppIcon-Sunset@3x"),
-        AppIconOption(iconName: "Emerald", title: "翡翠薄荷", subtitle: "薄荷底 · 翠绿渐变 C", previewResource: "AppIcon-Emerald@3x"),
-        AppIconOption(iconName: "Sakura", title: "浪漫樱花", subtitle: "粉底 · 玫红渐变 C", previewResource: "AppIcon-Sakura@3x"),
-        AppIconOption(iconName: "Titanium", title: "钛合金灰", subtitle: "银灰底 · 石墨渐变 C", previewResource: "AppIcon-Titanium@3x"),
-        AppIconOption(iconName: "Purple", title: "极光幽紫", subtitle: "深紫底 · 紫罗兰渐变 C", previewResource: "AppIcon-Purple@3x"),
+        AppIconOption(iconName: nil, title: "经典原版", subtitle: "蓝紫渐变 · 当前主图标", previewResource: "AppIconPreview-Default"),
+        AppIconOption(iconName: "Dark", title: "黑曜暗金", subtitle: "近黑底 · 金 C", previewResource: "AppIconPreview-Dark"),
+        AppIconOption(iconName: "Neon", title: "赛博霓虹", subtitle: "深蓝底 · 青品渐变 C", previewResource: "AppIconPreview-Neon"),
+        AppIconOption(iconName: "Sunset", title: "落日晚霞", subtitle: "蜜桃底 · 橙红渐变 C", previewResource: "AppIconPreview-Sunset"),
+        AppIconOption(iconName: "Emerald", title: "翡翠薄荷", subtitle: "薄荷底 · 翠绿渐变 C", previewResource: "AppIconPreview-Emerald"),
+        AppIconOption(iconName: "Sakura", title: "浪漫樱花", subtitle: "粉底 · 玫红渐变 C", previewResource: "AppIconPreview-Sakura"),
+        AppIconOption(iconName: "Titanium", title: "钛合金灰", subtitle: "银灰底 · 石墨渐变 C", previewResource: "AppIconPreview-Titanium"),
+        AppIconOption(iconName: "Purple", title: "极光幽紫", subtitle: "深紫底 · 紫罗兰渐变 C", previewResource: "AppIconPreview-Purple"),
     ]
 
     @State private var currentIconName: String? = UIApplication.shared.alternateIconName
@@ -134,14 +136,15 @@ struct AppIconPickerView: View {
     }
 }
 
-// Loads a loose PNG from the bundle by resource name. UIImage(named:)
-// does not reliably find loose files, so go through Bundle.main.url.
+// Loads a preview image from the asset catalog by image-set name.
+// (The alternate icons themselves are .appiconset entries, which are
+// not loadable as UIImages — hence the separate AppIconPreview-*
+// .imageset entries carrying the same 180px artwork.)
 private struct AppIconPreview: View {
     let resource: String
 
     var body: some View {
-        if let url = Bundle.main.url(forResource: resource, withExtension: "png"),
-           let uiImage = UIImage(contentsOfFile: url.path) {
+        if let uiImage = UIImage(named: resource) {
             Image(uiImage: uiImage)
                 .resizable()
                 .scaledToFit()

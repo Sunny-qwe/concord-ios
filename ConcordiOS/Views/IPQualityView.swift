@@ -558,7 +558,10 @@ struct IPQualityView: View {
     /// no-type failure (upstream _query/_statusOf).
     private static func query(source: IPQualitySource, targetIp: String?) async -> WaveOutcome {
         do {
-            let (data, response) = try await Self.timedSession.data(from: source.url(for: targetIp))
+            guard let url = source.url(for: targetIp) else {
+                return .failed(source.label, .failed)
+            }
+            let (data, response) = try await Self.timedSession.data(from: url)
             guard let http = response as? HTTPURLResponse else {
                 return .failed(source.label, .failed)
             }
@@ -661,28 +664,43 @@ private enum IPQualitySource: CaseIterable {
     /// query parameter. ident.me has no IP parameter — it always
     /// answers the caller's IP, and a mismatch is a failure (Q-M6).
     /// Nil IP means "the caller's IP", the egress IP the page is
-    /// about.
-    func url(for ip: String?) -> URL {
+    /// about. The IP comes from a free-text field, so it is
+    /// percent-encoded (a mistyped IP with a space used to crash
+    /// here: URL(string:) returns nil and the old code force-
+    /// unwrapped it) and a still-unbuildable URL returns nil,
+    /// which the caller reports as a per-source failure.
+    func url(for ip: String?) -> URL? {
+        let encoded: String?
+        if let ip {
+            // Only the characters a literal IPv4/IPv6 address may
+            // contain pass through unescaped; anything else (space,
+            // `/`, `?`, `#`, `&`) is encoded so it cannot rewrite
+            // the request path or query.
+            guard let e = ip.addingPercentEncoding(withAllowedCharacters: .init(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-:")) else { return nil }
+            encoded = e
+        } else {
+            encoded = nil
+        }
         switch self {
-        case .identMe: return URL(string: "https://ident.me/json")!
+        case .identMe: return URL(string: "https://ident.me/json")
         // ip-api.com serves HTTPS only on its paid plan.
         case .ipApiCom:
-            if let ip {
-                return URL(string: "http://ip-api.com/json/\(ip)?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting")!
+            if let ip = encoded {
+                return URL(string: "http://ip-api.com/json/\(ip)?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting")
             }
-            return URL(string: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting")!
+            return URL(string: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting")
         case .ipQuery:
-            if let ip { return URL(string: "https://api.ipquery.io/\(ip)?format=json")! }
-            return URL(string: "https://api.ipquery.io/?format=json")!
+            if let ip = encoded { return URL(string: "https://api.ipquery.io/\(ip)?format=json") }
+            return URL(string: "https://api.ipquery.io/?format=json")
         case .ipLocate:
-            if let ip { return URL(string: "https://iplocate.io/api/lookup/\(ip)")! }
-            return URL(string: "https://iplocate.io/api/lookup/")!
+            if let ip = encoded { return URL(string: "https://iplocate.io/api/lookup/\(ip)") }
+            return URL(string: "https://iplocate.io/api/lookup/")
         case .ipApiIs:
-            if let ip { return URL(string: "https://api.ipapi.is/?q=\(ip)")! }
-            return URL(string: "https://api.ipapi.is/")!
+            if let ip = encoded { return URL(string: "https://api.ipapi.is/?q=\(ip)") }
+            return URL(string: "https://api.ipapi.is/")
         case .proxyCheck:
-            if let ip { return URL(string: "https://proxycheck.io/v3/\(ip)")! }
-            return URL(string: "https://proxycheck.io/v3/")!
+            if let ip = encoded { return URL(string: "https://proxycheck.io/v3/\(ip)") }
+            return URL(string: "https://proxycheck.io/v3/")
         }
     }
 

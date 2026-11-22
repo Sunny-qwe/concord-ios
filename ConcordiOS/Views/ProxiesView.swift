@@ -1730,37 +1730,6 @@ struct ProxiesView: View {
 /// publish re-renders only this row — ProxiesView itself must NOT
 /// observe TrafficStore, or the whole page would re-render every
 /// second (v0.2.51).
-private struct SelectedNodeSpeedsView: View {
-    let proxyName: String
-    let running: Bool
-    @EnvironmentObject var trafficStore: TrafficStore
-
-    var body: some View {
-        let speed: NodeSpeed = running ? (trafficStore.nodeSpeeds[proxyName] ?? NodeSpeed.zero) : NodeSpeed.zero
-        HStack(spacing: 4) {
-            speedFigure(systemName: "arrow.up", bytesPerSecond: speed.up)
-            speedFigure(systemName: "arrow.down", bytesPerSecond: speed.down)
-        }
-    }
-
-    /// One figure (MuYu _SpeedFigure): 12pt glyph + rate text,
-    /// 2pt apart, caption2 semibold in the muted colour. The rate
-    /// text is "value unit/s" (MuYu _rateText), via the same
-    /// ConcordBytes.split the Dashboard speed panels use.
-    private func speedFigure(systemName: String, bytesPerSecond: Double) -> some View {
-        let split = ConcordBytes.split(Int64(bytesPerSecond))
-        return HStack(spacing: 2) {
-            Image(systemName: systemName)
-                .font(.system(size: 12))
-            Text("\(split.number) \(split.unit)/s")
-                .lineLimit(1)
-        }
-        .font(.caption2)
-        .fontWeight(.semibold)
-        .foregroundStyle(.secondary)
-    }
-}
-
     /// The selected node's group icon for the card's bottom row
     /// (MuYu _SelectedProxy: groups.getGroup(proxyName)?.icon).
     /// The group's own profile icon wins; when it has none, the
@@ -3013,5 +2982,36 @@ private struct RuleSetRepairSheet: View {
         case .delete: return .orange
         case .unrepairable: return .red
         }
+    }
+}
+
+struct SelectedNodeSpeedsView: View {
+    let proxyName: String
+    let running: Bool
+    @EnvironmentObject var trafficStore: TrafficStore
+
+    var body: some View {
+        let speed: NodeSpeed = running ? (trafficStore.nodeSpeeds[proxyName] ?? NodeSpeed.zero) : NodeSpeed.zero
+        HStack(spacing: 4) {
+            speedFigure(systemName: "arrow.up", bytesPerSecond: speed.up)
+            speedFigure(systemName: "arrow.down", bytesPerSecond: speed.down)
+        }
+    }
+
+    /// One figure (MuYu _SpeedFigure): 12pt glyph + rate text,
+    /// 2pt apart, caption2 semibold in the muted colour. The rate
+    /// text is "value unit/s" (MuYu _rateText), via the same
+    /// ConcordBytes.split the Dashboard speed panels use.
+    private func speedFigure(systemName: String, bytesPerSecond: Double) -> some View {
+        let split = ConcordBytes.split(Int64(bytesPerSecond))
+        return HStack(spacing: 2) {
+            Image(systemName: systemName)
+                .font(.system(size: 12))
+            Text("\(split.number) \(split.unit)/s")
+                .lineLimit(1)
+        }
+        .font(.caption2)
+        .fontWeight(.semibold)
+        .foregroundStyle(.secondary)
     }
 }

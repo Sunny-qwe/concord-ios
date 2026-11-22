@@ -109,6 +109,7 @@ final class TrafficStore: ObservableObject {
     /// flashes after a restart.
     @Published var servicesHeld = false
 
+    @MainActor
     func holdServices() {
         servicesHeld = true
     }
@@ -137,6 +138,7 @@ final class TrafficStore: ObservableObject {
         return order
     }
 
+    @MainActor
     func setServiceOrder(_ order: [String]) {
         UserDefaults.standard.set(order, forKey: Self.serviceOrderKey)
         objectWillChange.send()
@@ -146,6 +148,7 @@ final class TrafficStore: ObservableObject {
         Set(UserDefaults.standard.stringArray(forKey: Self.disabledServicesKey) ?? [])
     }
 
+    @MainActor
     func setServiceDisabled(_ name: String, disabled: Bool) {
         var set = disabledServices
         if disabled { set.insert(name) } else { set.remove(name) }

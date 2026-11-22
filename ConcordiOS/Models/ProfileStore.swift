@@ -1022,6 +1022,10 @@ final class ProfileStore: ObservableObject {
     /// honestly instead of storing ciphertext that can never apply.
     /// Validates locally first; when the profile is active the new
     /// file is re-applied like an update, so it takes effect.
+    /// @MainActor: the age-decrypt await and the applyProfile await
+    /// below suspend, so without this the lastError / profiles
+    /// writes after them would publish from a background thread.
+    @MainActor
     func updateProfileFile(_ profile: Profile, data: Data, ageSecretKey: String? = nil) async {
         var data = data
         if Self.looksAgeEncrypted(data) {

@@ -761,9 +761,13 @@ struct CachedIconImage<Placeholder: View>: View {
             }
         }
         .task(id: url) {
-            if image == nil {
-                image = await IconImageCache.shared.image(for: url)
-            }
+            // No `image == nil` guard: .task(id:) re-runs when the
+            // URL changes (profile switch, icon-pack re-import),
+            // and a guard would keep showing the OLD image forever
+            // for the new URL. The cache makes a repeat load cheap,
+            // and the old image stays visible until the new one
+            // lands (no placeholder flash).
+            image = await IconImageCache.shared.image(for: url)
         }
     }
 }

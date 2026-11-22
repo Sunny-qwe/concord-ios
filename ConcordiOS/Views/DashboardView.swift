@@ -1525,8 +1525,8 @@ struct DashboardView: View {
 
     private var memoryCard: some View {
         MemoryCardView(
-            bigNumberSize: bigNumberSize,
             isDetailOpen: $showMemoryDetail,
+            bigNumberSize: bigNumberSize,
             onOpenDetail: { showMemoryDetail = true }
         )
     }
@@ -1618,33 +1618,40 @@ private struct SpeedPanelAreaWaveform: View {
 
     var body: some View {
         GeometryReader { geo in
-            let points = Array(history.suffix(120))
-            let maxValue = max(1, points.map { $0[keyPath: value] }.max() ?? 1)
-            let step = geo.size.width / CGFloat(max(points.count - 1, 1))
-            var area = Path()
-            var line = Path()
-            if points.count > 1 {
-                for (index, point) in points.enumerated() {
-                    let x = CGFloat(index) * step
-                    let y = geo.size.height - (CGFloat(point[keyPath: value]) / CGFloat(maxValue)) * geo.size.height
-                    if index == 0 {
-                        area.move(to: CGPoint(x: x, y: geo.size.height))
-                        area.addLine(to: CGPoint(x: x, y: y))
-                        line.move(to: CGPoint(x: x, y: y))
-                    } else {
-                        area.addLine(to: CGPoint(x: x, y: y))
-                        line.addLine(to: CGPoint(x: x, y: y))
-                    }
-                }
-                area.addLine(to: CGPoint(x: CGFloat(points.count - 1) * step, y: geo.size.height))
-                area.closeSubpath()
-            }
-            ZStack {
-                area.fill(color.opacity(0.14))
-                line.stroke(color.opacity(0.45), lineWidth: 1.5)
-            }
+            waveformView(size: geo.size)
         }
         .accessibilityHidden(true)
+    }
+
+    /// Builds the area + line paths imperatively. A plain function, not a
+    /// ViewBuilder, so the `if`/`for` that mutate the Paths are legal
+    /// (a GeometryReader content closure cannot contain them).
+    private func waveformView(size: CGSize) -> some View {
+        let points = Array(history.suffix(120))
+        let maxValue = max(1, points.map { $0[keyPath: value] }.max() ?? 1)
+        let step = size.width / CGFloat(max(points.count - 1, 1))
+        var area = Path()
+        var line = Path()
+        if points.count > 1 {
+            for (index, point) in points.enumerated() {
+                let x = CGFloat(index) * step
+                let y = size.height - (CGFloat(point[keyPath: value]) / CGFloat(maxValue)) * size.height
+                if index == 0 {
+                    area.move(to: CGPoint(x: x, y: size.height))
+                    area.addLine(to: CGPoint(x: x, y: y))
+                    line.move(to: CGPoint(x: x, y: y))
+                } else {
+                    area.addLine(to: CGPoint(x: x, y: y))
+                    line.addLine(to: CGPoint(x: x, y: y))
+                }
+            }
+            area.addLine(to: CGPoint(x: CGFloat(points.count - 1) * step, y: size.height))
+            area.closeSubpath()
+        }
+        return ZStack {
+            area.fill(color.opacity(0.14))
+            line.stroke(color.opacity(0.45), lineWidth: 1.5)
+        }
     }
 }
 
@@ -2427,7 +2434,7 @@ private struct ServicesCardView: View {
     }
 
     private func service(named name: String) -> ConcordServiceItem? {
-        trafficStore.services.first { $0.name.lowercased() == name }
+        trafficStore.services.first { $0.name.lowercased() == name.lowercased() }
     }
 
     /// Service-status verdict (FlClash service_status.dart: problems

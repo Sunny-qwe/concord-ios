@@ -1917,7 +1917,7 @@ final class ProfileStore: ObservableObject {
         do {
             let parseIssues = try await validateCandidateText(combinedText, for: profile)
             if let first = parseIssues.first {
-                applyDeleteAllFallback("补全的定义未通过校验（\(first.message)），已改为删除全部引用规则")
+                applyDeleteAllFallback(reason: "补全的定义未通过校验（\(first.message)），已改为删除全部引用规则")
             } else {
                 let bakedCombined = String(data: reapplyLocalOverrides(to: Data(combinedText.utf8), for: profile), encoding: .utf8) ?? combinedText
                 var simulatedLines = bakedCombined.components(separatedBy: "\n")
@@ -1931,11 +1931,11 @@ final class ProfileStore: ObservableObject {
                 let remaining = Self.missingRuleSetNames(in: simulatedLines.joined(separator: "\n"))
                 if !remaining.isEmpty {
                     let remainingNames = remaining.map { "「\($0)」" }.joined(separator: "、")
-                    applyDeleteAllFallback("修复后仍缺失规则集\(remainingNames)，已改为删除全部引用规则")
+                    applyDeleteAllFallback(reason: "修复后仍缺失规则集\(remainingNames)，已改为删除全部引用规则")
                 }
             }
         } catch {
-            applyDeleteAllFallback("修复后校验失败（\(error.localizedDescription)），已改为删除全部引用规则")
+            applyDeleteAllFallback(reason: "修复后校验失败（\(error.localizedDescription)），已改为删除全部引用规则")
         }
         let names = collected.missing.map { "「\($0)」" }.joined(separator: "、")
         var summary = collected.missing.count == 1

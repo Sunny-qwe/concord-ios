@@ -65,6 +65,23 @@ jobs:
           done
           git status --short
 
+      - name: Install CA certificates (upstream bundle is empty)
+        working-directory: upstream
+        run: |
+          # The pinned upstream tree ships assets/ca-certificates.crt
+          # empty (see THIRD_PARTY_NOTICES.md); upstream CI fills it
+          # from curl.se before building. Without it the iOS core's
+          # trust store is empty and every TLS handshake fails with
+          # UnknownIssuer (delay test, provider fetches, geo updates).
+          bundle="$RUNNER_TEMP/ca/cacert-2026-09-25.pem"
+          if [ ! -f "$bundle" ]; then
+            mkdir -p "$RUNNER_TEMP/ca"
+            curl -fsSL --retry 3 -o "$bundle" "https://curl.se/ca/cacert-2026-09-25.pem"
+          fi
+          echo "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505  $bundle" | sha256sum -c -
+          cp "$bundle" assets/ca-certificates.crt
+          ls -la assets/ca-certificates.crt
+
       - name: Build Concord staticlib (full workspace, no trimming)
         working-directory: upstream
         run: |
@@ -176,6 +193,24 @@ jobs:
             git apply "$p" || exit 1
           done
           git status --short
+
+      - name: Install CA certificates (upstream bundle is empty)
+        if: steps.check.outputs.has_secrets == 'true'
+        working-directory: upstream
+        run: |
+          # The pinned upstream tree ships assets/ca-certificates.crt
+          # empty (see THIRD_PARTY_NOTICES.md); upstream CI fills it
+          # from curl.se before building. Without it the iOS core's
+          # trust store is empty and every TLS handshake fails with
+          # UnknownIssuer (delay test, provider fetches, geo updates).
+          bundle="$RUNNER_TEMP/ca/cacert-2026-09-25.pem"
+          if [ ! -f "$bundle" ]; then
+            mkdir -p "$RUNNER_TEMP/ca"
+            curl -fsSL --retry 3 -o "$bundle" "https://curl.se/ca/cacert-2026-09-25.pem"
+          fi
+          echo "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505  $bundle" | sha256sum -c -
+          cp "$bundle" assets/ca-certificates.crt
+          ls -la assets/ca-certificates.crt
 
       - name: Build Concord staticlib (full workspace, no trimming)
         if: steps.check.outputs.has_secrets == 'true'

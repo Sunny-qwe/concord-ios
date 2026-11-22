@@ -710,13 +710,23 @@ final class ProxyStore: ObservableObject {
             throw ConcordClientError.transport("核心未返回策略组（快照为空）")
         }
         let nodeTypes = Dictionary(uniqueKeysWithValues: result.nodes.map { ($0.name, $0) })
+        // The core's node list holds only real nodes — a member that is
+        // itself a group (a nested Selector / URLTest / Fallback) is
+        // absent from it, so its type used to fall through to
+        // "unknown" (v0.2.56 IMG_1178: 自动选择 / unknown, 故障转移 /
+        // unknown). Resolve it from the group's own type instead —
+        // the same type the core reports for that group. MuYu's
+        // Proxy.type comes from the core's /proxies table, where
+        // groups ARE proxies (Selector / URLTest / Fallback), so
+        // MuYu never shows "unknown" for a nested group.
+        let groupTypeByName = Dictionary(uniqueKeysWithValues: result.groups.map { ($0.name, $0.type) })
         groups = result.groups.map { g in
             ProxyGroup(
                 name: g.name,
                 type: g.type,
                 nodes: (g.all ?? []).map { name in
                     let info = nodeTypes[name]
-                    return ProxyNode(name: name, type: info?.type ?? "unknown", provider: info?.provider, latencyMs: nil)
+                    return ProxyNode(name: name, type: info?.type ?? groupTypeByName[name] ?? "unknown", provider: info?.provider, latencyMs: nil)
                 },
                 selectedNodeName: g.now,
                 testUrl: g.testUrl,
@@ -744,15 +754,26 @@ final class ProxyStore: ObservableObject {
         let providerByName: [String: String] = Dictionary(uniqueKeysWithValues: local.nodes.compactMap { node in
             node.provider.map { (node.name, $0) }
         })
+        // Offline, a member that is itself a group is absent from the
+        // parsed node list too, so resolve its type from the parsed
+        // groups — same "unknown" fix as the live path above.
+        let groupTypeByName = Dictionary(uniqueKeysWithValues: local.groups.map { ($0.name, $0.type) })
         groups = local.groups.map { g in
             let pending = pendingSelection(profileID: profileID, group: g.name)
             return ProxyGroup(
                 name: g.name,
                 type: g.type,
                 nodes: g.nodeNames.map { name in
-                    ProxyNode(name: name, type: typeByName[name] ?? localBuiltinType(name), provider: providerByName[name], latencyMs: nil)
+                    ProxyNode(name: name, type: typeByName[name] ?? groupTypeByName[name] ?? localBuiltinType(name), provider: providerByName[name], latencyMs: nil)
                 },
-                selectedNodeName: g.type == "select" ? pending : nil,
+                // MuYu selectedProxyName for url-test / fallback:
+                // the core's now when present, else the saved pick.
+                // Offline there is no now, so the remembered pick IS
+                // the current selection — show it (header subtitle,
+                // card selected row, scroll target) instead of
+                // nothing. `fixed` keeps the pin, as before; for
+                // Selector groups this line is unchanged.
+                selectedNodeName: pending,
                 testUrl: g.testURL,
                 fixed: g.type == "select" ? nil : pending,
                 icon: "",
@@ -764,8 +785,9 @@ final class ProxyStore: ObservableObject {
     }
 
     /// Built-in pseudo-proxies keep their type offline; anything else
-    /// the file does not declare is "unknown" (the live path does the
-    /// same for nested-group members).
+    /// the file does not declare is "unknown". Nested-group members
+    /// never reach this fallback — loadLocalGroups resolves them
+    /// from the parsed groups first (see groupTypeByName above).
     private func localBuiltinType(_ name: String) -> String {
         switch name {
         case "DIRECT", "REJECT", "REJECT-DROP", "PASS":
@@ -875,6 +897,10 @@ final class ProxyStore: ObservableObject {
                         g.selectedNodeName = proxy.isEmpty ? nil : proxy
                     } else {
                         g.fixed = proxy.isEmpty ? nil : proxy
+                        // Keep the displayed pick in step with the
+                        // pin (loadLocalGroups now reports the pick
+                        // as selectedNodeName for computed groups).
+                        g.selectedNodeName = proxy.isEmpty ? nil : proxy
                     }
                     return g
                 }

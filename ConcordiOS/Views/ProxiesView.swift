@@ -9,10 +9,10 @@ import SwiftUI
 //   card menu (FlClash PopupMenu): 风格/排序/布局/尺寸/图标样式, each
 //   opening a submenu with a checkmark on the current value, plus
 //   隐藏超时代理. No test-all and no refresh in the menu (FlClash
-//   has neither there). The locate button (tab style only, a
-//   separate bar item after the pill — FlClash proxies.dart:164-172)
-//   scrolls to the selected node; re-tapping the active group pill
-//   does the same. The page title is the 24pt pageTitle (FlClash
+//   has neither there). 滚动到已选 is the menu's first row in tab
+//   style (the MuYu video build shows it there); re-tapping the
+//   active group pill scrolls to the selected node too. The page
+//   title is the 24pt pageTitle (FlClash
 //   scaffold: compactTitle is false on a tab page — only sheets and
 //   pushed pages use the 17pt headline), rendered as a leading
 //   toolbar item because SwiftUI's inline title is fixed at 17pt.
@@ -149,6 +149,10 @@ struct ProxiesView: View {
     @State private var groupSearchKeywords: [String: String] = [:]
     @State private var groupSearchOpen: Set<String> = []
     @FocusState private var groupSearchFocus: String?
+    /// Focus for the page search field (v0.2.56): the field is a
+    /// plain TextField shown only while isSearching, NOT SwiftUI's
+    /// .searchable — see the searchField below.
+    @FocusState private var searchFieldFocused: Bool
     /// Tab style: the overflow "More" picker (FlClash group_tabs.dart
     /// _OverflowMenuButton) and the pills strip measurement that
     /// decides whether it (and the 24pt right-edge fade) shows.
@@ -479,6 +483,7 @@ struct ProxiesView: View {
                         .padding(.horizontal)
                         .padding(.vertical, 6)
                     }
+                    searchField
                     if let notice {
                         HStack {
                             Text(notice)
@@ -553,7 +558,6 @@ struct ProxiesView: View {
             // title is fixed at 17pt, so the title is a leading
             // toolbar item instead. Pushed pages keep their 17pt
             // inline title (compactTitle is true there).
-            .searchable(text: $searchText, isPresented: $isSearching, prompt: "搜索节点")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Text("tab.proxies".l10n)
@@ -561,11 +565,6 @@ struct ProxiesView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     topBarPill
-                }
-                if styleStore.style == .tab && !picker {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        locateButton
-                    }
                 }
                 if !picker {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -627,6 +626,53 @@ struct ProxiesView: View {
 
     // MARK: - Top bar
 
+    /// The page search field (v0.2.56): a plain TextField shown
+    /// ONLY while isSearching, toggled by the top-bar magnifier.
+    /// SwiftUI's .searchable was removed: with no .navigationTitle
+    /// (the 24pt title is a leading toolbar item, per B16) it
+    /// rendered a PERMANENT search row under the bar (IMG_1178 /
+    /// IMG_1179), which MuYu does not have — MuYu's magnifier opens
+    /// the AppBar search field on tap, and it is hidden otherwise.
+    /// Closing clears the query, as MuYu's search does.
+    @ViewBuilder
+    private var searchField: some View {
+        if isSearching {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                TextField("搜索节点", text: $searchText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($searchFieldFocused)
+                    .submitLabel(.search)
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("清除搜索")
+                }
+                Button {
+                    isSearching = false
+                    searchText = ""
+                } label: {
+                    Text("取消")
+                        .font(.subheadline)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
+            .onAppear {
+                DispatchQueue.main.async { self.searchFieldFocused = true }
+            }
+        }
+    }
+
     /// FlClash's bar, 1:1 (lib/ui/scaffold/scaffold_actions.dart):
     /// the first two actions sit in ONE TonalButtonGroup pill, and
     /// the ⋯ is a separate standalone button. TonalButtonSize.bar =
@@ -641,10 +687,13 @@ struct ProxiesView: View {
     /// buttons. The bolt tests the current group in tab style and
     /// ALL groups in list / card style (MuYu _delayTestAllGroups);
     /// the search is a magnifier button that presents the search
-    /// field. The locate button is a separate bar item (tab style
-    /// only, FlClash proxies.dart:164-172) — it is NOT folded into
-    /// the ⋯ menu; re-tapping the active group pill scrolls to the
-    /// selected node too.
+    /// field (a plain TextField while isSearching — see
+    /// searchField). Scroll-to-selected lives in the ⋯ menu as its
+    /// first row in tab style (the MuYu video build shows it there;
+    /// the checked-out MuYu code has it as a separate bar item
+    /// instead — the video is the newer build and the user's live
+    /// reference, so the video wins); re-tapping the active group
+    /// pill scrolls to the selected node too.
     /// The pill and the ⋯ are TWO toolbar items, not one HStack:
     /// with a single item SwiftUI anchors the ⋯ popover to the whole
     /// 140pt bar, so its arrow pointed at the bolt (v0.2.28). The
@@ -700,22 +749,6 @@ struct ProxiesView: View {
         .buttonStyle(.plain)
         .disabled(proxyStore.displayGroups.isEmpty || testing)
         .accessibilityLabel("测速全部")
-    }
-
-    /// The locate button: tab style only, a separate bar item after
-    /// the pill (FlClash proxies.dart:164-172, `if (_isTab &&
-    /// !picker)`). Scrolls to the current group's selected node;
-    /// a no-op when nothing is selected, as in FlClash.
-    private var locateButton: some View {
-        Button { scrollToSelected(in: selectedGroup) } label: {
-            Image(systemName: "location.fill")
-                .font(.system(size: 19, weight: .semibold))
-                .imageScale(.medium)
-                .frame(width: 44, height: 44)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("滚动到已选")
-        .background(ConcordTheme.cardBackground, in: Circle())
     }
 
     private var moreButton: some View {
@@ -790,6 +823,30 @@ struct ProxiesView: View {
         VStack(spacing: 0) {
             switch menuLevel {
             case .root:
+                // Scroll-to-selected (MuYu video build, f_044/f_045):
+                // the ⋯ menu's first row in tab style. The
+                // checked-out MuYu code has it as a separate bar
+                // item instead (proxies.dart iconActions); the video
+                // is the newer build and the user's live reference.
+                // List / card style keep their per-header locate
+                // buttons, so the row is tab-only.
+                if styleStore.style == .tab {
+                    Button {
+                        scrollToSelected(in: selectedGroup)
+                        showMoreMenu = false
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "location.fill")
+                                .frame(width: 22)
+                            Text("滚动到已选")
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
                 menuRow(icon: "list.bullet", label: "风格", destination: .style)
                 menuRow(icon: "arrow.up.arrow.down", label: "排序", destination: .sort)
                 menuRow(icon: "square.grid.2x2", label: "布局", destination: .layout)
@@ -1035,15 +1092,11 @@ struct ProxiesView: View {
             .padding(.vertical, 6)
 
             if let group = selectedVisibleGroup {
-                Text("\(group.type) · \(group.nodes.count) 个节点 · 当前：\(group.selectedNodeName ?? "未选择")")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
-                    .padding(.bottom, 4)
-                localFallbackNote
-                    .padding(.horizontal)
-                    .padding(.bottom, 4)
+                // No info line under the pills: MuYu's tab page
+                // (IMG_1183, video f_044) shows the pills directly
+                // above the grid — no "type · n 个节点 · 当前：…"
+                // line and no offline note (MuYu has no offline
+                // mode). Both were ours-only rows; removed v0.2.56.
                 ScrollViewReader { reader in
                     ScrollView {
                         LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
@@ -1136,14 +1189,6 @@ struct ProxiesView: View {
             } else {
                 ScrollViewReader { reader in
                     List {
-                        if proxyStore.isLocalFallback {
-                            Section {
-                                localFallbackNote
-                                    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-                                    .listRowBackground(Color.clear)
-                                    .listRowSeparator(.hidden)
-                            }
-                        }
                         ForEach(visibleGroups) { group in
                             Section(header: listHeader(group, width: width)) {
                                 if expandedGroups.contains(group.name) {
@@ -1201,9 +1246,6 @@ struct ProxiesView: View {
     private func iconsContent(width: CGFloat) -> some View {
         VStack(spacing: 0) {
             folderBar
-            localFallbackNote
-                .padding(.horizontal, 16)
-                .padding(.bottom, 4)
             Group {
                 if proxyStore.displayGroups.isEmpty && proxyStore.isLoading {
                     ProgressView()
@@ -1238,9 +1280,33 @@ struct ProxiesView: View {
                 } else {
                     ScrollViewReader { reader in
                         ScrollView {
-                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
-                                ForEach(folderGroups) { group in
-                                    iconGroupSection(group, width: width)
+                            LazyVStack(spacing: 8) {
+                                ForEach(iconSegments) { segment in
+                                    switch segment {
+                                    case .pair(let first, let second):
+                                        HStack(spacing: 8) {
+                                            iconCard(first)
+                                                .id(groupHeaderID(first.name))
+                                            if let second {
+                                                iconCard(second)
+                                                    .id(groupHeaderID(second.name))
+                                            } else {
+                                                Color.clear
+                                                    .frame(maxWidth: .infinity)
+                                            }
+                                        }
+                                    case .expanded(let group):
+                                        VStack(spacing: 8) {
+                                            iconCard(group)
+                                                .id(groupHeaderID(group.name))
+                                            LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
+                                                ForEach(displayNodes(for: group)) { node in
+                                                    nodeCard(node, in: group)
+                                                        .id(scrollID(nodeName: node.name, groupName: group.name))
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             .padding(.horizontal, 10)
@@ -1293,25 +1359,57 @@ struct ProxiesView: View {
         .padding(.vertical, 4)
     }
 
-    /// One group in card style: the brand-icon card, and — when
-    /// unfolded — its nodes in a full-width grid below it (MuYu
-    /// _buildIconSegments: collapsed groups pair side-by-side,
-    /// an expanded group takes the full width alone).
-    private func iconGroupSection(_ group: ProxyGroup, width: CGFloat) -> some View {
-        let expanded = expandedGroups.contains(group.name)
-        return VStack(spacing: 8) {
-            iconCard(group)
-                .id(groupHeaderID(group.name))
-            if expanded {
-                LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
-                    ForEach(displayNodes(for: group)) { node in
-                        nodeCard(node, in: group)
-                            .id(scrollID(nodeName: node.name, groupName: group.name))
-                    }
-                }
+    /// One row of the card-style grid (MuYu list.dart
+    /// _buildIconSegments): collapsed groups pair side-by-side, an
+    /// expanded group takes a full-width row alone with its nodes
+    /// below its card. Rows are built EXPLICITLY (LazyVStack +
+    /// HStack), not as a LazyVGrid with .gridCellColumns(2): the
+    /// spanning did not take effect in the shipped v0.2.55 build —
+    /// measured in IMG_1179, the expanded 顺畅网络 card was 181pt
+    /// wide (one column, not two) and its inner 2-col node grid was
+    /// squeezed into that column, so every node card was ~87pt wide
+    /// and names wrapped ("自动/选择") and types truncated to
+    /// "u…"/"vl…"/"D…". Explicit rows make the full width
+    /// structural instead of relying on the spanning modifier.
+    private enum IconSegment: Identifiable {
+        case pair(ProxyGroup, ProxyGroup?)
+        case expanded(ProxyGroup)
+
+        var id: String {
+            switch self {
+            case .pair(let first, let second):
+                return "pair:\(first.name)|\(second?.name ?? "")"
+            case .expanded(let group):
+                return "expanded:\(group.name)"
             }
         }
-        .gridCellColumns(expanded ? 2 : 1)
+    }
+
+    /// The card-style rows in order: walk the folder-filtered
+    /// groups; an expanded group becomes its own row, otherwise
+    /// pair two collapsed groups (a trailing single pairs with
+    /// nothing). Same order as the group list — an expanded group
+    /// never moves.
+    private var iconSegments: [IconSegment] {
+        var out: [IconSegment] = []
+        var index = 0
+        while index < folderGroups.count {
+            let group = folderGroups[index]
+            if expandedGroups.contains(group.name) {
+                out.append(.expanded(group))
+                index += 1
+                continue
+            }
+            let next = index + 1
+            if next < folderGroups.count, !expandedGroups.contains(folderGroups[next].name) {
+                out.append(.pair(group, folderGroups[next]))
+                index = next + 1
+            } else {
+                out.append(.pair(group, nil))
+                index = next
+            }
+        }
+        return out
     }
 
     /// The brand-icon card (MuYu icon_card.dart GroupIconCard):
@@ -1358,37 +1456,45 @@ struct ProxiesView: View {
             }
             Spacer(minLength: m.bottomGap)
             HStack(spacing: m.nameIconGap) {
-                if let selectedName {
-                    Image(systemName: "arrow.right.circle")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                    if let selectedIcon {
-                        GroupBrandIconView(icon: selectedIcon, name: selectedName, size: 16, iconStyle: .plain)
+                // MuYu icon_card.dart _GroupBottomRow: the selected
+                // node sits in an Expanded — it takes ALL remaining
+                // width and truncates only when the row is genuinely
+                // full. The old row gave the name its ideal width
+                // next to a Spacer, so on a narrow card it was the
+                // name that got squeezed ("故…"); with the
+                // full-width rows above, the name now has the row to
+                // itself apart from the speeds and the pill.
+                HStack(spacing: m.nameIconGap) {
+                    if let selectedName {
+                        Image(systemName: "arrow.right.circle")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                        if let selectedIcon {
+                            GroupBrandIconView(icon: selectedIcon, name: selectedName, size: 16, iconStyle: .plain)
+                        }
+                        Text(selectedName)
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else if group.type == "load-balance" {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                        Text("负载均衡")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                    Text(selectedName)
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else if group.type == "load-balance" {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.secondary)
-                    Text("负载均衡")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                } else {
-                    Spacer()
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 // MuYu icon_card.dart:296-301: the speeds sit
                 // between the selected node and the delay, only
                 // while unfolded with a node selected.
                 if let selectedName, expanded {
                     SelectedNodeSpeedsView(proxyName: selectedName, running: proxyStore.isRunning)
                 }
-                Spacer()
                 if selectedName != nil {
                     iconCardLatencyPill(group: group, latencyMs: latency, testing: testing)
                 }
@@ -1535,17 +1641,6 @@ private struct SelectedNodeSpeedsView: View {
         }
     }
 
-    /// Shown while the list comes from the local YAML (VPN off).
-    @ViewBuilder
-    private var localFallbackNote: some View {
-        if proxyStore.isLocalFallback {
-            Text("本地配置 · 未连接 VPN — 点按节点会记住选择，启动后自动应用")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
     /// The list-style group header (v0.2.53 C1): the same row the
     /// old groupSection drew, now a List section header so it
     /// sticks to the top while its rows scroll under it. Its card
@@ -1553,8 +1648,9 @@ private struct SelectedNodeSpeedsView: View {
     /// to its grid at rest, fully round when collapsed or when
     /// stuck (floating) above scrolling rows — and the lift shadow
     /// appears only while floating. Tap toggles expand/collapse,
-    /// exactly as before; the per-group bolt, spinner, locate
-    /// button and search field are unchanged.
+    /// exactly as before; the expanded actions follow MuYu's
+    /// _GroupActions order (locate+bolt in one group, then the
+    /// per-group search, then the chevron).
     private func listHeader(_ group: ProxyGroup, width: CGFloat) -> some View {
         let expanded = expandedGroups.contains(group.name)
         let floating = floatingHeaders[group.name] == true
@@ -1582,26 +1678,34 @@ private struct SelectedNodeSpeedsView: View {
             }
             Spacer()
             if expanded {
-                groupSearchControl(for: group)
-                RoundedBarButton(systemName: "location.fill", label: "滚动到已选", size: 28) {
-                    scrollToSelectedInList(group)
-                }
+                // MuYu _GroupActions: locate + bolt sit in ONE
+                // TonalButtonGroup, then the per-group search, then
+                // the chevron. (The old row had search first and
+                // two separate buttons.)
                 let testing = proxyStore.testingGroups.contains(group.name)
-                Button {
-                    Task { await proxyStore.testLatency(group: group, nodeNames: searchMatchedNodeNames(forGroupNamed: group.name)) }
-                } label: {
-                    if testing {
-                        ProgressView()
+                HStack(spacing: 0) {
+                    Button { scrollToSelectedInList(group) } label: {
+                        Image(systemName: "location.fill")
                             .frame(width: 28, height: 28)
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-                    } else {
-                        Image(systemName: "bolt.fill")
-                            .frame(width: 28, height: 28)
-                            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("滚动到已选")
+                    Button {
+                        Task { await proxyStore.testLatency(group: group, nodeNames: searchMatchedNodeNames(forGroupNamed: group.name)) }
+                    } label: {
+                        if testing {
+                            ProgressView()
+                                .frame(width: 28, height: 28)
+                        } else {
+                            Image(systemName: "bolt.fill")
+                                .frame(width: 28, height: 28)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(testing)
                 }
-                .buttonStyle(.plain)
-                .disabled(testing)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                groupSearchControl(for: group)
             } else {
                 Text(group.type)
                     .font(.caption2)
@@ -1611,7 +1715,8 @@ private struct SelectedNodeSpeedsView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .contentShape(Rectangle())
         .onTapGesture {
             if expanded {
@@ -1748,22 +1853,25 @@ private struct SelectedNodeSpeedsView: View {
     /// user-imported icon pack (matched by group name), else the
     /// group's first character. Filled puts it in a rounded tile,
     /// plain shows it bare, hidden leaves a small gap so the title
-    /// lines up with the card names below.
+    /// lines up with the card names below. Size is 40pt (v0.2.56):
+    /// MuYu's header icon fills the header row (listHeaderHeight
+    /// 61pt; IMG_1182 brand icons measure ~40pt) — the old 28pt
+    /// tile was visibly smaller than MuYu's.
     private func groupIcon(_ group: ProxyGroup) -> some View {
         let content: some View = GroupIconImageView(icon: group.icon, name: group.name)
         switch styleStore.iconStyle {
         case .hidden:
-            return AnyView(Color.clear.frame(width: 4, height: 28))
+            return AnyView(Color.clear.frame(width: 4, height: 40))
         case .plain:
             return AnyView(
                 content
                     .foregroundStyle(ConcordTheme.accent)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 40, height: 40)
             )
         case .filled:
             return AnyView(
                 content
-                    .frame(width: 28, height: 28)
+                    .frame(width: 40, height: 40)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             )
@@ -2255,26 +2363,6 @@ private struct DelayText: View {
         }
         .font(.caption2)
         .fontWeight(.semibold)
-    }
-}
-
-/// A top bar button as FlClash draws it: a rounded rect, not a bare
-/// glyph (used for the bolt, the locate button and the ⋯ menu's
-/// label via its own frame).
-private struct RoundedBarButton: View {
-    let systemName: String
-    let label: String
-    var size: CGFloat = 32
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .frame(width: size, height: size)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: size == 32 ? 10 : 8))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
     }
 }
 

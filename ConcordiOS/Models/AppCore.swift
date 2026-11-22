@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 // MARK: - AppCore: the Concord core in the APP process, delay tests + MITM CA generation
@@ -122,6 +123,15 @@ final class AppCore {
     /// silently and the boot proceeds exactly as before.
     static weak var profileStore: ProfileStore?
 
+    /// The settings store, linked by the app at startup
+    /// (ConcordiOSApp, next to profileStore): v0.2.65 reads the
+    /// "统一延迟测试" toggle (SettingsStore.unifiedDelay) through
+    /// it to patch unified_delay into the in-app core. Weak, like
+    /// profileStore — the app owns the store. Nil when unlinked
+    /// (e.g. a non-app caller): the patch then uses the core
+    /// default (false) and the boot proceeds exactly as before.
+    static weak var settingsStore: SettingsStore?
+
     /// Ports the app-side core listens on (see the header comment).
     /// Nothing else on the device uses them; the extension's core
     /// uses the profile's own ports, so the two can never clash.
@@ -171,6 +181,12 @@ final class AppCore {
     /// trimBuffer.
     private var logSub: Int?
     private var logBuffer: [ConcordLogEntry] = []
+
+    /// Subscription to the "统一延迟测试" toggle (v0.2.65): every
+    /// change re-patches unified_delay into the running in-app
+    /// core, so the toggle takes effect without re-booting.
+    /// Created once by startUnifiedDelayObservation().
+    private var unifiedDelayCancellable: AnyCancellable?
 
     /// True while the app-side core session is open.
     var isRunning: Bool { session != 0 }
@@ -538,6 +554,50 @@ final class AppCore {
     /// is running, when there is no config, or when the core fails
     /// to boot — the caller leaves nodes untested in that case.
     @MainActor
+    /// Patches ONLY unified_delay into the in-app core
+    /// (config.patch with every other field absent — the core's
+    /// ConfigPatchParams is all-optional, like
+    /// ConcordClient.configPatchMode's mode-only patch). v0.2.65:
+    /// the "统一延迟测试" toggle (SettingsStore.unifiedDelay) was
+    /// only ever written to general.json, which the extension
+    /// patches at tunnel start — so it reached the core only with
+    /// the VPN on, and the in-app core (VPN-off delay test) always
+    /// ran with the core default (false). When on, the probe times
+    /// the 2nd request on the warm connection instead of the cold
+    /// dial + TLS, so displayed latencies drop toward the pure
+    /// round-trip. Best-effort and never thrown: a stale
+    /// unified_delay only costs the toggle's effect, never the
+    /// boot or the test itself. No-ops while the session is down
+    /// (the next boot patches the current value instead).
+    private func patchUnifiedDelay() async {
+        guard session != 0 else { return }
+        let unified = Self.settingsStore?.unifiedDelay ?? false
+        do {
+            _ = try await sendRequest(method: "config.patch", params: ["unified_delay": unified], resultType: EmptyResult.self)
+        } catch {
+            // Best-effort: the toggle stays off for this run; the
+            // next boot or toggle flip retries. Never fails boot.
+        }
+    }
+
+    /// Starts observing the "统一延迟测试" toggle (once): every
+    /// change re-patches unified_delay into the running in-app
+    /// core. dropFirst() skips the subscription's immediate
+    /// current-value emission — the boot path patches explicitly
+    /// after engine.start, so the observer only fires on real
+    /// flips. No-ops while the core is down (patchUnifiedDelay
+    /// guards on the session); the next boot patches the current
+    /// value. Idempotent: a second call is a no-op once the
+    /// subscription exists.
+    private func startUnifiedDelayObservation() {
+        guard unifiedDelayCancellable == nil, let store = Self.settingsStore else { return }
+        unifiedDelayCancellable = store.$unifiedDelay
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { await self?.patchUnifiedDelay() }
+            }
+    }
+
     func ensureStarted() async throws {
         guard !TunnelManager.shared.isRunning else {
             throw AppCoreError.tunnelRunning
@@ -562,6 +622,10 @@ final class AppCore {
         let home = try homeDirectory()
         let groupHome = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)
+        // v0.2.65: start observing the "统一延迟测试" toggle here
+        // (idempotent) so a flip re-patches the running core even
+        // when this call early-returns on an already-running core.
+        startUnifiedDelayObservation()
         if session != 0 {
             if signature == loadedConfigSignature {
                 // The core is already running this exact config — but
@@ -743,6 +807,11 @@ final class AppCore {
                 throw error
             }
             _ = try await sendRequest(method: "engine.start", params: [:], resultType: EmptyResult.self, timeoutSeconds: 60)
+            // v0.2.65: the engine is up — apply the "统一延迟测试"
+            // toggle now (best-effort; a failure never fails the
+            // boot). Re-applied on every (re-)boot, so a restarted
+            // core always carries the current setting.
+            await patchUnifiedDelay()
             // FIX 1a (v0.2.45): record what the core actually
             // loaded, while the session is up — a proxy.groups
             // read here costs one local call and tells the next

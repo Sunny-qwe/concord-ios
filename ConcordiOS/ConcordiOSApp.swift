@@ -51,6 +51,10 @@ struct ConcordiOSApp: App {
         _ruleStore = StateObject(wrappedValue: RuleStore(client: client))
         let settingsStore = SettingsStore(client: client)
         _settingsStore = StateObject(wrappedValue: settingsStore)
+        // The in-app core patches the "统一延迟测试" toggle into
+        // the core at boot and on every flip (v0.2.65); AppCore
+        // reads it through here. Weak, like profileStore above.
+        AppCore.settingsStore = settingsStore
         // ProxyStore's delay timeout reads the live setting through
         // here (audit B1: 8000ms FlClash default); it falls back to
         // the persisted blob when this is unset.

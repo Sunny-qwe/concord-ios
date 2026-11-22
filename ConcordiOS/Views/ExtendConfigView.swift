@@ -253,6 +253,8 @@ struct ExtendConfigView: View {
                 }
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("扩展配置")
         .navigationBarTitleDisplayMode(.inline)
@@ -466,6 +468,8 @@ private struct GlobalRulesToggleView: View {
                 }
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("全局规则开关")
         .navigationBarTitleDisplayMode(.inline)

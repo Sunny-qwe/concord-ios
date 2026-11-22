@@ -222,6 +222,8 @@ struct DiagnosticsView: View {
                 diagnosticsRow(icon: "doc.text", title: "日志", subtitle: "打开日志页", destination: .logs)
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("可靠性中心")
         .navigationBarTitleDisplayMode(.inline)
@@ -443,6 +445,8 @@ struct NetworkHealthView: View {
                 }
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("网络健康")
         .navigationBarTitleDisplayMode(.inline)
@@ -672,6 +676,8 @@ struct ModuleAuditView: View {
                 }
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("模块审计")
         .navigationBarTitleDisplayMode(.inline)
@@ -819,6 +825,8 @@ struct ConfigPreflightView: View {
                 .buttonStyle(.plain)
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("配置预检")
         .navigationBarTitleDisplayMode(.inline)

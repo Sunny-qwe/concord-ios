@@ -109,6 +109,8 @@ struct TunOverrideView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("TUN 覆盖")
         .navigationBarTitleDisplayMode(.inline)

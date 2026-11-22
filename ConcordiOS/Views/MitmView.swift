@@ -248,6 +248,8 @@ struct MitmView: View {
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .mitmExchangeMenuOverlays(menuModel, moduleStore: moduleStore)
         .scrollContentBackground(.hidden)
         .font(.footnote.weight(.semibold))

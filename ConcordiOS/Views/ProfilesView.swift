@@ -855,6 +855,8 @@ struct ProfilePreviewView: View {
                         ProgressView().padding()
                     }
                 }
+                // v0.2.66: tab-bar clearance for pushed pages
+                .contentMargins(.bottom, ConcordTheme.tabBarClearance)
             }
             .background(ConcordTheme.pageBackground)
             .navigationTitle(profile.name)

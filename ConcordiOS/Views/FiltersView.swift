@@ -221,6 +221,8 @@ struct FiltersView: View {
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
     }
 
     private func namedFilterRow(_ filter: NamedFilter) -> some View {
@@ -297,6 +299,8 @@ struct FiltersView: View {
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
     }
 
     private func load() async {

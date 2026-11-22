@@ -86,6 +86,8 @@ struct DeveloperView: View {
                 }
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("开发者模式")
         .navigationBarTitleDisplayMode(.inline)

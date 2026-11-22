@@ -261,6 +261,8 @@ struct RulesView: View {
                     }
                 }
             }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
             .scrollContentBackground(.hidden)
             .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)

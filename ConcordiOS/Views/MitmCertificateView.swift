@@ -233,6 +233,8 @@ struct MitmCertificateView: View {
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("MITM 证书设置")
         .navigationBarTitleDisplayMode(.inline)
@@ -648,6 +650,8 @@ struct MitmHostnameEditorView: View {
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("解密主机名")
         .navigationBarTitleDisplayMode(.inline)

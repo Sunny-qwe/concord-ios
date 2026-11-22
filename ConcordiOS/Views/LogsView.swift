@@ -160,6 +160,8 @@ struct LogsView: View {
                             persistedDiagnosticsView
                             compactEmptyStateView
                         }
+                        // v0.2.66: tab-bar clearance for pushed pages.
+                        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
                     } else {
                         ScrollViewReader { proxy in
                             List {
@@ -181,6 +183,8 @@ struct LogsView: View {
                             }
                             .listStyle(.insetGrouped)
                             .scrollContentBackground(.hidden)
+                            // v0.2.66: tab-bar clearance for pushed pages.
+                            .contentMargins(.bottom, ConcordTheme.tabBarClearance)
                             .onChange(of: logStore.filtered.count) { _, _ in
                                 if logStore.autoScroll, followingLogs, let last = logStore.filtered.last {
                                     proxy.scrollTo(last.id, anchor: .bottom)
@@ -241,6 +245,8 @@ struct LogsView: View {
                             }
                             .listStyle(.insetGrouped)
                             .scrollContentBackground(.hidden)
+                            // v0.2.66: tab-bar clearance for pushed pages.
+                            .contentMargins(.bottom, ConcordTheme.tabBarClearance)
                             .onChange(of: eventStore.filtered.count) { _, _ in
                                 if logStore.autoScroll, followingEvents, let last = eventStore.filtered.last {
                                     proxy.scrollTo(last.id, anchor: .bottom)

@@ -102,6 +102,8 @@ struct GeneralAuthView: View {
                     .foregroundStyle(.orange)
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("鉴权与控制器")
         .navigationBarTitleDisplayMode(.inline)

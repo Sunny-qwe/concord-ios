@@ -28,6 +28,8 @@ struct AdvancedConfigView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("进阶配置")
         .navigationBarTitleDisplayMode(.inline)

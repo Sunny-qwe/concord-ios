@@ -101,6 +101,8 @@ struct CustomProxiesView: View {
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("代理")
         .navigationBarTitleDisplayMode(.inline)

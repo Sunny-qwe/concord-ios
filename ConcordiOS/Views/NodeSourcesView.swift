@@ -122,6 +122,8 @@ private struct NodeSourcesRootView: View {
                 }
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("节点来源")
         .navigationBarTitleDisplayMode(.inline)
@@ -343,6 +345,8 @@ private struct NodeSourcesEditorView: View {
                 }
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle(profile?.name ?? customSub?.name ?? "节点来源")
         .navigationBarTitleDisplayMode(.inline)

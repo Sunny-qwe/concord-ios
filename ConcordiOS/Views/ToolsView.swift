@@ -188,7 +188,7 @@ struct ToolsView: View {
             }
             .navigationDestination(for: ToolsDestination.self) { destination in
                 switch destination {
-                case .requests: ConnectionsView()
+                case .requests: ConnectionsView(applyTabBarClearance: true)
                 case .dns: DnsQueriesView()
                 case .resources: ResourcesView()
                 case .logs: LogsView()
@@ -326,6 +326,8 @@ private struct LanguageView: View {
                     .font(.footnote)
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .scrollContentBackground(.hidden)
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
@@ -399,6 +401,8 @@ private struct DisclaimerView: View {
                 }
                 .font(.footnote)
                 .padding(16)
+                // v0.2.66: tab-bar clearance for pushed pages.
+                .padding(.bottom, ConcordTheme.tabBarClearance)
             }
             _ConsentBar(
                 consented: consented,

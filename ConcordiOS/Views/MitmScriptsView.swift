@@ -104,6 +104,8 @@ struct MitmScriptsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .scrollContentBackground(.hidden)
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)

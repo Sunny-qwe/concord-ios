@@ -693,8 +693,9 @@ struct SettingsView: View {
                     NavigationLink("日志") {
                         LogsView()
                     }
+                    // v0.2.66: IPQualityView is a pushed page — pass tab-bar clearance through.
                     NavigationLink("IP 质量") {
-                        IPQualityView()
+                        IPQualityView(applyTabBarClearance: true)
                     }
                     NavigationLink("快捷指令") {
                         ShortcutsView()
@@ -765,6 +766,8 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+            .contentMargins(.bottom, ConcordTheme.tabBarClearance)
             .scrollContentBackground(.hidden)
             .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
@@ -1094,6 +1097,8 @@ struct DnsQueriesView: View {
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .scrollContentBackground(.hidden)
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
@@ -1396,6 +1401,8 @@ struct ProvidersView: View {
                     .listRowBackground(Color.clear)
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .scrollContentBackground(.hidden)
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
@@ -1798,6 +1805,8 @@ struct ResourcesView: View {
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .scrollContentBackground(.hidden)
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)

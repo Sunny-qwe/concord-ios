@@ -217,6 +217,8 @@ struct EditProfileView: View {
                 }
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .navigationTitle("编辑")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)

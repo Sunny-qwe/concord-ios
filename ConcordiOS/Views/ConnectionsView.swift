@@ -18,9 +18,14 @@ struct ConnectionsView: View {
     @State private var feed: ConnectionFeed = ConnectionFeed(
         rawValue: UserDefaults.standard.string(forKey: "ConcordiOS.connections.feed.v1") ?? "live") ?? .live
 
+    /// v0.2.66: tab-bar clearance for pushed pages. True only when
+    /// pushed from Tools; the Dashboard sheet keeps the default false.
+    private let applyTabBarClearance: Bool
+
     /// Opens the page on one feed (the dashboard's stat cells open
     /// it directly on live / recent); nil keeps the persisted feed.
-    init(initialFeed: ConnectionFeed? = nil) {
+    init(initialFeed: ConnectionFeed? = nil, applyTabBarClearance: Bool = false) {
+        self.applyTabBarClearance = applyTabBarClearance
         if let initialFeed {
             _feed = State(initialValue: initialFeed)
         }
@@ -315,6 +320,8 @@ struct ConnectionsView: View {
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
+            // v0.2.66: tab-bar clearance for pushed pages.
+            .contentMargins(.bottom, applyTabBarClearance ? ConcordTheme.tabBarClearance : 0)
         } else {
             List {
                 ForEach(connectionStore.grouped(list, by: connectionStore.groupBy), id: \.key) { group in
@@ -337,6 +344,8 @@ struct ConnectionsView: View {
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
+            // v0.2.66: tab-bar clearance for pushed pages.
+            .contentMargins(.bottom, applyTabBarClearance ? ConcordTheme.tabBarClearance : 0)
         }
     }
 

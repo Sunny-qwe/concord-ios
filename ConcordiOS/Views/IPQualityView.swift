@@ -221,7 +221,14 @@ struct IPQualityView: View {
     @State private var ipFieldText: String
     @State private var failures: [IPQualityFailure] = []
 
-    init(ip: String? = nil) {
+    /// Whether the pushed (Settings) presentation should leave room
+    /// for the floating tab bar. Sheets (e.g. from Dashboard) keep the
+    /// default false so no dead space is added there.
+    /// v0.2.66: tab-bar clearance for pushed pages.
+    let applyTabBarClearance: Bool
+
+    init(ip: String? = nil, applyTabBarClearance: Bool = false) {
+        self.applyTabBarClearance = applyTabBarClearance
         let cleaned = ip?.trimmingCharacters(in: .whitespacesAndNewlines)
         _explicitIp = State(initialValue: cleaned?.isEmpty == true ? nil : cleaned)
         _ipFieldText = State(initialValue: cleaned ?? "")
@@ -414,6 +421,8 @@ struct IPQualityView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, applyTabBarClearance ? ConcordTheme.tabBarClearance : 0)
         .scrollContentBackground(.hidden)
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)

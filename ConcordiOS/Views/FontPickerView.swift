@@ -66,6 +66,8 @@ struct FontPickerView: View {
                     .font(.footnote)
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .searchable(text: $searchText, prompt: "搜索字体")
         .scrollContentBackground(.hidden)
         .font(.footnote.weight(.semibold))

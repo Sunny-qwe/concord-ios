@@ -111,6 +111,8 @@ struct OverrideView: View {
                 }
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("覆盖")
         .navigationBarTitleDisplayMode(.inline)
@@ -331,6 +333,8 @@ private struct OverrideSectionPage: View {
         List {
             OverrideSectionEditor(section: section, scope: $editableScope)
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle(section.label)
         .navigationBarTitleDisplayMode(.inline)
@@ -638,6 +642,8 @@ private struct OverrideStringListPage: View {
                 StringListEditor(items: $items, placeholder: "添加一项")
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -685,6 +691,8 @@ private struct OverrideNumberListPage: View {
                 }
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -701,6 +709,8 @@ private struct OverrideStringMapPage: View {
                 KeyValueListEditor(items: $items, keyPlaceholder: "匹配", valuePlaceholder: "服务器")
             }
         }
+        // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)

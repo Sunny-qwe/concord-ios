@@ -91,6 +91,8 @@ struct AddedRulesView: View {
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("附加规则")
         .navigationBarTitleDisplayMode(.inline)

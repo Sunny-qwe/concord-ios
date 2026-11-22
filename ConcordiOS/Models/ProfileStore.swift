@@ -1131,6 +1131,14 @@ final class ProfileStore: ObservableObject {
         let type: String
         let nodeNames: [String]
         let testURL: String
+        /// The group's `icon:` from the subscription YAML
+        /// (v0.2.57): a URL in practice (mihomo / FlClash custom
+        /// groups bake an icon URL), or a name — never invented
+        /// here. "" = the group defines none; the Proxies page
+        /// then falls back to the user-imported icon pack (matched
+        /// by group name) and finally the monogram. No built-in
+        /// brand icons.
+        let icon: String
         /// Raw filter expressions, kept so callers can see why a
         /// group has the members it has; nodeNames already has the
         /// filter evaluated against the parsed node list.
@@ -1145,12 +1153,13 @@ final class ProfileStore: ObservableObject {
         let hidden: Bool
 
         init(name: String, type: String, nodeNames: [String], testURL: String,
-             filter: String = "", excludeFilter: String = "", useProviders: [String] = [],
+             icon: String = "", filter: String = "", excludeFilter: String = "", useProviders: [String] = [],
              hidden: Bool = false) {
             self.name = name
             self.type = type
             self.nodeNames = nodeNames
             self.testURL = testURL
+            self.icon = icon
             self.filter = filter
             self.excludeFilter = excludeFilter
             self.useProviders = useProviders
@@ -1234,6 +1243,7 @@ final class ProfileStore: ObservableObject {
                     groups.append(LocalProxyGroup(
                         name: name, type: item["type"] ?? "select",
                         nodeNames: members, testURL: item["url"] ?? "",
+                        icon: item["icon"] ?? "",
                         filter: item["filter"] ?? "", excludeFilter: item["exclude-filter"] ?? "",
                         useProviders: itemUseFlow ?? itemUse,
                         hidden: item["hidden"]?.lowercased() == "true"))
@@ -1393,7 +1403,7 @@ final class ProfileStore: ObservableObject {
             }
             return LocalProxyGroup(
                 name: group.name, type: group.type, nodeNames: members,
-                testURL: group.testURL, filter: group.filter,
+                testURL: group.testURL, icon: group.icon, filter: group.filter,
                 excludeFilter: group.excludeFilter, useProviders: group.useProviders,
                 hidden: group.hidden)
         }

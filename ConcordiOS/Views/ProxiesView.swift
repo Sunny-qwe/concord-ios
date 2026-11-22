@@ -6,9 +6,11 @@ import SwiftUI
 //   (magnifier, presents the search field) + bolt. In tab style the
 //   bolt tests the current group; in list / card style it tests ALL
 //   groups (MuYu iOS build _delayTestAllGroups). The ⋯ opens a white
-//   card menu (FlClash PopupMenu): 风格/排序/布局/尺寸/图标样式, each
-//   opening a submenu with a checkmark on the current value, plus
-//   隐藏超时代理. No test-all and no refresh in the menu (FlClash
+//   card menu (FlClash PopupMenu): 风格 expands inline (MuYu
+//   video: the three style rows sit directly below it in the same
+//   popup); 排序/布局/尺寸/图标样式 each open a submenu with a
+//   checkmark on the current value, plus 隐藏超时代理. No test-all
+//   and no refresh in the menu (FlClash
 //   has neither there). 滚动到已选 is the menu's first row in tab
 //   style (the MuYu video build shows it there); re-tapping the
 //   active group pill scrolls to the selected node too. The page
@@ -120,6 +122,14 @@ struct ProxiesView: View {
     @State private var isSearching = false
     @State private var showMoreMenu = false
     @State private var menuLevel: MenuLevel = .root
+    /// Whether the 风格 section of the ⋯ menu is expanded inline
+    /// (v0.2.57, MuYu video f_023/f_026): the three style rows sit
+    /// directly below the 风格 row inside the same popup, while the
+    /// sibling rows stay visible — an accordion, not a drill-down.
+    /// The other rows (排序/布局/尺寸/图标样式） still open their
+    /// drill-down submenu via menuLevel. Reset on disappear so the
+    /// menu always reopens collapsed.
+    @State private var styleExpanded = false
     @State private var selectedGroupName: String?
     /// Groups the user expanded in list style. FlClash's unfoldSet
     /// (models/profile.dart:78) defaults to {} — groups start
@@ -797,11 +807,17 @@ struct ProxiesView: View {
 
     // MARK: - ⋯ menu (FlClash PopupMenu, lib/views/proxies/proxies.dart)
 
-    /// The ⋯ menu is a white card, not a native context menu: five
-    /// option rows (each opens a submenu with a checkmark on the
-    /// current value) and the hide-timeout toggle. No test-all and no
-    /// refresh in the menu — FlClash has neither there (the bolt is
-    /// the test; refresh is pull-to-refresh). Icon style shows in
+    /// The ⋯ menu is a white card, not a native context menu:
+    /// 滚动到已选 (tab style only, first row), 风格， 排序， 布局，
+    /// 尺寸， 图标样式 (not in tab style), and the hide-timeout
+    /// toggle last. 风格 does NOT drill down: tapping it toggles
+    /// the three style rows inline, directly below it in the same
+    /// popup (MuYu video f_023/f_026 — an accordion, sibling rows
+    /// stay visible; tapping a style applies it and closes the
+    /// menu). The other rows open a drill-down submenu with a
+    /// checkmark on the current value. No test-all and no refresh
+    /// in the menu — FlClash has neither there (the bolt is the
+    /// test; refresh is pull-to-refresh). Icon style shows in
     /// list AND card style, hidden only in tab style (MuYu changed
     /// FlClash's `type == list` to `type != tab` when it added the
     /// card style, proxies.dart).
@@ -811,7 +827,7 @@ struct ProxiesView: View {
     /// the popover sizes itself to the VStack — the same as FlClash's
     /// PopupMenu sizing to its content.
     private enum MenuDestination: Hashable {
-        case style, sort, layout, size, iconStyle
+        case sort, layout, size, iconStyle
     }
 
     private enum MenuLevel: Hashable {
@@ -847,7 +863,38 @@ struct ProxiesView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                menuRow(icon: "list.bullet", label: "风格", destination: .style)
+                // 风格 expands INLINE (v0.2.57, MuYu video
+                // f_023/f_026): the three style rows appear directly
+                // below this row inside the same popup — 标签页 ✓ /
+                // 列表 / 卡片 — while the sibling rows stay visible.
+                // The chevron-down is MuYu's (shown expanded in the
+                // frames). Tapping a style applies it and closes
+                // the menu (menuOptionRow); tapping 风格 only
+                // toggles the expansion.
+                Button {
+                    withAnimation { styleExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "list.bullet")
+                            .frame(width: 22)
+                        Text("风格")
+                        Spacer()
+                        Image(systemName: "chevron.down")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if styleExpanded {
+                    ForEach(ProxyStyleStore.Style.allCases, id: \.self) { style in
+                        menuOptionRow(label: style.label, selected: styleStore.style == style) {
+                            styleStore.style = style
+                        }
+                    }
+                }
                 menuRow(icon: "arrow.up.arrow.down", label: "排序", destination: .sort)
                 menuRow(icon: "square.grid.2x2", label: "布局", destination: .layout)
                 menuRow(icon: "textformat.size", label: "尺寸", destination: .size)
@@ -881,7 +928,7 @@ struct ProxiesView: View {
         .frame(minWidth: 160, maxWidth: 280)
         .font(.subheadline)
         .presentationCompactAdaptation(.popover)
-        .onDisappear { menuLevel = .root }
+        .onDisappear { menuLevel = .root; styleExpanded = false }
     }
 
     private func menuRow(icon: String, label: String, destination: MenuDestination) -> some View {
@@ -922,12 +969,6 @@ struct ProxiesView: View {
             .buttonStyle(.plain)
             Divider()
             switch dest {
-            case .style:
-                ForEach(ProxyStyleStore.Style.allCases, id: \.self) { style in
-                    menuOptionRow(label: style.label, selected: styleStore.style == style) {
-                        styleStore.style = style
-                    }
-                }
             case .sort:
                 ForEach(ProxySort.allCases) { option in
                     menuOptionRow(label: option.rawValue, selected: styleStore.sort == option) {
@@ -958,7 +999,6 @@ struct ProxiesView: View {
 
     private func menuTitle(for dest: MenuDestination) -> String {
         switch dest {
-        case .style: return "风格"
         case .sort: return "排序"
         case .layout: return "布局"
         case .size: return "尺寸"
@@ -2053,11 +2093,13 @@ private struct SelectedNodeSpeedsView: View {
 }
 
 /// A group's icon image, resolved in priority order: the profile's
-/// own icon (URL loaded, short text shown as-is), then the
-/// user-imported icon pack (IconPackStore, matched by group name),
-/// else the group's first character. There are NO bundled brand
-/// icons (v0.2.53, user direction): the pack is the only icon source
-/// besides the profile icon, and the monogram is the only fallback.
+/// own icon (a URL is loaded; a name is matched through the
+/// user-imported icon pack, v0.2.57; other short text such as an
+/// emoji or a letter is shown as-is), then the user-imported icon
+/// pack (IconPackStore, matched by group name), else the group's
+/// first character. There are NO bundled brand icons (v0.2.53,
+/// user direction): the pack is the only icon source besides the
+/// profile icon, and the monogram is the only fallback.
 /// Observes the pack itself, so an import re-renders only this leaf
 /// — ProxiesView never observes the store (v0.2.51 scroll fix).
 /// A failed image load falls back to the monogram: the simple
@@ -2081,11 +2123,25 @@ private struct GroupIconImageView: View {
                         .fontWeight(.semibold)
                 }
             } else if !icon.isEmpty {
-                // The profile's own text icon (e.g. an emoji or a
-                // letter) wins over the icon pack.
-                Text(icon)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
+                // A name-form icon (e.g. "YouTube" baked as the
+                // group's `icon:`) is matched through the user's
+                // icon pack first; only a pack miss falls back to
+                // showing the text itself (an emoji or a single
+                // letter). A URL never reaches here — it is handled
+                // above.
+                if let packURL = iconPack.iconURL(for: icon) {
+                    AsyncImage(url: packURL) { image in
+                        image.resizable().scaledToFill()
+                    } placeholder: {
+                        Text(monogram)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                    }
+                } else {
+                    Text(icon)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                }
             } else if let packURL = iconPack.iconURL(for: name) {
                 AsyncImage(url: packURL) { image in
                     image.resizable().scaledToFill()

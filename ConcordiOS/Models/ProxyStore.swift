@@ -652,7 +652,7 @@ final class ProxyStore: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            try await fetchCoreGroups()
+            try await fetchCoreGroups(profileID: activeProfile?.id)
             lastUpdated = Date()
             lastError = nil
             isLocalFallback = false
@@ -694,7 +694,7 @@ final class ProxyStore: ObservableObject {
     /// the core has not finished applying — the caller then falls
     /// back to the local YAML instead of showing an empty page
     /// (v0.2.32: the v0.2.31 "节点也看不见" report).
-    private func fetchCoreGroups() async throws {
+    private func fetchCoreGroups(profileID: UUID? = nil) async throws {
         // proxy.watch is the live table: the extension subscribes
         // once at startup and rewrites snapshots/proxies.json on
         // every change, so this is fresher than a one-shot
@@ -721,14 +721,36 @@ final class ProxyStore: ObservableObject {
         // MuYu never shows "unknown" for a nested group.
         let groupTypeByName = Dictionary(uniqueKeysWithValues: result.groups.map { ($0.name, $0.type) })
         groups = result.groups.map { g in
-            ProxyGroup(
+            // v0.2.57: a never-tested url-test/fallback group reports
+            // an empty `now` — live it showed an empty subtitle while
+            // MuYu shows the pinned pick. Display-only: `now` wins
+            // when present; else the core's `fixed` pin, else the
+            // remembered pick (a pin saved while off, or one the core
+            // has not applied yet). Nothing is selected here and no
+            // delay-test state is touched — only the displayed pick
+            // (header subtitle, card selected row, scroll target)
+            // changes. Same fallback the offline path has used since
+            // v0.2.56 (selectedNodeName = pending).
+            let now = (g.now ?? "").trimmingCharacters(in: .whitespaces)
+            let displayedPick: String?
+            if !now.isEmpty {
+                displayedPick = now
+            } else if let fixed = g.fixed, !fixed.trimmingCharacters(in: .whitespaces).isEmpty {
+                displayedPick = fixed.trimmingCharacters(in: .whitespaces)
+            } else if let profileID, let pending = self.pendingSelection(profileID: profileID, group: g.name),
+                      !pending.trimmingCharacters(in: .whitespaces).isEmpty {
+                displayedPick = pending.trimmingCharacters(in: .whitespaces)
+            } else {
+                displayedPick = nil
+            }
+            return ProxyGroup(
                 name: g.name,
                 type: g.type,
                 nodes: (g.all ?? []).map { name in
                     let info = nodeTypes[name]
                     return ProxyNode(name: name, type: info?.type ?? groupTypeByName[name] ?? "unknown", provider: info?.provider, latencyMs: nil)
                 },
-                selectedNodeName: g.now,
+                selectedNodeName: displayedPick,
                 testUrl: g.testUrl,
                 fixed: g.fixed,
                 icon: g.icon,
@@ -776,7 +798,7 @@ final class ProxyStore: ObservableObject {
                 selectedNodeName: pending,
                 testUrl: g.testURL,
                 fixed: g.type == "select" ? nil : pending,
-                icon: "",
+                icon: g.icon,
                 hidden: g.hidden
             )
         }
@@ -820,7 +842,7 @@ final class ProxyStore: ObservableObject {
             }
         }
         if changed {
-            try? await fetchCoreGroups()
+            try? await fetchCoreGroups(profileID: profileID)
         }
     }
 

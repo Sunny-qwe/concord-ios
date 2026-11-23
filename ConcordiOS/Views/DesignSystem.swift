@@ -124,14 +124,22 @@ enum ConcordTheme {
     /// root safeAreaInset does not reach them through the sliding
     /// container's GeometryReader — so at max scroll the content
     /// bottom sits at 844 − 34 = 810 and a last row ends at
-    /// 810 − padding; 77pt of padding puts it at 733, i.e. 12pt
-    /// above the bar top (745). 77 = 61 (bar) + 4 (bar bottom
-    /// margin) + 12 (breathing gap). The same value covers the
-    /// shorter docked bar (49pt) and a no-home-indicator phone
-    /// (bar top and content bottom both rise 34pt, gap unchanged).
-    /// It is a TOTAL bottom padding/margin, not an addition: each
-    /// page replaces its old 12/16pt bottom value with this.
-    static let tabBarClearance: CGFloat = 77
+    /// 810 − padding. v0.2.66 set this to 77 (= 61 bar + 4 margin
+    /// + 12 gap), measured to the BAR top (745) — but it forgot
+    /// the environment watermark ("Concord iOS v…", 10pt text +
+    /// 6pt spacing = 18pt) that sits ABOVE the bar in the same
+    /// safeAreaInset VStack, so the real obstruction top is the
+    /// watermark top (727), not the bar top — and with 77 the last
+    /// row ended at 733, overlapping the watermark (IMG_1226,
+    /// Tools page 关于 cut off, v0.2.80). 95 = 61 (bar) + 4 (bar
+    /// bottom margin) + 18 (watermark) + 12 (breathing gap);
+    /// 95pt of padding puts the last row at 715, i.e. 12pt above
+    /// the watermark top (727). The same value covers the shorter
+    /// docked bar (49pt) and a no-home-indicator phone (bar top
+    /// and content bottom both rise 34pt, gap unchanged). It is
+    /// a TOTAL bottom padding/margin, not an addition: each page
+    /// replaces its old 12/16pt bottom value with this.
+    static let tabBarClearance: CGFloat = 95
     /// Soft card shadow.
     static let cardShadow = Color.black.opacity(0.05)
 }

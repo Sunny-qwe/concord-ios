@@ -30,84 +30,9 @@ struct MitmScriptsView: View {
 
     var body: some View {
         List {
-            Section {
-                Text("独立脚本库：脚本文件保存在核心资源目录。核心只运行已被模块 [Script] 段引用的脚本——点「复制核心脚本行」粘贴进模块即可引用，引用后点「运行」按名字运行（mitm.runScript）。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if let message = scriptStore.statusMessage {
-                    Text(message).font(.caption2).foregroundStyle(.green)
-                }
-                if let error = scriptStore.lastError {
-                    Text(error).font(.caption2).foregroundStyle(.red)
-                }
-                if isRunning {
-                    ProgressView()
-                }
-                if let message = runMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
-                }
-                if let result = runResult {
-                    JSONValueView(value: result)
-                        .frame(minHeight: 60)
-                }
-            }
-
-            Section("脚本（\(scriptStore.scripts.count)）") {
-                if scriptStore.scripts.isEmpty {
-                    Text("还没有脚本。点右上角 + 新建一个，或从链接、文件导入。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(scriptStore.scripts) { script in
-                    MitmScriptRow(
-                        script: script,
-                        isUpdating: scriptStore.updatingIds.contains(script.id),
-                        onEdit: { editingScript = script },
-                        onUpdate: { Task { await scriptStore.update(script) } },
-                        onRun: { Task { await run(script) } },
-                        onCopyLine: {
-                            if let line = scriptStore.coreScriptLine(for: script) {
-                                UIPasteboard.general.string = line
-                                runMessage = "已复制核心脚本行，可粘贴进模块的 [Script] 段"
-                            }
-                        },
-                        onEditURL: {
-                            renameText = script.label
-                            urlScript = script
-                        },
-                        onDelete: {
-                            deleteScript = script
-                            showDeleteConfirm = true
-                        }
-                    )
-                }
-                .onMove { source, destination in
-                    scriptStore.move(from: source, to: destination)
-                }
-            }
-
-            Section("核心资源目录的脚本文件（只读）") {
-                let files = scriptStore.resourceFiles()
-                if files.isEmpty {
-                    Text("资源目录里还没有 .js 文件。模块下载的脚本和这里保存的脚本都会出现在这里。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(files) { file in
-                    HStack {
-                        Text(file.name)
-                            .font(.system(.caption, design: .monospaced))
-                            .lineLimit(1)
-                        Spacer()
-                        Text(resourceFileSubtitle(for: file))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Text("这些文件属于模块或本页的脚本，在「MITM 模块」里管理；删模块时会连同清理。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            introSection
+            scriptsSection
+            resourceFilesSection
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
@@ -118,21 +43,7 @@ struct MitmScriptsView: View {
         .navigationTitle("MITM 脚本")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("从空白新建") { showNewEditor = true }
-                    Button("从链接导入") {
-                        importURLText = ""
-                        showImportURLDialog = true
-                    }
-                    Button("从文件导入") { showFileImporter = true }
-                } label: {
-                    Image(systemName: "plus.circle")
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                EditButton()
-            }
+            toolbarContent
         }
         // Upstream scripts.dart:259: editing a script pushes
         // EditorPage — a full page push, not a sheet.
@@ -197,6 +108,112 @@ struct MitmScriptsView: View {
             }
         } message: {
             Text("删除“\(deleteScript?.label ?? "")”？它的文件和核心资源副本都会删掉，已引用它的模块行会失效。")
+        }
+    }
+
+    /// The three List sections, each a separate computed property
+    /// so the type-checker solves them one at a time: the whole
+    /// body as one expression timed out (v0.2.85 CI runs #238–239).
+    private var introSection: some View {
+        Section {
+            Text("独立脚本库：脚本文件保存在核心资源目录。核心只运行已被模块 [Script] 段引用的脚本——点「复制核心脚本行」粘贴进模块即可引用，引用后点「运行」按名字运行（mitm.runScript）。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if let message = scriptStore.statusMessage {
+                Text(message).font(.caption2).foregroundStyle(.green)
+            }
+            if let error = scriptStore.lastError {
+                Text(error).font(.caption2).foregroundStyle(.red)
+            }
+            if isRunning {
+                ProgressView()
+            }
+            if let message = runMessage {
+                Text(message).font(.caption2).foregroundStyle(.secondary)
+            }
+            if let result = runResult {
+                JSONValueView(value: result)
+                    .frame(minHeight: 60)
+            }
+        }
+    }
+
+    private var scriptsSection: some View {
+        Section("脚本（\(scriptStore.scripts.count)）") {
+            if scriptStore.scripts.isEmpty {
+                Text("还没有脚本。点右上角 + 新建一个，或从链接、文件导入。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(scriptStore.scripts) { script in
+                MitmScriptRow(
+                    script: script,
+                    isUpdating: scriptStore.updatingIds.contains(script.id),
+                    onEdit: { editingScript = script },
+                    onUpdate: { Task { await scriptStore.update(script) } },
+                    onRun: { Task { await run(script) } },
+                    onCopyLine: {
+                        if let line = scriptStore.coreScriptLine(for: script) {
+                            UIPasteboard.general.string = line
+                            runMessage = "已复制核心脚本行，可粘贴进模块的 [Script] 段"
+                        }
+                    },
+                    onEditURL: {
+                        renameText = script.label
+                        urlScript = script
+                    },
+                    onDelete: {
+                        deleteScript = script
+                        showDeleteConfirm = true
+                    }
+                )
+            }
+            .onMove { source, destination in
+                scriptStore.move(from: source, to: destination)
+            }
+        }
+    }
+
+    private var resourceFilesSection: some View {
+        Section("核心资源目录的脚本文件（只读）") {
+            let files = scriptStore.resourceFiles()
+            if files.isEmpty {
+                Text("资源目录里还没有 .js 文件。模块下载的脚本和这里保存的脚本都会出现在这里。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(files) { file in
+                HStack {
+                    Text(file.name)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                    Spacer()
+                    Text(resourceFileSubtitle(for: file))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text("这些文件属于模块或本页的脚本，在「MITM 模块」里管理；删模块时会连同清理。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button("从空白新建") { showNewEditor = true }
+                Button("从链接导入") {
+                    importURLText = ""
+                    showImportURLDialog = true
+                }
+                Button("从文件导入") { showFileImporter = true }
+            } label: {
+                Image(systemName: "plus.circle")
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            EditButton()
         }
     }
 

@@ -629,6 +629,17 @@ final class ProxyStore: ObservableObject {
     /// then the FlClash default 8000ms — see delayTimeoutMs.
     weak var settingsStore: SettingsStore?
 
+    /// The service-probe store, linked by the app at startup
+    /// (ConcordiOSApp, next to the lines above — it is
+    /// `trafficStore.serviceProbeStore`): a user-initiated
+    /// outbound change re-probes the dashboard service checks
+    /// immediately through the new outbound (v0.2.86 item 16,
+    /// upstream _onRoute picks change). Weak, like profileStore
+    /// above; until it is linked, selections change with no
+    /// probe notification and the dashboard's normal probe path
+    /// covers the checks.
+    weak var serviceProbeStore: ServiceProbeStore?
+
     /// Last tunnel-connected state seen by the status subscription
     /// (audit A1): the connect edge is what triggers applying
     /// pending selections.
@@ -1025,6 +1036,10 @@ final class ProxyStore: ObservableObject {
 
     @MainActor
     private func applySelect(group: ProxyGroup, proxy: String, profileID: UUID? = nil) async -> String? {
+        // The selected outbound the dashboard probes through may
+        // change with this pick (upstream _onRoute picks change):
+        // capture it before so the probe store can be told after.
+        let previousOutbound = selectedOutbound
         do {
             let result = try await client.proxySelect(group: group.name, proxy: proxy)
             // Record the live pick too, so the local fallback keeps
@@ -1034,6 +1049,15 @@ final class ProxyStore: ObservableObject {
             }
             if result.changed { await refresh() }
             lastError = nil
+            // v0.2.86 item 16: the selected outbound changed — the
+            // service checks re-probe immediately through the new
+            // outbound (no backoff, no throttle). Live path only:
+            // offline the core is unreachable and the dashboard
+            // re-probes on connect anyway. Fire-and-forget: the
+            // probe runs seconds behind the tap, never holding it.
+            if selectedOutbound != previousOutbound, let outbound = selectedOutbound {
+                Task { await serviceProbeStore?.outboundChanged(proxy: outbound) }
+            }
             return nil
         } catch {
             if !isRunning, let profileID {

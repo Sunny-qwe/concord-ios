@@ -1136,9 +1136,32 @@ final class TrafficStore: ObservableObject {
     /// The live engine status (engine.state): created / initialized /
     /// configured / running / failed, plus any services that failed
     /// to start. Read from the extension's engine.json snapshot.
+    /// The dashboard reads the faults directly as
+    /// `trafficStore.engineStatus?.faults` (v0.2.86 item 11:
+    /// ConcordServiceFault = service, address?, reason, message).
     @Published var engineStatus: ConcordEngineStatus?
     @Published var engineStatusError: String?
     @Published var lastError: String?
+
+    /// Config warnings (v0.2.86 item 10, upstream
+    /// lib/providers/app.dart ConfigWarningsState +
+    /// lib/providers/actions/setup.dart _loadConfigWarnings): the
+    /// warnings of the config the core last set up, read via
+    /// core.lastWarnings. Pulled after a config apply / engine
+    /// start succeeds (see refreshWarnings) and cleared when the
+    /// engine snapshot goes unreadable — the warnings end with
+    /// the core, as upstream's state clears when coreStatus is
+    /// not connected.
+    @Published var lastWarnings: [ConcordWarning] = []
+
+    /// v0.2.86 item 16: the service-probe retry/backoff machine.
+    /// It calls back into this store's probeServices /
+    /// probeService — the execution layer stays here. Owned here
+    /// so the dashboard reads one object
+    /// (`trafficStore.serviceProbeStore`) and ProxyStore's weak
+    /// link (wired in ConcordiOSApp, next to profileStore) points
+    /// at the same instance.
+    lazy var serviceProbeStore: ServiceProbeStore = ServiceProbeStore(trafficStore: self)
 
     let client: ConcordClient
     private var timer: AnyCancellable?
@@ -1216,6 +1239,11 @@ final class TrafficStore: ObservableObject {
         Task { await refresh() }
         Task { await probe() }
         Task { await refreshMemory() }
+        // v0.2.86 item 10: the engine may already be running when
+        // the dashboard appears — pull the warnings of the config
+        // now in force (upstream _loadConfigWarnings runs after a
+        // successful setupConfig).
+        Task { await refreshWarnings() }
     }
 
     func stop() {
@@ -1360,11 +1388,44 @@ final class TrafficStore: ObservableObject {
     @MainActor
     func refreshEngineStatus() async {
         do {
+            let previousState = engineStatus?.state
             engineStatus = try await client.engineSnapshot()
             engineStatusError = nil
+            // v0.2.86 item 10: the engine newly reaching "running"
+            // means a config apply / engine start just completed
+            // (upstream setup.dart calls _loadConfigWarnings after
+            // setupConfig succeeds) — pull the warnings of the
+            // config now in force. A new "failed" state is the
+            // other upstream call site: _loadConfigWarnings also
+            // runs when the core rejects a config, so the rejection
+            // warnings are shown instead of the previous config's.
+            if let state = engineStatus?.state, state != previousState,
+               state == "running" || state == "failed" {
+                await refreshWarnings()
+            }
         } catch {
             engineStatus = nil
             engineStatusError = error.localizedDescription
+            // The warnings end with the core (upstream
+            // ConfigWarningsState clears when coreStatus is not
+            // connected): the snapshot is unreadable, so the core
+            // is gone and its config's warnings are stale.
+            lastWarnings = []
+        }
+    }
+
+    /// Reads the warnings of the config the core last set up
+    /// (upstream _loadConfigWarnings: called after a successful
+    /// setupConfig, and again when the core rejects a config so
+    /// the rejection warnings are shown). On error the previous
+    /// value is kept — a failed read must not wipe warnings the
+    /// dashboard is showing, and must not crash.
+    @MainActor
+    func refreshWarnings() async {
+        do {
+            lastWarnings = try await client.lastWarnings()
+        } catch {
+            // Keep the previous value.
         }
     }
 

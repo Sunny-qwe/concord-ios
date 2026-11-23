@@ -583,16 +583,28 @@ struct ServiceStatusSheet: View {
         return String(name.prefix(1)).uppercased()
     }
 
-    /// Second line: the probed egress IP through the service's
-    /// exit node; the node name while pending or when the probe
-    /// failed; "—" when there is no node at all.
+    /// Second line: the address the service itself saw the
+    /// check come from (the core fills `ip` only for checks
+    /// whose answer names it — Claude/ChatGPT, from their
+    /// Cloudflare trace); else the probed egress IP through
+    /// the service's exit node; the node name while pending
+    /// or when the probe failed; "—" when there is no node
+    /// at all.
     private func nodeLine(for service: ConcordServiceItem) -> String {
         guard let node = service.chains?.first, !node.isEmpty else { return "—" }
+        if let ip = service.ip, !ip.isEmpty { return ip }
         if let ip = nodeIPs[node] { return ip }
         return node
     }
 
     private func trailingText(for service: ConcordServiceItem) -> String {
+        // v0.2.86 item 16: a failed/timeout status reads as
+        // checking until ServiceProbeStore confirms it (1 s
+        // confirm re-probe); verdicts are shown as-is.
+        if ServiceProbeStore.isFailure(service),
+           !trafficStore.serviceProbeStore.confirmedFailures.contains(service.name) {
+            return "检测中"
+        }
         if service.status == "available", let delay = service.delay {
             return "\(delay) ms"
         }
@@ -600,6 +612,10 @@ struct ServiceStatusSheet: View {
     }
 
     private func trailingColor(for service: ConcordServiceItem) -> Color {
+        if ServiceProbeStore.isFailure(service),
+           !trafficStore.serviceProbeStore.confirmedFailures.contains(service.name) {
+            return .secondary
+        }
         if service.status == "available", service.delay != nil {
             return Color(.label)
         }
@@ -608,13 +624,17 @@ struct ServiceStatusSheet: View {
 
     private func recheckAll() async {
         guard let proxy = proxyStore.selectedOutbound else { return }
-        await trafficStore.probeServices(proxy: proxy, names: trafficStore.orderedServiceNames)
+        await trafficStore.serviceProbeStore.probeAll(proxy: proxy, names: trafficStore.orderedServiceNames)
         await probeNodeIPs()
     }
 
     private func recheckOne(_ service: ConcordServiceItem) async {
         guard let proxy = proxyStore.selectedOutbound else { return }
         await trafficStore.probeService(proxy: proxy, name: service.name)
+        // v0.2.86 item 16: feed the single-service result through
+        // the confirm/backoff machine instead of showing a first
+        // failure instantly.
+        await trafficStore.serviceProbeStore.evaluate(trafficStore.services)
         await probeNodeIPs()
     }
 

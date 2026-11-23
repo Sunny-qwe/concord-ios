@@ -36,13 +36,19 @@ struct ConcordiOSApp: App {
         _client = StateObject(wrappedValue: client)
         let proxyStore = ProxyStore(client: client)
         _proxyStore = StateObject(wrappedValue: proxyStore)
-        _trafficStore = StateObject(wrappedValue: TrafficStore(client: client))
+        let trafficStore = TrafficStore(client: client)
+        _trafficStore = StateObject(wrappedValue: trafficStore)
         _connectionStore = StateObject(wrappedValue: ConnectionStore(client: client))
         _logStore = StateObject(wrappedValue: LogStore(client: client))
         let profileStore = ProfileStore(client: client)
         // The Proxies page falls back to the active profile's local
         // YAML when the VPN is off; ProxyStore reads it through here.
         proxyStore.profileStore = profileStore
+        // The dashboard service probes run through the backoff /
+        // confirm machine (v0.2.86 item 16); ProxyStore fires its
+        // immediate re-probe when the selected outbound changes.
+        // Weak, like profileStore above.
+        proxyStore.serviceProbeStore = trafficStore.serviceProbeStore
         // The app-side core heals a stale shared config.yaml from
         // the active profile and names it in the boot report
         // (FIX 1a + FIX 2, v0.2.45); AppCore reads it through here.

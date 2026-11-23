@@ -12,6 +12,7 @@ struct LogsView: View {
     @EnvironmentObject private var eventStore: EventStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var connectionStore: ConnectionStore
+    @EnvironmentObject private var settingsStore: SettingsStore
     @State private var exportError: String?
     @State private var showExportError = false
     @State private var showExportSuccess = false
@@ -317,6 +318,28 @@ struct LogsView: View {
                                     Text(level.rawValue).tag(level)
                                 }
                             }
+                            // v0.2.86 (item 9): upstream logs.dart
+                            // _buildMenuItems puts the CORE log level
+                            // in the same bar menu as a submenu
+                            // (label = logLevel, subtitle = current
+                            // level, checked row = active option) and
+                            // writes it via patchClashConfig. This
+                            // submenu mirrors it: same label
+                            // ("日志等级", arb/intl_zh.arb:122) and
+                            // same option names (LogLevel raw values
+                            // = Dart enum .name). Unlike the filter
+                            // above (display-only, LogStore), a pick
+                            // here writes SettingsStore.logLevel —
+                            // the .onChange below saves it and
+                            // patches the running core. Upstream
+                            // default is error; ours stays info.
+                            Menu("日志等级") {
+                                Picker("日志等级", selection: $settingsStore.logLevel) {
+                                    ForEach(LogLevel.allCases) { level in
+                                        Text(level.rawValue).tag(level)
+                                    }
+                                }
+                            }
                         } label: {
                             Image(systemName: "line.3.horizontal.decrease.circle")
                         }
@@ -355,6 +378,25 @@ struct LogsView: View {
                         Image(systemName: "arrow.clockwise")
                     }
                 }
+            }
+            // v0.2.86 (item 9): the log-level submenu above writes
+            // SettingsStore.logLevel; persist it (UserDefaults +
+            // general.json, so the extension picks it up at the
+            // next VPN start) and patch the running core — the
+            // same save + applyGeneralToCore pair the Settings
+            // page's "应用通用设置到核心" button uses, and the
+            // same .onChange pattern DashboardView uses for mode.
+            // With the VPN off applyGeneralToCore returns early
+            // by design (it guards on TunnelManager.isRunning),
+            // so the level is only saved then; the running
+            // in-app overlay core gets no live patch either —
+            // AppCore only observes unifiedDelay, never
+            // logLevel — so the new level reaches a core at the
+            // next VPN start (extension) or not at all for the
+            // overlay until a live-patch channel is added.
+            .onChange(of: settingsStore.logLevel) { _, _ in
+                settingsStore.save()
+                Task { await settingsStore.applyGeneralToCore() }
             }
             .sheet(item: $selectedEntry) { entry in
                 LogEntryDetailView(entry: entry)

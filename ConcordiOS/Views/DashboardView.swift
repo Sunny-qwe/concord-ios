@@ -374,6 +374,10 @@ struct DashboardView: View {
         await connectionStore.refresh()
         await trafficActions.refresh()
         await trafficActions.refreshEngineStatus()
+        // v0.2.86 item 10: a transient snapshot failure clears the
+        // warnings (TrafficStore.refreshEngineStatus); a manual
+        // refresh re-pulls them so the pill does not stay empty.
+        await trafficActions.refreshWarnings()
         await eventStore.refresh()
         await dnsStore.refresh()
         await refreshSubscription()
@@ -383,6 +387,54 @@ struct DashboardView: View {
     // MARK: - Body
 
     var body: some View {
+        dashboardScrollContent
+            .concordPageBackground()
+            .refreshable { await refreshAll() }
+        // v0.2.69: the tunnel bookkeeping, engine refresh and
+        // service probing that used to live in this view's .task /
+        // .onChange now live in DashboardTrafficEffects (below),
+        // a leaf that observes TrafficStore. Its body is clear
+        // colour, so the 1 s traffic tick re-evaluates almost
+        // nothing; this view stays unsubscribed.
+        .background { dashboardTrafficEffects }
+        .onChange(of: settingsStore.mode) { _, _ in
+            Task { await settingsStore.applyGeneralToCore() }
+        }
+        .sheet(isPresented: $showMemoryDetail) { memoryDetailSheet }
+        .sheet(isPresented: $showTrafficDetail) { trafficDetailSheet }
+        .sheet(isPresented: $showOutboundIPSheet) { outboundIPSheet }
+        .sheet(isPresented: $showServiceSheet) { serviceStatusSheet }
+        .sheet(isPresented: $showProvidersSheet) { providersSheetContent }
+        .sheet(isPresented: $showGroupsSheet) { groupsSheetContent }
+        .sheet(item: $statsDestination) { statsSheetContent(for: $0) }
+        .sheet(isPresented: $showServiceManageSheet) { serviceManageSheet }
+        // The dashboard's consent prompt (fork 0a55a31): the same
+        // prompt the modules page uses, asked over the dashboard
+        // for each module that awaits an answer in turn; an answer
+        // either way takes the module off the card.
+        .alert(reviewAlertTitle, isPresented: $showReviewAlert, presenting: reviewModule) { module in
+            Button("取消", role: .cancel) {
+                Task { await answerReview(module, agreed: false) }
+            }
+            Button("启用") {
+                Task { await answerReview(module, agreed: true) }
+            }
+        } message: { module in
+            Text(mitmModuleStore.consentPrompt(for: module)?.message ?? "")
+        }
+    }
+
+    // MARK: - Body sections (v0.2.86)
+    //
+    // body was ~275 lines — past the type-check risk line, and a
+    // timeout can mask real errors in the same file. Each section
+    // below is one small property or helper; behaviour is
+    // unchanged, only the grouping moved.
+
+    /// The scrolling card list: title row, sample badge, pending
+    /// modules, the inline edit panel, the ordered cards, and the
+    /// start-error line.
+    private var dashboardScrollContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: stackSpacing) {
                 titleRow
@@ -408,156 +460,142 @@ struct DashboardView: View {
             .padding(.top, 20)
             .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        .concordPageBackground()
-        .refreshable { await refreshAll() }
-        // v0.2.69: the tunnel bookkeeping, engine refresh and
-        // service probing that used to live in this view's .task /
-        // .onChange now live in DashboardTrafficEffects (below),
-        // a leaf that observes TrafficStore. Its body is clear
-        // colour, so the 1 s traffic tick re-evaluates almost
-        // nothing; this view stays unsubscribed.
-        .background {
-            DashboardTrafficEffects(
-                tunnelStartedAt: $tunnelStartedAt,
-                morphProgress: $morphProgress,
-                ipInfo: $ipInfo,
-                ipAsn: $ipAsn,
-                ipFetchFailed: $ipFetchFailed,
-                trafficActions: $trafficActions,
-                fetchIPInfo: fetchIPInfo,
-                refreshSubscription: refreshSubscription
-            )
-        }
-        .onChange(of: settingsStore.mode) { _, _ in
-            Task { await settingsStore.applyGeneralToCore() }
-        }
-        .sheet(isPresented: $showMemoryDetail) {
-            // v0.2.69: the sheet's core-bytes read lives in the
-            // host leaf, which observes TrafficStore; this view
-            // no longer reads the store.
-            MemoryDetailSheetHost(
-                isReleasing: $isReleasingMemory,
-                releaseMessage: $memoryReleaseMessage
-            )
+    }
+
+    /// The TrafficStore-observing leaf (v0.2.69): tunnel
+    /// bookkeeping, engine refresh and service probing. A
+    /// property so the .background modifier in body stays one line.
+    private var dashboardTrafficEffects: some View {
+        DashboardTrafficEffects(
+            tunnelStartedAt: $tunnelStartedAt,
+            morphProgress: $morphProgress,
+            ipInfo: $ipInfo,
+            ipAsn: $ipAsn,
+            ipFetchFailed: $ipFetchFailed,
+            trafficActions: $trafficActions,
+            fetchIPInfo: fetchIPInfo,
+            refreshSubscription: refreshSubscription
+        )
+    }
+
+    /// Memory detail sheet. v0.2.69: the sheet's core-bytes read
+    /// lives in the host leaf, which observes TrafficStore; this
+    /// view no longer reads the store.
+    private var memoryDetailSheet: some View {
+        MemoryDetailSheetHost(
+            isReleasing: $isReleasingMemory,
+            releaseMessage: $memoryReleaseMessage
+        )
+        .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+        .presentationDragIndicator(.hidden)
+        .presentationBackground(ConcordTheme.pageBackground)
+        .presentationCornerRadius(28)
+    }
+
+    /// v0.2.56: the traffic card opens the MuYu traffic sheet
+    /// (日/周/月， date navigator, 流量概括， rankings) — it
+    /// reads TrafficStore directly, so its figures always
+    /// match the card's.
+    private var trafficDetailSheet: some View {
+        TrafficStatsSheet()
             .presentationDetents([.fraction(0.5625), .fraction(0.9)])
             .presentationDragIndicator(.hidden)
             .presentationBackground(ConcordTheme.pageBackground)
             .presentationCornerRadius(28)
-        }
-        // v0.2.56: the traffic card opens the MuYu traffic sheet
-        // (日/周/月， date navigator, 流量概括， rankings) — it
-        // reads TrafficStore directly, so its figures always
-        // match the card's.
-        .sheet(isPresented: $showTrafficDetail) {
-            TrafficStatsSheet()
-                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
-                .presentationDragIndicator(.hidden)
-                .presentationBackground(ConcordTheme.pageBackground)
-                .presentationCornerRadius(28)
-        }
-        // v0.2.56: the status card opens the 出站 IP sheet
-        // (MuYu key_3).
-        .sheet(isPresented: $showOutboundIPSheet) {
-            // v0.2.69: the egress-IP read and the core probe live
-            // in the host leaf, which observes TrafficStore.
-            OutboundIPSheetHost(
-                hideIp: $settingsStore.hideIp,
-                ipInfo: ipInfo,
-                assessed: assessedIpInfo,
-                ipAsn: ipAsn,
-                isChecking: ipChecking,
-                fetchFailed: ipFetchFailed,
-                fetchIPInfo: fetchIPInfo
-            )
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.hidden)
-            .presentationBackground(ConcordTheme.pageBackground)
-            .presentationCornerRadius(28)
-        }
-        // v0.2.56: the services card opens the 服务状态 sheet
-        // (MuYu key_7).
-        .sheet(isPresented: $showServiceSheet) {
-            ServiceStatusSheet()
-                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
-                .presentationDragIndicator(.hidden)
-                .presentationBackground(ConcordTheme.pageBackground)
-                .presentationCornerRadius(28)
-        }
-        // v0.2.56: the config card opens the rule-providers
-        // sheet (MuYu key_25).
-        .sheet(isPresented: $showProvidersSheet) {
-            ProvidersSheet(profileName: profileStore.activeProfile?.name ?? "配置", subscription: subscription)
-                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
-                .presentationDragIndicator(.hidden)
-                .presentationBackground(ConcordTheme.pageBackground)
-                .presentationCornerRadius(28)
-        }
-        // v0.2.64: the 策略组 card opens this sheet (upstream
-        // FlClash proxy_groups.dart showProxiesSheet) instead of
-        // jumping straight to the Proxies tab.
-        .sheet(isPresented: $showGroupsSheet) {
-            groupsSheet
-                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
-                .presentationDragIndicator(.hidden)
-                .presentationBackground(ConcordTheme.pageBackground)
-                .presentationCornerRadius(28)
-        }
-        // D-M6: a stat cell opens its source page — live/recent
-        // connections, or the DNS queries page for the DNS cell.
-        // v0.2.68: MuYu sheet chrome — no NavigationStack, no
-        // system nav bar; each content view renders its own
-        // MuYu header (handle + ✕ + title + actions) and a
-        // bottom floating search bar.
-        // v0.2.84: upstream FlClash openDashboardFeed passes the
-        // feed straight to the sheet builder (showSnapSheet +
-        // NestedPagedSheet) — one item, no separate Bool. The
-        // v0.2.83 two-state pattern (statsDestination + a
-        // showStatsSheet Bool, content behind `if let`) presented
-        // a blank sheet: the content read a nil destination and
-        // rendered nothing, and a blank sheet with a hidden drag
-        // indicator and no ✕ cannot be dismissed, so the app
-        // looked frozen. .sheet(item:) hands the destination to
-        // the content directly, so it cannot be nil. Detents
-        // match upstream snapSheetDetents [9/16, 0.9]: opens at
-        // the short detent, drags to 90%.
-        .sheet(item: $statsDestination) { destination in
-            Group {
-                switch destination {
-                case .live:
-                    ConnectionsView(initialFeed: .live, sheetChrome: true)
-                case .recent:
-                    ConnectionsView(initialFeed: .recent, sheetChrome: true)
-                case .dns:
-                    DnsQueriesView(mode: .sheet)
-                }
-            }
+    }
+
+    /// v0.2.56: the status card opens the 出站 IP sheet
+    /// (MuYu key_3). v0.2.69: the egress-IP read and the core
+    /// probe live in the host leaf, which observes TrafficStore.
+    private var outboundIPSheet: some View {
+        OutboundIPSheetHost(
+            hideIp: $settingsStore.hideIp,
+            ipInfo: ipInfo,
+            assessed: assessedIpInfo,
+            ipAsn: ipAsn,
+            isChecking: ipChecking,
+            fetchFailed: ipFetchFailed,
+            fetchIPInfo: fetchIPInfo
+        )
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.hidden)
+        .presentationBackground(ConcordTheme.pageBackground)
+        .presentationCornerRadius(28)
+    }
+
+    /// v0.2.56: the services card opens the 服务状态 sheet
+    /// (MuYu key_7).
+    private var serviceStatusSheet: some View {
+        ServiceStatusSheet()
             .presentationDetents([.fraction(0.5625), .fraction(0.9)])
             .presentationDragIndicator(.hidden)
             .presentationBackground(ConcordTheme.pageBackground)
             .presentationCornerRadius(28)
-        }
-        // D-M3: manage the probe-service targets (order + enabled).
-        .sheet(isPresented: $showServiceManageSheet) {
-            ServiceManageSheet()
-                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(ConcordTheme.pageBackground)
-                .presentationCornerRadius(28)
-        }
-        // The dashboard's consent prompt (fork 0a55a31): the same
-        // prompt the modules page uses, asked over the dashboard
-        // for each module that awaits an answer in turn; an answer
-        // either way takes the module off the card.
-        .alert(reviewAlertTitle, isPresented: $showReviewAlert, presenting: reviewModule) { module in
-            Button("取消", role: .cancel) {
-                Task { await answerReview(module, agreed: false) }
+    }
+
+    /// v0.2.56: the config card opens the rule-providers
+    /// sheet (MuYu key_25).
+    private var providersSheetContent: some View {
+        ProvidersSheet(profileName: profileStore.activeProfile?.name ?? "配置", subscription: subscription)
+            .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+            .presentationDragIndicator(.hidden)
+            .presentationBackground(ConcordTheme.pageBackground)
+            .presentationCornerRadius(28)
+    }
+
+    /// v0.2.64: the 策略组 card opens this sheet (upstream
+    /// FlClash proxy_groups.dart showProxiesSheet) instead of
+    /// jumping straight to the Proxies tab.
+    private var groupsSheetContent: some View {
+        groupsSheet
+            .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+            .presentationDragIndicator(.hidden)
+            .presentationBackground(ConcordTheme.pageBackground)
+            .presentationCornerRadius(28)
+    }
+
+    /// D-M6: a stat cell opens its source page — live/recent
+    /// connections, or the DNS queries page for the DNS cell.
+    /// v0.2.68: MuYu sheet chrome — no NavigationStack, no
+    /// system nav bar; each content view renders its own
+    /// MuYu header (handle + ✕ + title + actions) and a
+    /// bottom floating search bar.
+    /// v0.2.84: upstream FlClash openDashboardFeed passes the
+    /// feed straight to the sheet builder (showSnapSheet +
+    /// NestedPagedSheet) — one item, no separate Bool. The
+    /// v0.2.83 two-state pattern (statsDestination + a
+    /// showStatsSheet Bool, content behind `if let`) presented
+    /// a blank sheet: the content read a nil destination and
+    /// rendered nothing, and a blank sheet with a hidden drag
+    /// indicator and no ✕ cannot be dismissed, so the app
+    /// looked frozen. .sheet(item:) hands the destination to
+    /// the content directly, so it cannot be nil. Detents
+    /// match upstream snapSheetDetents [9/16, 0.9]: opens at
+    /// the short detent, drags to 90%.
+    private func statsSheetContent(for destination: StatsDestination) -> some View {
+        Group {
+            switch destination {
+            case .live:
+                ConnectionsView(initialFeed: .live, sheetChrome: true)
+            case .recent:
+                ConnectionsView(initialFeed: .recent, sheetChrome: true)
+            case .dns:
+                DnsQueriesView(mode: .sheet)
             }
-            Button("启用") {
-                Task { await answerReview(module, agreed: true) }
-            }
-        } message: { module in
-            Text(mitmModuleStore.consentPrompt(for: module)?.message ?? "")
         }
+        .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+        .presentationDragIndicator(.hidden)
+        .presentationBackground(ConcordTheme.pageBackground)
+        .presentationCornerRadius(28)
+    }
+
+    /// D-M3: manage the probe-service targets (order + enabled).
+    private var serviceManageSheet: some View {
+        ServiceManageSheet()
+            .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(ConcordTheme.pageBackground)
+            .presentationCornerRadius(28)
     }
 
     // MARK: - Modules awaiting consent (fork 2d31f10 + 0a55a31)
@@ -668,6 +706,15 @@ struct DashboardView: View {
             Text("tab.dashboard".l10n)
                 .font(.system(size: 24, weight: .bold))
             Spacer()
+            // v0.2.86: upstream dashboard.dart statusActions —
+            // the faults badge first, then the live-status
+            // (warnings) pill; both hidden while editing. Both
+            // are TrafficStore leaves, so the 1 s tick never
+            // re-evaluates this view (v0.2.69).
+            if !isEditingDashboard {
+                DashboardServiceFaultsBadge()
+                DashboardWarningsPill()
+            }
             // D-M2: core-status button — shown only while the VPN
             // is off, one tap starts it (the same path as the play
             // button). There is no separate core-restart API: the
@@ -1078,7 +1125,7 @@ struct DashboardView: View {
 
     private var modeCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            CardTitleRow(icon: "arrow.triangle.branch", title: "出站模式")
+            CardTitleRow(icon: "arrow.triangle.branch", title: "出站")
             // FlClash outbound_mode.dart DashboardConnectedGroup: one
             // connected pill — outer radius 26, height 52, icon 18,
             // selected segment primary-filled, inner radius 12.
@@ -2030,8 +2077,122 @@ private struct MemoryBar: View {
 private struct DashboardTrafficActions {
     var refresh: () async -> Void = {}
     var refreshEngineStatus: () async -> Void = {}
+    var refreshWarnings: () async -> Void = {}
     var noteTunnelStarted: (Date) async -> Void = { _ in }
     var probe: () async -> Void = {}
+}
+
+/// Dashboard bar badge for services that did not start (v0.2.86,
+/// upstream dashboard.dart statusActions + service_faults.dart
+/// ServiceFaultsButton): an error-tinted count badge, left out
+/// while there are none; a tap lists each service and its reason.
+/// A TrafficStore leaf, so the 1 s tick re-renders only this badge.
+private struct DashboardServiceFaultsBadge: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    @State private var showFaultsAlert = false
+
+    var body: some View {
+        if let faults = trafficStore.engineStatus?.faults, !faults.isEmpty {
+            Button { showFaultsAlert = true } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("\(faults.count)")
+                        .font(.footnote.weight(.semibold).monospacedDigit())
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.red.opacity(0.14), in: Capsule())
+                .foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("未能启动的服务")
+            .alert("未能启动的服务", isPresented: $showFaultsAlert) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(faults.map { faultLine($0) }.joined(separator: "\n\n"))
+            }
+        }
+    }
+
+    /// One fault as upstream shows it (service_faults.dart):
+    /// the service label, then the reason, on two lines.
+    private func faultLine(_ fault: ConcordServiceFault) -> String {
+        "\(faultServiceLabel(fault))\n\(faultReasonLabel(fault))"
+    }
+
+    /// Upstream l10n_labels.dart ServiceFaultL10n.serviceLabel:
+    /// the localized service name, plus the address when the core
+    /// reports one. The wire names are the FaultService enum
+    /// cases (dto.dart); anything else is "其他".
+    private func faultServiceLabel(_ fault: ConcordServiceFault) -> String {
+        let name: String
+        switch fault.service {
+        case "mixed": name = "混合端口"
+        case "http": name = "HTTP端口"
+        case "socks": name = "Socks端口"
+        case "redir": name = "Redir端口"
+        case "tproxy": name = "Tproxy端口"
+        case "tun": name = "虚拟网卡"
+        case "dns": name = "DNS 服务器"
+        default: name = "其他"
+        }
+        if let address = fault.address, !address.isEmpty {
+            return "\(name) \(address)"
+        }
+        return name
+    }
+
+    /// Upstream l10n_labels.dart ServiceFaultL10n.reasonLabel:
+    /// the three known reasons are localized; anything else shows
+    /// the core's own message.
+    private func faultReasonLabel(_ fault: ConcordServiceFault) -> String {
+        switch fault.reason {
+        case "address_in_use": return "地址已被占用。"
+        case "address_not_available": return "本机没有这个地址。"
+        case "permission_denied": return "没有权限。"
+        default: return fault.message
+        }
+    }
+}
+
+/// Dashboard bar pill for config warnings (v0.2.86, upstream
+/// live_status.dart LiveStatusButton / _LiveStatusPill, the
+/// WarningsStatus case): a warning-tinted pill with the warning
+/// glyph and the warning count, left out while there are none; a
+/// tap opens the warnings deck. A TrafficStore leaf, so the 1 s
+/// tick re-renders only this pill. The deck is ConfigWarningsDeck
+/// (Views/ConfigWarningsDeck.swift); the sheet chrome matches the
+/// other dashboard sheets.
+private struct DashboardWarningsPill: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+    @State private var showWarningsDeck = false
+
+    var body: some View {
+        if !trafficStore.lastWarnings.isEmpty {
+            Button { showWarningsDeck = true } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text("\(trafficStore.lastWarnings.count)")
+                        .font(.footnote.weight(.semibold).monospacedDigit())
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(Color.orange.opacity(0.14), in: Capsule())
+                .foregroundStyle(.orange)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("配置警告")
+            .sheet(isPresented: $showWarningsDeck) {
+                ConfigWarningsDeck(warnings: trafficStore.lastWarnings)
+                    .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                    .presentationDragIndicator(.hidden)
+                    .presentationBackground(ConcordTheme.pageBackground)
+                    .presentationCornerRadius(28)
+            }
+        }
+    }
 }
 
 /// IP to show in the status card and the IP sheets (audit D10):
@@ -2096,6 +2257,7 @@ private struct DashboardTrafficEffects: View {
                 trafficActions = DashboardTrafficActions(
                     refresh: { await trafficStore.refresh() },
                     refreshEngineStatus: { await trafficStore.refreshEngineStatus() },
+                    refreshWarnings: { await trafficStore.refreshWarnings() },
                     noteTunnelStarted: { await trafficStore.noteTunnelStarted(at: $0) },
                     probe: { await trafficStore.probe() }
                 )
@@ -2118,7 +2280,7 @@ private struct DashboardTrafficEffects: View {
                 if trafficStore.services.isEmpty,
                    let proxy = proxyStore.selectedOutbound,
                    client.mode == .sample || tunnelManager.isRunning {
-                    await trafficStore.probeServices(proxy: proxy)
+                    await trafficStore.serviceProbeStore.probeAll(proxy: proxy)
                 }
             }
             .onChange(of: proxyStore.isRunning) { _, running in
@@ -2136,7 +2298,14 @@ private struct DashboardTrafficEffects: View {
                         Task { await trafficStore.noteTunnelStarted(at: started) }
                     }
                 } else {
-                    Task { await trafficStore.noteTunnelStopped() }
+                    // v0.2.86 item 16: the tunnel going down forgets
+                    // every confirmed failure and cancels every
+                    // pending confirm/recheck, so no stale retry
+                    // fires after the core is gone.
+                    Task {
+                        await trafficStore.noteTunnelStopped()
+                        await trafficStore.serviceProbeStore.reset()
+                    }
                 }
                 // D-M7: hold the service/IP-probe results through the
                 // start — a stale pre-start result must not flash as
@@ -2171,7 +2340,7 @@ private struct DashboardTrafficEffects: View {
                         await trafficStore.probe()
                         if let proxy = proxyStore.selectedOutbound,
                            client.mode == .sample || tunnelManager.isRunning {
-                            await trafficStore.probeServices(proxy: proxy)
+                            await trafficStore.serviceProbeStore.probeAll(proxy: proxy)
                         }
                     }
                 }
@@ -2542,6 +2711,26 @@ private struct ServicesCardView: View {
         }
     }
 
+    /// v0.2.86 item 16: a failed/timeout status is only shown as
+    /// failed once ServiceProbeStore confirms it (1 s confirm
+    /// re-probe); until then the row reads "检测中" in secondary
+    /// grey. Verdicts (blocked/restricted/…) are shown as-is.
+    private func serviceRowStatusLabel(_ service: ConcordServiceItem) -> String {
+        if ServiceProbeStore.isFailure(service),
+           !trafficStore.serviceProbeStore.confirmedFailures.contains(service.name) {
+            return "检测中"
+        }
+        return serviceStatusLabel(service.status)
+    }
+
+    private func serviceRowStatusColor(_ service: ConcordServiceItem) -> Color {
+        if ServiceProbeStore.isFailure(service),
+           !trafficStore.serviceProbeStore.confirmedFailures.contains(service.name) {
+            return .secondary
+        }
+        return serviceStatusColor(service.status)
+    }
+
     /// engine.state values (upstream crates/proto EngineStatus):
     /// created / initialized / configured / running / failed.
     private func engineStateLabel(_ state: String) -> String {
@@ -2597,10 +2786,10 @@ private struct ServicesCardView: View {
                             Text(region).font(.caption2).foregroundStyle(.secondary)
                         }
                         Text(service.delay.map { "\($0) ms" } ?? "—").font(.caption2)
-                        Text(serviceStatusLabel(service.status))
+                        Text(serviceRowStatusLabel(service))
                             .font(.caption2)
                             .fontWeight(.semibold)
-                            .foregroundStyle(serviceStatusColor(service.status))
+                            .foregroundStyle(serviceRowStatusColor(service))
                     }
                 }
             }
@@ -2608,7 +2797,7 @@ private struct ServicesCardView: View {
                 Button("检测") {
                     Task {
                         if let proxy = proxyStore.selectedOutbound {
-                            await trafficStore.probeServices(proxy: proxy)
+                            await trafficStore.serviceProbeStore.probeAll(proxy: proxy)
                         }
                     }
                 }
@@ -2622,7 +2811,7 @@ private struct ServicesCardView: View {
                 Button("全部检测") {
                     Task {
                         if let proxy = proxyStore.selectedOutbound {
-                            await trafficStore.probeServices(proxy: proxy, names: trafficStore.orderedServiceNames)
+                            await trafficStore.serviceProbeStore.probeAll(proxy: proxy, names: trafficStore.orderedServiceNames)
                         }
                     }
                 }

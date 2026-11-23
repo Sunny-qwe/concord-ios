@@ -145,8 +145,8 @@ struct MitmModulesView: View {
             MitmModuleTextEditorView(
                 module: nil,
                 initialText: MitmModuleStore.blankTemplate(name: "新模块"),
-                pushed: true,
-                onSaved: { saved in offerConsent(saved) }
+                onSaved: { saved in offerConsent(saved) },
+                pushed: true
             )
         }
         // The consent prompt (fork `answerMitmModule`): what turning
@@ -881,12 +881,12 @@ struct MitmModuleDetailView: View {
                 MitmModuleTextEditorView(
                     module: module,
                     initialText: text,
-                    pushed: true,
                     onSaved: { saved in
                         if let saved, moduleStore.awaitsConsent(saved) {
                             showConsent = true
                         }
-                    }
+                    },
+                    pushed: true
                 )
             } else {
                 List {

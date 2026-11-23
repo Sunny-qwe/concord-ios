@@ -37,6 +37,7 @@ struct DashboardView: View {
     /// reads tunnelManager.unexpectedDisconnect.
     @ObservedObject private var onDemandStore = OnDemandStore.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openURL) private var openURL
 
     @AppStorage("ConcordiOS.dashboard.show.status") private var showStatus = true
     @AppStorage("ConcordiOS.dashboard.show.speed") private var showSpeed = true
@@ -60,7 +61,10 @@ struct DashboardView: View {
     /// later versions).
     @AppStorage("ConcordiOS.dashboard.order") private var cardOrderString = ""
 
-    @State private var showEditSheet = false
+    /// Inline edit mode (v0.2.85, upstream dashboard.dart
+    /// `_editing`): the pencil in the title row toggles editing
+    /// on this page and becomes a check "done" — no sheet.
+    @State private var isEditingDashboard = false
     /// Non-subscribing TrafficStore action channel (v0.2.69): this
     /// view no longer observes TrafficStore, so its body does not
     /// re-evaluate on the 1 s traffic tick. The DashboardTrafficEffects
@@ -70,9 +74,6 @@ struct DashboardView: View {
     /// and never re-render the body.
     @State private var trafficActions = DashboardTrafficActions()
     @State private var servicesExpanded = false
-    /// IP quality sheet (D-M4): the status card's IP opens the
-    /// IP-quality page for that exact IP.
-    @State private var showIPQualitySheet = false
     /// Service management sheet (D-M3): reorder + enable/disable
     /// the probe-service targets.
     @State private var showServiceManageSheet = false
@@ -394,6 +395,10 @@ struct DashboardView: View {
                     }
                 }
                 pendingModulesCard
+                // v0.2.85: inline edit panel (upstream `_editing`)
+                // sits above the cards, which stay visible below
+                // so toggles and reordering apply live.
+                if isEditingDashboard { dashboardEditPanel }
                 ForEach(orderedCards, id: \.self) { cardView(for: $0) }
                 if let error = proxyStore.lastError {
                     Text(error).font(.caption2).foregroundStyle(.red)
@@ -426,28 +431,6 @@ struct DashboardView: View {
         .onChange(of: settingsStore.mode) { _, _ in
             Task { await settingsStore.applyGeneralToCore() }
         }
-        .sheet(isPresented: $showEditSheet) {
-            DashboardEditSheet(
-                showStatus: $showStatus,
-                showSpeed: $showSpeed,
-                showTraffic: $showTraffic,
-                showMode: $showMode,
-                showVpn: $showVpn,
-                showServices: $showServices,
-                showProfile: $showProfile,
-                showGroups: $showGroups,
-                showStats: $showStats,
-                showMemory: $showMemory,
-                showUpdate: $showUpdate,
-                densityCompact: $densityCompact,
-                cardOrder: Binding(
-                    get: { orderedCards },
-                    set: { newOrder in
-                        cardOrderString = newOrder.map(\.rawValue).joined(separator: ",")
-                    }
-                )
-            )
-        }
         .sheet(isPresented: $showMemoryDetail) {
             // v0.2.69: the sheet's core-bytes read lives in the
             // host leaf, which observes TrafficStore; this view
@@ -456,7 +439,7 @@ struct DashboardView: View {
                 isReleasing: $isReleasingMemory,
                 releaseMessage: $memoryReleaseMessage
             )
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.fraction(0.5625), .fraction(0.9)])
             .presentationDragIndicator(.hidden)
             .presentationBackground(ConcordTheme.pageBackground)
             .presentationCornerRadius(28)
@@ -467,7 +450,7 @@ struct DashboardView: View {
         // match the card's.
         .sheet(isPresented: $showTrafficDetail) {
             TrafficStatsSheet()
-                .presentationDetents([.fraction(0.85), .large])
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
                 .presentationDragIndicator(.hidden)
                 .presentationBackground(ConcordTheme.pageBackground)
                 .presentationCornerRadius(28)
@@ -495,7 +478,7 @@ struct DashboardView: View {
         // (MuYu key_7).
         .sheet(isPresented: $showServiceSheet) {
             ServiceStatusSheet()
-                .presentationDetents([.fraction(0.85), .large])
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
                 .presentationDragIndicator(.hidden)
                 .presentationBackground(ConcordTheme.pageBackground)
                 .presentationCornerRadius(28)
@@ -504,7 +487,7 @@ struct DashboardView: View {
         // sheet (MuYu key_25).
         .sheet(isPresented: $showProvidersSheet) {
             ProvidersSheet(profileName: profileStore.activeProfile?.name ?? "配置", subscription: subscription)
-                .presentationDetents([.fraction(0.85), .large])
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
                 .presentationDragIndicator(.hidden)
                 .presentationBackground(ConcordTheme.pageBackground)
                 .presentationCornerRadius(28)
@@ -514,7 +497,7 @@ struct DashboardView: View {
         // jumping straight to the Proxies tab.
         .sheet(isPresented: $showGroupsSheet) {
             groupsSheet
-                .presentationDetents([.fraction(0.85), .large])
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
                 .presentationDragIndicator(.hidden)
                 .presentationBackground(ConcordTheme.pageBackground)
                 .presentationCornerRadius(28)
@@ -553,19 +536,13 @@ struct DashboardView: View {
             .presentationBackground(ConcordTheme.pageBackground)
             .presentationCornerRadius(28)
         }
-        // D-M4: the status card's IP opens the IP-quality page for
-        // that exact IP (upstream showIpQualitySheet is always
-        // opened for one IP).
-        .sheet(isPresented: $showIPQualitySheet) {
-            // v0.2.69: the egress-IP read lives in the root leaf,
-            // which observes TrafficStore.
-            IPQualitySheetRoot(ipInfo: ipInfo)
-                .presentationDragIndicator(.visible)
-        }
         // D-M3: manage the probe-service targets (order + enabled).
         .sheet(isPresented: $showServiceManageSheet) {
             ServiceManageSheet()
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
                 .presentationDragIndicator(.visible)
+                .presentationBackground(ConcordTheme.pageBackground)
+                .presentationCornerRadius(28)
         }
         // The dashboard's consent prompt (fork 0a55a31): the same
         // prompt the modules page uses, asked over the dashboard
@@ -709,14 +686,26 @@ struct DashboardView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("启动 VPN")
             }
-            Button { showEditSheet = true } label: {
-                ThickPencilIcon(iconColor: editButtonIconColor, bandColor: editButtonBackground)
-                    .frame(width: 44, height: 44)
-                    .background(editButtonBackground, in: Circle())
-                    .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
+            // v0.2.85: inline edit mode (upstream dashboard.dart
+            // `_editing`) — the pencil toggles editing on this
+            // page and becomes the check "done"; no sheet.
+            Button { isEditingDashboard.toggle() } label: {
+                if isEditingDashboard {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(editButtonIconColor)
+                        .frame(width: 44, height: 44)
+                        .background(editButtonBackground, in: Circle())
+                        .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
+                } else {
+                    ThickPencilIcon(iconColor: editButtonIconColor, bandColor: editButtonBackground)
+                        .frame(width: 44, height: 44)
+                        .background(editButtonBackground, in: Circle())
+                        .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
+                }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("编辑仪表盘卡片")
+            .accessibilityLabel(isEditingDashboard ? "完成编辑" : "编辑仪表盘卡片")
         }
     }
 
@@ -735,6 +724,80 @@ struct DashboardView: View {
     private var editButtonIconColor: Color {
         guard proxyStore.isRunning else { return Color(.label) }
         return colorScheme == .dark ? .white : ConcordTheme.accent
+    }
+
+    // MARK: - Inline edit panel (v0.2.85, upstream `_editing`)
+    //
+    // The old DashboardEditSheet (a List with .onMove drag
+    // handles) cannot live inside this page's ScrollView — a
+    // List nested in a ScrollView breaks scrolling — so the
+    // order rows reorder with ↑/↓ buttons instead of drag
+    // handles. Same toggles, same order, same persistence
+    // (cardOrderString); the cards stay visible below the
+    // panel, so every change applies live.
+
+    private var dashboardEditPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("编辑仪表盘")
+                .font(.headline)
+            Text("状态卡片含启动键，不可移除。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle("网络速度", isOn: $showSpeed)
+            Toggle("流量统计", isOn: $showTraffic)
+            Toggle("出站模式", isOn: $showMode)
+            Toggle("VPN", isOn: $showVpn)
+            Toggle("服务状态", isOn: $showServices)
+            Toggle("配置", isOn: $showProfile)
+            Toggle("策略组", isOn: $showGroups)
+            Toggle("统计", isOn: $showStats)
+            Toggle("内存", isOn: $showMemory)
+            Toggle("更新状态", isOn: $showUpdate)
+            Divider()
+            Toggle("紧凑密度", isOn: $densityCompact)
+            Text("紧凑模式缩小字号与启动按钮、收紧卡片间距，并隐藏部分副标题（FlClash DashboardDensity.compact）。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Divider()
+            Text("卡片顺序")
+                .font(.subheadline.weight(.semibold))
+            ForEach(orderedCards, id: \.self) { id in
+                HStack(spacing: 8) {
+                    Text(id.title)
+                        .font(.footnote.weight(.semibold))
+                    Spacer()
+                    Button { moveCard(id, by: -1) } label: {
+                        Image(systemName: "chevron.up")
+                            .font(.footnote.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(orderedCards.first == id)
+                    Button { moveCard(id, by: 1) } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.footnote.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(orderedCards.last == id)
+                }
+            }
+            Text("点上下箭头调整顺序，关闭的卡片会从仪表盘隐藏，可随时再打开。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .font(.footnote.weight(.semibold))
+        .concordCard()
+    }
+
+    /// Moves one card one slot up (-1) or down (+1) in the
+    /// stored order (same cardOrderString write the old edit
+    /// sheet's .onMove used).
+    private func moveCard(_ id: DashboardCardID, by offset: Int) {
+        var order = orderedCards
+        guard let index = order.firstIndex(of: id) else { return }
+        let newIndex = index + offset
+        guard order.indices.contains(newIndex) else { return }
+        order.swapAt(index, newIndex)
+        cardOrderString = order.map(\.rawValue).joined(separator: ",")
     }
 
     // Content states (FlClash _ExitRow / _IpChips / _Cells): while
@@ -1608,12 +1671,23 @@ struct DashboardView: View {
             .controlSize(.small)
             .disabled(isCheckingUpdate)
             if lastUpdateIsNew {
-                Text("新版本需在 GitHub Actions 重新构建 IPA 后手动安装，本应用内无法直接更新。")
+                Text("点击卡片前往 GitHub Releases 下载新版本安装，本应用内无法直接更新。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
         .concordCard()
+        // v0.2.85: upstream update_status.dart installs directly
+        // from the update row with no dialog — tapping the card
+        // while an update is known opens the Releases page
+        // straight away (the app cannot install an IPA itself).
+        // The inner 检查更新 button keeps its own tap.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard lastUpdateIsNew,
+                  let url = URL(string: "https://github.com/Sunny-qwe/concord-ios/releases/latest") else { return }
+            openURL(url)
+        }
     }
 }
 
@@ -1935,75 +2009,6 @@ private struct MemoryBar: View {
 }
 
 // MARK: - Dashboard edit sheet (pencil button)
-
-private struct DashboardEditSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @Binding var showStatus: Bool
-    @Binding var showSpeed: Bool
-    @Binding var showTraffic: Bool
-    @Binding var showMode: Bool
-    @Binding var showVpn: Bool
-    @Binding var showServices: Bool
-    @Binding var showProfile: Bool
-    @Binding var showGroups: Bool
-    @Binding var showStats: Bool
-    @Binding var showMemory: Bool
-    @Binding var showUpdate: Bool
-    @Binding var densityCompact: Bool
-    @Binding var cardOrder: [DashboardCardID]
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("显示的卡片") {
-                    // FlClash widget_registry.dart: the status card is
-                    // non-removable ("含启动键，不可移除") — no toggle.
-                    Text("状态卡片含启动键，不可移除。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Toggle("网络速度", isOn: $showSpeed)
-                    Toggle("流量统计", isOn: $showTraffic)
-                    Toggle("出站模式", isOn: $showMode)
-                    Toggle("VPN", isOn: $showVpn)
-                    Toggle("服务状态", isOn: $showServices)
-                    Toggle("配置", isOn: $showProfile)
-                    Toggle("策略组", isOn: $showGroups)
-                    Toggle("统计", isOn: $showStats)
-                    Toggle("内存", isOn: $showMemory)
-                    Toggle("更新状态", isOn: $showUpdate)
-                }
-                Section("密度") {
-                    Toggle("紧凑密度", isOn: $densityCompact)
-                    Text("紧凑模式缩小字号与启动按钮、收紧卡片间距，并隐藏部分副标题（FlClash DashboardDensity.compact）。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Section("卡片顺序") {
-                    ForEach(cardOrder, id: \.self) { id in
-                        Text(id.title)
-                    }
-                    .onMove { from, to in
-                        cardOrder.move(fromOffsets: from, toOffset: to)
-                    }
-                    Text("拖动右侧手柄调整顺序，关闭的卡片会从仪表盘隐藏，可随时再打开。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .environment(\.editMode, .constant(.active))
-            .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle("title.editDashboard".l10n)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
-        }
-    }
-}
 
 // MARK: - TrafficStore leaf views (v0.2.69)
 //
@@ -2831,28 +2836,6 @@ private struct OutboundIPSheetHost: View {
                 }
             }
         )
-    }
-}
-
-/// Root for the IP-quality sheet (D-M4): the status card's IP
-/// opens the IP-quality page for that exact IP (upstream
-/// showIpQualitySheet is always opened for one IP). The
-/// egress-IP read lives here, in a view that observes
-/// TrafficStore.
-private struct IPQualitySheetRoot: View {
-    @EnvironmentObject private var trafficStore: TrafficStore
-    @EnvironmentObject private var proxyStore: ProxyStore
-
-    let ipInfo: IPQualityInfo?
-
-    var body: some View {
-        NavigationStack {
-            if let ip = dashboardDisplayIp(isRunning: proxyStore.isRunning, coreIp: trafficStore.outboundIp, fallbackQuery: ipInfo?.query) {
-                IPQualityView(ip: ip)
-            } else {
-                IPQualityView()
-            }
-        }
     }
 }
 

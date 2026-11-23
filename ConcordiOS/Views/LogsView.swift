@@ -12,10 +12,10 @@ struct LogsView: View {
     @EnvironmentObject private var eventStore: EventStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var connectionStore: ConnectionStore
-    @State private var showShare = false
-    @State private var exportURL: URL?
     @State private var exportError: String?
     @State private var showExportError = false
+    @State private var showExportSuccess = false
+    @State private var exportedFileName: String?
     @State private var showCopiedAlert = false
     @Environment(\.dismiss) private var dismiss
     @State private var tab = LogsTab.logs
@@ -326,11 +326,12 @@ struct LogsView: View {
                         // the full bundled export — one .txt file
                         // (app log + core warnings + app-core boot /
                         // GeoSeed diagnostic + VPN startup diagnostic)
-                        // via the system share sheet — or a copy of
-                        // the same text to the clipboard, so the user
-                        // can paste it straight into a message.
+                        // written to Documents ("文件" App) with a
+                        // success dialog — or a copy of the same text
+                        // to the clipboard, so the user can paste it
+                        // straight into a message.
                         Menu {
-                            Button("导出日志文件") { exportAndShare() }
+                            Button("导出日志文件") { exportLogFile() }
                             Button("复制日志文本") { copyLogs() }
                         } label: {
                             Image(systemName: "square.and.arrow.up")
@@ -355,18 +356,26 @@ struct LogsView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showShare) {
-                if let exportURL {
-                    ShareSheet(items: [exportURL])
-                }
-            }
             .sheet(item: $selectedEntry) { entry in
                 LogEntryDetailView(entry: entry)
+                    // Ours-only detail view (no upstream detail):
+                    // stays a sheet, with the upstream snap detents
+                    // [9/16, 0.9] and a drag handle.
+                    .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                    .presentationDragIndicator(.visible)
             }
             .alert("已复制", isPresented: $showCopiedAlert) {
                 Button("好", role: .cancel) {}
             } message: {
                 Text("日志已复制到剪贴板，可以直接粘贴发送。")
+            }
+            // Upstream _handleExport writes the file to disk, then
+            // showAlert "exportSuccess" (logs.dart:115-128) — no
+            // share sheet.
+            .alert("导出成功", isPresented: $showExportSuccess) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text("日志已保存到「文件」：\(exportedFileName ?? "")")
             }
             .alert("导出失败", isPresented: $showExportError) {
                 Button("好", role: .cancel) {}
@@ -475,16 +484,27 @@ struct LogsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Writes the bundled log export to a .txt file and opens the
-    /// system share sheet for it. Sharing is user-initiated only;
-    /// nothing is uploaded anywhere by the app itself.
-    private func exportAndShare() {
+    /// Writes the bundled log export to a .txt file in Documents
+    /// (visible in the Files app) and shows a success dialog.
+    /// Upstream _handleExport (logs.dart:115-128): write to disk,
+    /// then showAlert "exportSuccess" — no share sheet.
+    private func exportLogFile() {
         do {
             // Connection diagnostics for the export (v0.2.60):
             // failed dials + recently ended connections.
             logStore.connectionDiagnosticText = connectionStore.diagnosticExportText
-            exportURL = try logStore.exportLogFile()
-            showShare = true
+            let tmpURL = try logStore.exportLogFile()
+            if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                let dest = docs.appendingPathComponent(tmpURL.lastPathComponent)
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    try? FileManager.default.removeItem(at: dest)
+                }
+                try FileManager.default.moveItem(at: tmpURL, to: dest)
+                exportedFileName = dest.lastPathComponent
+            } else {
+                exportedFileName = tmpURL.lastPathComponent
+            }
+            showExportSuccess = true
         } catch {
             exportError = error.localizedDescription
             showExportError = true

@@ -223,6 +223,11 @@ struct ConnectionsView: View {
         }
         .sheet(item: $detail) { connection in
             ConnectionDetailView(connection: connection, isLive: detailIsLive)
+                // Upstream showTrackerInfoDetail → showSheet(props:
+                // nestedPagedSheetProps) + NestedPagedSheet, [9/16,
+                // 0.9], transparent bg (tracker_info_item.dart:27).
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                .presentationDragIndicator(.visible)
         }
         .refreshable { await connectionStore.refresh() }
         .onChange(of: feed) { _, newFeed in

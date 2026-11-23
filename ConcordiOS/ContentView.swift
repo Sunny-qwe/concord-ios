@@ -45,7 +45,6 @@ struct ContentView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var selectedTab: AppTab = .dashboard
-    @State private var updateAlertMessage: String?
     /// Drives the sliding grey pill behind the selected tab in the
     /// floating bar (matchedGeometryEffect): the pill glides to the
     /// tapped tab inside the same 0.3 s ease-out transaction that
@@ -198,10 +197,22 @@ struct ContentView: View {
             if settingsStore.autoRun, profileStore.activeProfile != nil, !proxyStore.isRunning {
                 await proxyStore.toggle()
             }
-            // Auto-check for updates on launch.
+            // Auto-check for updates on launch (v0.2.85):
+            // upstream update_status.dart installs directly
+            // from the update row with NO dialog, so the old
+            // "发现更新" alert is gone. The result is recorded
+            // silently in the same AppStorage keys the
+            // Dashboard update card reads (see DashboardView
+            // checkForUpdate), so the card shows the
+            // "发现新提交" pill — tapping the card opens the
+            // Releases page straight away.
             if settingsStore.autoCheckUpdate {
-                if let result = await UpdateChecker.check(), result.isNew {
-                    updateAlertMessage = "发现新提交：\(result.message)"
+                if let result = await UpdateChecker.check() {
+                    UserDefaults.standard.set(result.sha, forKey: "ConcordiOS.update.lastSha")
+                    UserDefaults.standard.set(result.message, forKey: "ConcordiOS.update.lastMessage")
+                    UserDefaults.standard.set(result.date, forKey: "ConcordiOS.update.lastDate")
+                    UserDefaults.standard.set(result.isNew, forKey: "ConcordiOS.update.lastIsNew")
+                    UserDefaults.standard.set(true, forKey: "ConcordiOS.update.lastChecked")
                 }
             }
         }
@@ -245,16 +256,6 @@ struct ContentView: View {
             // S8: keep the due-update gate in sync when the user
             // flips the switch in Settings while the app runs.
             profileStore.globalAutoUpdateEnabled = enabled
-        }
-        .alert("发现更新", isPresented: Binding(
-            get: { updateAlertMessage != nil },
-            set: { if !$0 { updateAlertMessage = nil } }
-        )) {
-            Button("common.ok".l10n, role: .cancel) {}
-        } message: {
-            if let updateAlertMessage {
-                Text(updateAlertMessage)
-            }
         }
     }
 

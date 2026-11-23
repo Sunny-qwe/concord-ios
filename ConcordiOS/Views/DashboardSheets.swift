@@ -318,9 +318,10 @@ struct SheetInfoRow: View {
 // (hosting -> 机房， silence -> residential, inferred).
 // The IP row opens the full IP-quality page (MuYu taps the
 // IP line for the same page); v0.2.68 removed the in-sheet
-// "查看完整 IP 质量" button (the video's sheet has none), so
-// the dashboard's showIPQualitySheet presentation currently
-// has no trigger — the IP-quality page itself stays reachable
+// "查看完整 IP 质量" button (the video's sheet has none), and
+// v0.2.85 removed the dashboard's dead IP-quality sheet
+// presentation (its trigger was deleted in v0.2.68 and nothing
+// ever set it) — the IP-quality page itself stays reachable
 // from Settings. The refresh button re-runs
 // both lookups. hideIp masks the address like the card does.
 
@@ -519,8 +520,10 @@ struct ServiceStatusSheet: View {
         .task { await probeNodeIPs() }
         .sheet(isPresented: $showManage) {
             ServiceManageSheet()
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
                 .presentationDragIndicator(.visible)
+                .presentationBackground(ConcordTheme.pageBackground)
+                .presentationCornerRadius(28)
         }
     }
 

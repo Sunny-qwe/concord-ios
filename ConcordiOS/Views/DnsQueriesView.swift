@@ -390,6 +390,11 @@ struct DnsQueriesView: View {
             }
             .sheet(item: $selectedEntry) { entry in
                 DnsEntryDetailView(entry: entry)
+                    // Upstream _showDnsQueryDetail → showSheet, snap
+                    // detents [9/16, 0.9], drag handle, scrim dismiss
+                    // (dns_queries.dart:233; MuYu: showNestedSheet).
+                    .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                    .presentationDragIndicator(.visible)
             }
         }
     }

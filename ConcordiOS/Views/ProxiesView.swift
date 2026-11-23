@@ -774,6 +774,15 @@ struct ProxiesView: View {
         // invisible tap catcher dismisses on any tap outside the
         // card; the card sits just below the nav bar with an arrow
         // pointing up at the ⋯ button, like the MuYu popup.
+        // v0.2.74: .ignoresSafeArea() must sit on the inner ZStack,
+        // NOT on the GeometryReader — on the reader it zeroes
+        // geo.safeAreaInsets.top, so the card's top padding was
+        // 0 + 44 + 6 = 50pt and the menu started inside the nav bar,
+        // covering the search/bolt/⋯ buttons (IMG_1219: card top
+        // ~57pt). With the real inset (~59pt on a Dynamic Island
+        // phone) the top is ~59 + 44 + 6 = 109pt, just below the
+        // nav bar (~103pt). The ZStack still ignores the safe area
+        // so the tap catcher covers the whole screen.
         .overlay {
             if showMoreMenu {
                 GeometryReader { geo in
@@ -794,8 +803,8 @@ struct ProxiesView: View {
                         .padding(.top, geo.safeAreaInsets.top + 44 + 6)
                         .padding(.trailing, 12)
                     }
+                    .ignoresSafeArea()
                 }
-                .ignoresSafeArea()
             }
         }
         .onDisappear { showMoreMenu = false }
@@ -1244,7 +1253,13 @@ struct ProxiesView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .frame(minWidth: 160, maxWidth: 280)
+            // v0.2.74: maxWidth 200 (was 280) — the menu expanded
+            // to the full 280pt and looked far wider than MuYu's
+            // (~160pt, IMG_1214); the longest row needs ~163pt, so
+            // 200pt gives it room without the bulk. Row height /
+            // padding unchanged (the ~44pt pitch already matches
+            // MuYu's ~43pt).
+            .frame(minWidth: 160, maxWidth: 200)
             .font(.subheadline)
             .foregroundStyle(Color(.label))
             .onDisappear { styleExpanded = false; sortExpanded = false; layoutExpanded = false; sizeExpanded = false; iconStyleExpanded = false }

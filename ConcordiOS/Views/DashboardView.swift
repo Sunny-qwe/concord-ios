@@ -694,8 +694,12 @@ struct DashboardView: View {
                         .font(.footnote.weight(.semibold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(ConcordTheme.accent, in: Capsule())
-                        .foregroundStyle(.white)
+                        // v0.2.74: white pill with accent text — the
+                        // user wants ALL rounded backgrounds back to
+                        // the original white, including this pill
+                        // (was a solid accent capsule).
+                        .background(Color.white, in: Capsule())
+                        .foregroundStyle(ConcordTheme.accent)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("启动 VPN")
@@ -887,13 +891,20 @@ struct DashboardView: View {
                     Task { await proxyStore.toggle() }
                 } label: {
                     ZStack {
+                        // v0.2.74: white fill with an accent icon —
+                        // the user wants ALL rounded backgrounds back
+                        // to the original white, including this round
+                        // button (was a solid accent fill with a white
+                        // icon; MuYu's IS accent-filled, noted in the
+                        // v0.2.74 report). The neutral shadow keeps
+                        // the white shape readable on the white card.
                         StartToggleMorphShape(progress: morphProgress)
-                            .fill(ConcordTheme.accent)
+                            .fill(Color.white)
                             .rotationEffect(.degrees(Double(morphProgress) * 40))
-                            .shadow(color: ConcordTheme.accent.opacity(0.35), radius: 9, x: 0, y: 6)
+                            .shadow(color: .black.opacity(0.15), radius: 9, x: 0, y: 6)
                         Image(systemName: proxyStore.isRunning ? "pause.fill" : "play.fill")
                             .font(.system(size: 21, weight: .bold))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(ConcordTheme.accent)
                     }
                     .frame(width: playButtonSize, height: playButtonSize)
                 }
@@ -1023,11 +1034,20 @@ struct DashboardView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: 52)
+                        // v0.2.74: the selected segment is a white
+                        // fill with accent text/icon — the user wants
+                        // ALL rounded backgrounds back to the
+                        // original white, including this pill (was a
+                        // solid accent fill with white text; MuYu's
+                        // selected segment IS accent-filled, noted in
+                        // the v0.2.74 report). Selection is still
+                        // shown by the accent text/icon vs the
+                        // unselected segments' dark text.
                         .background(
-                            selected ? ConcordTheme.accent : Color.clear,
+                            selected ? Color.white : Color.clear,
                             in: connectedSegmentShape(index: index, count: OutboundMode.allCases.count)
                         )
-                        .foregroundStyle(selected ? .white : Color(.label))
+                        .foregroundStyle(selected ? ConcordTheme.accent : Color(.label))
                     }
                     .buttonStyle(.plain)
                 }

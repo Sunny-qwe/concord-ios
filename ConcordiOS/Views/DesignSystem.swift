@@ -73,11 +73,13 @@ enum ConcordTheme {
         }
         return Color(.systemGroupedBackground)
     }
-    /// Card background: the same seeded tint, lighter — accent 8%
-    /// over white in light mode. Blue -> #EBF5FF (235,245,255);
-    /// magenta -> #F9F3F8 (249,243,248), near the video's #FBF4F3
-    /// card. Dark mode: accent 8% into #1C1C1E. Pure black mode
-    /// keeps cards very dark grey so they stay distinguishable.
+    /// Card background (v0.2.74): pure white in light mode — the
+    /// user wants the original white back ("所有的圆角背景都变成
+    /// 蓝色了 改成最开始的白色"). The v0.2.68 accent tint made
+    /// every card light blue under the blue theme (#EBF5FF) and
+    /// pink-tinted under magenta; MuYu's cards are near-white
+    /// (#FBF4F3) and our earliest versions were white. Dark mode
+    /// unchanged (dark cards stay dark).
     static var cardBackground: Color {
         if ThemeStore.shared.pureBlack && ThemeStore.shared.isDark {
             return Color(red: 0.11, green: 0.11, blue: 0.12)
@@ -85,7 +87,7 @@ enum ConcordTheme {
         if ThemeStore.shared.isDark {
             return Color(red: 0.11, green: 0.11, blue: 0.12).mixed(with: accent, amount: 0.08)
         }
-        return Color.white.mixed(with: accent, amount: 0.08)
+        return Color.white
     }
     /// Main card corner radius.
     static let cardRadius: CGFloat = 28
@@ -95,14 +97,15 @@ enum ConcordTheme {
     /// #007AFF). Read from ThemeStore so a theme change recolours
     /// every page that uses it.
     static var accent: Color { ThemeStore.shared.accentColor }
-    /// Pale fill for unselected pills / inner panels: theme-tinted
-    /// in light mode (accent 8% over white — blue #EBF5FF,
-    /// magenta #F9F3F8, like the video's warm-white pills); dark
-    /// mode keeps the system fill.
+    /// Pale fill for unselected pills / inner panels (v0.2.74):
+    /// pure white in light mode — same user request as
+    /// cardBackground (all rounded backgrounds back to the
+    /// original white; the accent tint made every inner panel
+    /// light blue too). Dark mode keeps the system fill.
     static var softFill: Color {
         ThemeStore.shared.isDark
             ? Color(.secondarySystemFill)
-            : Color.white.mixed(with: accent, amount: 0.08)
+            : Color.white
     }
     /// Selected-tab capsule fill in the floating bar (v0.2.68):
     /// the theme accent — the video's selected tab is a solid

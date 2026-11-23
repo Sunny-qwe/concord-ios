@@ -71,7 +71,14 @@ final class SettingsStore: ObservableObject {
     @Published var allowLan: Bool = false
     @Published var ipv6: Bool = true
     @Published var tcpConcurrent: Bool = true
-    @Published var unifiedDelay: Bool = false
+    /// "统一延迟测试" (FlClash clash_config.dart:2162 @Default(true)):
+    /// the delay probe times the 2nd request on the warm connection
+    /// instead of the cold dial + TLS, so displayed latencies drop
+    /// toward the pure round-trip. Default true since v0.2.86 Batch 5
+    /// (was false — the v0.2.65 wiring only added the switch, so the
+    /// toggle was effectively off for everyone; existing installs are
+    /// migrated once in load() via unifiedDelayMigrated).
+    @Published var unifiedDelay: Bool = true
     @Published var sniffing: Bool = true
     // TCP keep-alive (core GeneralConfig `keep-alive-idle` /
     // `keep-alive-interval` / `disable-keep-alive`, defaults 0/0/
@@ -330,10 +337,20 @@ final class SettingsStore: ObservableObject {
     let client: ConcordClient
     private let storageKey = "ConcordiOS.settings.v1"
     private var autosaveCancellable: AnyCancellable?
+    /// One-time migration flag for the v0.2.86 unified_delay default
+    /// flip (false → true): true once the migration has run. Defaults
+    /// to true so a fresh install (no saved blob) never "migrates";
+    /// old blobs decode it as false (see Saved's decoder) and get
+    /// migrated once in load().
+    private var unifiedDelayMigrated: Bool = true
+    /// Subscription for the live tunnel patch (see
+    /// startUnifiedDelayTunnelObservation).
+    private var unifiedDelayTunnelCancellable: AnyCancellable?
 
     init(client: ConcordClient = ConcordClient()) {
         self.client = client
         load()
+        startUnifiedDelayTunnelObservation()
         // Autosave: every toggle / field change persists to UserDefaults
         // and rewrites the shared files the extension reads. Before this
         // only a handful of controls saved on change — most settings
@@ -442,10 +459,11 @@ final class SettingsStore: ObservableObject {
         var appendSystemDns: Bool
         var systemProxy: Bool
         var bypassDomain: [String]
+        var unifiedDelayMigrated: Bool
 
         // The MITM fields are new: decode them leniently so settings
         // saved before they existed still load.
-        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, updateChannel: String = "stable", openLogs: Bool = false, showEnvironmentWatermark: Bool = true, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftncsi.com", "www.msftncsi.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 64, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict", keepAliveIdle: Int = 0, keepAliveInterval: Int = 0, disableKeepAlive: Bool = false, includeAllNetworks: Bool = false, excludeLocalNetworks: Bool = true, excludeAPNs: Bool = true, excludeCellularServices: Bool = true, enforceRoutes: Bool = false, excludeDeviceCommunication: Bool = true, onlyStatisticsProxy: Bool = false, appendSystemDns: Bool = false, systemProxy: Bool = false, bypassDomain: [String] = []) {
+        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, updateChannel: String = "stable", openLogs: Bool = false, showEnvironmentWatermark: Bool = true, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftncsi.com", "www.msftncsi.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 64, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict", keepAliveIdle: Int = 0, keepAliveInterval: Int = 0, disableKeepAlive: Bool = false, includeAllNetworks: Bool = false, excludeLocalNetworks: Bool = true, excludeAPNs: Bool = true, excludeCellularServices: Bool = true, enforceRoutes: Bool = false, excludeDeviceCommunication: Bool = true, onlyStatisticsProxy: Bool = false, appendSystemDns: Bool = false, systemProxy: Bool = false, bypassDomain: [String] = [], unifiedDelayMigrated: Bool = false) {
             self.mode = mode
             self.logLevel = logLevel
             self.mixedPort = mixedPort
@@ -502,6 +520,7 @@ final class SettingsStore: ObservableObject {
             self.appendSystemDns = appendSystemDns
             self.systemProxy = systemProxy
             self.bypassDomain = bypassDomain
+            self.unifiedDelayMigrated = unifiedDelayMigrated
             self.dnsListen = dnsListen
             self.dnsPreferH3 = dnsPreferH3
             self.dnsUseHosts = dnsUseHosts
@@ -549,6 +568,7 @@ final class SettingsStore: ObservableObject {
             ipv6 = try c.decode(Bool.self, forKey: .ipv6)
             tcpConcurrent = try c.decode(Bool.self, forKey: .tcpConcurrent)
             unifiedDelay = try c.decode(Bool.self, forKey: .unifiedDelay)
+            unifiedDelayMigrated = try c.decodeIfPresent(Bool.self, forKey: .unifiedDelayMigrated) ?? false
             sniffing = try c.decode(Bool.self, forKey: .sniffing)
             globalUa = try c.decode(String.self, forKey: .globalUa)
             delayTestTimeout = try c.decode(Int.self, forKey: .delayTestTimeout)
@@ -643,7 +663,7 @@ final class SettingsStore: ObservableObject {
     }
 
     func save() {
-        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, updateChannel: updateChannel.rawValue, openLogs: openLogs, showEnvironmentWatermark: showEnvironmentWatermark, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, dnsListen: dnsListen, dnsPreferH3: dnsPreferH3, dnsUseHosts: dnsUseHosts, dnsUseSystemHosts: dnsUseSystemHosts, dnsRespectRules: dnsRespectRules, dnsIpv6Timeout: dnsIpv6Timeout, dnsCacheAlgorithm: dnsCacheAlgorithm, dnsCacheMaxSize: dnsCacheMaxSize, dnsEnhancedMode: dnsEnhancedMode, dnsFakeIpRange6: dnsFakeIpRange6, dnsFakeIpFilter: dnsFakeIpFilter, dnsFakeIpFilterMode: dnsFakeIpFilterMode, dnsFakeIpTtl: dnsFakeIpTtl, dnsDefaultNameserver: dnsDefaultNameserver, dnsNameserverPolicy: dnsNameserverPolicy, dnsExtraNameservers: dnsExtraNameservers, dnsFallback: dnsFallback, dnsFallbackLazyQuery: dnsFallbackLazyQuery, dnsProxyServerNameserver: dnsProxyServerNameserver, dnsProxyServerNameserverPolicy: dnsProxyServerNameserverPolicy, dnsDirectNameserver: dnsDirectNameserver, dnsDirectNameserverFollowPolicy: dnsDirectNameserverFollowPolicy, dnsFallbackFilterGeoip: dnsFallbackFilterGeoip, dnsFallbackFilterGeoipCode: dnsFallbackFilterGeoipCode, dnsFallbackFilterGeosite: dnsFallbackFilterGeosite, dnsFallbackFilterIpcidr: dnsFallbackFilterIpcidr, dnsFallbackFilterDomain: dnsFallbackFilterDomain, interfaceName: interfaceName, interfaceNameMode: interfaceNameMode, userAgents: userAgents, authEnabled: authEnabled, authUsername: authUsername, authPassword: authPassword, externalControllerSecret: externalControllerSecret, externalControllerEnabled: externalControllerEnabled, mitmSkipServerCertVerify: mitmSkipServerCertVerify, mitmAutoQuicBlock: mitmAutoQuicBlock, mitmTrustedFingerprint: mitmTrustedFingerprint, mitmCapture: mitmCapture, mitmCaptureEntries: mitmCaptureEntries, hideIp: hideIp, dnsIpv6: dnsIpv6, findProcessModeSetting: findProcessModeSetting, keepAliveIdle: keepAliveIdle, keepAliveInterval: keepAliveInterval, disableKeepAlive: disableKeepAlive, includeAllNetworks: includeAllNetworks, excludeLocalNetworks: excludeLocalNetworks, excludeAPNs: excludeAPNs, excludeCellularServices: excludeCellularServices, enforceRoutes: enforceRoutes, excludeDeviceCommunication: excludeDeviceCommunication, onlyStatisticsProxy: onlyStatisticsProxy, appendSystemDns: appendSystemDns, systemProxy: systemProxy, bypassDomain: bypassDomain)
+        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, updateChannel: updateChannel.rawValue, openLogs: openLogs, showEnvironmentWatermark: showEnvironmentWatermark, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, dnsListen: dnsListen, dnsPreferH3: dnsPreferH3, dnsUseHosts: dnsUseHosts, dnsUseSystemHosts: dnsUseSystemHosts, dnsRespectRules: dnsRespectRules, dnsIpv6Timeout: dnsIpv6Timeout, dnsCacheAlgorithm: dnsCacheAlgorithm, dnsCacheMaxSize: dnsCacheMaxSize, dnsEnhancedMode: dnsEnhancedMode, dnsFakeIpRange6: dnsFakeIpRange6, dnsFakeIpFilter: dnsFakeIpFilter, dnsFakeIpFilterMode: dnsFakeIpFilterMode, dnsFakeIpTtl: dnsFakeIpTtl, dnsDefaultNameserver: dnsDefaultNameserver, dnsNameserverPolicy: dnsNameserverPolicy, dnsExtraNameservers: dnsExtraNameservers, dnsFallback: dnsFallback, dnsFallbackLazyQuery: dnsFallbackLazyQuery, dnsProxyServerNameserver: dnsProxyServerNameserver, dnsProxyServerNameserverPolicy: dnsProxyServerNameserverPolicy, dnsDirectNameserver: dnsDirectNameserver, dnsDirectNameserverFollowPolicy: dnsDirectNameserverFollowPolicy, dnsFallbackFilterGeoip: dnsFallbackFilterGeoip, dnsFallbackFilterGeoipCode: dnsFallbackFilterGeoipCode, dnsFallbackFilterGeosite: dnsFallbackFilterGeosite, dnsFallbackFilterIpcidr: dnsFallbackFilterIpcidr, dnsFallbackFilterDomain: dnsFallbackFilterDomain, interfaceName: interfaceName, interfaceNameMode: interfaceNameMode, userAgents: userAgents, authEnabled: authEnabled, authUsername: authUsername, authPassword: authPassword, externalControllerSecret: externalControllerSecret, externalControllerEnabled: externalControllerEnabled, mitmSkipServerCertVerify: mitmSkipServerCertVerify, mitmAutoQuicBlock: mitmAutoQuicBlock, mitmTrustedFingerprint: mitmTrustedFingerprint, mitmCapture: mitmCapture, mitmCaptureEntries: mitmCaptureEntries, hideIp: hideIp, dnsIpv6: dnsIpv6, findProcessModeSetting: findProcessModeSetting, keepAliveIdle: keepAliveIdle, keepAliveInterval: keepAliveInterval, disableKeepAlive: disableKeepAlive, includeAllNetworks: includeAllNetworks, excludeLocalNetworks: excludeLocalNetworks, excludeAPNs: excludeAPNs, excludeCellularServices: excludeCellularServices, enforceRoutes: enforceRoutes, excludeDeviceCommunication: excludeDeviceCommunication, onlyStatisticsProxy: onlyStatisticsProxy, appendSystemDns: appendSystemDns, systemProxy: systemProxy, bypassDomain: bypassDomain, unifiedDelayMigrated: unifiedDelayMigrated)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
         saveSharedFiles()
@@ -1099,9 +1119,10 @@ final class SettingsStore: ObservableObject {
         ipv6 = saved.ipv6
         tcpConcurrent = saved.tcpConcurrent
         unifiedDelay = saved.unifiedDelay
+        unifiedDelayMigrated = saved.unifiedDelayMigrated
         sniffing = saved.sniffing
         globalUa = saved.globalUa
-        delayTestTimeout = min(max(saved.delayTestTimeout, 500), 8000)
+        delayTestTimeout = min(max(saved.delayTestTimeout, 500), 15000)
         tunEnabled = saved.tunEnabled
         tunStack = saved.tunStack
         tunMtu = saved.tunMtu
@@ -1182,6 +1203,19 @@ final class SettingsStore: ObservableObject {
         appendSystemDns = saved.appendSystemDns
         systemProxy = saved.systemProxy
         bypassDomain = saved.bypassDomain
+        // One-time migration (v0.2.86 Batch 5): the unified_delay
+        // default flipped false → true (FlClash parity). An install
+        // that saved false only because the old default was false
+        // gets turned on once; the flag is persisted with the save
+        // below, so a user who turns it off afterwards stays off.
+        // Placed at the end of load() (not next to the unifiedDelay
+        // assignment above) so the save() writes the fully loaded
+        // state instead of defaults for the fields below it.
+        if !saved.unifiedDelayMigrated {
+            unifiedDelay = true
+            unifiedDelayMigrated = true
+            save()
+        }
     }
 
     /// Pull the general config from the core (config.general) into the UI.
@@ -1203,6 +1237,50 @@ final class SettingsStore: ObservableObject {
             save()
         } catch {
             // Keep the locally saved settings; the core is not linked yet.
+        }
+    }
+
+    /// Starts observing the "统一延迟测试" toggle (once): every flip
+    /// re-patches unified_delay into the RUNNING tunnel core. The
+    /// AppCore observer only covers the in-app core, so without this
+    /// the toggle never reached the tunnel core while the VPN was on
+    /// (v0.2.86 Batch 5). dropFirst() skips the subscription's
+    /// immediate current-value emission — the boot path already
+    /// carries the value via general.json, so the observer only
+    /// fires on real flips. No-ops while the tunnel is down
+    /// (patchUnifiedDelayToTunnel guards); the next VPN start reads
+    /// general.json. Idempotent: a second call is a no-op once the
+    /// subscription exists. Mirrors AppCore.startUnifiedDelayObservation.
+    func startUnifiedDelayTunnelObservation() {
+        guard unifiedDelayTunnelCancellable == nil else { return }
+        unifiedDelayTunnelCancellable = $unifiedDelay
+            .dropFirst()
+            .sink { [weak self] value in
+                Task { @MainActor [weak self] in
+                    await self?.patchUnifiedDelayToTunnel(value)
+                }
+            }
+    }
+
+    /// Patches only unified_delay into the tunnel core (config.patch
+    /// with just that field — ConcordConfigPatchParams fields are all
+    /// optional, nil means "leave alone"). Guards: the live transport
+    /// must be up and the tunnel running, otherwise the patch has
+    /// nowhere to go. Best-effort and never thrown: a failed patch
+    /// only costs the toggle's effect for this run; the next flip or
+    /// a manual "应用通用设置到核心" retries.
+    @MainActor
+    private func patchUnifiedDelayToTunnel(_ value: Bool) async {
+        guard client.mode == .live, TunnelManager.shared.isRunning else { return }
+        do {
+            try await client.configPatch(ConcordConfigPatchParams(
+                mode: nil, logLevel: nil, mixedPort: nil, allowLan: nil,
+                ipv6: nil, tcpConcurrent: nil, unifiedDelay: value,
+                findProcessMode: nil, secret: nil, authentication: nil,
+                externalController: nil))
+        } catch {
+            // Best-effort: the toggle keeps its old value in the tunnel
+            // core for this run. Never surfaces an error.
         }
     }
 

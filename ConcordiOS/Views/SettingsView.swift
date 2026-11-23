@@ -251,6 +251,9 @@ struct SettingsView: View {
                     .onChange(of: settingsStore.sniffing) { _, _ in SnifferStore.shared.save() }
                 Toggle("TCP 并发", isOn: $settingsStore.tcpConcurrent)
                 Toggle("统一延迟测试", isOn: $settingsStore.unifiedDelay)
+                Text("统一延迟测试：打开后测速只计量热连接上的第二次请求，拨号与 TLS 握手不再计入，延迟更接近真实往返耗时。VPN 开启时切换后立即生效；VPN 关闭时，隧道核心在下次启动时读取。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Section("内核") {

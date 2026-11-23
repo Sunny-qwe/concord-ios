@@ -1237,7 +1237,7 @@ final class ProxyStore: ObservableObject {
 
     /// Latency test for every node (FlClash delayTestGroups on
     /// all groups): each resolved target gets one delay.test call,
-    /// at most 2 in flight (see runLatencyTest). With the VPN OFF
+    /// at most delayTestBatchSize (32) in flight (see runLatencyTest). With the VPN OFF
     /// (live mode) the test runs on the app-side core (AppCore,
     /// FlClash parity) instead of failing: the extension's core is
     /// down, so the calls below go to AppCore. A transport failure
@@ -1628,8 +1628,9 @@ final class ProxyStore: ObservableObject {
     /// actions/proxies.dart _runDelayTests, :405-445): every target
     /// gets exactly ONE delay.test call (timeout = the settings
     /// delayTestTimeout, default 8000 ms — constant.dart:60), run
-    /// in parallel with at most 2 in flight (TaskPool
-    /// maxConcurrentDelayTests = 2 on iOS, constant.dart:99), each
+    /// in parallel with at most delayTestBatchSize (32) in flight
+    /// (upstream caps iOS at 2 — TaskPool maxConcurrentDelayTests
+    /// = 2, constant.dart:99; see the note below), each
     /// call guarded by a 30 s outer timeout (delayTestGuardDuration,
     /// constant.dart:62, applied in lib/core/interface.dart:195).
     /// There is deliberately NO delay.run batch here any more (B2

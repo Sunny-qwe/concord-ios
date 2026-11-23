@@ -138,8 +138,6 @@ final class ProxyStore: ObservableObject {
     @Published var testErrorIsGeoSeed = false
     /// True while a banner retry re-seed is running (banner spinner).
     @Published var isRetryingGeoSeed = false
-    /// True while any delay test runs.
-    var isTesting: Bool { !testingGroups.isEmpty }
     /// True while the group list itself is loading (first load).
     @Published var isLoading = false
     @Published var lastError: String?
@@ -1389,7 +1387,7 @@ final class ProxyStore: ObservableObject {
     /// network exactly like the MMDB download did, and
     /// config.apply still succeeds with zero provider nodes, so
     /// every delay.test returns -2 with no throw.
-    ///   1. loadedProxyNames / missingLoadedNames: all present
+    ///   1. missingLoadedNames: all present
     ///      → .ready (nothing updated).
     ///   2. Missing → update the owning providers (group rows
     ///      carry the provider name; when no row attributes a

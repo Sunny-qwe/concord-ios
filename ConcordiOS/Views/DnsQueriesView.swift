@@ -318,12 +318,19 @@ struct DnsQueriesView: View {
         .buttonStyle(.plain)
     }
 
-    /// Full date-time for the sheet rows ("2026-11-20 19:16:48").
-    private static func fullDateTime(_ epochMillis: Int64) -> String {
+    /// Shared formatter for the sheet rows ("2026-11-20 19:16:48"):
+    /// DateFormatter setup is expensive, so one instance serves
+    /// every call (main thread only — all callers are view code).
+    private static let fullDateTimeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(epochMillis) / 1000))
+        return formatter
+    }()
+
+    /// Full date-time for the sheet rows ("2026-11-20 19:16:48").
+    private static func fullDateTime(_ epochMillis: Int64) -> String {
+        fullDateTimeFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(epochMillis) / 1000))
     }
 
     var body: some View {

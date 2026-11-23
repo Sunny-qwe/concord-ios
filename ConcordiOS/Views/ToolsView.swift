@@ -200,8 +200,11 @@ struct ToolsView: View {
                 }
             }
             .navigationDestination(for: ToolsDestination.self) { destination in
-                switch destination {
-                case .requests: ConnectionsView(applyTabBarClearance: true)
+                // v0.2.83 white-bar fix: the bar blends with the page
+                // background on every Tools sub-page.
+                Group {
+                    switch destination {
+                    case .requests: ConnectionsView(applyTabBarClearance: true)
                 case .dns: DnsQueriesView()
                 case .resources: ResourcesView()
                 case .logs: LogsView()
@@ -231,7 +234,9 @@ struct ToolsView: View {
                 case .disclaimer: DisclaimerView()
                 case .developer: DeveloperView()
                 case .about: AboutView()
+                    }
                 }
+                .concordNavBarBackground()
             }
         }
         .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)

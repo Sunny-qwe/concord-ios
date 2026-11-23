@@ -700,13 +700,9 @@ private struct LogPayload {
 
     private static let tagRegex = regex(#"^\[([^\]]+)\] (.+)$"#, dotAll: true)
 
-    private static var routeRegex: NSRegularExpression? {
-        regex("^" + endpoint + #" --> (\S+) (?:(?:match (.+?)|(doesn't match any rule)) )?using (.+)$"#)
-    }
+    private static let routeRegex: NSRegularExpression? = regex("^" + endpoint + #" --> (\S+) (?:(?:match (.+?)|(doesn't match any rule)) )?using (.+)$"#)
 
-    private static var dialRegex: NSRegularExpression? {
-        regex(#"^dial (.+?) (?:\(match (.+?)\) )?"# + endpoint + #" --> (\S+) error: (.+)$"#, dotAll: true)
-    }
+    private static let dialRegex: NSRegularExpression? = regex(#"^dial (.+?) (?:\(match (.+?)\) )?"# + endpoint + #" --> (\S+) error: (.+)$"#, dotAll: true)
 
     private static func group(_ match: NSTextCheckingResult, _ index: Int, in text: String) -> String {
         let range = match.range(at: index)

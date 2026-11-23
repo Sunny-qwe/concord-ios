@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 // MARK: - Dashboard (reference screenshots IMG_1082 / IMG_1083)
 // Layout, top to bottom: big title + edit button; status card (big
@@ -80,6 +79,13 @@ struct DashboardView: View {
     /// Stat-cell destination sheet (D-M6): live / recent
     /// connections, or the DNS queries page.
     @State private var statsDestination: StatsDestination?
+    /// v0.2.82 (stats freeze): the stats sheet is presented by
+    /// this Bool, not by .sheet(item:) — it was the only
+    /// .sheet(item:) on the Dashboard and all three stats froze
+    /// on tap while the .sheet(isPresented:) sheets did not, so
+    /// the item-based presentation is the one mechanism unique
+    /// to the freezing sheets; it now matches the other sheets.
+    @State private var showStatsSheet = false
     /// Traffic statistics detail sheet (D-M8, v0.2.56 MuYu
     /// TrafficStatisticsView).
     @State private var showTrafficDetail = false
@@ -118,7 +124,6 @@ struct DashboardView: View {
     /// same UpdateChecker the About page uses; the last result is
     /// kept in AppStorage so the card shows something before the
     /// first check of the session.
-    @State private var updateCheckResult: UpdateChecker.Result?
     @State private var updateCheckMessage: String?
     @State private var isCheckingUpdate = false
     @AppStorage("ConcordiOS.update.lastSha") private var lastUpdateSha = ""
@@ -213,7 +218,6 @@ struct DashboardView: View {
         isCheckingUpdate = true
         defer { isCheckingUpdate = false }
         if let result = await UpdateChecker.check() {
-            updateCheckResult = result
             updateCheckMessage = result.isNew ? "发现新提交" : "已是最新提交"
             lastUpdateSha = result.sha
             lastUpdateMessage = result.message
@@ -528,15 +532,17 @@ struct DashboardView: View {
         // system nav bar; each content view renders its own
         // MuYu header (handle + ✕ + title + actions) and a
         // bottom floating search bar.
-        .sheet(item: $statsDestination) { destination in
+        .sheet(isPresented: $showStatsSheet) {
             Group {
-                switch destination {
-                case .live:
-                    ConnectionsView(initialFeed: .live, sheetChrome: true)
-                case .recent:
-                    ConnectionsView(initialFeed: .recent, sheetChrome: true)
-                case .dns:
-                    DnsQueriesView(mode: .sheet)
+                if let destination = statsDestination {
+                    switch destination {
+                    case .live:
+                        ConnectionsView(initialFeed: .live, sheetChrome: true)
+                    case .recent:
+                        ConnectionsView(initialFeed: .recent, sheetChrome: true)
+                    case .dns:
+                        DnsQueriesView(mode: .sheet)
+                    }
                 }
             }
             .presentationDetents([.fraction(0.85), .large])
@@ -1472,14 +1478,22 @@ struct DashboardView: View {
         .concordCard()
     }
 
+    /// Shared grouped-digits formatter for dashboardCount below
+    /// 100k: NumberFormatter setup is expensive, so one instance
+    /// serves every render (main thread only — all callers are
+    /// view code).
+    private static let groupedCountFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "en_US")
+        return formatter
+    }()
+
     /// FlClash style.dart dashboardCount: grouped digits below
     /// 100k, compact form at/above (123K, 1.5M).
     private func dashboardCount(_ count: Int) -> String {
         if count < 100_000 {
-            let formatter = NumberFormatter()
-            formatter.numberStyle = .decimal
-            formatter.locale = Locale(identifier: "en_US")
-            return formatter.string(from: NSNumber(value: count)) ?? "\(count)"
+            return Self.groupedCountFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
         }
         if count < 1_000_000 {
             return "\(Int((Double(count) / 1_000).rounded()))K"
@@ -1496,7 +1510,7 @@ struct DashboardView: View {
     /// v0.2.64: the contentShape makes the full cell column
     /// tappable, not just the number/label glyphs.
     private func statCell(value: String, label: String, destination: StatsDestination) -> some View {
-        Button { statsDestination = destination } label: {
+        Button { statsDestination = destination; showStatsSheet = true } label: {
             VStack(spacing: 4) {
                 Text(value)
                     .font(.system(size: statNumberSize, weight: .bold))

@@ -224,6 +224,16 @@ struct ContentView: View {
             default: break
             }
         }
+        // v0.2.82 (stats freeze / Tools lag): pause the
+        // TrafficStore 1 s Dashboard tick while the Dashboard tab
+        // is not selected — all four tabs stay mounted, so the
+        // tick re-rendered the Dashboard every second even on
+        // Tools / Profiles. Per-node speeds keep ticking (the
+        // pause only skips the traffic + engine work), and the
+        // next tick after returning refreshes within 1 s.
+        .onChange(of: selectedTab) { _, tab in
+            trafficStore.liveTickPaused = tab != .dashboard
+        }
         // NOTE (audit A1): a node picked while the VPN was off is
         // applied on the tunnel-connected edge by ProxyStore's own
         // tunnel-status subscription (applyPendingSelectionsOnConnect,

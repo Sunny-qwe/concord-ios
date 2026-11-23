@@ -995,19 +995,7 @@ final class AppCore {
         return report
     }
 
-    /// The proxy + group names the applied config knows
-    /// (proxy.groups), for the channel-vs-node diagnosis: a delay
-    /// target absent from this set was never loaded (provider not
-    /// loaded / name mismatch), so its -2 is a channel failure,
-    /// not a dead node. The core must already be started.
-    func loadedProxyNames() async throws -> Set<String> {
-        let groups = try await loadedProxyGroups()
-        var names = Set(groups.nodes.map { $0.name })
-        names.formUnion(groups.groups.map { $0.name })
-        return names
-    }
-
-    /// The full proxy.groups response behind loadedProxyNames —
+    /// The full proxy.groups response —
     /// ProxyStore builds its per-provider inventory from it
     /// (nodes carry their provider), so the "names still missing"
     /// banner can name what each provider actually holds. The

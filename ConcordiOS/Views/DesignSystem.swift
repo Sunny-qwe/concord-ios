@@ -1,9 +1,5 @@
 import SwiftUI
 
-#if canImport(Darwin)
-import Darwin
-#endif
-
 // MARK: - Design system (reference screenshots IMG_1082 / IMG_103)
 // One visual language for the whole app, matching the reference
 // dashboard: theme-tinted page and cards (FlClash Material 3 seeded
@@ -206,6 +202,15 @@ extension View {
     /// The app-wide page background.
     func concordPageBackground() -> some View {
         background(ConcordTheme.pageBackground)
+    }
+
+    /// Nav-bar background matching the page background, so pushed
+    /// pages don't fall back to UIKit white (v0.2.83 white-bar fix).
+    /// Attach to the destination view inside each NavigationLink /
+    /// navigationDestination closure — the stack-level modifier only
+    /// covers the root page.
+    func concordNavBarBackground() -> some View {
+        toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
     }
 }
 

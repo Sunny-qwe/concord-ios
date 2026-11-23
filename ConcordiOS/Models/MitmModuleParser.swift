@@ -1,10 +1,6 @@
 import Foundation
 import CryptoKit
 
-#if canImport(Darwin)
-import Darwin
-#endif
-
 // MARK: - MITM module parser (FlClash: lib/common/mitm_module.dart)
 //
 // Ports FlClash's module parsing to Swift: a Surge .sgmodule, Loon
@@ -339,14 +335,6 @@ struct MitmListEdit: Codable, Equatable {
     var after: [String] = []
 
     var values: [String] { before + after }
-
-    func applyTo(_ current: [String]) -> [String] {
-        var out: [String] = []
-        for value in before + (replace ? [] : current) + after where !out.contains(value) {
-            out.append(value)
-        }
-        return out
-    }
 
     /// This edit, then `next` over its result.
     func then(_ next: MitmListEdit) -> MitmListEdit {
@@ -1960,7 +1948,7 @@ private final class MitmModuleParserEngine {
         let value = String(line[line.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
         switch key {
         case "hostname":
-            readMitmHostname(section, line: line, value: value)
+            readMitmHostname(value: value)
         case "hostname-disabled":
             // Upstream b0806a8: removes entries from the composed
             // hostname list (the core applies it after hostname).
@@ -2029,7 +2017,7 @@ private final class MitmModuleParserEngine {
         }
     }
 
-    private func readMitmHostname(_ section: String, line: String, value: String) {
+    private func readMitmHostname(value: String) {
         var value = value
         var inserted = false
         if value.hasPrefix("%INSERT%") {

@@ -68,7 +68,7 @@ struct MitmView: View {
 
             Section("模块") {
                 NavigationLink {
-                    MitmModulesView()
+                    MitmModulesView().concordNavBarBackground()
                 } label: {
                     HStack {
                         Text("MITM 模块")
@@ -79,7 +79,7 @@ struct MitmView: View {
                     }
                 }
                 NavigationLink {
-                    MitmScriptsView()
+                    MitmScriptsView().concordNavBarBackground()
                 } label: {
                     HStack {
                         Text("MITM 脚本")

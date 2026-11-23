@@ -241,7 +241,7 @@ enum YamlParser {
                 return try parseBlockScalar(stripped, indent: indent, line: line)
             }
             if stripped.hasPrefix("{") || stripped.hasPrefix("[") {
-                return try parseFlowValueMultiline(stripped, indent: indent, line: line)
+                return try parseFlowValueMultiline(stripped, line: line)
             }
             if stripped.hasPrefix("\"") || stripped.hasPrefix("'") {
                 var acc = stripped
@@ -253,7 +253,7 @@ enum YamlParser {
                         if acc.hasPrefix("\"") {
                             value = try YamlParser.parseDoubleQuoted(chars, pos: &pos, line: line)
                         } else {
-                            value = try YamlParser.parseSingleQuoted(chars, pos: &pos, line: line)
+                            value = try YamlParser.parseSingleQuoted(chars, pos: &pos)
                         }
                         let rest = YamlParser.stripComment(String(chars[pos...])).trimmingCharacters(in: .whitespaces)
                         if !rest.isEmpty {
@@ -270,7 +270,7 @@ enum YamlParser {
                 }
             }
             // plain 标量；后续更深缩进的行是它的续行（按 YAML 规则以空格连接）
-            var value = YamlParser.resolveScalar(stripped, line: line)
+            var value = YamlParser.resolveScalar(stripped)
             while let nxt = peek(), nxt.indent > indent {
                 let cont = YamlParser.stripComment(nxt.text).trimmingCharacters(in: .whitespaces)
                 index += 1
@@ -285,7 +285,7 @@ enum YamlParser {
             return value
         }
 
-        private mutating func parseFlowValueMultiline(_ text: String, indent: Int, line: Int) throws -> JSONValue {
+        private mutating func parseFlowValueMultiline(_ text: String, line: Int) throws -> JSONValue {
             var accumulated = text
             while true {
                 do {
@@ -399,7 +399,7 @@ enum YamlParser {
             case "\"":
                 return .string(try YamlParser.parseDoubleQuoted(chars, pos: &pos, line: line))
             case "'":
-                return .string(try YamlParser.parseSingleQuoted(chars, pos: &pos, line: line))
+                return .string(try YamlParser.parseSingleQuoted(chars, pos: &pos))
             case "&":
                 pos += 1
                 let start = pos
@@ -422,7 +422,7 @@ enum YamlParser {
             case ",", "]", "}":
                 throw YamlParserError(line: line, message: "流式值中出现意外的字符：\(c)")
             default:
-                return flowPlainScalar(chars, pos: &pos, line: line)
+                return flowPlainScalar(chars, pos: &pos)
             }
         }
 
@@ -450,10 +450,10 @@ enum YamlParser {
                     if kc == "\"" {
                         key = try YamlParser.parseDoubleQuoted(chars, pos: &pos, line: line)
                     } else {
-                        key = try YamlParser.parseSingleQuoted(chars, pos: &pos, line: line)
+                        key = try YamlParser.parseSingleQuoted(chars, pos: &pos)
                     }
                 } else {
-                    let rawKey = flowPlainScalar(chars, pos: &pos, line: line)
+                    let rawKey = flowPlainScalar(chars, pos: &pos)
                     key = rawKey.displayString
                 }
                 flowSkipWhitespace(chars, pos: &pos)
@@ -517,7 +517,7 @@ enum YamlParser {
             }
         }
 
-        private func flowPlainScalar(_ chars: [Character], pos: inout Int, line: Int) -> JSONValue {
+        private func flowPlainScalar(_ chars: [Character], pos: inout Int) -> JSONValue {
             let start = pos
             while pos < chars.count {
                 let c = chars[pos]
@@ -531,7 +531,7 @@ enum YamlParser {
                 // 调用方只在确定有值时调用；空值由调用方处理，这里返回 null
                 return .null
             }
-            return YamlParser.resolveScalar(raw, line: line)
+            return YamlParser.resolveScalar(raw)
         }
 
         private func flowSkipWhitespace(_ chars: [Character], pos: inout Int) {
@@ -644,7 +644,7 @@ enum YamlParser {
             if chars[start] == "\"" {
                 key = try parseDoubleQuoted(chars, pos: &pos, line: line)
             } else {
-                key = try parseSingleQuoted(chars, pos: &pos, line: line)
+                key = try parseSingleQuoted(chars, pos: &pos)
             }
             var rest = pos
             while rest < chars.count && chars[rest] == " " { rest += 1 }
@@ -684,7 +684,7 @@ enum YamlParser {
                 if first == "\"" {
                     _ = try parseDoubleQuoted(chars, pos: &pos, line: 0)
                 } else {
-                    _ = try parseSingleQuoted(chars, pos: &pos, line: 0)
+                    _ = try parseSingleQuoted(chars, pos: &pos)
                 }
                 var rest = pos
                 while rest < chars.count && chars[rest] == " " { rest += 1 }
@@ -705,7 +705,7 @@ enum YamlParser {
     }
 
     /// plain 标量 -> JSONValue（YAML 1.2 core schema）。
-    private static func resolveScalar(_ text: String, line: Int) -> JSONValue {
+    private static func resolveScalar(_ text: String) -> JSONValue {
         switch text {
         case "", "~", "null", "Null", "NULL": return .null
         case "true", "True", "TRUE": return .bool(true)
@@ -797,7 +797,7 @@ enum YamlParser {
         }
     }
 
-    private static func parseSingleQuoted(_ chars: [Character], pos: inout Int, line: Int) throws -> String {
+    private static func parseSingleQuoted(_ chars: [Character], pos: inout Int) throws -> String {
         pos += 1
         var out: [Character] = []
         while true {

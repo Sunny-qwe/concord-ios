@@ -102,7 +102,7 @@ struct ExtendConfigView: View {
             if settings.mode == .standard {
                 Section("标准模式") {
                     NavigationLink {
-                        GlobalRulesToggleView()
+                        GlobalRulesToggleView().concordNavBarBackground()
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
@@ -115,7 +115,7 @@ struct ExtendConfigView: View {
                         }
                     }
                     NavigationLink {
-                        AddedRulesView()
+                        AddedRulesView().concordNavBarBackground()
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
@@ -199,7 +199,7 @@ struct ExtendConfigView: View {
                         setDraft { $0.scriptEnabled = true; $0.scriptText = content }
                     }
                     NavigationLink {
-                        MitmScriptsView()
+                        MitmScriptsView().concordNavBarBackground()
                     } label: {
                         HStack {
                             Text("管理 MITM 脚本")
@@ -461,7 +461,7 @@ private struct GlobalRulesToggleView: View {
                 }
                 Section {
                     NavigationLink {
-                        AddedRulesView()
+                        AddedRulesView().concordNavBarBackground()
                     } label: {
                         Label("去配置附加规则", systemImage: "list.bullet")
                     }

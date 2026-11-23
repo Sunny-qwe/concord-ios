@@ -41,10 +41,6 @@ struct SubscriptionInfo: Codable, Equatable {
 
     var usedBytes: Int64 { upload + download }
 
-    var usageFraction: Double? {
-        total > 0 ? min(1.0, Double(usedBytes) / Double(total)) : nil
-    }
-
     var expireDate: Date? {
         expire > 0 ? Date(timeIntervalSince1970: TimeInterval(expire)) : nil
     }
@@ -60,8 +56,6 @@ struct SubscriptionInfo: Codable, Equatable {
 
     /// Expiry as a plain date pill ("2026-12-03", MuYu profile
     /// card, v0.2.68); nil when the provider sent no expiry.
-    /// The old "剩余 N 天" text (expiryLine below) is kept for
-    /// callers that still need the countdown.
     var expiryDateString: String? {
         guard let date = expireDate else { return nil }
         var calendar = Calendar(identifier: .gregorian)
@@ -69,16 +63,6 @@ struct SubscriptionInfo: Codable, Equatable {
         let parts = calendar.dateComponents([.year, .month, .day], from: date)
         guard let year = parts.year, let month = parts.month, let day = parts.day else { return nil }
         return String(format: "%04d-%02d-%02d", year, month, day)
-    }
-
-    /// ("剩余 12 天", warning) — warning when ≤ 7 days left or
-    /// already expired; nil when the provider sent no expiry.
-    func expiryLine(now: Date = Date()) -> (text: String, warning: Bool)? {
-        guard let date = expireDate else { return nil }
-        let days = Int(ceil(date.timeIntervalSince(now) / 86400))
-        if days < 0 { return ("已过期", true) }
-        if days == 0 { return ("今天到期", true) }
-        return ("剩余 \(days) 天", days <= 7)
     }
 
     static func byteCount(_ bytes: Int64) -> String {
@@ -276,8 +260,6 @@ struct RuleSetRepairAllPlan: Identifiable {
     var confirmTitle: String { "全部修复并重新应用" }
     var completedCount: Int { items.filter { if case .complete = $0.kind { return true }; return false }.count }
     var deletedCount: Int { items.filter { if case .delete = $0.kind { return true }; return false }.count }
-    var unrepairableCount: Int { items.filter { if case .unrepairable = $0.kind { return true }; return false }.count }
-
     var successMessage: String {
         var bits: [String] = []
         if completedCount > 0 { bits.append("补全了 \(completedCount) 个规则集的定义") }
@@ -296,18 +278,6 @@ final class ProfileStore: ObservableObject {
     @Published var inspect: ConcordProfileInspect?
     @Published var applyWarnings: [ConcordWarning] = []
     @Published var validationIssues: [ConcordIssue] = []
-    /// Decrypted text of the last config.decrypt call (never persisted;
-    /// the key is never stored either). Saved as a new profile only
-    /// through saveDecryptedAsProfile, an explicit user action.
-    @Published var decryptResult: String?
-    @Published var decryptMessage: String?
-    /// Outbounds of the last profile.outbounds call.
-    @Published var outbounds: ConcordProfileOutbounds?
-    @Published var outboundsMessage: String?
-    @Published var clearEffectMessage: String?
-    /// Share links of the last convert.encodeLinks call.
-    @Published var encodedLinks: [String] = []
-    @Published var encodeMessage: String?
     /// Decoded proxies of the last convert.decodeLinks call: one
     /// entry per input line, empty when the line is not a link.
     @Published var decodedResults: [[JSONValue]] = []
@@ -970,14 +940,6 @@ final class ProfileStore: ObservableObject {
         lastError = nil
     }
 
-    /// Persist a drag-reordered profile list (ProfilesView onMove).
-    /// The array order IS the display order; it is saved with the
-    /// metadata in UserDefaults like every other list change.
-    func moveProfiles(fromOffsets: IndexSet, toOffset: Int) {
-        profiles.move(fromOffsets: fromOffsets, toOffset: toOffset)
-        save()
-    }
-
     /// Persist a reordered list built outside the List (the FlClash
     /// ReorderableProfilesSheet keeps a local copy and saves once).
     /// Profiles missing from the new order keep their relative order
@@ -1075,8 +1037,7 @@ final class ProfileStore: ObservableObject {
     /// Local provenance for NodeSourcesView: the proxy names a
     /// profile's own YAML file declares under `proxies:` (a line
     /// scan — no core needed, so it works with the tunnel stopped).
-    /// Provider-fetched nodes are not in `proxies:`; those come
-    /// from the core via convertProfile instead.
+    /// Provider-fetched nodes are not in `proxies:`.
     func localNodeNames(for profile: Profile) -> [String] {
         guard let url = fileURL(for: profile),
               let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
@@ -2643,52 +2604,6 @@ final class ProfileStore: ObservableObject {
         }
     }
 
-    /// The node list a profile actually yields (convert.subscription).
-    @MainActor
-    func convertProfile(_ profile: Profile) async -> Result<[JSONValue], Error> {
-        guard let absolutePath = absolutePath(for: profile) else {
-            return .failure(NSError(domain: "ConcordiOS", code: 1, userInfo: [NSLocalizedDescriptionKey: "该订阅没有本地文件"]))
-        }
-        do {
-            return .success(try await client.convertSubscription(profilePath: absolutePath))
-        } catch {
-            return .failure(error)
-        }
-    }
-
-    /// Validates the active profile's nodes (config.read +
-    /// validate.proxies). Returns the issues, if any.
-    @MainActor
-    func validateActiveProfileProxies() async -> Result<[ConcordIssue], Error> {
-        guard let profile = activeProfile,
-              let absolutePath = absolutePath(for: profile) else {
-            return .failure(NSError(domain: "ConcordiOS", code: 1, userInfo: [NSLocalizedDescriptionKey: "没有已激活的订阅"]))
-        }
-        do {
-            let config = try await client.configRead(profilePath: absolutePath)
-            guard let proxies = config.config.objectValue?["proxies"]?.arrayValue else {
-                return .failure(NSError(domain: "ConcordiOS", code: 2, userInfo: [NSLocalizedDescriptionKey: "配置里没有 proxies"]))
-            }
-            return .success(try await client.validateProxies(proxies: proxies))
-        } catch {
-            return .failure(error)
-        }
-    }
-
-    /// Validates the active profile file itself (config.validate).
-    @MainActor
-    func validateActiveProfile() async -> Result<[ConcordIssue], Error> {
-        guard let profile = activeProfile,
-              let absolutePath = absolutePath(for: profile) else {
-            return .failure(NSError(domain: "ConcordiOS", code: 1, userInfo: [NSLocalizedDescriptionKey: "没有已激活的订阅"]))
-        }
-        do {
-            return .success(try await client.configValidate(profilePath: absolutePath))
-        } catch {
-            return .failure(error)
-        }
-    }
-
     /// Extracts every proxy-group `filter:` expression from the active
     /// profile's effective config (config.read). No read API exposes
     /// filter lists directly, so they are derived from the config the
@@ -2719,123 +2634,11 @@ final class ProfileStore: ObservableObject {
         }
     }
 
-    /// Decrypts an encrypted profile file with its key
-    /// (config.decrypt). The key is passed for this one call and never
-    /// stored; the plaintext is kept only in memory until the user
-    /// saves it as a new profile. The core runs in the extension, so
-    /// the tunnel must be running in live mode.
-    @MainActor
-    func decryptProfile(_ profile: Profile, key: String) async {
-        guard let absolutePath = absolutePath(for: profile) else {
-            decryptMessage = "该订阅没有本地文件"
-            return
-        }
-        guard !key.isEmpty else {
-            decryptMessage = "请先输入解密密钥"
-            return
-        }
-        if client.mode == .live, !TunnelManager.shared.isRunning {
-            decryptMessage = "需先启动 VPN：解密由扩展内的核心执行"
-            return
-        }
-        do {
-            decryptResult = try await client.configDecrypt(profilePath: absolutePath, key: key)
-            decryptMessage = decryptResult?.isEmpty == true ? "解密结果为空" : "解密成功，可另存为新订阅"
-            lastError = nil
-        } catch {
-            decryptResult = nil
-            decryptMessage = "解密失败：\(error.localizedDescription)"
-        }
-    }
-
-    /// Saves the last decrypted text as a new local profile. The
-    /// decrypted text is a plain Clash / mihomo YAML document, so it
-    /// goes through the same sanity check as any other import.
-    @MainActor
-    func saveDecryptedAsProfile(name: String) {
-        guard let text = decryptResult, !text.isEmpty else { return }
-        addFromFile(name: name, data: Data(text.utf8))
-        decryptResult = nil
-        decryptMessage = "已保存为新订阅「\(name)」"
-    }
-
-    // MARK: - Remaining APIs, batch 2 (profile.outbounds /
-    // clearEffect, convert.encodeLinks / decodeLinks)
-
-    /// Lists the outbounds (proxies + proxy-groups) a profile
-    /// declares (profile.outbounds). The core runs in the extension,
-    /// so the tunnel must be running in live mode.
-    @MainActor
-    func loadOutbounds(_ profile: Profile) async {
-        guard let absolutePath = absolutePath(for: profile) else {
-            outboundsMessage = "该订阅没有本地文件"
-            return
-        }
-        if client.mode == .live, !TunnelManager.shared.isRunning {
-            outboundsMessage = "需先启动 VPN：出站列表由扩展内的核心读取"
-            return
-        }
-        do {
-            outbounds = try await client.profileOutbounds(profilePath: absolutePath)
-            outboundsMessage = nil
-            lastError = nil
-        } catch {
-            outbounds = nil
-            outboundsMessage = "读取出站列表失败：\(error.localizedDescription)"
-        }
-    }
-
-    /// Clears the downloaded provider files of one core-side profile
-    /// (profile.clearEffect). `profileId` is the numeric id the host
-    /// assigned that profile — the app never assigns numeric ids and
-    /// the core keeps its own provider downloads under `providers/`,
-    /// so on iOS this usually finds nothing to clear. The call
-    /// itself is the real upstream method.
-    @MainActor
-    func clearEffect(profileId: Int64) async {
-        if client.mode == .live, !TunnelManager.shared.isRunning {
-            clearEffectMessage = "需先启动 VPN：清除操作由扩展内的核心执行"
-            return
-        }
-        do {
-            try await client.profileClearEffect(profileId: profileId)
-            clearEffectMessage = "已清除订阅 #\(profileId) 的已下载提供方文件（若无此订阅则无事可做）"
-            lastError = nil
-        } catch {
-            clearEffectMessage = "清除失败：\(error.localizedDescription)"
-        }
-    }
-
-    /// Encodes the profile's proxies into share links
-    /// (convert.encodeLinks). The links are built from the effective
-    /// config's `proxies` list (config.read), so the profile must be
-    /// readable by the core.
-    @MainActor
-    func encodeLinks(_ profile: Profile) async {
-        guard let absolutePath = absolutePath(for: profile) else {
-            encodeMessage = "该订阅没有本地文件"
-            return
-        }
-        if client.mode == .live, !TunnelManager.shared.isRunning {
-            encodeMessage = "需先启动 VPN：分享链接由扩展内的核心生成"
-            return
-        }
-        do {
-            let read = try await client.configRead(profilePath: absolutePath)
-            let proxies = read.config.objectValue?["proxies"]?.arrayValue ?? []
-            encodedLinks = try await client.convertEncodeLinks(proxies: proxies)
-            encodeMessage = encodedLinks.isEmpty ? "该订阅没有可分享的节点" : nil
-            lastError = nil
-        } catch {
-            encodedLinks = []
-            encodeMessage = "生成分享链接失败：\(error.localizedDescription)"
-        }
-    }
+    // MARK: - Remaining APIs, batch 2 (convert.decodeLinks)
 
     /// Decodes pasted share links into proxy definitions
     /// (convert.decodeLinks). The pasted lines are only sent to the
-    /// core for decoding — nowhere else. Decoded nodes can be saved
-    /// as a new local profile via `saveDecodedAsProfile`.
+    /// core for decoding — nowhere else.
     @MainActor
     func decodeLinks(_ lines: [String]) async {
         let trimmed = lines.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
@@ -2856,19 +2659,6 @@ final class ProfileStore: ObservableObject {
             decodedResults = []
             decodedProxies = []
             decodeMessage = "解析链接失败：\(error.localizedDescription)"
-        }
-    }
-
-    /// Saves the decoded proxies as a new local profile YAML file
-    /// (through the same sanity check as any other import).
-    @MainActor
-    func saveDecodedAsProfile(name: String) {
-        guard !decodedProxies.isEmpty else { return }
-        let yaml = "proxies:\n" + decodedProxies.map { "  - " + jsonValueToYaml($0, indent: 4) }.joined(separator: "\n") + "\n"
-        let fileName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "导入的节点" : name.trimmingCharacters(in: .whitespacesAndNewlines)
-        addFromFile(name: fileName, data: Data(yaml.utf8))
-        if lastError == nil {
-            decodeMessage = "已保存为新订阅「\(fileName)」"
         }
     }
 

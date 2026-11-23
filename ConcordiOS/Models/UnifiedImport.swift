@@ -63,8 +63,6 @@ final class UnifiedImporter: ObservableObject {
 
     // MARK: - Classification
 
-    /// Schemes the local parser handles (no core, no VPN).
-    static let localNodeSchemes = ["ss://", "vmess://", "trojan://", "vless://"]
     /// All node-link schemes the core can decode (convert.decodeLinks).
     static let nodeSchemes = ["ss://", "vmess://", "trojan://", "vless://", "ssr://", "hysteria2://", "hysteria://",
                               "tuic://", "mieru://", "anytls://", "snell://", "wireguard://", "wg://",
@@ -86,12 +84,6 @@ final class UnifiedImporter: ObservableObject {
         return lines.contains {
             $0.hasPrefix("proxies:") || $0.hasPrefix("proxy-groups:") || $0.hasPrefix("proxy-providers:")
         }
-    }
-
-    /// True when the text contains anything importable (for the
-    /// clipboard prefill on open).
-    static func looksImportable(_ text: String) -> Bool {
-        singleItemText(text) != nil
     }
 
     /// The single item the one-at-a-time UI imports: a whole YAML

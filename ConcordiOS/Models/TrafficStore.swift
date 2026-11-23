@@ -165,7 +165,7 @@ final class TrafficStore: ObservableObject {
     //
     // The core's totals are cumulative since the core started.
     // "Today" is the daily-history accumulator below
-    // (todayAccumulatedUp/Down, todayTotals): per-tick deltas
+    // (accumUp/Down, todayTotals): per-tick deltas
     // added while the app runs, so a mid-day core restart or
     // traffic.reset does not restart the day from zero. The
     // v0.2.55 day-start baseline (todayUp/todayDown) was removed
@@ -173,10 +173,19 @@ final class TrafficStore: ObservableObject {
     // restarted from zero after a core restart, so the card and
     // the sheet could disagree about "today".
 
-    private static func todayString() -> String {
+    /// Shared "yyyy-MM-dd" formatter for the daily keys: a fresh
+    /// DateFormatter per call ran on the 1 s tick path. One static
+    /// instance serves every call (all callers run on the main
+    /// thread — the tick timer is on .main and the store's
+    /// publishers are main-thread confined).
+    private static let todayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+        return formatter
+    }()
+
+    private static func todayString() -> String {
+        todayFormatter.string(from: Date())
     }
 
     // MARK: - Daily traffic history (v0.2.55)
@@ -939,36 +948,6 @@ final class TrafficStore: ObservableObject {
         return connection.proxy == "DIRECT"
     }
 
-    /// Today's accumulated traffic so far (the live contribution of
-    /// today to the week/month totals). A mid-day core restart
-    /// does not restart it — the negative delta is dropped and
-    /// the pre-restart bytes stay in the day (see the history
-    /// notes above).
-    var todayAccumulatedUp: Int64 { accumUp }
-    var todayAccumulatedDown: Int64 { accumDown }
-
-    /// Rolling last 7 days including today (see the history notes
-    /// above for why rolling, not the calendar week).
-    var weekUp: Int64 { totalsForLastDays(7).up }
-    var weekDown: Int64 { totalsForLastDays(7).down }
-    /// Days in the rolling 7-day window with a recorded total (a
-    /// history entry, or today with traffic so far). Zero means
-    /// nothing has been recorded yet — the UI shows "暂无数据".
-    var weekRecordedDays: Int { totalsForLastDays(7).recordedDays }
-
-    /// Current calendar month (1st through today).
-    var monthUp: Int64 { totalsForCurrentMonth().up }
-    var monthDown: Int64 { totalsForCurrentMonth().down }
-    var monthRecordedDays: Int { totalsForCurrentMonth().recordedDays }
-
-    private func totalsForLastDays(_ count: Int) -> (up: Int64, down: Int64, recordedDays: Int) {
-        totals(for: Self.dayStrings(count: count))
-    }
-
-    private func totalsForCurrentMonth() -> (up: Int64, down: Int64, recordedDays: Int) {
-        totals(for: Self.currentMonthDayStrings())
-    }
-
     /// Sums the given local dates. Today always contributes the live
     /// accumulators — never a stored entry for today, so a stale
     /// provisional snapshot can neither double-count nor go stale
@@ -1057,11 +1036,6 @@ final class TrafficStore: ObservableObject {
     /// two can never disagree.
     var todayTotals: DayTotals { totalsForDates([Self.todayString()]) }
 
-    private func totals(for dates: [String]) -> (up: Int64, down: Int64, recordedDays: Int) {
-        let totals = totalsForDates(dates)
-        return (totals.up, totals.down, totals.recordedDays)
-    }
-
     /// Clears the recorded daily history (traffic sheet trash
     /// button, MuYu trafficStatisticsClear): stored days, hourly
     /// buckets and today's live accumulators — so today restarts
@@ -1146,36 +1120,6 @@ final class TrafficStore: ObservableObject {
         return formatter.string(from: date)
     }
 
-    private static func dayStrings(count: Int) -> [String] {
-        let calendar = Calendar.current
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        var result: [String] = []
-        for offset in 0..<count {
-            guard let date = calendar.date(byAdding: .day, value: -offset, to: Date()) else { continue }
-            result.append(formatter.string(from: date))
-        }
-        return result
-    }
-
-    private static func currentMonthDayStrings() -> [String] {
-        let calendar = Calendar.current
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        guard let startOfMonth = calendar.date(
-            from: calendar.dateComponents([.year, .month], from: Date())) else {
-            return [todayString()]
-        }
-        var result: [String] = []
-        var date = startOfMonth
-        let today = Date()
-        while date <= today {
-            result.append(formatter.string(from: date))
-            guard let next = calendar.date(byAdding: .day, value: 1, to: date) else { break }
-            date = next
-        }
-        return result
-    }
     /// Live up/down per proxy and group name (MuYu
     /// nodeSpeedsProvider), from the same snapshots as the
     /// dashboard speeds. A reader takes the selected node's entry,
@@ -1241,8 +1185,15 @@ final class TrafficStore: ObservableObject {
         }
     }
 
-    var maxDown: Int64 { history.map { $0.down }.max() ?? 1 }
-    var maxUp: Int64 { history.map { $0.up }.max() ?? 1 }
+    /// v0.2.82 (stats freeze / Tools lag): when true, the 1 s
+    /// live tick skips its Dashboard-only work (traffic snapshot
+    /// + engine status). All four tabs stay mounted, so the tick
+    /// re-rendered the Dashboard every second even on Tools /
+    /// Profiles, loading the main thread under scrolling and
+    /// sheet presentation. Per-node speeds keep ticking (the
+    /// Proxies tab needs them). ContentView sets this from the
+    /// selected tab; default false (Dashboard selected at launch).
+    var liveTickPaused = false
 
     func start() {
         stop()
@@ -1250,14 +1201,16 @@ final class TrafficStore: ObservableObject {
             .autoconnect()
             .sink { [weak self] _ in
                 Task {
-                    await self?.refresh()
+                    if !(self?.liveTickPaused ?? false) {
+                        await self?.refresh()
+                        // D11: the engine row rides the same 1 s tick
+                        // as the traffic snapshot, otherwise it freezes
+                        // after the first read.
+                        await self?.refreshEngineStatus()
+                    }
                     // The per-node speeds ride the same 1 s tick as
                     // the traffic snapshot (MuYu updateTraffic).
                     await self?.refreshNodeSpeeds()
-                    // D11: the engine row rides the same 1 s tick
-                    // as the traffic snapshot, otherwise it freezes
-                    // after the first read.
-                    await self?.refreshEngineStatus()
                 }
             }
         Task { await refresh() }
@@ -1412,36 +1365,6 @@ final class TrafficStore: ObservableObject {
         } catch {
             engineStatus = nil
             engineStatusError = error.localizedDescription
-        }
-    }
-
-    @MainActor
-    func resetTotals() async {
-        do {
-            try await client.trafficReset()
-            history.removeAll()
-            current = ConcordTraffic(up: 0, down: 0, totalUp: 0, totalDown: 0)
-            // A totals reset restarts today from zero: drop what the
-            // accumulator holds for today, or the pre-reset bytes
-            // would be counted again on top of the post-reset
-            // traffic. The next background snapshot overwrites
-            // today's provisional entry with the restarted total
-            // (today's contribution to week/month always reads the
-            // live accumulator, never the stored entry, so the stale
-            // entry cannot leak into the totals meanwhile).
-            accumUp = 0
-            accumDown = 0
-            resetDayAccumulators()
-            // Today's hourly buckets restart too (a totals reset
-            // restarts today from zero everywhere); past days'
-            // buckets are untouched. Per-day uptime is tunnel
-            // time, not traffic, and is not reset.
-            let todayPrefix = Self.todayString()
-            hourlyHistory = hourlyHistory.filter { !$0.key.hasPrefix(todayPrefix) }
-            lastSeenUp = 0
-            lastSeenDown = 0
-        } catch {
-            lastError = error.localizedDescription
         }
     }
 

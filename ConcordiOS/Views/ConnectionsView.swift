@@ -236,7 +236,17 @@ struct ConnectionsView: View {
         // app-side core running (a delay test boots it) — not
         // the tunnel alone.
         .task {
-            if connectionStore.connections.isEmpty { await connectionStore.refresh() }
+            // v0.2.82 (stats freeze): the appear refresh runs
+            // only when a core can actually serve it (tunnel up,
+            // app core up, or sample mode) — the live/recent
+            // sheets refreshed unconditionally on appear, the one
+            // unguarded store call left on the shared stats tap
+            // path (DNS got the same gate in the first v0.2.82
+            // fix). The 1 s poll below already uses this gate.
+            if connectionStore.connections.isEmpty
+                && (TunnelManager.shared.isRunning || AppCore.shared.isRunning || client.mode == .sample) {
+                await connectionStore.refresh()
+            }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled else { break }

@@ -132,14 +132,6 @@ private struct SniffProtocolRow: View {
     @State private var newPort = ""
     @State private var portError: String?
 
-    private var destLabel: String {
-        switch config.overrideDest {
-        case nil: return "跟随"
-        case true: return "覆盖开"
-        case false: return "覆盖关"
-        }
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {

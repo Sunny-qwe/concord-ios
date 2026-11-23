@@ -265,12 +265,6 @@ final class SettingsStore: ObservableObject {
     @Published var pressureLevel: Int = 0
     @Published var pressureMessage: String?
     @Published var crashMessage: String?
-    /// The core's TUN state (config.general `tun`). Display-only: TUN
-    /// is owned by the PacketTunnel extension, so the app never sends
-    /// config.patch `tun`.
-    @Published var tunState: ConcordTunState?
-    @Published var tunStateMessage: String?
-
     /// The MITM config as the core expects it (RawConfig keys, kebab-case).
     /// A trusted fingerprint overrides the app CA's fingerprint and
     /// turns decryption on (FlClash MitmExt.coreJson); otherwise the
@@ -1269,25 +1263,6 @@ final class SettingsStore: ObservableObject {
             developerInfoMessage = nil
         } catch {
             developerInfoMessage = "读取失败：\(error.localizedDescription)"
-        }
-    }
-
-    /// Reads the core's TUN state (config.general `tun`). Display-only:
-    /// TUN is owned by the PacketTunnel extension (tun.start/tun.stop +
-    /// tunnel.json); sending config.patch `tun` would fight it — the
-    /// patch would disable or replace the device the extension is
-    /// pumping packets through — so the app never sends tun patches.
-    /// `device` is meaningless on iOS (the device is the packet
-    /// channel, not a named interface) and `autoRoute` is owned by
-    /// NetworkExtension, not the core.
-    @MainActor
-    func refreshTunState() async {
-        do {
-            tunState = try await client.configGeneral().tun
-            tunStateMessage = tunState == nil ? "核心未报告 TUN 状态" : nil
-        } catch {
-            tunState = nil
-            tunStateMessage = "读取失败：\(error.localizedDescription)"
         }
     }
 

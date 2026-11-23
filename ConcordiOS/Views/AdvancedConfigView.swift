@@ -83,17 +83,17 @@ struct AdvancedConfigView: View {
                         .onChange(of: settingsStore.mitmEnabled) { _, _ in settingsStore.save() }
                 }
                 NavigationLink {
-                    MitmModulesView()
+                    MitmModulesView().concordNavBarBackground()
                 } label: {
                     mitmRow(icon: "puzzlepiece", title: "模块", value: moduleCountText)
                 }
                 NavigationLink {
-                    MitmHostnameEditorView()
+                    MitmHostnameEditorView().concordNavBarBackground()
                 } label: {
                     mitmRow(icon: "scope", title: "主机名", value: hostnameCountText)
                 }
                 NavigationLink {
-                    MitmOptionsView()
+                    MitmOptionsView().concordNavBarBackground()
                 } label: {
                     mitmRow(icon: "slider.horizontal.3", title: "选项", value: nil)
                 }

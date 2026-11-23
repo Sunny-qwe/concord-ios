@@ -245,7 +245,7 @@ struct EditProfileView: View {
             }
         }
         .navigationDestination(isPresented: $showEditor) {
-            ConfigEditorView(targetProfile: profile)
+            ConfigEditorView(targetProfile: profile).concordNavBarBackground()
         }
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.yaml, UTType.plainText]) { result in
             handlePickedFile(result)

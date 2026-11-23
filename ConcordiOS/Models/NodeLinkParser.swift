@@ -63,20 +63,9 @@ struct ParsedNode {
         return .object(dict)
     }
 
-    /// One "  - name: …" block for the proxies: section.
-    var yamlEntry: String {
-        let lines = NodeLinkParser.yamlLines(fields, indent: 4)
-        guard let first = lines.first else { return "" }
-        var out = "  - " + String(first.dropFirst(4))
-        for line in lines.dropFirst() { out += "\n" + line }
-        return out
-    }
 }
 
 enum NodeLinkParser {
-    /// Schemes parsed locally (no core, no VPN).
-    static let localSchemes = ["ss://", "vmess://", "trojan://", "vless://"]
-
     /// Parses one share-link line. The failure reason is user-facing.
     static func parse(_ line: String) -> Result<ParsedNode, NodeLinkError> {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)

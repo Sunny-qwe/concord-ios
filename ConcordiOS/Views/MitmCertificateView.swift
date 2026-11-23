@@ -200,7 +200,7 @@ struct MitmCertificateView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 NavigationLink {
-                    MitmHostnameEditorView()
+                    MitmHostnameEditorView().concordNavBarBackground()
                 } label: {
                     HStack {
                         Text("主机名")

@@ -671,7 +671,7 @@ struct ModuleAuditView: View {
                             .foregroundStyle(.red)
                     }
                     NavigationLink("查看详情和不支持的条目") {
-                        MitmModuleDetailView(moduleId: module.id)
+                        MitmModuleDetailView(moduleId: module.id).concordNavBarBackground()
                     }
                 }
             }

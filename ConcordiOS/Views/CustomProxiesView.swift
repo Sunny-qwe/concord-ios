@@ -127,7 +127,7 @@ struct CustomProxiesView: View {
         }
         .navigationDestination(isPresented: $showCreatedEditor) {
             if let createdSubscriptionID {
-                CustomSubscriptionEditorView(subscriptionID: createdSubscriptionID)
+                CustomSubscriptionEditorView(subscriptionID: createdSubscriptionID).concordNavBarBackground()
             }
         }
     }

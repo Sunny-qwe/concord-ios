@@ -69,14 +69,6 @@ struct ExtendSettings: Codable, Equatable {
         scriptEnabled = try c.decodeIfPresent(Bool.self, forKey: .scriptEnabled) ?? false
         profileRules = try c.decodeIfPresent([String].self, forKey: .profileRules) ?? []
     }
-
-    static let defaultScript = """
-        // 改写配置：config 是核心解析后的配置对象，返回新配置。
-        // 例如：给所有分组加上测速地址
-        function main(config) {
-          return config;
-        }
-        """
 }
 
 final class ExtendConfigStore: ObservableObject {

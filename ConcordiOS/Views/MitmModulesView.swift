@@ -805,7 +805,7 @@ struct MitmModuleDetailView: View {
                         linesRow(title: "待下载资源", key: nil, section: "", lines: content.resourceUrls.sorted(), content: content)
                         if !content.skipped.isEmpty {
                             NavigationLink("跳过的行（\(content.skipped.count)）") {
-                                MitmModuleSkippedView(skipped: content.skipped)
+                                MitmModuleSkippedView(skipped: content.skipped).concordNavBarBackground()
                             }
                         }
                     }
@@ -1061,6 +1061,7 @@ struct MitmModuleDetailView: View {
                     runningScript: runningScript,
                     canRun: module?.enabled == true && settingsStore.mitmEnabled
                 )
+                .concordNavBarBackground()
             } label: {
                 HStack {
                     Text(title)

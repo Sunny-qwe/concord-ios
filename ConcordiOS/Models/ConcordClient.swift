@@ -594,8 +594,6 @@ struct ConcordEndedConnection: Codable {
     let endedAt: Int64
     let message: String?
 
-    var reasonLabel: String { Self.label(for: reason) }
-
     static func label(for reason: String) -> String {
         switch reason {
         case "local": return "本地先结束"
@@ -887,7 +885,7 @@ struct MitmConfig: Codable {
     var limits: MitmLimitsConfig? = nil
     /// The core's MITM lists (RawConfig keys, kebab-case). The
     /// Settings page only fills hostname; the merged module lists
-    /// (MitmModuleStore.mergedConfig) fill these for mitm.validate.
+    /// (MitmModuleStore.mergedConfigLive) fill these for mitm.validate.
     /// Empty lists encode as [] and the core treats them as absent.
     var urlRewrite: [String] = []
     var headerRewrite: [String] = []

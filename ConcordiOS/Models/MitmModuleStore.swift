@@ -520,22 +520,10 @@ final class MitmModuleStore: ObservableObject {
         return out
     }
 
-    /// The merged module lists + rules (user hostnames are NOT in
-    /// here — the extension prepends mitm.json's hostnames first).
-    func mergedLists() -> MitmModuleMerged {
-        mergeMitmModules(hostname: [], modules: enabledContents())
-    }
-
     /// The merged module lists + rules, with the core's parse where
     /// the tunnel is running.
     func mergedListsLive() async -> MitmModuleMerged {
         mergeMitmModules(hostname: [], modules: await enabledContentsLive())
-    }
-
-    /// The merged MITM config for mitm.validate: the user's own
-    /// choices first, then the enabled modules' lists.
-    func mergedConfig(userMitm: MitmConfig) -> MitmConfig {
-        applyMerged(mergedLists(), to: userMitm)
     }
 
     /// The merged MITM config, with the core's parse where the

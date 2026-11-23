@@ -1,5 +1,4 @@
 import SwiftUI
-import Combine
 import UniformTypeIdentifiers
 
 // MARK: - Icon sets (FlClash: IconSetsView, lib/views/config/icon_sets.dart)
@@ -34,8 +33,6 @@ final class IconSetStore: ObservableObject {
         let symbols: [String: String]
         /// Per-type tint; nil means the theme accent for every type.
         let colors: [String: Color]?
-
-        var isColorful: Bool { colors != nil }
     }
 
     /// Proxy / group type -> SF Symbol, shared by every pack.

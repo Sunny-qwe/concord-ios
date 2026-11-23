@@ -199,7 +199,7 @@ struct DnsSettingsView: View {
             // the override editor, not on this global page.
             Section("按订阅覆盖") {
                 NavigationLink("按订阅覆盖 DNS 设置") {
-                    OverrideView()
+                    OverrideView().concordNavBarBackground()
                 }
                 Text("每个订阅可以在这里单独覆盖 DNS；没有覆盖的订阅用上面的全局设置。")
                     .font(.footnote)

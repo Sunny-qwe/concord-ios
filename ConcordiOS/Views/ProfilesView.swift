@@ -172,8 +172,11 @@ struct ProfilesView: View {
                 }
             }
             .navigationDestination(for: ProfileNavDestination.self) { destination in
-                switch destination {
-                case .nodeSources:
+                // v0.2.83 white-bar fix: the bar blends with the page
+                // background on every Profiles sub-page.
+                Group {
+                    switch destination {
+                    case .nodeSources:
                     NodeSourcesView()
                 case .visualConfig:
                     VisualConfigView()
@@ -197,7 +200,9 @@ struct ProfilesView: View {
                     } else {
                         ContentUnavailableView("订阅已删除", systemImage: "trash")
                     }
+                    }
                 }
+                .concordNavBarBackground()
             }
             .sheet(isPresented: $showUnifiedImport, onDismiss: { scannedText = nil }) {
                 UnifiedImportView(profileStore: profileStore, initialText: scannedText ?? "", autoImport: scannedText != nil)

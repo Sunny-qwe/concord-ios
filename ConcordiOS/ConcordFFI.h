@@ -61,12 +61,6 @@ int32_t concord_ios_send(uint64_t session, const uint8_t *data, size_t len);
 /* Ends a session. Closing twice is harmless. */
 void concord_ios_close_session(uint64_t session);
 
-/* Option A (socketpair bridge): hands a descriptor to the core, which
- * closes it. Returns the handle `tun.start` names as
- * {"kind": "inherited", "handle": ...}, or 0 when the core is not up.
- * Declared for completeness; neither target uses it on iOS. */
-uint64_t concord_ios_adopt_fd(int32_t fd);
-
 /* Creates a packet channel (Option B, patched tree only) and returns its
  * handle (never 0), or 0 when the core is not up. Declared for
  * completeness; the app target never opens one. */

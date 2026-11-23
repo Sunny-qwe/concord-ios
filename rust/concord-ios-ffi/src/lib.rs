@@ -116,15 +116,6 @@ pub extern "C" fn concord_ios_close_session(session: u64) {
     unsafe { concord_close(session) }
 }
 
-/// Hands a descriptor to the core, which closes it. Returns the handle
-/// `tun.start` names as `{"kind": "inherited", "handle": …}` (Option A
-/// socketpair bridge), or 0 when the core is not up.
-#[no_mangle]
-pub extern "C" fn concord_ios_adopt_fd(fd: c_int) -> u64 {
-    // SAFETY: the fd is passed on; the core takes ownership.
-    unsafe { concord_adopt_fd(fd) }
-}
-
 /// Creates a packet channel (Option B, patched tree only) and returns its
 /// handle (never 0), or 0 when the core is not up. The handle is what
 /// `tun.start` names as `{"kind": "channel", "handle": …}`.

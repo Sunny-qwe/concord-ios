@@ -20,6 +20,10 @@ struct SettingsView: View {
     // it through its icon leaf views only, never at page level.
     @ObservedObject private var iconPack = IconPackStore.shared
     @State private var showCrashConfirm = false
+    /// Cached 主机映射 summary ("无" / "N 条"): hosts.json is
+    /// read + parsed once here (and refreshed on appear) instead
+    /// of on every body evaluation.
+    @State private var hostsSummaryCache: String = Self.readHostsSummary()
     // FlClash general/port_form.dart: HTTP / redir / tproxy ports
     // (0 = disabled, otherwise 1024–49151, no conflicts). These
     // live in @AppStorage until the SettingsStore owner wires them
@@ -65,7 +69,7 @@ struct SettingsView: View {
     /// Hosts summary for the 内核 → 主机映射 row: "无" when the
     /// user has no hosts.json entries, else "N 条". Read from the
     /// shared hosts.json (same file HostsView edits).
-    private var hostsSummary: String {
+    private static func readHostsSummary() -> String {
         guard let url = ConfigStore.sharedFileURL(name: ConfigStore.hostsFileName),
               let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
@@ -73,6 +77,8 @@ struct SettingsView: View {
         }
         return json.isEmpty ? "无" : "\(json.count) 条"
     }
+
+    private var hostsSummary: String { hostsSummaryCache }
 
     /// Keep-alive display: 0 = the core default. Idle defaults to
     /// 15 s (Go's defaultTCPKeepAliveIdle, which concord inherits
@@ -549,6 +555,7 @@ struct SettingsView: View {
         .onChange(of: settingsStore.autoCheckUpdate) { _, _ in settingsStore.save() }
         .onChange(of: settingsStore.openLogs) { _, _ in settingsStore.save() }
         .onChange(of: settingsStore.showEnvironmentWatermark) { _, _ in settingsStore.save() }
+        .onAppear { hostsSummaryCache = Self.readHostsSummary() }
     }
 }
 

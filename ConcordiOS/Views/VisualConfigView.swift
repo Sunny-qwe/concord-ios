@@ -87,7 +87,7 @@ struct VisualConfigView: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $showCreatedEditor) {
             if let createdSubscriptionID {
-                CustomSubscriptionEditorView(subscriptionID: createdSubscriptionID)
+                CustomSubscriptionEditorView(subscriptionID: createdSubscriptionID).concordNavBarBackground()
             }
         }
     }

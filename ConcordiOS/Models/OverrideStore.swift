@@ -260,7 +260,7 @@ final class OverrideStore: ObservableObject {
     /// reads it as the fallback delay-test URL when a group has no
     /// testUrl of its own. Returns nil when unset or blank.
     /// READ ACCESSOR for ProxyStore: `OverrideStore.shared.testURL(scope:)`
-    /// (instance) or `OverrideStore.savedTestURL(profileID:)` (static).
+    /// (instance).
     func testURL(scope: String?) -> String? {
         if let scope,
            let value = profiles[scope]?["general"]?["test-url"]?.stringValue,
@@ -272,13 +272,6 @@ final class OverrideStore: ObservableObject {
             return value.trimmingCharacters(in: .whitespaces)
         }
         return nil
-    }
-
-    /// Static read for callers without the shared store
-    /// (ProxyStore): `OverrideStore.savedTestURL(profileID:)` —
-    /// profile scope wins over global; nil when unset/blank.
-    static func savedTestURL(profileID: UUID?) -> String? {
-        shared.testURL(scope: profileID?.uuidString)
     }
 
     /// The general section with `test-url` removed: that key must

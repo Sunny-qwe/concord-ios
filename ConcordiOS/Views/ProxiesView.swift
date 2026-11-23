@@ -420,14 +420,28 @@ struct ProxiesView: View {
         }
     }
 
+    /// Raw groups keyed by name, built once per content pass and
+    /// threaded to the per-row helpers below, so they stop
+    /// re-scanning proxyStore.groups per row. First wins — the
+    /// same group `groups.first(where: { $0.name == name })`
+    /// would find.
+    private var rawGroupsByName: [String: ProxyGroup] {
+        var out: [String: ProxyGroup] = [:]
+        out.reserveCapacity(proxyStore.groups.count)
+        for group in proxyStore.groups where out[group.name] == nil {
+            out[group.name] = group
+        }
+        return out
+    }
+
     /// "n" of MuYu's "TYPE · n/m" subtitle (icon_card.dart
     /// _GroupAvailability, countAvailableProxies): members whose
     /// resolved delay is > 0. The store's latencyMs is already the
     /// resolved pick delay (applyLatencies), so a nested-group
     /// member counts through its current pick. "m" is the raw
     /// member count (group.all.length, unfiltered).
-    private func availableCount(for group: ProxyGroup) -> Int {
-        let raw = proxyStore.groups.first(where: { $0.name == group.name })
+    private func availableCount(for group: ProxyGroup, groupsByName: [String: ProxyGroup]) -> Int {
+        let raw = groupsByName[group.name]
         return (raw?.nodes ?? group.nodes).filter { ($0.latencyMs ?? 0) > 0 }.count
     }
 
@@ -481,7 +495,7 @@ struct ProxiesView: View {
     /// caption1 leading (16) + bottomGap + bottom row (24).
     /// rowHeight is the brand icon size, or the callout leading
     /// (21) when icons are hidden.
-    private func iconCardCollapsedHeight(for group: ProxyGroup) -> CGFloat {
+    private func iconCardCollapsedHeight() -> CGFloat {
         let m = iconCardMetrics()
         let rowHeight = styleStore.iconStyle == .hidden ? 21 : m.brandSize
         return m.inset * 2 + rowHeight + m.metaGap + 16 + m.bottomGap + 24
@@ -498,9 +512,9 @@ struct ProxiesView: View {
     /// show nothing, exactly as MuYu's `if (proxy.icon.isNotEmpty)`.
     /// A pack URL is returned as a string: GroupIconImageView loads
     /// http(s) icon strings directly.
-    private func memberIcon(for node: ProxyNode) -> String? {
+    private func memberIcon(for node: ProxyNode, groupsByName: [String: ProxyGroup]) -> String? {
         guard Self.groupTypes.contains(node.type),
-              let sub = proxyStore.groups.first(where: { $0.name == node.name }) else { return nil }
+              let sub = groupsByName[node.name] else { return nil }
         if !sub.icon.isEmpty { return sub.icon }
         return IconPackStore.shared.iconURL(for: node.name)?.absoluteString
     }
@@ -1327,7 +1341,9 @@ struct ProxiesView: View {
     }
 
     private func tabContent(width: CGFloat) -> some View {
-        VStack(spacing: 0) {
+        // One group lookup for this pass (see rawGroupsByName).
+        let groupsByName = rawGroupsByName
+        return VStack(spacing: 0) {
             // FlClash group_tabs.dart: the strip auto-centers the
             // selected chip, fades its right edge over 24pt, and
             // shows an overflow "More" button (chevron.down) when
@@ -1431,7 +1447,7 @@ struct ProxiesView: View {
                     ScrollView {
                         LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
                             ForEach(group.nodes) { node in
-                                nodeCard(node, in: group)
+                                nodeCard(node, in: group, groupsByName: groupsByName)
                                     .id(scrollID(nodeName: node.name, groupName: group.name))
                             }
                         }
@@ -1514,7 +1530,9 @@ struct ProxiesView: View {
     /// Members of an expanded group are not listed again as their
     /// own cards below (listGroups, item 6).
     private func listContent(width: CGFloat) -> some View {
-        Group {
+        // One group lookup for this pass (see rawGroupsByName).
+        let groupsByName = rawGroupsByName
+        return Group {
             if proxyStore.displayGroups.isEmpty && proxyStore.isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1529,7 +1547,7 @@ struct ProxiesView: View {
                         // was 12; the screenshot's gap is ~7.3pt).
                         LazyVStack(spacing: 8) {
                             ForEach(listGroups) { group in
-                                listGroupCard(group, width: width)
+                                listGroupCard(group, width: width, groupsByName: groupsByName)
                                     .id(groupHeaderID(group.name))
                             }
                         }
@@ -1554,7 +1572,9 @@ struct ProxiesView: View {
     // MARK: - Card style (MuYu-only, lib/views/proxies/list.dart icons mode + icon_card.dart)
 
     private func iconsContent(width: CGFloat) -> some View {
-        VStack(spacing: 0) {
+        // One group lookup for this pass (see rawGroupsByName).
+        let groupsByName = rawGroupsByName
+        return VStack(spacing: 0) {
             folderBar
             Group {
                 if proxyStore.displayGroups.isEmpty && proxyStore.isLoading {
@@ -1573,7 +1593,7 @@ struct ProxiesView: View {
                         ScrollView {
                             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
                                 ForEach(leafNodeEntries) { entry in
-                                    nodeCard(entry.node, in: entry.group)
+                                    nodeCard(entry.node, in: entry.group, groupsByName: groupsByName)
                                         .id(scrollID(nodeName: entry.node.name, groupName: entry.group.name))
                                 }
                             }
@@ -1596,11 +1616,11 @@ struct ProxiesView: View {
                                     switch segment {
                                     case .pair(let first, let second):
                                         HStack(spacing: 8) {
-                                            iconGroupCard(first)
+                                            iconGroupCard(first, groupsByName: groupsByName)
                                                 .equatable()
                                                 .id(groupHeaderID(first.name))
                                             if let second {
-                                                iconGroupCard(second)
+                                                iconGroupCard(second, groupsByName: groupsByName)
                                                     .equatable()
                                                     .id(groupHeaderID(second.name))
                                             } else {
@@ -1610,12 +1630,12 @@ struct ProxiesView: View {
                                         }
                                     case .expanded(let group):
                                         VStack(spacing: 8) {
-                                            iconGroupCard(group)
+                                            iconGroupCard(group, groupsByName: groupsByName)
                                                 .equatable()
                                                 .id(groupHeaderID(group.name))
                                             LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
                                                 ForEach(displayNodes(for: group)) { node in
-                                                    nodeCard(node, in: group)
+                                                    nodeCard(node, in: group, groupsByName: groupsByName)
                                                         .id(scrollID(nodeName: node.name, groupName: group.name))
                                                 }
                                             }
@@ -1737,21 +1757,21 @@ struct ProxiesView: View {
     /// closures the parent owns; the struct only calls them.
     /// Call sites add .equatable() — without it SwiftUI does not
     /// consult the ==.
-    private func iconGroupCard(_ group: ProxyGroup) -> IconGroupCard {
-        let total = proxyStore.groups.first(where: { $0.name == group.name })?.nodes.count ?? group.nodes.count
+    private func iconGroupCard(_ group: ProxyGroup, groupsByName: [String: ProxyGroup]) -> IconGroupCard {
+        let total = groupsByName[group.name]?.nodes.count ?? group.nodes.count
         return IconGroupCard(
             name: group.name,
             type: group.type,
             icon: group.icon,
-            subtitle: "\(Self.typeDisplayName(group.type).uppercased()) · \(availableCount(for: group))/\(total)",
+            subtitle: "\(Self.typeDisplayName(group.type).uppercased()) · \(availableCount(for: group, groupsByName: groupsByName))/\(total)",
             selectedName: group.selectedNodeName,
-            selectedIcon: selectedNodeIcon(for: group),
-            latencyMs: selectedNodeLatency(for: group),
+            selectedIcon: selectedNodeIcon(for: group, groupsByName: groupsByName),
+            latencyMs: selectedNodeLatency(for: group, groupsByName: groupsByName),
             testing: proxyStore.testingGroups.contains(group.name),
             expanded: expandedGroups.contains(group.name),
             cardType: styleStore.cardType,
             iconStyle: styleStore.iconStyle,
-            collapsedHeight: iconCardCollapsedHeight(for: group),
+            collapsedHeight: iconCardCollapsedHeight(),
             running: proxyStore.isRunning,
             searchKeyword: groupSearchKeywords[group.name] ?? "",
             searchOpen: groupSearchOpen.contains(group.name),
@@ -1810,9 +1830,9 @@ struct ProxiesView: View {
     /// name (IconPackStore.iconURL) — a node with no icon anywhere
     /// shows no monogram there. A pack URL is returned as a string:
     /// GroupIconImageView loads http(s) icon strings directly.
-    private func selectedNodeIcon(for group: ProxyGroup) -> String? {
+    private func selectedNodeIcon(for group: ProxyGroup, groupsByName: [String: ProxyGroup]) -> String? {
         guard let selected = group.selectedNodeName else { return nil }
-        if let sub = proxyStore.groups.first(where: { $0.name == selected }),
+        if let sub = groupsByName[selected],
            !sub.icon.isEmpty {
             return sub.icon
         }
@@ -1823,9 +1843,9 @@ struct ProxiesView: View {
     /// (MuYu _SelectedDelay reads the delay map). Looked up in the
     /// RAW group: the visible copy may have filtered the selected
     /// node out while searching.
-    private func selectedNodeLatency(for group: ProxyGroup) -> Int32? {
+    private func selectedNodeLatency(for group: ProxyGroup, groupsByName: [String: ProxyGroup]) -> Int32? {
         guard let selected = group.selectedNodeName else { return nil }
-        return proxyStore.groups.first(where: { $0.name == group.name })?
+        return groupsByName[group.name]?
             .nodes.first(where: { $0.name == selected })?.latencyMs
     }
 
@@ -1867,19 +1887,19 @@ struct ProxiesView: View {
     /// closure whose rendered data is shadowed by nodeFingerprints
     /// — see ListGroupNodeFingerprint. Collapsed cards pass []
     /// fingerprints (no grid rendered, no per-node lookups).
-    private func listGroupCard(_ group: ProxyGroup, width: CGFloat) -> some View {
+    private func listGroupCard(_ group: ProxyGroup, width: CGFloat, groupsByName: [String: ProxyGroup]) -> some View {
         let expanded = expandedGroups.contains(group.name)
         let nodes = displayNodes(for: group)
         let fingerprints: [ListGroupNodeFingerprint] = expanded ? nodes.map { node in
             ListGroupNodeFingerprint(
                 name: node.name,
                 typeDisplay: Self.nodeTypeDisplayName(node.type),
-                description: nodeDescription(node),
+                description: nodeDescription(node, groupsByName: groupsByName),
                 latencyMs: node.latencyMs,
                 testing: proxyStore.testingNodes.contains(node.name),
                 pinned: group.fixed == node.name,
                 selected: group.selectedNodeName == node.name,
-                memberIcon: memberIcon(for: node),
+                memberIcon: memberIcon(for: node, groupsByName: groupsByName),
                 addable: isAddable(node)
             )
         } : []
@@ -1910,7 +1930,7 @@ struct ProxiesView: View {
         ) {
             LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
                 ForEach(nodes) { node in
-                    nodeCard(node, in: group)
+                    nodeCard(node, in: group, groupsByName: groupsByName)
                         .id(scrollID(nodeName: node.name, groupName: group.name))
                 }
             }
@@ -1931,27 +1951,27 @@ struct ProxiesView: View {
     /// (FlClash _ProxyDesc); otherwise just the type. The type is
     /// the capitalized display name (URLTest / Selector / Vless),
     /// never the raw lowercase core spelling.
-    private func nodeDescription(_ node: ProxyNode) -> String {
+    private func nodeDescription(_ node: ProxyNode, groupsByName: [String: ProxyGroup]) -> String {
         guard Self.groupTypes.contains(node.type),
-              let sub = proxyStore.groups.first(where: { $0.name == node.name }),
+              let sub = groupsByName[node.name],
               let selected = sub.selectedNodeName, selected != node.name else {
             return Self.nodeTypeDisplayName(node.type)
         }
         return "\(Self.nodeTypeDisplayName(node.type))(\(selected))"
     }
 
-    private func nodeCard(_ node: ProxyNode, in group: ProxyGroup) -> some View {
+    private func nodeCard(_ node: ProxyNode, in group: ProxyGroup, groupsByName: [String: ProxyGroup]) -> some View {
         ProxyNodeCard(
             name: node.name,
             type: Self.nodeTypeDisplayName(node.type),
-            description: nodeDescription(node),
+            description: nodeDescription(node, groupsByName: groupsByName),
             latencyMs: node.latencyMs,
             testing: proxyStore.testingNodes.contains(node.name),
             pinned: group.fixed == node.name,
             selected: group.selectedNodeName == node.name,
             cardType: styleStore.cardType,
             cardHeight: cardHeight,
-            memberIcon: memberIcon(for: node),
+            memberIcon: memberIcon(for: node, groupsByName: groupsByName),
             onTest: { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } }
         )
         .equatable()

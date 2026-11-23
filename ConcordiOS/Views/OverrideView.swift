@@ -377,6 +377,7 @@ struct OverrideSectionEditor: View {
             OverrideAddSheet(section: section, scope: $scope, specs: remainingSpecs) {
                 showAddSheet = false
             }
+            .formSheetChrome()
         }
     }
 }

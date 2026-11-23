@@ -148,6 +148,7 @@ struct FiltersView: View {
             NamedFilterFormView(filter: filter, reservedLabels: Set(namedStore.filters.map { $0.label }).subtracting([filter.label])) { saved in
                 namedStore.upsert(saved)
             }
+            .formSheetChrome()
         }
         .alert("编辑过滤器", isPresented: Binding(
             get: { editingGroup != nil },
@@ -352,6 +353,9 @@ struct FiltersView: View {
 /// and locally otherwise — never saved invalid.
 private struct NamedFilterFormView: View {
     @State private var filter: NamedFilter
+    /// The filter as opened (dirty = changed since open).
+    private let original: NamedFilter
+    @State private var showDiscardConfirm = false
     let reservedLabels: Set<String>
     var onSave: (NamedFilter) -> Void
     @EnvironmentObject private var ruleStore: RuleStore
@@ -361,9 +365,12 @@ private struct NamedFilterFormView: View {
 
     init(filter: NamedFilter, reservedLabels: Set<String>, onSave: @escaping (NamedFilter) -> Void) {
         _filter = State(initialValue: filter)
+        self.original = filter
         self.reservedLabels = reservedLabels
         self.onSave = onSave
     }
+
+    private var isDirty: Bool { filter != original }
 
     private var isNew: Bool { filter.label.isEmpty && filter.regex.isEmpty }
 
@@ -395,7 +402,9 @@ private struct NamedFilterFormView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") { Task { await save() } }
@@ -403,6 +412,7 @@ private struct NamedFilterFormView: View {
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 
     private func save() async {

@@ -361,14 +361,20 @@ private struct NodeSourcesEditorView: View {
             NodeSourcesAddSubscriptionSheet { url, label, ageKey in
                 Task { await addSubscription(url: url, label: label, ageKey: ageKey) }
             }
+            .formSheetChrome()
         }
-        .sheet(isPresented: $showExistingPicker) {
-            NodeSourcesExistingPickerSheet(
+        // Existing-subscription picker is a full page push with
+        // search + select-all + ✓ (upstream _choose() →
+        // BaseNavigator.push(_SourcePicker…), node_sources.dart:
+        // 83-90), not a sheet.
+        .navigationDestination(isPresented: $showExistingPicker) {
+            NodeSourcesExistingPickerPage(
                 profiles: profileStore.profiles.filter { $0.id != profileId },
                 alreadyAttached: Set(customSub?.proxyProviders.map { $0.name } ?? [])
             ) { picked in
                 attachExisting(picked)
             }
+            .concordNavBarBackground()
         }
         .navigationDestination(item: $editProfileID) { id in
             if let attached = profileStore.profiles.first(where: { $0.id == id }) {
@@ -548,6 +554,12 @@ private struct NodeSourcesAddSubscriptionSheet: View {
     @State private var url = ""
     @State private var label = ""
     @State private var ageKey = ""
+    @State private var showDiscardConfirm = false
+
+    /// Dirty once anything is typed (a fresh form is empty).
+    private var isDirty: Bool {
+        !url.isEmpty || !label.isEmpty || !ageKey.isEmpty
+    }
 
     var body: some View {
         NavigationStack {
@@ -573,7 +585,9 @@ private struct NodeSourcesAddSubscriptionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("添加") {
@@ -585,12 +599,16 @@ private struct NodeSourcesAddSubscriptionSheet: View {
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 }
 
 // MARK: - Existing subscriptions picker (FlClash _SourcePicker)
 
-private struct NodeSourcesExistingPickerSheet: View {
+/// A pushed page (upstream _choose() → BaseNavigator.push): search
+/// + select-all + ✓. No own NavigationStack, no 取消 button;
+/// attaching pops back to the sources list.
+private struct NodeSourcesExistingPickerPage: View {
     let profiles: [Profile]
     let alreadyAttached: Set<String>
     var onPick: ([Profile]) -> Void
@@ -604,59 +622,56 @@ private struct NodeSourcesExistingPickerSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                if profiles.isEmpty {
-                    Text("没有可附加的订阅。")
+        List {
+            if profiles.isEmpty {
+                Text("没有可附加的订阅。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                TextField("搜索订阅", text: $search)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                HStack {
+                    Button(selected.count == profiles.count ? "取消全选" : "全选") {
+                        selected = selected.count == profiles.count ? [] : Set(profiles.map { $0.id })
+                    }
+                    Spacer()
+                    Text("已选 \(selected.count) 个")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                } else {
-                    TextField("搜索订阅", text: $search)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    HStack {
-                        Button(selected.count == profiles.count ? "取消全选" : "全选") {
-                            selected = selected.count == profiles.count ? [] : Set(profiles.map { $0.id })
-                        }
-                        Spacer()
-                        Text("已选 \(selected.count) 个")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(visible) { profile in
-                        Button {
-                            if selected.contains(profile.id) { selected.remove(profile.id) } else { selected.insert(profile.id) }
-                        } label: {
-                            HStack {
-                                Image(systemName: selected.contains(profile.id) ? "checkmark.square.fill" : "square")
-                                    .foregroundStyle(selected.contains(profile.id) ? ConcordTheme.accent : .secondary)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(profile.name).font(.headline)
-                                    Text(alreadyAttached.contains(profile.name) ? "已附加" : (profile.kind == .url ? "远程订阅" : "本地文件"))
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
+                }
+                ForEach(visible) { profile in
+                    Button {
+                        if selected.contains(profile.id) { selected.remove(profile.id) } else { selected.insert(profile.id) }
+                    } label: {
+                        HStack {
+                            Image(systemName: selected.contains(profile.id) ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(selected.contains(profile.id) ? ConcordTheme.accent : .secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(profile.name).font(.headline)
+                                Text(alreadyAttached.contains(profile.name) ? "已附加" : (profile.kind == .url ? "远程订阅" : "本地文件"))
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
                             }
+                            Spacer()
                         }
-                        .buttonStyle(.plain)
                     }
+                    .buttonStyle(.plain)
                 }
             }
-            .font(.footnote.weight(.semibold))
-            .navigationTitle("附加已有订阅")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+        }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .font(.footnote.weight(.semibold))
+        .navigationTitle("附加已有订阅")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("附加") {
+                    onPick(profiles.filter { selected.contains($0.id) })
+                    dismiss()
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("附加") {
-                        onPick(profiles.filter { selected.contains($0.id) })
-                        dismiss()
-                    }
-                    .disabled(selected.isEmpty)
-                }
+                .disabled(selected.isEmpty)
             }
         }
     }

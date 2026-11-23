@@ -14,6 +14,20 @@ struct RulesView: View {
     /// Filter expressions to validate, one per line (validate.filters).
     @State private var filterText = ""
     @State private var filterExtractMessage: String?
+    /// Rule-set dump page (upstream EditorPage, providers.dart:
+    /// 226-243) — local state fed from the store once the async
+    /// dump lands, then the store values are cleared so a later
+    /// EditProviderView dump cannot re-trip this page.
+    @State private var dumpDestination: RuleSetDumpDestination?
+    /// Provider-detail page (upstream EditorPage) — local state,
+    /// not the shared ruleStore.providerDetail (same P2
+    /// cross-trigger as ProvidersView: EditProviderView's detail
+    /// load must not present anything here). A Bool + stored
+    /// value, not navigationDestination(item:): ConcordProviderInfo
+    /// is not Hashable (and its model file is outside this change),
+    /// so the item form cannot be used.
+    @State private var detailProvider: ConcordProviderInfo?
+    @State private var showDetailPage = false
 
     /// The non-empty filter lines from the editor.
     private var filterLines: [String] {
@@ -51,7 +65,14 @@ struct RulesView: View {
                     } else {
                         ForEach(ruleStore.ruleProviders) { provider in
                             Button {
-                                Task { await ruleStore.dumpRuleSet(provider) }
+                                Task {
+                                    await ruleStore.dumpRuleSet(provider)
+                                    if let name = ruleStore.dumpedRuleSetName {
+                                        dumpDestination = RuleSetDumpDestination(name: name, text: ruleStore.dumpedRuleSetText ?? "")
+                                        ruleStore.dumpedRuleSetName = nil
+                                        ruleStore.dumpedRuleSetText = nil
+                                    }
+                                }
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
@@ -73,7 +94,14 @@ struct RulesView: View {
                             .buttonStyle(.plain)
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button("详情") {
-                                    Task { await ruleStore.loadProviderDetail(provider) }
+                                    Task {
+                                        await ruleStore.loadProviderDetail(provider)
+                                        if let detail = ruleStore.providerDetail {
+                                            detailProvider = detail
+                                            ruleStore.providerDetail = nil
+                                            showDetailPage = true
+                                        }
+                                    }
                                 }
                                 .tint(ConcordTheme.accent)
                                 Button("更新") {
@@ -282,114 +310,113 @@ struct RulesView: View {
                 if ruleStore.rules.isEmpty { await ruleStore.refresh() }
                 await ruleStore.refreshRouteStamp()
             }
-            .sheet(isPresented: Binding(
-                get: { ruleStore.dumpedRuleSetName != nil },
-                set: { if !$0 { ruleStore.dumpedRuleSetName = nil } }
-            )) {
-                RuleSetDumpView(name: ruleStore.dumpedRuleSetName ?? "", text: ruleStore.dumpedRuleSetText ?? "")
+            // Rule-set dump and provider detail are pushed pages
+            // (upstream EditorPage), not sheets — nothing here
+            // observes the shared store values for presentation any
+            // more, so another view's dump/detail load cannot
+            // present anything on this page.
+            .navigationDestination(item: $dumpDestination) { destination in
+                RuleSetDumpView(name: destination.name, text: destination.text)
+                    .concordNavBarBackground()
             }
-            .sheet(isPresented: Binding(
-                get: { ruleStore.providerDetail != nil },
-                set: { if !$0 { ruleStore.providerDetail = nil } }
-            )) {
-                if let detail = ruleStore.providerDetail {
+            .navigationDestination(isPresented: $showDetailPage) {
+                if let detail = detailProvider {
                     ProviderDetailView(provider: detail)
+                        .concordNavBarBackground()
                 }
             }
     }
 }
 
-// Dumped rules of one rule-set provider (ruleSet.dump).
+/// One dumped rule set, as a page-push destination.
+private struct RuleSetDumpDestination: Identifiable, Hashable {
+    let name: String
+    let text: String
+    var id: String { name }
+}
+
+// Dumped rules of one rule-set provider (ruleSet.dump). A pushed
+// page (upstream EditorPage) — no own NavigationStack, no 完成
+// button; the stack's back button dismisses it.
 struct RuleSetDumpView: View {
     let name: String
     let text: String
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                Text(text.isEmpty ? "该规则集没有可显示的规则" : text)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-            }
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle(name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
+        ScrollView {
+            Text(text.isEmpty ? "该规则集没有可显示的规则" : text)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .background(ConcordTheme.pageBackground)
+        .navigationTitle(name)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
 // One provider's full detail (provider.get). Unlike provider.list,
 // the result carries `subscriptionInfo` when the provider is a
-// subscription.
+// subscription. A pushed page (upstream EditorPage) — no own
+// NavigationStack, no 完成 button.
 struct ProviderDetailView: View {
     let provider: ConcordProviderInfo
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var ruleStore: RuleStore
 
     var body: some View {
-        NavigationStack {
-            List {
-                LabeledContent("名称", value: provider.name)
-                LabeledContent("类型", value: provider.type)
-                LabeledContent("传输", value: provider.vehicleType)
-                LabeledContent("条目", value: "\(provider.count)")
-                LabeledContent("路径", value: provider.path)
-                if let updatedAt = provider.updatedAt {
-                    LabeledContent("更新于", value: Date(timeIntervalSince1970: TimeInterval(updatedAt)).formatted(date: .abbreviated, time: .shortened))
-                }
-                if let testUrl = provider.testUrl {
-                    LabeledContent("测速地址", value: testUrl)
-                }
-                if let expectedStatus = provider.expectedStatus {
-                    LabeledContent("期望状态码", value: expectedStatus)
-                }
-                if let behavior = provider.behavior {
-                    LabeledContent("行为", value: behavior)
-                }
-                if let format = provider.format {
-                    LabeledContent("格式", value: format)
-                }
-                if let subscription = provider.subscriptionInfo {
-                    Section("订阅流量") {
-                        LabeledContent("已上传", value: ByteCountFormatter.string(fromByteCount: subscription.upload, countStyle: .file))
-                        LabeledContent("已下载", value: ByteCountFormatter.string(fromByteCount: subscription.download, countStyle: .file))
-                        LabeledContent("总量", value: ByteCountFormatter.string(fromByteCount: subscription.total, countStyle: .file))
-                        LabeledContent("到期", value: Date(timeIntervalSince1970: TimeInterval(subscription.expire)).formatted(date: .abbreviated, time: .shortened))
-                    }
-                }
-                Section {
-                    Button("健康检查（provider.healthCheck）") {
-                        Task { await ruleStore.healthCheckProvider(provider) }
-                    }
-                    // Tools B16: the old copy promised a result on
-                    // refresh, but the core never returns provider
-                    // health state, so no refresh can show one.
-                    Text("健康检查已触发，但核心不返回提供方健康状态，无法显示结果")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if let message = ruleStore.providerActionMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
-                    }
+        List {
+            LabeledContent("名称", value: provider.name)
+            LabeledContent("类型", value: provider.type)
+            LabeledContent("传输", value: provider.vehicleType)
+            LabeledContent("条目", value: "\(provider.count)")
+            LabeledContent("路径", value: provider.path)
+            if let updatedAt = provider.updatedAt {
+                LabeledContent("更新于", value: Date(timeIntervalSince1970: TimeInterval(updatedAt)).formatted(date: .abbreviated, time: .shortened))
+            }
+            if let testUrl = provider.testUrl {
+                LabeledContent("测速地址", value: testUrl)
+            }
+            if let expectedStatus = provider.expectedStatus {
+                LabeledContent("期望状态码", value: expectedStatus)
+            }
+            if let behavior = provider.behavior {
+                LabeledContent("行为", value: behavior)
+            }
+            if let format = provider.format {
+                LabeledContent("格式", value: format)
+            }
+            if let subscription = provider.subscriptionInfo {
+                Section("订阅流量") {
+                    LabeledContent("已上传", value: ByteCountFormatter.string(fromByteCount: subscription.upload, countStyle: .file))
+                    LabeledContent("已下载", value: ByteCountFormatter.string(fromByteCount: subscription.download, countStyle: .file))
+                    LabeledContent("总量", value: ByteCountFormatter.string(fromByteCount: subscription.total, countStyle: .file))
+                    LabeledContent("到期", value: Date(timeIntervalSince1970: TimeInterval(subscription.expire)).formatted(date: .abbreviated, time: .shortened))
                 }
             }
-            .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle(provider.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
+            Section {
+                Button("健康检查（provider.healthCheck）") {
+                    Task { await ruleStore.healthCheckProvider(provider) }
+                }
+                // Tools B16: the old copy promised a result on
+                // refresh, but the core never returns provider
+                // health state, so no refresh can show one.
+                Text("健康检查已触发，但核心不返回提供方健康状态，无法显示结果")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if let message = ruleStore.providerActionMessage {
+                    Text(message).font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .scrollContentBackground(.hidden)
+        .font(.footnote.weight(.semibold))
+        .background(ConcordTheme.pageBackground)
+        .navigationTitle(provider.name)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }

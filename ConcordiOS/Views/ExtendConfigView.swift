@@ -279,6 +279,7 @@ struct ExtendConfigView: View {
                     }
                 }
             }
+            .formSheetChrome()
         }
         .sheet(isPresented: $showProfileRulePresets) {
             RulePresetSheetView { preset in
@@ -288,6 +289,7 @@ struct ExtendConfigView: View {
                     }
                 }
             }
+            .formSheetChrome()
         }
         .task {
             if draft == nil, let profile {

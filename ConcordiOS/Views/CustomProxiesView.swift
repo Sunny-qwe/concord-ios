@@ -1,5 +1,56 @@
 import SwiftUI
 
+// MARK: - Shared form-sheet chrome + dirty-discard guard
+//
+// Upstream FlClash form sheets go through showFormSheet /
+// showSnapSheet (plugins/prism_ui/lib/sheet.dart): detents
+// [9/16, 0.9], tap-scrim dismiss, corner radius 38 (28pt here,
+// the stats-sheet value at DashboardView.swift:540). Every form
+// sheet in the Config/Settings area uses formSheetChrome().
+// Upstream NestedFormSheet also intercepts dismiss and asks
+// save-changes when the form is dirty. SwiftUI cannot intercept
+// the swipe-down gesture itself, so while a form is dirty the
+// swipe is blocked (interactiveDismissDisabled) and the Cancel
+// button asks whether to discard — DiscardChangesGuard, applied
+// to the form's root with the form's own isDirty flag.
+
+/// Upstream form-sheet chrome: opens at the short detent, drags
+/// to 90%, page background, 28pt corners (stats-sheet pattern).
+extension View {
+    func formSheetChrome() -> some View {
+        presentationDetents([.fraction(0.5625), .fraction(0.9)])
+            .presentationBackground(ConcordTheme.pageBackground)
+            .presentationCornerRadius(28)
+    }
+}
+
+/// Dirty-discard guard for edit-form sheets. `isDirty` is the
+/// form's own flag; `showConfirm` drives the alert; `onDiscard`
+/// dismisses the sheet. Cancel buttons call
+/// `if isDirty { showConfirm = true } else { dismiss() }`.
+struct DiscardChangesGuard: ViewModifier {
+    var isDirty: Bool
+    @Binding var showConfirm: Bool
+    var onDiscard: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .interactiveDismissDisabled(isDirty)
+            .alert("放弃未保存的修改？", isPresented: $showConfirm) {
+                Button("放弃修改", role: .destructive, action: onDiscard)
+                Button("继续编辑", role: .cancel) {}
+            } message: {
+                Text("已做的修改尚未保存。")
+            }
+    }
+}
+
+extension View {
+    func discardChangesGuard(isDirty: Bool, showConfirm: Binding<Bool>, onDiscard: @escaping () -> Void) -> some View {
+        modifier(DiscardChangesGuard(isDirty: isDirty, showConfirm: showConfirm, onDiscard: onDiscard))
+    }
+}
+
 // MARK: - Custom proxies (FlClash: Tools -> 进阶配置 -> 代理)
 // User-defined proxies, merged into the active profile's YAML
 // under `proxies:` (see CustomProxyStore — the config.apply
@@ -12,7 +63,7 @@ struct CustomProxiesView: View {
     @StateObject private var store = CustomProxyStore()
     @StateObject private var customStore = CustomSubscriptionStore()
     @State private var editing: CustomProxy?
-    @State private var editingRawIndex: Int?
+    @State private var editingRawItem: RawProxyEditItem?
     @State private var message: String?
     @State private var createdSubscriptionID: UUID?
     @State private var showCreatedEditor = false
@@ -75,7 +126,7 @@ struct CustomProxiesView: View {
                 }
                 ForEach(Array(store.rawProxies.enumerated()), id: \.offset) { index, definition in
                     Button {
-                        editingRawIndex = index
+                        editingRawItem = RawProxyEditItem(index: index)
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
@@ -110,19 +161,21 @@ struct CustomProxiesView: View {
             CustomProxyFormView(proxy: proxy, isNew: !store.proxies.contains(where: { $0.id == proxy.id })) { saved in
                 Task { await saveProxy(saved) }
             }
+            .formSheetChrome()
         }
-        .sheet(isPresented: Binding(
-            get: { editingRawIndex != nil },
-            set: { if !$0 { editingRawIndex = nil } }
-        )) {
-            if let index = editingRawIndex, store.rawProxies.indices.contains(index) {
-                RawProxyEditView(definition: store.rawProxies[index]) { saved in
-                    store.rawProxies[index] = saved
+        // Raw ("添加到本地") edit: ours-only, stays a sheet, but
+        // single-item (the old Bool + index + if-let could show a
+        // stale/blank form for a deleted row).
+        .sheet(item: $editingRawItem) { item in
+            if store.rawProxies.indices.contains(item.index) {
+                RawProxyEditView(definition: store.rawProxies[item.index]) { saved in
+                    store.rawProxies[item.index] = saved
                     store.save()
                     Task { await bakeIntoProfile() }
                 } onDelete: {
-                    deleteRawProxies(at: IndexSet(integer: index))
+                    deleteRawProxies(at: IndexSet(integer: item.index))
                 }
+                .formSheetChrome()
             }
         }
         .navigationDestination(isPresented: $showCreatedEditor) {
@@ -144,7 +197,7 @@ struct CustomProxiesView: View {
     private func deleteRawProxies(at offsets: IndexSet) {
         store.rawProxies.remove(atOffsets: offsets)
         store.save()
-        editingRawIndex = nil
+        editingRawItem = nil
         Task { await bakeIntoProfile() }
     }
 
@@ -205,14 +258,20 @@ struct CustomProxiesView: View {
 struct CustomProxyFormView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var proxy: CustomProxy
+    /// The proxy as opened (dirty = changed since open).
+    private let original: CustomProxy
+    @State private var showDiscardConfirm = false
     let isNew: Bool
     let onSave: (CustomProxy) -> Void
 
     init(proxy: CustomProxy, isNew: Bool = false, onSave: @escaping (CustomProxy) -> Void) {
         _proxy = State(initialValue: proxy)
+        self.original = proxy
         self.isNew = isNew
         self.onSave = onSave
     }
+
+    private var isDirty: Bool { proxy != original }
 
     var body: some View {
         NavigationStack {
@@ -266,7 +325,9 @@ struct CustomProxyFormView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
@@ -279,10 +340,18 @@ struct CustomProxyFormView: View {
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 }
 
 // MARK: - Raw ("添加到本地") node editor
+
+/// Single-item trigger for the raw-node edit sheet (the row index
+/// as the item identity).
+private struct RawProxyEditItem: Identifiable {
+    let index: Int
+    var id: Int { index }
+}
 
 /// Edits one raw node definition losslessly for the fields the
 /// form can express (name / server / port); every other key
@@ -300,6 +369,11 @@ struct RawProxyEditView: View {
     @State private var name: String
     @State private var server: String
     @State private var portText: String
+    /// The values as opened (dirty = changed since open).
+    private let originalName: String
+    private let originalServer: String
+    private let originalPortText: String
+    @State private var showDiscardConfirm = false
 
     init(definition: JSONValue, onSave: @escaping (JSONValue) -> Void, onDelete: @escaping () -> Void) {
         self.definition = definition
@@ -313,6 +387,13 @@ struct RawProxyEditView: View {
             port = String(number)
         }
         _portText = State(initialValue: port)
+        self.originalName = object["name"]?.stringValue ?? ""
+        self.originalServer = object["server"]?.stringValue ?? ""
+        self.originalPortText = port
+    }
+
+    private var isDirty: Bool {
+        name != originalName || server != originalServer || portText != originalPortText
     }
 
     private var yamlText: String {
@@ -350,7 +431,9 @@ struct RawProxyEditView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
@@ -361,6 +444,7 @@ struct RawProxyEditView: View {
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 
     private func save() {

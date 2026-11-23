@@ -453,9 +453,14 @@ struct IconSetsView: View {
     @State private var importName = ""
     @State private var importURL = ""
     @State private var showImporter = false
-    @State private var editingPack: IconSetStore.ImportedPack?
-    @State private var editName = ""
-    @State private var editURL = ""
+    /// Local-pack rename dialog (upstream showCommonDialog
+    /// InputDialog, icon_sets.dart:67) — the item itself is the
+    /// source; the name field binds to it.
+    @State private var renamingPack: IconSetStore.ImportedPack?
+    /// Remote-pack edit form sheet (upstream showNamedUrlForm →
+    /// showFormSheet): the form's fields live in the sheet and
+    /// are initialised from the item.
+    @State private var editingRemotePack: IconSetStore.ImportedPack?
     @State private var deletingPack: IconSetStore.ImportedPack?
 
     var body: some View {
@@ -568,11 +573,16 @@ struct IconSetsView: View {
                                     }
                                 }
                                 Button("选项…") {
-                                    editName = pack.name
-                                    editURL = pack.url
-                                    editingPack = pack
+                                    deletingPack = nil
+                                    if pack.isRemote {
+                                        editingRemotePack = pack
+                                    } else {
+                                        renamingPack = pack
+                                    }
                                 }
                                 Button("删除", role: .destructive) {
+                                    renamingPack = nil
+                                    editingRemotePack = nil
                                     deletingPack = pack
                                 }
                             } label: {
@@ -655,19 +665,35 @@ struct IconSetsView: View {
                 iconSetStore.lastError = "选择文件失败：\(error.localizedDescription)"
             }
         }
-        .sheet(item: $editingPack) { pack in
-            IconSetEditSheet(
-                pack: pack,
-                name: $editName,
-                url: $editURL,
-                onSave: {
-                    if pack.isRemote {
-                        Task { await iconSetStore.updatePack(pack, name: editName, url: editURL) }
-                    } else {
-                        iconSetStore.renamePack(pack, name: editName)
-                    }
+        // Remote-pack edit is a form sheet (upstream
+        // showNamedUrlForm → showFormSheet); a local pack has no
+        // URL to edit, so it uses the rename dialog below.
+        .sheet(item: $editingRemotePack) { pack in
+            IconSetEditSheet(pack: pack) { name, url in
+                Task { await iconSetStore.updatePack(pack, name: name, url: url) }
+            }
+            .formSheetChrome()
+        }
+        // Local-pack rename is a centred input dialog (upstream
+        // showCommonDialog InputDialog), not a sheet.
+        .alert("重命名图标集", isPresented: Binding(
+            get: { renamingPack != nil },
+            set: { if !$0 { renamingPack = nil } }
+        )) {
+            TextField("名称", text: Binding(
+                get: { renamingPack?.name ?? "" },
+                set: { renamingPack?.name = $0 }
+            ))
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            Button("保存") {
+                if let pack = renamingPack {
+                    iconSetStore.renamePack(pack, name: pack.name)
                 }
-            )
+                renamingPack = nil
+            }
+            .disabled((renamingPack?.name.trimmingCharacters(in: .whitespaces).isEmpty) ?? true)
+            Button("取消", role: .cancel) { renamingPack = nil }
         }
         .alert(
             "删除这个图标集吗？",
@@ -716,14 +742,23 @@ struct IconSetsView: View {
     }
 }
 
-/// Rename a pack (and, for a remote pack, change its URL — a
-/// changed URL re-syncs, FlClash _handleEditOptions).
+/// Rename a remote pack (and change its URL — a changed URL
+/// re-syncs, FlClash _handleEditOptions). The fields live in the
+/// sheet, initialised from the item — no separate parent state.
 private struct IconSetEditSheet: View {
     let pack: IconSetStore.ImportedPack
-    @Binding var name: String
-    @Binding var url: String
-    let onSave: () -> Void
+    let onSave: (String, String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var url: String
+    @State private var showDiscardConfirm = false
+
+    init(pack: IconSetStore.ImportedPack, onSave: @escaping (String, String) -> Void) {
+        self.pack = pack
+        self.onSave = onSave
+        _name = State(initialValue: pack.name)
+        _url = State(initialValue: pack.url)
+    }
 
     private var error: String? {
         if name.trimmingCharacters(in: .whitespaces).isEmpty { return "名称不能为空" }
@@ -735,6 +770,11 @@ private struct IconSetEditSheet: View {
             }
         }
         return nil
+    }
+
+    /// Dirty once name or URL differs from the pack as opened.
+    private var isDirty: Bool {
+        name != pack.name || url != pack.url
     }
 
     var body: some View {
@@ -769,16 +809,19 @@ private struct IconSetEditSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        onSave()
+                        onSave(name, url)
                         dismiss()
                     }
                     .disabled(error != nil)
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 }

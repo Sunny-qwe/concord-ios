@@ -57,11 +57,19 @@ import SwiftUI
 struct LoopbackView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @ObservedObject private var overrideStore = OverrideStore.shared
-    @State private var editingAddress: String?
-    @State private var editText = ""
-    @State private var showEditSheet = false
+    /// Single source for the add/edit sheet (ours-only editor):
+    /// the address being edited (nil = add) + the text. One item
+    /// — never a Bool + address + text that can disagree and show
+    /// a stale or blank form.
+    @State private var editingDraft: LoopbackEditDraft?
     @State private var showDeleteConfirm: String?
     @State private var applyMessage: String?
+
+    private struct LoopbackEditDraft: Identifiable {
+        let id = UUID()
+        var original: String?
+        var text: String
+    }
     /// Loopback 10.7.0.1 switch (NE side, tunnel.json
     /// "loopback-device", default OFF). Initialised from the
     /// shared file so the toggle shows the persisted value.
@@ -123,9 +131,7 @@ struct LoopbackView: View {
         List {
             Section {
                 Button {
-                    editingAddress = nil
-                    editText = ""
-                    showEditSheet = true
+                    editingDraft = LoopbackEditDraft(original: nil, text: "")
                 } label: {
                     Text("添加地址…")
                         .foregroundStyle(ConcordTheme.accent)
@@ -138,9 +144,7 @@ struct LoopbackView: View {
                 ForEach(addresses, id: \.self) { address in
                     HStack {
                         Button {
-                            editingAddress = address
-                            editText = address
-                            showEditSheet = true
+                            editingDraft = LoopbackEditDraft(original: address, text: address)
                         } label: {
                             Text(address)
                                 .foregroundStyle(.primary)
@@ -149,9 +153,7 @@ struct LoopbackView: View {
                         Spacer()
                         Menu {
                             Button("编辑") {
-                                editingAddress = address
-                                editText = address
-                                showEditSheet = true
+                                editingDraft = LoopbackEditDraft(original: address, text: address)
                             }
                             Button("删除", role: .destructive) {
                                 showDeleteConfirm = address
@@ -214,16 +216,19 @@ struct LoopbackView: View {
                 EditButton()
             }
         }
-        .sheet(isPresented: $showEditSheet) {
+        .sheet(item: $editingDraft) { draft in
             LoopbackEditSheet(
-                title: editingAddress == nil ? "添加地址" : "编辑地址",
-                text: $editText,
+                title: draft.original == nil ? "添加地址" : "编辑地址",
+                text: Binding(
+                    get: { editingDraft?.text ?? "" },
+                    set: { editingDraft?.text = $0 }
+                ),
                 existing: addresses,
-                current: editingAddress,
+                current: draft.original,
                 tunnelAddress: Self.tunnelAddress
             ) { value in
-                if let editingAddress,
-                   let index = addresses.firstIndex(of: editingAddress) {
+                if let original = draft.original,
+                   let index = addresses.firstIndex(of: original) {
                     var list = addresses
                     list[index] = value
                     saveAddresses(list)
@@ -231,6 +236,7 @@ struct LoopbackView: View {
                     saveAddresses(addresses + [value])
                 }
             }
+            .formSheetChrome()
         }
         .alert("删除这个地址？", isPresented: Binding(
             get: { showDeleteConfirm != nil },
@@ -276,9 +282,9 @@ struct LoopbackView: View {
     }
 }
 
-/// Add / edit sheet for one loopback address (same pattern as
-/// UserAgentEditSheet): the reason for a rejected value is shown
-/// inline in red and 保存 stays disabled until the value is valid.
+/// Add / edit sheet for one loopback address: the reason for a
+/// rejected value is shown inline in red and 保存 stays disabled
+/// until the value is valid.
 private struct LoopbackEditSheet: View {
     let title: String
     @Binding var text: String
@@ -287,10 +293,17 @@ private struct LoopbackEditSheet: View {
     let tunnelAddress: String
     let onSave: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var showDiscardConfirm = false
 
     private var error: String? {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return LoopbackView.validationError(for: value, excluding: current, existing: existing)
+    }
+
+    /// Dirty once the text differs from the address as opened
+    /// (empty for a new address).
+    private var isDirty: Bool {
+        text != (current ?? "")
     }
 
     var body: some View {
@@ -315,7 +328,9 @@ private struct LoopbackEditSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
@@ -326,5 +341,6 @@ private struct LoopbackEditSheet: View {
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 }

@@ -33,8 +33,15 @@ struct CustomSubscriptionEditorView: View {
     @State private var ruleSelectionMode = false
     @State private var selectedRuleIDs: Set<String> = []
     @State private var showRulePresets = false
-    @State private var showProxyProviderPicker = false
-    @State private var showRuleProviderPicker = false
+    /// Provider-picker page (upstream pushes a SelectionSheet as
+    /// a PagedSheetRoute page inside the form sheet — here a page
+    /// push in the editor's stack, not a second sheet).
+    @State private var pickerDestination: ProviderPickerDestination?
+
+    private enum ProviderPickerDestination: Hashable {
+        case proxyProviders
+        case ruleProviders
+    }
     /// Rule providers defined in the active profile's YAML, loaded
     /// once in .task — the existing providers a rule provider can
     /// reference (upstream: the core's provider list).
@@ -280,7 +287,7 @@ struct CustomSubscriptionEditorView: View {
                     copy.proxyProviders.remove(atOffsets: offsets)
                     draft = copy
                 }
-                Button { showProxyProviderPicker = true } label: {
+                Button { pickerDestination = .proxyProviders } label: {
                     Label("添加代理提供方", systemImage: "plus")
                 }
             }
@@ -306,7 +313,7 @@ struct CustomSubscriptionEditorView: View {
                     copy.ruleProviders.remove(atOffsets: offsets)
                     draft = copy
                 }
-                Button { showRuleProviderPicker = true } label: {
+                Button { pickerDestination = .ruleProviders } label: {
                     Label("添加规则提供方", systemImage: "plus")
                 }
             }
@@ -543,8 +550,11 @@ struct CustomSubscriptionEditorView: View {
         } message: {
             Text("「\(sub.name)」里的分组、提供方和规则都会被删除。")
         }
-        .sheet(isPresented: $showPreview) {
-            CustomSubscriptionPreviewSheet(subscription: sub)
+        // Runtime-config preview is a pushed page (upstream
+        // _push(PreviewProfileView), custom.dart:250), not a sheet.
+        .navigationDestination(isPresented: $showPreview) {
+            CustomSubscriptionPreviewPage(subscription: sub)
+                .concordNavBarBackground()
         }
         .task {
             if let yaml = profileStore.activeProfileYAML() {
@@ -585,6 +595,7 @@ struct CustomSubscriptionEditorView: View {
                 }
                 draft = copy
             }
+            .formSheetChrome()
         }
         .sheet(item: $editingDialer) { dialer in
             CustomDialerFormView(
@@ -600,6 +611,7 @@ struct CustomSubscriptionEditorView: View {
                 }
                 draft = copy
             }
+            .formSheetChrome()
         }
         .sheet(item: $editingProxyProvider) { provider in
             CustomProviderOptionsView(provider: provider) { saved in
@@ -611,30 +623,38 @@ struct CustomSubscriptionEditorView: View {
                 }
                 draft = copy
             }
+            .formSheetChrome()
         }
-        .sheet(isPresented: $showProxyProviderPicker) {
-            CustomProviderPickerView(
-                title: "添加代理提供方",
-                candidates: proxyProviderCandidates,
-                emptyTip: "没有可引用的订阅：先在订阅页导入一个带链接的订阅。"
-            ) { picked in
-                var copy = sub
-                copy.proxyProviders.append(picked)
-                draft = copy
+        // Provider pickers are pages inside the editor's stack
+        // (upstream PagedSheetRoute), not second sheets.
+        .navigationDestination(item: $pickerDestination) { destination in
+            Group {
+                switch destination {
+                case .proxyProviders:
+                    CustomProviderPickerView(
+                        title: "添加代理提供方",
+                        candidates: proxyProviderCandidates,
+                        emptyTip: "没有可引用的订阅：先在订阅页导入一个带链接的订阅。"
+                    ) { picked in
+                        var copy = sub
+                        copy.proxyProviders.append(picked)
+                        draft = copy
+                    }
+                case .ruleProviders:
+                    CustomProviderPickerView(
+                        title: "添加规则提供方",
+                        candidates: ruleProviderCandidates.filter { candidate in
+                            !sub.ruleProviders.contains(where: { $0.name == candidate.name })
+                        },
+                        emptyTip: "当前配置里没有规则提供方。"
+                    ) { picked in
+                        var copy = sub
+                        copy.ruleProviders.append(picked)
+                        draft = copy
+                    }
+                }
             }
-        }
-        .sheet(isPresented: $showRuleProviderPicker) {
-            CustomProviderPickerView(
-                title: "添加规则提供方",
-                candidates: ruleProviderCandidates.filter { candidate in
-                    !sub.ruleProviders.contains(where: { $0.name == candidate.name })
-                },
-                emptyTip: "当前配置里没有规则提供方。"
-            ) { picked in
-                var copy = sub
-                copy.ruleProviders.append(picked)
-                draft = copy
-            }
+            .concordNavBarBackground()
         }
         .sheet(item: $editingRuleProvider) { provider in
             CustomProviderOptionsView(provider: provider) { saved in
@@ -646,6 +666,7 @@ struct CustomSubscriptionEditorView: View {
                 }
                 draft = copy
             }
+            .formSheetChrome()
         }
         .sheet(isPresented: $showRulePresets) {
             RulePresetSheetView { preset in
@@ -659,6 +680,7 @@ struct CustomSubscriptionEditorView: View {
                 }
                 draft = copy
             }
+            .formSheetChrome()
         }
         .sheet(item: $editingRule) { rule in
             CustomRuleFormView(rule: rule, targets: targetCandidates, ruleProviderNames: ruleProviderCandidates.map { $0.name }) { saved in
@@ -670,6 +692,7 @@ struct CustomSubscriptionEditorView: View {
                 }
                 draft = copy
             }
+            .formSheetChrome()
         }
     }
 
@@ -702,11 +725,11 @@ struct CustomSubscriptionEditorView: View {
 /// The custom subscription baked into the active profile's YAML
 /// (or a minimal template when there is no active profile),
 /// read-only text with copy — the same preview surface as
-/// ProfilePreviewView.
-private struct CustomSubscriptionPreviewSheet: View {
+/// ProfilePreviewView. A pushed page (upstream
+/// _push(PreviewProfileView)), not a sheet.
+private struct CustomSubscriptionPreviewPage: View {
     let subscription: CustomSubscription
     @EnvironmentObject private var profileStore: ProfileStore
-    @Environment(\.dismiss) private var dismiss
     @State private var copied = false
 
     private var bakedText: String {
@@ -716,26 +739,23 @@ private struct CustomSubscriptionPreviewSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                Text(bakedText)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
-            }
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle("运行时配置")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(copied ? "已复制" : "复制") {
-                        UIPasteboard.general.string = bakedText
-                        copied = true
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
+        ScrollView {
+            Text(bakedText)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+        }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .background(ConcordTheme.pageBackground)
+        .navigationTitle("运行时配置")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(copied ? "已复制" : "复制") {
+                    UIPasteboard.general.string = bakedText
+                    copied = true
                 }
             }
         }
@@ -746,6 +766,9 @@ private struct CustomSubscriptionPreviewSheet: View {
 
 private struct CustomGroupFormView: View {
     @State private var group: CustomGroup
+    /// The group as opened (dirty = changed since open).
+    private let original: CustomGroup
+    @State private var showDiscardConfirm = false
     let candidates: [String]
     let providerNames: [String]
     let isNew: Bool
@@ -763,10 +786,15 @@ private struct CustomGroupFormView: View {
 
     init(group: CustomGroup, candidates: [String], providerNames: [String], isNew: Bool, onSave: @escaping (CustomGroup) -> Void) {
         _group = State(initialValue: group)
+        self.original = group
         self.candidates = candidates
         self.providerNames = providerNames
         self.isNew = isNew
         self.onSave = onSave
+    }
+
+    private var isDirty: Bool {
+        group != original || !customMember.isEmpty
     }
 
     var body: some View {
@@ -1008,7 +1036,9 @@ private struct CustomGroupFormView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") {
@@ -1019,6 +1049,7 @@ private struct CustomGroupFormView: View {
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 }
 
@@ -1026,6 +1057,9 @@ private struct CustomGroupFormView: View {
 
 private struct CustomDialerFormView: View {
     @State private var dialer: CustomDialer
+    /// The dialer as opened (dirty = changed since open).
+    private let original: CustomDialer
+    @State private var showDiscardConfirm = false
     let candidates: [String]
     let isNew: Bool
     var onSave: (CustomDialer) -> Void
@@ -1033,10 +1067,13 @@ private struct CustomDialerFormView: View {
 
     init(dialer: CustomDialer, candidates: [String], isNew: Bool, onSave: @escaping (CustomDialer) -> Void) {
         _dialer = State(initialValue: dialer)
+        self.original = dialer
         self.candidates = candidates
         self.isNew = isNew
         self.onSave = onSave
     }
+
+    private var isDirty: Bool { dialer != original }
 
     var body: some View {
         NavigationStack {
@@ -1066,7 +1103,9 @@ private struct CustomDialerFormView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") {
@@ -1077,6 +1116,7 @@ private struct CustomDialerFormView: View {
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 }
 
@@ -1088,13 +1128,19 @@ private struct CustomDialerFormView: View {
 /// edited here).
 private struct CustomProviderOptionsView: View {
     @State private var provider: CustomProvider
+    /// The provider as opened (dirty = changed since open).
+    private let original: CustomProvider
+    @State private var showDiscardConfirm = false
     var onSave: (CustomProvider) -> Void
     @Environment(\.dismiss) private var dismiss
 
     init(provider: CustomProvider, onSave: @escaping (CustomProvider) -> Void) {
         _provider = State(initialValue: provider)
+        self.original = provider
         self.onSave = onSave
     }
+
+    private var isDirty: Bool { provider != original }
 
     var body: some View {
         NavigationStack {
@@ -1195,7 +1241,9 @@ private struct CustomProviderOptionsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") {
@@ -1205,11 +1253,17 @@ private struct CustomProviderOptionsView: View {
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 }
 
 /// Pick an existing provider to reference by name — FlClash
 /// custom providers are references, never created from scratch.
+/// Pick an existing provider to reference by name — FlClash
+/// custom providers are references, never created from scratch.
+/// A pushed page (upstream SelectionSheet as a PagedSheetRoute
+/// page): no own NavigationStack, no 取消 button; picking pops
+/// back to the editor.
 private struct CustomProviderPickerView: View {
     let title: String
     let candidates: [CustomProvider]
@@ -1218,39 +1272,34 @@ private struct CustomProviderPickerView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
-            List {
-                if candidates.isEmpty {
-                    Text(emptyTip)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(candidates) { provider in
-                        Button {
-                            onPick(provider)
-                            dismiss()
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(provider.name).font(.headline)
-                                Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
+        List {
+            if candidates.isEmpty {
+                Text(emptyTip)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(candidates) { provider in
+                    Button {
+                        onPick(provider)
+                        dismiss()
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(provider.name).font(.headline)
+                            Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
-                        .buttonStyle(.plain)
                     }
-                }
-            }
-            .font(.footnote.weight(.semibold))
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+                    .buttonStyle(.plain)
                 }
             }
         }
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .font(.footnote.weight(.semibold))
+        .navigationTitle(title)
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -1730,6 +1779,9 @@ private func yamlUnquote(_ value: String) -> String {
 
 private struct CustomRuleFormView: View {
     @State private var rule: CustomRule
+    /// The rule as opened (dirty = changed since open).
+    private let original: CustomRule
+    @State private var showDiscardConfirm = false
     let targets: [String]
     /// Rule-provider names for the RULE-SET picker (FlClash
     /// rules.dart:312 customProfileRuleProviderIsValidProvider).
@@ -1739,10 +1791,13 @@ private struct CustomRuleFormView: View {
 
     init(rule: CustomRule, targets: [String], ruleProviderNames: [String] = [], onSave: @escaping (CustomRule) -> Void) {
         _rule = State(initialValue: rule)
+        self.original = rule
         self.targets = targets
         self.ruleProviderNames = ruleProviderNames
         self.onSave = onSave
     }
+
+    private var isDirty: Bool { rule != original }
 
     private var isRuleSetProviderInvalid: Bool {
         rule.type == "RULE-SET" && !ruleProviderNames.isEmpty && !ruleProviderNames.contains(rule.content)
@@ -1797,7 +1852,9 @@ private struct CustomRuleFormView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") {
@@ -1808,5 +1865,6 @@ private struct CustomRuleFormView: View {
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 }

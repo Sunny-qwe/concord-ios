@@ -568,6 +568,16 @@ struct ProvidersView: View {
     @State private var sideLoadName = ""
     @State private var sideLoadText = ""
     @State private var editingProvider: ConcordProviderInfo?
+    /// Provider-detail page push (upstream providers.dart:226-250
+    /// pushes an EditorPage — no detail sheet). Local state, NOT
+    /// the shared ruleStore.providerDetail: opening Edit Provider
+    /// makes EditProviderView.task load the detail into the store,
+    /// which used to trip the old detail sheet while the edit
+    /// sheet was open (P2 cross-trigger). A Bool + stored value,
+    /// not navigationDestination(item:): ConcordProviderInfo is
+    /// not Hashable (and its model file is outside this change).
+    @State private var detailProvider: ConcordProviderInfo?
+    @State private var showDetailPage = false
     /// Import from URL (FlClash providers.dart _handleImportFromUrl):
     /// one URL per line; the provider name comes from the URL file
     /// stem and is deduplicated against the existing names.
@@ -611,7 +621,14 @@ struct ProvidersView: View {
                     }
                     .tint(.purple)
                     Button("详情") {
-                        Task { await ruleStore.loadProviderDetail(provider) }
+                        Task {
+                            await ruleStore.loadProviderDetail(provider)
+                            if let detail = ruleStore.providerDetail {
+                                detailProvider = detail
+                                ruleStore.providerDetail = nil
+                                showDetailPage = true
+                            }
+                        }
                     }
                     .tint(.blue)
                     Button("健康检查") {
@@ -736,12 +753,14 @@ struct ProvidersView: View {
                 ruleStore.lastError = "选择文件失败：\(error.localizedDescription)"
             }
         }
-        .sheet(isPresented: Binding(
-            get: { ruleStore.providerDetail != nil },
-            set: { if !$0 { ruleStore.providerDetail = nil } }
-        )) {
-            if let detail = ruleStore.providerDetail {
+        // Provider detail is a pushed page (upstream EditorPage),
+        // not a sheet — and nothing here observes the shared
+        // ruleStore.providerDetail any more, so EditProviderView's
+        // own detail load can no longer trip a detail sheet.
+        .navigationDestination(isPresented: $showDetailPage) {
+            if let detail = detailProvider {
                 ProviderDetailView(provider: detail)
+                    .concordNavBarBackground()
             }
         }
         .sheet(item: $editingProvider) { provider in

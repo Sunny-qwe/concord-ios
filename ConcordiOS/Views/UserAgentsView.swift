@@ -11,12 +11,47 @@ import SwiftUI
 
 struct UserAgentsView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
-    @State private var editingUA: String?
-    @State private var editText = ""
-    @State private var showAddSheet = false
+    /// Single source for the add/edit input dialog (upstream
+    /// showCommonDialog → InputDialog, a centred dialog, not a
+    /// sheet): the value being edited (nil = add) + the text.
+    @State private var uaDraft: UserAgentDraft?
     @State private var showDeleteConfirm: String?
 
+    private struct UserAgentDraft: Identifiable {
+        let id = UUID()
+        var original: String?
+        var text: String
+    }
+
     private var selected: String { settingsStore.globalUa }
+
+    /// Validation for the dialog's text (same rules as the old
+    /// sheet): non-empty, no duplicates.
+    private var uaValidationError: String? {
+        guard let draft = uaDraft else { return nil }
+        let value = draft.text.trimmingCharacters(in: .whitespaces)
+        if value.isEmpty { return "User-Agent 不能为空" }
+        if value != draft.original && settingsStore.userAgents.contains(value) { return "这个 User-Agent 已存在" }
+        return nil
+    }
+
+    private func saveUserAgent() {
+        guard let draft = uaDraft else { return }
+        let value = draft.text.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return }
+        if let original = draft.original {
+            if let index = settingsStore.userAgents.firstIndex(of: original) {
+                settingsStore.userAgents[index] = value
+            }
+            if selected == original {
+                settingsStore.globalUa = value
+            }
+        } else {
+            settingsStore.userAgents.append(value)
+        }
+        settingsStore.save()
+        uaDraft = nil
+    }
 
     var body: some View {
         List {
@@ -45,9 +80,8 @@ struct UserAgentsView: View {
             }
             Section {
                 Button("添加 User-Agent") {
-                    editText = ""
-                    editingUA = nil
-                    showAddSheet = true
+                    showDeleteConfirm = nil
+                    uaDraft = UserAgentDraft(original: nil, text: "")
                 }
             }
             // FlClash user_agents.dart: changing the selection only
@@ -79,24 +113,24 @@ struct UserAgentsView: View {
                 EditButton()
             }
         }
-        .sheet(isPresented: $showAddSheet) {
-            UserAgentEditSheet(
-                title: editingUA == nil ? "添加 User-Agent" : "编辑 User-Agent",
-                text: $editText,
-                existing: settingsStore.userAgents,
-                current: editingUA
-            ) { value in
-                if let editingUA {
-                    if let index = settingsStore.userAgents.firstIndex(of: editingUA) {
-                        settingsStore.userAgents[index] = value
-                    }
-                    if selected == editingUA {
-                        settingsStore.globalUa = value
-                    }
-                } else {
-                    settingsStore.userAgents.append(value)
-                }
-                settingsStore.save()
+        // Add / edit is a centred input dialog (upstream
+        // showCommonDialog → InputDialog), not a sheet.
+        .alert(uaDraft?.original == nil ? LocalizedStringKey("添加 User-Agent") : LocalizedStringKey("编辑 User-Agent"), isPresented: Binding(
+            get: { uaDraft != nil },
+            set: { if !$0 { uaDraft = nil } }
+        )) {
+            TextField("User-Agent", text: Binding(
+                get: { uaDraft?.text ?? "" },
+                set: { uaDraft?.text = $0 }
+            ))
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            Button("保存") { saveUserAgent() }
+                .disabled(uaValidationError != nil)
+            Button("取消", role: .cancel) { uaDraft = nil }
+        } message: {
+            if let error = uaValidationError {
+                Text(error)
             }
         }
         .alert("删除这个 User-Agent？", isPresented: Binding(
@@ -138,11 +172,11 @@ struct UserAgentsView: View {
             if !value.isEmpty {
                 Menu {
                     Button("编辑") {
-                        editingUA = value
-                        editText = value
-                        showAddSheet = true
+                        showDeleteConfirm = nil
+                        uaDraft = UserAgentDraft(original: value, text: value)
                     }
                     Button("删除", role: .destructive) {
+                        uaDraft = nil
                         showDeleteConfirm = value
                     }
                 } label: {
@@ -150,55 +184,6 @@ struct UserAgentsView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-            }
-        }
-    }
-}
-
-/// Add / edit sheet for one User-Agent: non-empty, no duplicates.
-private struct UserAgentEditSheet: View {
-    let title: String
-    @Binding var text: String
-    let existing: [String]
-    let current: String?
-    let onSave: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    private var error: String? {
-        let value = text.trimmingCharacters(in: .whitespaces)
-        if value.isEmpty { return "User-Agent 不能为空" }
-        if value != current && existing.contains(value) { return "这个 User-Agent 已存在" }
-        return nil
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("User-Agent", text: $text, axis: .vertical)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    if let error {
-                        Text(error)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-                }
-            }
-            .font(.footnote.weight(.semibold))
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
-                        onSave(text.trimmingCharacters(in: .whitespaces))
-                        dismiss()
-                    }
-                    .disabled(error != nil)
-                }
             }
         }
     }

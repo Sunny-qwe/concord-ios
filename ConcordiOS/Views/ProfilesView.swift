@@ -47,6 +47,39 @@ enum ProfileNavDestination: Hashable {
     case extend(UUID)
     case edit(UUID)
     case preview(UUID)
+    /// QR-code scan import (upstream BaseNavigator.push(ScanPage),
+    /// add.dart:31) — a full page push that returns the scanned
+    /// text on pop, never a second sheet stacked on the scan.
+    case scan
+}
+
+/// The unified-import form's single item: the text handed in and
+/// whether to auto-import it ("" / false from the + menu, the
+/// scanned text / true from the scan page).
+private struct UnifiedImportDraft: Identifiable {
+    let id = UUID()
+    let text: String
+    let autoImport: Bool
+}
+
+/// The exported profile file for the system save-file picker
+/// (upstream _handleExportFile).
+private struct ProfileExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.yaml] }
+
+    var data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
 }
 
 struct ProfilesView: View {
@@ -61,17 +94,25 @@ struct ProfilesView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @StateObject private var customStore = CustomSubscriptionStore()
     @State private var navPath: [ProfileNavDestination] = []
-    @State private var showUnifiedImport = false
+    /// Unified import form (upstream showNamedUrlsForm /
+    /// showFormSheet): ONE item is the single source — the text
+    /// handed in ("" from the + menu, the scanned text from the
+    /// scan page) and whether to auto-import it. No separate Bool
+    /// + scanned-text state.
+    @State private var unifiedImportDraft: UnifiedImportDraft?
     @State private var showCustomSubscriptionImport = false
-    @State private var showScanImport = false
-    @State private var scannedText: String?
     @State private var showFileImporter = false
     @State private var showReorder = false
     @State private var reorderDraft: [Profile] = []
     @State private var qrProfile: Profile?
     @State private var renameTarget: CustomSubscription?
     @State private var renameText = ""
-    @State private var exportURL: URL?
+    /// Export (upstream _handleExportFile): the system save-file
+    /// picker + a success banner — no share sheet. The document
+    /// is the single source for the fileExporter.
+    @State private var showFileExporter = false
+    @State private var exportDocument: ProfileExportDocument?
+    @State private var exportFileName = "config.yaml"
     @State private var deleteTarget: Profile?
     @State private var updatingIDs: Set<UUID> = []
     @State private var isUpdatingAll = false
@@ -200,59 +241,63 @@ struct ProfilesView: View {
                     } else {
                         ContentUnavailableView("订阅已删除", systemImage: "trash")
                     }
+                case .scan:
+                    // ScanImportView keeps its own NavigationStack
+                    // (it was built as a sheet) and its 取消 button
+                    // pops the page; on a good scan it calls
+                    // onScanned and dismisses itself, and the
+                    // unified-import form opens from the draft.
+                    ScanImportView { text in
+                        unifiedImportDraft = UnifiedImportDraft(text: text, autoImport: true)
+                    }
                     }
                 }
                 .concordNavBarBackground()
             }
-            .sheet(isPresented: $showUnifiedImport, onDismiss: { scannedText = nil }) {
-                UnifiedImportView(profileStore: profileStore, initialText: scannedText ?? "", autoImport: scannedText != nil)
+            .sheet(item: $unifiedImportDraft) { draft in
+                UnifiedImportView(profileStore: profileStore, initialText: draft.text, autoImport: draft.autoImport)
+                    .formSheetChrome()
             }
             .sheet(isPresented: $showCustomSubscriptionImport) {
                 CustomSubscriptionImportView(store: customStore) { sub in
                     navPath.append(.customSubscription(sub.id))
                 }
-            }
-            .sheet(isPresented: $showScanImport) {
-                ScanImportView { text in
-                    scannedText = text
-                    showUnifiedImport = true
-                }
+                .formSheetChrome()
             }
             .sheet(isPresented: $showReorder) {
                 reorderSheet
+                    .formSheetChrome()
             }
-            .sheet(item: $qrProfile) { profile in
-                ProfileQRCodeView(profile: profile)
-            }
-            .sheet(isPresented: Binding(
-                get: { exportURL != nil },
-                set: { if !$0 { exportURL = nil } }
-            )) {
-                if let url = exportURL {
-                    NavigationStack {
-                        VStack(spacing: 16) {
-                            Text(url.lastPathComponent)
-                                .font(.headline)
-                            ShareLink(item: url) {
-                                Label("分享配置文件", systemImage: "square.and.arrow.up")
-                                    .font(.headline)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(ConcordTheme.accent)
-                            Text("导出成功")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                            Spacer()
+            // QR code is a floating dialog (upstream dialogs
+            // .showQrCode → showCommonDialog AlertDialog with a
+            // 关闭 button), not a sheet: a dimmed scrim + a
+            // centred card. Tapping the scrim closes it too.
+            .overlay {
+                if let profile = qrProfile {
+                    ZStack {
+                        Color.black.opacity(0.4)
+                            .ignoresSafeArea()
+                            .onTapGesture { qrProfile = nil }
+                        ProfileQRCodeDialog(profile: profile) {
+                            qrProfile = nil
                         }
-                        .padding(24)
-                        .navigationTitle("导出文件")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button("完成") { exportURL = nil }
-                            }
-                        }
+                        .padding(.horizontal, 32)
                     }
+                }
+            }
+            // Export: the system save-file picker; success shows
+            // the green banner, failure an alert (upstream
+            // _handleExportFile, profiles.dart:381).
+            .fileExporter(isPresented: $showFileExporter, document: $exportDocument, contentType: .yaml, defaultFilename: exportFileName) { result in
+                switch result {
+                case .success:
+                    copyNotice = "导出成功"
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(2.5))
+                        copyNotice = nil
+                    }
+                case .failure(let error):
+                    alertMessage = "导出失败：\(error.localizedDescription)"
                 }
             }
             .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.yaml, UTType.plainText]) { result in
@@ -337,7 +382,7 @@ struct ProfilesView: View {
             Label("可视化配置", systemImage: "slider.horizontal.3")
                 .font(.subheadline)
         }
-        Button { showScanImport = true } label: {
+        Button { navPath.append(.scan) } label: {
             Label("扫码", systemImage: "qrcode.viewfinder")
                 .font(.subheadline)
         }
@@ -345,7 +390,7 @@ struct ProfilesView: View {
             Label("文件", systemImage: "doc")
                 .font(.subheadline)
         }
-        Button { showUnifiedImport = true } label: {
+        Button { unifiedImportDraft = UnifiedImportDraft(text: "", autoImport: false) } label: {
             Label("链接", systemImage: "link")
                 .font(.subheadline)
         }
@@ -705,12 +750,22 @@ struct ProfilesView: View {
         }
     }
 
+    /// Export (upstream _handleExportFile, profiles.dart:381):
+    /// open the system save-file picker for the profile's local
+    /// file; the success banner / failure alert come from the
+    /// fileExporter's completion.
     private func export(_ profile: Profile) {
         guard let url = profileStore.exportFileURL(for: profile) else {
             alertMessage = "导出失败：找不到该订阅的本地文件"
             return
         }
-        exportURL = url
+        guard let data = try? Data(contentsOf: url) else {
+            alertMessage = "导出失败：无法读取该订阅的本地文件"
+            return
+        }
+        exportDocument = ProfileExportDocument(data: data)
+        exportFileName = url.lastPathComponent
+        showFileExporter = true
     }
 
     /// The + menu's 文件 item: read the picked .yaml through the
@@ -745,9 +800,13 @@ struct ProfilesView: View {
 
 // MARK: - QR code sheet (FlClash dialogs.showQrCode)
 
-private struct ProfileQRCodeView: View {
+/// QR-code dialog (upstream dialogs.showQrCode → showCommonDialog
+/// AlertDialog): a centred floating card over a dimmed scrim, not
+/// a sheet. The scrim tap (in the overlay) and the 关闭 button
+/// both close it.
+private struct ProfileQRCodeDialog: View {
     let profile: Profile
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
     /// Generated off the main thread (see the .task below): the
     /// CIFilter + CIContext render used to run inside body
     /// evaluation and stall the sheet's first frame, title included.
@@ -767,50 +826,48 @@ private struct ProfileQRCodeView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                if let image = qrImage {
-                    Image(uiImage: image)
-                        .interpolation(.none)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 240, height: 240)
-                } else if !qrGenerated {
-                    ProgressView()
-                        .frame(width: 240, height: 240)
-                } else {
-                    Text("无法生成二维码：该订阅没有链接")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                if let urlString = profile.urlString {
-                    Text(urlString)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                        .multilineTextAlignment(.center)
-                }
-                Text("在另一台设备上用 FlClash 扫码即可导入此配置。")
+        VStack(spacing: 16) {
+            Text(profile.name)
+                .font(.headline)
+                .multilineTextAlignment(.center)
+            if let image = qrImage {
+                Image(uiImage: image)
+                    .interpolation(.none)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 240, height: 240)
+            } else if !qrGenerated {
+                ProgressView()
+                    .frame(width: 240, height: 240)
+            } else {
+                Text("无法生成二维码：该订阅没有链接")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            if let urlString = profile.urlString {
+                Text(urlString)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
                     .multilineTextAlignment(.center)
-                Spacer()
             }
-            .padding(24)
-            .navigationTitle(profile.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .task {
-                let image = await Task.detached(priority: .userInitiated) {
-                    Self.makeQRImage(for: profile)
-                }.value
-                qrImage = image
-                qrGenerated = true
-            }
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
+            Text("在另一台设备上用 FlClash 扫码即可导入此配置。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("关闭") { onClose() }
+                .buttonStyle(.borderedProminent)
+                .tint(ConcordTheme.accent)
+        }
+        .padding(24)
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
+        .shadow(color: .black.opacity(0.2), radius: 16, y: 8)
+        .task {
+            let image = await Task.detached(priority: .userInitiated) {
+                Self.makeQRImage(for: profile)
+            }.value
+            qrImage = image
+            qrGenerated = true
         }
     }
 }

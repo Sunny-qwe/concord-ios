@@ -133,6 +133,7 @@ struct AddedRulesView: View {
             RuleFormSheet(draft: draft, ruleProviderNames: ruleProviderNames) { saved in
                 saveFormRule(saved, replacing: draft.originalText)
             }
+            .formSheetChrome()
         }
         .sheet(isPresented: $showPresets) {
             RulePresetSheetView { preset in
@@ -141,6 +142,7 @@ struct AddedRulesView: View {
                 }
                 rulesStore.save()
             }
+            .formSheetChrome()
         }
         .alert("删除所选的 \(selectedRules.count) 条规则？", isPresented: $showDeleteConfirm) {
             Button("删除", role: .destructive) {
@@ -325,15 +327,21 @@ struct RuleFormDraft: Identifiable {
 /// editor's rules (same module, internal on purpose).
 struct RuleFormSheet: View {
     @State private var draft: RuleFormDraft
+    /// The rule text as opened (dirty = serialised text changed).
+    private let originalText: String
+    @State private var showDiscardConfirm = false
     let ruleProviderNames: [String]
     var onSave: (RuleFormDraft) -> Void
     @Environment(\.dismiss) private var dismiss
 
     init(draft: RuleFormDraft, ruleProviderNames: [String], onSave: @escaping (RuleFormDraft) -> Void) {
         _draft = State(initialValue: draft)
+        self.originalText = draft.text
         self.ruleProviderNames = ruleProviderNames
         self.onSave = onSave
     }
+
+    private var isDirty: Bool { draft.text != originalText }
 
     private var validationError: String? {
         AddedRulesStore.validationError(for: draft.text)
@@ -398,7 +406,9 @@ struct RuleFormSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+                    Button("取消") {
+                        if isDirty { showDiscardConfirm = true } else { dismiss() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") {
@@ -409,6 +419,7 @@ struct RuleFormSheet: View {
                 }
             }
         }
+        .discardChangesGuard(isDirty: isDirty, showConfirm: $showDiscardConfirm) { dismiss() }
     }
 }
 

@@ -79,13 +79,6 @@ struct DashboardView: View {
     /// Stat-cell destination sheet (D-M6): live / recent
     /// connections, or the DNS queries page.
     @State private var statsDestination: StatsDestination?
-    /// v0.2.82 (stats freeze): the stats sheet is presented by
-    /// this Bool, not by .sheet(item:) — it was the only
-    /// .sheet(item:) on the Dashboard and all three stats froze
-    /// on tap while the .sheet(isPresented:) sheets did not, so
-    /// the item-based presentation is the one mechanism unique
-    /// to the freezing sheets; it now matches the other sheets.
-    @State private var showStatsSheet = false
     /// Traffic statistics detail sheet (D-M8, v0.2.56 MuYu
     /// TrafficStatisticsView).
     @State private var showTrafficDetail = false
@@ -532,20 +525,30 @@ struct DashboardView: View {
         // system nav bar; each content view renders its own
         // MuYu header (handle + ✕ + title + actions) and a
         // bottom floating search bar.
-        .sheet(isPresented: $showStatsSheet) {
+        // v0.2.84: upstream FlClash openDashboardFeed passes the
+        // feed straight to the sheet builder (showSnapSheet +
+        // NestedPagedSheet) — one item, no separate Bool. The
+        // v0.2.83 two-state pattern (statsDestination + a
+        // showStatsSheet Bool, content behind `if let`) presented
+        // a blank sheet: the content read a nil destination and
+        // rendered nothing, and a blank sheet with a hidden drag
+        // indicator and no ✕ cannot be dismissed, so the app
+        // looked frozen. .sheet(item:) hands the destination to
+        // the content directly, so it cannot be nil. Detents
+        // match upstream snapSheetDetents [9/16, 0.9]: opens at
+        // the short detent, drags to 90%.
+        .sheet(item: $statsDestination) { destination in
             Group {
-                if let destination = statsDestination {
-                    switch destination {
-                    case .live:
-                        ConnectionsView(initialFeed: .live, sheetChrome: true)
-                    case .recent:
-                        ConnectionsView(initialFeed: .recent, sheetChrome: true)
-                    case .dns:
-                        DnsQueriesView(mode: .sheet)
-                    }
+                switch destination {
+                case .live:
+                    ConnectionsView(initialFeed: .live, sheetChrome: true)
+                case .recent:
+                    ConnectionsView(initialFeed: .recent, sheetChrome: true)
+                case .dns:
+                    DnsQueriesView(mode: .sheet)
                 }
             }
-            .presentationDetents([.fraction(0.85), .large])
+            .presentationDetents([.fraction(0.5625), .fraction(0.9)])
             .presentationDragIndicator(.hidden)
             .presentationBackground(ConcordTheme.pageBackground)
             .presentationCornerRadius(28)
@@ -1510,7 +1513,7 @@ struct DashboardView: View {
     /// v0.2.64: the contentShape makes the full cell column
     /// tappable, not just the number/label glyphs.
     private func statCell(value: String, label: String, destination: StatsDestination) -> some View {
-        Button { statsDestination = destination; showStatsSheet = true } label: {
+        Button { statsDestination = destination } label: {
             VStack(spacing: 4) {
                 Text(value)
                     .font(.system(size: statNumberSize, weight: .bold))

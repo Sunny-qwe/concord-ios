@@ -26,8 +26,9 @@ struct MitmCertificateView: View {
     @State private var isCheckingTrust = false
     @State private var showRegenerateConfirm = false
     @State private var regenerateNote: String?
-    @State private var showShareCAConfirm = false
-    @State private var showCAShareSheet = false
+    @State private var showExportCAConfirm = false
+    @State private var caExportMessage: String?
+    @State private var showCAExportAlert = false
     @State private var isInstallingProfile = false
     @State private var installMessage: String?
     @State private var installFailed = false
@@ -74,19 +75,21 @@ struct MitmCertificateView: View {
                             .font(.footnote)
                             .foregroundStyle(installFailed ? Color.red : Color.secondary)
                     }
-                    // CA 证书是解密流量的信任根：分享前先确认，
+                    // CA 证书是解密流量的信任根：导出前先确认，
                     // 别随手发出去。
-                    Button("分享 CA 证书（PEM）") {
-                        showShareCAConfirm = true
+                    Button("导出 CA 证书（PEM）") {
+                        showExportCAConfirm = true
                     }
-                    .alert("分享 CA 证书？", isPresented: $showShareCAConfirm) {
-                        Button("分享") { showCAShareSheet = true }
+                    .alert("导出 CA 证书？", isPresented: $showExportCAConfirm) {
+                        Button("导出") { exportCA(pem: info.pem) }
                         Button("取消", role: .cancel) {}
                     } message: {
-                        Text("CA 证书是解密流量的信任根，请只分享给自己的设备。")
+                        Text("CA 证书是解密流量的信任根，请只导出到自己的设备上使用。")
                     }
-                    .sheet(isPresented: $showCAShareSheet) {
-                        ShareSheet(items: [info.pem])
+                    .alert("导出 CA 证书", isPresented: $showCAExportAlert) {
+                        Button("好", role: .cancel) {}
+                    } message: {
+                        Text(caExportMessage ?? "CA 证书已保存。")
                     }
                 } else {
                     Text(settingsStore.mitmStatusMessage ?? "尚未读取 CA 状态")
@@ -322,8 +325,25 @@ struct MitmCertificateView: View {
                 installMessage = "已交给系统打开安装页面：按提示装好描述文件，然后去「设置 → 通用 → 关于本机 → 证书信任设置」里打开 Concord CA 的完全信任，再回来点「检测信任状态」确认。"
             case .failure(let error):
                 installFailed = true
-                installMessage = "打不开安装页面：\(error.localizedDescription)。可以改用下面的「分享 CA 证书（PEM）」把证书发到电脑上安装。"
+                installMessage = "打不开安装页面：\(error.localizedDescription)。可以改用下面的「导出 CA 证书（PEM）」把证书发到电脑上安装。"
             }
+        }
+    }
+
+    /// Upstream _export (mitm.dart:233): writes the PEM file to
+    /// disk and shows an exportSuccess banner — no share sheet.
+    /// Documents is visible in the Files app.
+    private func exportCA(pem: String) {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Concord-CA.pem")
+        guard let url else { return }
+        do {
+            try pem.write(to: url, atomically: true, encoding: .utf8)
+            caExportMessage = "CA 证书已保存到「文件」：Concord-CA.pem"
+            showCAExportAlert = true
+        } catch {
+            installFailed = true
+            installMessage = "导出 CA 证书失败：\(error.localizedDescription)"
         }
     }
 
@@ -603,6 +623,11 @@ struct MitmHostnameEditorView: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
+                if let addError {
+                    Text(addError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
                 // Ours-only extra (no equivalent in the video):
                 // bulk edit stays reachable here.
                 Section {
@@ -642,73 +667,38 @@ struct MitmHostnameEditorView: View {
                 .filter { !$0.isEmpty }
         }
         .onChange(of: hostnames) { _, _ in save() }
-        .sheet(isPresented: $showAddSheet) {
-            NavigationStack {
-                List {
-                    Section {
-                        TextField("域名，如 *.example.com", text: $newHostname)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                        if let addError {
-                            Text(addError)
-                                .font(.footnote)
-                                .foregroundStyle(.red)
-                        }
-                        Text("以 - 开头表示排除该域名（不解密）。支持 *.example.com 这样的通配符。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    Section {
-                        Button("添加") {
-                            addHostname()
-                            if newHostname.isEmpty { showAddSheet = false }
-                        }
-                        .disabled(newHostname.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
-                .font(.footnote.weight(.semibold))
-                .navigationTitle("添加主机名")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("取消") { showAddSheet = false }
-                    }
-                }
+        // Upstream _handleAddOrUpdate → showListEntryDialog
+        // (mitm.dart:692): adding a hostname is a dialog, not a
+        // sheet. A failed add writes addError, which the list
+        // above shows (the dialog itself closes on tap).
+        .alert("添加主机名", isPresented: $showAddSheet) {
+            TextField("域名，如 *.example.com", text: $newHostname)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("取消", role: .cancel) {
+                newHostname = ""
+                addError = nil
             }
+            Button("添加") { addHostname() }
+        } message: {
+            Text("以 - 开头表示排除该域名（不解密）。支持 *.example.com 这样的通配符。")
         }
-        .sheet(isPresented: $showBulkEdit) {
-            NavigationStack {
-                List {
-                    Section {
-                        TextEditor(text: $bulkText)
-                            .frame(minHeight: 320)
-                            .font(.system(.body, design: .monospaced))
-                            .autocapitalization(.none)
-                            .autocorrectionDisabled()
-                        Text("每行一个域名，空行会被忽略。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    Section {
-                        Button("保存") {
-                            hostnames = bulkText
-                                .components(separatedBy: .newlines)
-                                .map { $0.trimmingCharacters(in: .whitespaces) }
-                                .filter { !$0.isEmpty }
-                            save()
-                            showBulkEdit = false
-                        }
-                    }
-                }
-                .font(.footnote.weight(.semibold))
-                .navigationTitle("批量编辑主机名")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("取消") { showBulkEdit = false }
-                    }
-                }
+        // Upstream _handleQuickEdit → showListQuickEdit
+        // (mitm.dart:715): bulk edit is a dialog, not a sheet.
+        .alert("批量编辑主机名", isPresented: $showBulkEdit) {
+            TextField("每行一个域名", text: $bulkText, axis: .vertical)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("取消", role: .cancel) {}
+            Button("保存") {
+                hostnames = bulkText
+                    .components(separatedBy: .newlines)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                save()
             }
+        } message: {
+            Text("每行一个域名，空行会被忽略。")
         }
     }
 

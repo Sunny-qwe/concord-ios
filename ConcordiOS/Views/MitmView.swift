@@ -267,6 +267,11 @@ struct MitmView: View {
         }
         .sheet(item: $detailSummary) { summary in
             MitmExchangeDetailView(summary: summary)
+                // Upstream tap → showInSheet(MitmExchangeView):
+                // snap sheet [9/16, 0.9] with a drag handle, scrim
+                // dismiss (mitm_exchanges.dart:159).
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                .presentationDragIndicator(.visible)
         }
         .task {
             if let id = initialConnectionId {
@@ -414,7 +419,7 @@ struct MitmExchangeDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var bodyKind: BodyKind = .request
     /// The exchange context menu's state (privacy warning, HAR
-    /// share, add-rule editor) for this detail page.
+    /// export notice, add-rule editor) for this detail page.
     @StateObject private var menuModel = MitmExchangeMenuModel()
 
     enum BodyKind: String, CaseIterable, Identifiable {
@@ -689,11 +694,6 @@ struct MitmMenuNotice: Identifiable {
     let text: String
 }
 
-struct MitmShareFile: Identifiable {
-    let id = UUID()
-    let url: URL
-}
-
 struct MitmRuleEditorRequest: Identifiable {
     let id = UUID()
     let module: MitmModule?
@@ -702,7 +702,7 @@ struct MitmRuleEditorRequest: Identifiable {
     let attachmentData: Data?
 }
 
-/// The menu's UI state (privacy warning, copy notice, HAR share,
+/// The menu's UI state (privacy warning, copy notice, HAR export,
 /// add-rule editor), one per menu host. The stores are passed per
 /// call so the model itself holds no environment.
 @MainActor
@@ -711,7 +711,6 @@ final class MitmExchangeMenuModel: ObservableObject {
     @Published var warningSummary: MitmExchangeSummary?
     @Published var warningDetail: MitmExchangeDetail?
     @Published var notice: MitmMenuNotice?
-    @Published var shareFile: MitmShareFile?
     @Published var ruleEditor: MitmRuleEditorRequest?
 
     private var client: ConcordClient?
@@ -789,11 +788,17 @@ final class MitmExchangeMenuModel: ObservableObject {
                 let response = await responseBody(summary: summary, mitmStore: mitmStore)
                 let har = mitmHar(full, request: request, response: response)
                 let host = URL(string: full.url)?.host ?? "concord"
-                let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("\(host)-\(full.exchangeId).har")
+                let fileName = "\(host)-\(full.exchangeId).har"
+                // Upstream _exportHar writes the HAR file to disk
+                // and shows an exportSuccess banner
+                // (mitm_exchange_menu.dart:226) — no share sheet.
+                // Documents is visible in the Files app.
+                let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+                    .appendingPathComponent(fileName)
+                    ?? FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
                 do {
-                    try har.data(using: .utf8)?.write(to: url)
-                    shareFile = MitmShareFile(url: url)
+                    try har.data(using: .utf8)?.write(to: url, options: .atomic)
+                    notice = MitmMenuNotice(text: "已导出 HAR：\(fileName)，可在「文件」里查看")
                 } catch {
                     notice = MitmMenuNotice(text: "导出失败：\(error.localizedDescription)")
                 }
@@ -912,9 +917,12 @@ struct MitmExchangeMenuButtons: View {
 }
 
 extension View {
-    /// The context-menu model's alert + sheets: the privacy
-    /// warning, the copy notice, the HAR share sheet and the
-    /// add-rule editor sheet.
+    /// The context-menu model's alert + editor page: the privacy
+    /// warning, the copy/export notice, and the add-rule editor.
+    /// The editor is a page push (upstream openMitmModuleEditor →
+    /// BaseNavigator.push(EditorPage), module_editor.dart:48):
+    /// pushed in the caller's stack, or nested inside the detail
+    /// sheet's own stack when opened from there.
     func mitmExchangeMenuOverlays(_ model: MitmExchangeMenuModel, moduleStore: MitmModuleStore) -> some View {
         self
             .alert("包含隐私信息", isPresented: Binding(
@@ -934,17 +942,11 @@ extension View {
             } message: { notice in
                 Text(notice.text)
             }
-            .sheet(item: Binding(
-                get: { model.shareFile },
-                set: { model.shareFile = $0 }
-            )) { file in
-                ShareSheet(items: [file.url])
-            }
-            .sheet(item: Binding(
+            .navigationDestination(item: Binding(
                 get: { model.ruleEditor },
                 set: { model.ruleEditor = $0 }
             )) { request in
-                MitmModuleTextEditorView(module: request.module, initialText: request.initialText, onSaved: { saved in
+                MitmModuleTextEditorView(module: request.module, initialText: request.initialText, pushed: true, onSaved: { saved in
                     if let saved, let name = request.attachmentName, let data = request.attachmentData {
                         Task { await moduleStore.attachFile(saved, fileName: name, data: data) }
                     }

@@ -19,10 +19,14 @@ struct MitmModulesView: View {
     @EnvironmentObject private var tunnelManager: TunnelManager
 
     @State private var urlText = ""
-    /// v0.2.68 (MuYu): import lives behind the top-right ⊕ button,
-    /// presented as a sheet (MitmModuleImportSheet below) — the
-    /// paste / file / blank flows present from inside that sheet.
-    @State private var showImportSheet = false
+    /// v0.2.85 (upstream mitm_modules.dart:160,189): no import
+    /// sheet — URL import is an input dialog, file import is the
+    /// system file picker. Paste import stays a sheet (ours-only),
+    /// blank module is a page push (EditorPage).
+    @State private var showImportURLDialog = false
+    @State private var showImportFilePicker = false
+    @State private var showPasteImport = false
+    @State private var showBlankEditorPage = false
     @State private var consentModule: MitmModule?
     @State private var showConsentAlert = false
     @State private var deleteModule: MitmModule?
@@ -121,7 +125,15 @@ struct MitmModulesView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showImportSheet = true } label: {
+                Menu {
+                    Button("从链接导入") {
+                        urlText = ""
+                        showImportURLDialog = true
+                    }
+                    Button("从文件导入") { showImportFilePicker = true }
+                    Button("粘贴模块文本导入") { showPasteImport = true }
+                    Button("新建空白模块") { showBlankEditorPage = true }
+                } label: {
                     Image(systemName: "plus.circle")
                 }
                 .accessibilityLabel("导入模块")
@@ -152,12 +164,48 @@ struct MitmModulesView: View {
         .navigationDestination(item: $detailModule) { module in
             MitmModuleDetailView(moduleId: module.id)
         }
-        .sheet(isPresented: $showImportSheet) {
-            MitmModuleImportSheet(
-                urlText: $urlText,
-                onImportURLs: { await importURLs() },
-                onImportFileText: { text, fileName in await importFile(text: text, fileName: fileName) },
-                onImported: { saved in offerConsent(saved) }
+        // Upstream mitm_modules.dart:160: URL import is an input
+        // dialog (dialogs.showUrlInput), not a sheet.
+        .alert("从链接导入模块", isPresented: $showImportURLDialog) {
+            TextField("模块链接，每行一个", text: $urlText, axis: .vertical)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("取消", role: .cancel) {}
+            Button("导入") {
+                Task { await importURLs() }
+            }
+        } message: {
+            Text("每行一个模块链接，也支持 surge:// / loon:// 安装链接。")
+        }
+        // Upstream mitm_modules.dart:189: file import is the
+        // system file picker.
+        .fileImporter(isPresented: $showImportFilePicker, allowedContentTypes: [UTType.plainText]) { result in
+            switch result {
+            case .success(let url):
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                    moduleStore.lastError = "读取模块文件失败：不是 UTF-8 文本"
+                    return
+                }
+                Task { await importFile(text: text, fileName: url.lastPathComponent) }
+            case .failure(let error):
+                moduleStore.lastError = "选择文件失败：\(error.localizedDescription)"
+            }
+        }
+        // Paste import is ours-only: it stays a sheet.
+        .sheet(isPresented: $showPasteImport) {
+            MitmModulePasteImportView(onImported: { saved in offerConsent(saved) })
+        }
+        // Upstream openMitmModuleEditor(module: null) pushes
+        // EditorPage (module_editor.dart:48) — a full page push,
+        // not a sheet.
+        .navigationDestination(isPresented: $showBlankEditorPage) {
+            MitmModuleTextEditorView(
+                module: nil,
+                initialText: MitmModuleStore.blankTemplate(name: "新模块"),
+                pushed: true,
+                onSaved: { saved in offerConsent(saved) }
             )
         }
         // The consent prompt (fork `answerMitmModule`): what turning
@@ -673,7 +721,7 @@ struct MitmModuleDetailView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var tunnelManager: TunnelManager
 
-    @State private var showEditor = false
+    @State private var showEditorPage = false
     @State private var showDeleteConfirm = false
     @State private var showConsent = false
     @State private var runMessage: String?
@@ -886,7 +934,7 @@ struct MitmModuleDetailView: View {
                         }
                         .disabled(moduleStore.isBusy)
                     }
-                    Button("编辑原文") { showEditor = true }
+                    Button("编辑原文") { showEditorPage = true }
                     if client.mode == .live && tunnelManager.isRunning {
                         Button("校验合并后的 MITM 配置") {
                             Task { await validate() }
@@ -927,17 +975,37 @@ struct MitmModuleDetailView: View {
                 coreContent = await moduleStore.coreParsedContent(for: module)
             }
         }
-        .sheet(isPresented: $showEditor) {
+        // Upstream openMitmModuleEditor pushes EditorPage
+        // (module_editor.dart:83) — a full page push, not a sheet.
+        // The text file can be missing (text(of:) returns nil):
+        // that renders an error page, never a blank sheet — the
+        // old .sheet(isPresented:) body had no else, so a missing
+        // text file showed an empty sheet with no way out.
+        .navigationDestination(isPresented: $showEditorPage) {
             if let module, let text = moduleStore.text(of: module) {
                 MitmModuleTextEditorView(
                     module: module,
                     initialText: text,
+                    pushed: true,
                     onSaved: { saved in
                         if let saved, moduleStore.awaitsConsent(saved) {
                             showConsent = true
                         }
                     }
                 )
+            } else {
+                List {
+                    Section {
+                        Text("模块文本丢失，请重新导入。")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .font(.footnote.weight(.semibold))
+                .background(ConcordTheme.pageBackground)
+                .navigationTitle(module?.name ?? "模块")
+                .navigationBarTitleDisplayMode(.inline)
             }
         }
         .fileImporter(isPresented: $showAttachmentImporter, allowedContentTypes: [UTType.data]) { result in
@@ -1435,21 +1503,43 @@ struct MitmModuleTextEditorView: View {
     /// Called with the saved module after a successful save, so the
     /// caller can offer the consent prompt when it awaits it.
     var onSaved: ((MitmModule?) -> Void)? = nil
+    /// Upstream openMitmModuleEditor pushes EditorPage: when true
+    /// the editor renders as a pushed page in the caller's stack
+    /// (no own NavigationStack, no 取消 button — the back chevron
+    /// dismisses); when false it is the old sheet with its own
+    /// stack and 取消 button.
+    let pushed: Bool
 
     @EnvironmentObject private var moduleStore: MitmModuleStore
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
 
-    init(module: MitmModule?, initialText: String, onSaved: ((MitmModule?) -> Void)? = nil) {
+    init(module: MitmModule?, initialText: String, onSaved: ((MitmModule?) -> Void)? = nil, pushed: Bool = false) {
         self.module = module
         self.initialText = initialText
         self.onSaved = onSaved
+        self.pushed = pushed
         _text = State(initialValue: initialText)
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        if pushed {
+            editorContent
+        } else {
+            NavigationStack {
+                editorContent
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("取消") { dismiss() }
+                        }
+                    }
+            }
+        }
+    }
+
+    /// The editor page itself, shared by the sheet and pushed forms.
+    private var editorContent: some View {
+        List {
                 Section {
                     TextEditor(text: $text)
                         .frame(minHeight: 420)
@@ -1492,116 +1582,5 @@ struct MitmModuleTextEditorView: View {
             .background(ConcordTheme.pageBackground)
             .navigationTitle(module?.name ?? "新建模块")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("取消") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Import sheet (v0.2.68, MuYu ⊕ button)
-//
-// The import UI that used to be an in-page section, now presented
-// as a sheet from the top-right ⊕ button. Same flows: multiple
-// URLs (plus install links) in one import, file import, paste
-// import, blank module. The paste / blank sheets present from
-// inside this sheet; import errors surface here via
-// moduleStore.lastError.
-private struct MitmModuleImportSheet: View {
-    @Binding var urlText: String
-    let onImportURLs: () async -> Void
-    let onImportFileText: (String, String) async -> Void
-    let onImported: (MitmModule?) -> Void
-
-    @EnvironmentObject private var moduleStore: MitmModuleStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var showPasteImport = false
-    @State private var showBlankEditor = false
-    @State private var showFileImporter = false
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    // FlClash mitm_modules.dart:174-205: multiple
-                    // URLs (plus install links) in one import,
-                    // skipping already-installed ones.
-                    TextEditor(text: $urlText)
-                        .frame(minHeight: 56)
-                        .font(.system(.caption, design: .monospaced))
-                        .autocapitalization(.none)
-                        .autocorrectionDisabled()
-                        .overlay(alignment: .topLeading) {
-                            if urlText.isEmpty {
-                                Text("模块链接，每行一个；也支持 surge:// / loon:// 安装链接")
-                                    .font(.footnote)
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 8)
-                                    .allowsHitTesting(false)
-                            }
-                        }
-                    HStack {
-                        Button("导入") {
-                            Task { await onImportURLs() }
-                        }
-                        .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                  || moduleStore.isBusy)
-                        Spacer()
-                        Button("从文件导入") { showFileImporter = true }
-                            .disabled(moduleStore.isBusy)
-                    }
-                    Button("粘贴模块文本导入") { showPasteImport = true }
-                    Button("新建空白模块") { showBlankEditor = true }
-                    if moduleStore.isBusy { ProgressView() }
-                    if let error = moduleStore.lastError {
-                        Text(error).font(.caption2).foregroundStyle(.red)
-                    }
-                } footer: {
-                    Text("模块把一组规则、重写、脚本和解密域名打包在一起，整体开关、整体更新。支持 Surge 模块、Loon 插件、Quantumult X 片段和 Stash 覆写。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-            .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle("导入模块")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
-            .sheet(isPresented: $showPasteImport) {
-                MitmModulePasteImportView(onImported: { saved in
-                    onImported(saved)
-                })
-            }
-            .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.plainText]) { result in
-                switch result {
-                case .success(let url):
-                    let accessing = url.startAccessingSecurityScopedResource()
-                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-                    guard let text = try? String(contentsOf: url, encoding: .utf8) else {
-                        moduleStore.lastError = "读取模块文件失败：不是 UTF-8 文本"
-                        return
-                    }
-                    Task { await onImportFileText(text, url.lastPathComponent) }
-                case .failure(let error):
-                    moduleStore.lastError = "选择文件失败：\(error.localizedDescription)"
-                }
-            }
-            .sheet(isPresented: $showBlankEditor) {
-                MitmModuleTextEditorView(
-                    module: nil,
-                    initialText: MitmModuleStore.blankTemplate(name: "新模块"),
-                    onSaved: { saved in onImported(saved) }
-                )
-            }
-        }
     }
 }

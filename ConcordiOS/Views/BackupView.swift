@@ -31,8 +31,8 @@ struct BackupView: View {
     @State private var backupURL: URL?
     @State private var showImporter = false
     @State private var showRestoreConfirm = false
-    @State private var showScopeSheet = false
-    /// What happens after the restore-options sheet is dismissed:
+    @State private var showScopeDialog = false
+    /// What happens after the restore-options dialog is dismissed:
     /// pick a local file, or confirm restoring a file just
     /// downloaded from WebDAV (FlClash: 备份与恢复 -> 恢复选项 is
     /// chosen before the file is picked).
@@ -105,7 +105,7 @@ struct BackupView: View {
                     .foregroundStyle(.secondary)
                 Button {
                     pendingAfterScope = .pickFile
-                    showScopeSheet = true
+                    showScopeDialog = true
                 } label: {
                     Label("选择备份文件…", systemImage: "square.and.arrow.down")
                 }
@@ -199,63 +199,39 @@ struct BackupView: View {
                 errorMessage = "选择文件失败：\(error.localizedDescription)"
             }
         }
-        // FlClash: the restore options are chosen before the file is
-        // picked. The sheet is dismissed first, then the pending
-        // step runs — a fileImporter presented while the sheet is
-        // still up would be swallowed.
-        .sheet(isPresented: $showScopeSheet) {
-            NavigationStack {
-                Form {
-                    Section("恢复选项") {
-                        Picker("恢复选项", selection: $restoreScope) {
-                            ForEach(BackupStore.RestoreScope.allCases) { scope in
-                                Text(scope.rawValue).tag(scope)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        Text(restoreScope == .all
-                             ? "恢复全部数据：所有文件与设置都在恢复范围内。"
-                             : "仅恢复配置：只恢复订阅与配置，设置、主题、MITM 模块保持不变。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Section("恢复策略") {
-                        Picker("恢复策略", selection: $backupStore.restoreStrategy) {
-                            ForEach(BackupStore.RestoreStrategy.allCases) { strategy in
-                                Text(strategy.label).tag(strategy)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        Text(backupStore.restoreStrategy.detail)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .font(.footnote.weight(.semibold))
-                .navigationTitle("恢复备份")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("取消") {
-                            pendingAfterScope = nil
-                            showScopeSheet = false
-                        }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("继续") { showScopeSheet = false }
+        // Upstream _pickRestoreOption →
+        // dialogs.showCommonDialog<RestoreOption>
+        // (RestoreOptionsDialog) (backup_and_restore.dart:94): a
+        // centered dialog, BEFORE the file is picked. The scope and
+        // the restore strategy are in-page settings above (the
+        // dialog only confirms them) — the strategy is not picked
+        // in the dialog.
+        .alert("恢复备份", isPresented: $showScopeDialog) {
+            Button("取消", role: .cancel) { pendingAfterScope = nil }
+            Button("继续") {
+                let pending = pendingAfterScope
+                pendingAfterScope = nil
+                // Run after the dialog dismisses, so the file
+                // picker / confirm alert is not presented while
+                // the dialog is still up.
+                DispatchQueue.main.async {
+                    switch pending {
+                    case .pickFile:
+                        showImporter = true
+                    case .confirmDownload:
+                        showRestoreConfirm = true
+                    case .none:
+                        break
                     }
                 }
             }
-        }
-        .onChange(of: showScopeSheet) { _, isShown in
-            guard !isShown, let pending = pendingAfterScope else { return }
-            pendingAfterScope = nil
-            switch pending {
-            case .pickFile:
-                showImporter = true
-            case .confirmDownload:
-                showRestoreConfirm = true
-            }
+        } message: {
+            Text((restoreScope == .all
+                  ? "恢复全部数据：所有文件与设置都在恢复范围内。"
+                  : "仅恢复配置：只恢复订阅与配置，设置、主题、MITM 模块保持不变。")
+                 + (backupStore.restoreStrategy == .compatible
+                    ? "备份里没有的数据保留原样。"
+                    : "恢复范围里的数据会被备份完全替换。"))
         }
         .task {
             // Live WebDAV indicator (FlClash shows the account state
@@ -322,10 +298,10 @@ struct BackupView: View {
             try data.write(to: tempURL, options: .atomic)
             pickedURL = tempURL
             webdavStatus = "已下载备份，请选择恢复选项"
-            // Same order as a local file: options first, then the
-            // confirm alert (via .onChange of showScopeSheet).
+            // Same order as a local file: the restore dialog first,
+            // then the confirm alert (via the dialog's 继续 button).
             pendingAfterScope = .confirmDownload
-            showScopeSheet = true
+            showScopeDialog = true
         } catch {
             webdavStatus = "下载失败：\(error.localizedDescription)"
         }

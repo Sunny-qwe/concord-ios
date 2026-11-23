@@ -412,6 +412,7 @@ private struct DisclaimerView: View {
     @AppStorage("ConcordiOS.disclaimer.consentedAt") private var consentedAt: Double = 0
     @Environment(\.dismiss) private var dismiss
     @State private var showRestateDialog = false
+    @State private var restateTyped = ""
     @State private var disagreeMessage: String?
     private static let terms: [(String, String)] = [
         ("一、软件说明", "本应用是一款基于开源项目构建的网络代理工具，旨在帮助用户管理网络连接、优化网络访问体验。本应用不提供任何代理服务、服务器或网络内容，所有网络流量均由用户自行配置的代理服务器处理。"),
@@ -456,7 +457,10 @@ private struct DisclaimerView: View {
             _ConsentBar(
                 consented: consented,
                 consentedDate: consentedAt > 0 ? Date(timeIntervalSince1970: consentedAt) : nil,
-                onAgree: { showRestateDialog = true },
+                onAgree: {
+                    restateTyped = ""
+                    showRestateDialog = true
+                },
                 onDisagree: {
                     consented = false
                     disagreeMessage = "您选择了不同意：请停止使用本应用并将其卸载。"
@@ -467,13 +471,35 @@ private struct DisclaimerView: View {
         .background(ConcordTheme.pageBackground)
         .navigationTitle("免责声明")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showRestateDialog) {
-            _RestateDialog(statement: DisclaimerView.restatement) {
+        // Upstream _handleAgree → dialogs.showCommonDialog
+        // (dismissible: false, child: _RestateDialog())
+        // (disclaimer.dart:305): a centered AlertDialog with
+        // Cancel + Confirm — NOT a sheet, NOT scrim-dismissible.
+        // Confirm stays disabled until the typed text matches the
+        // statement exactly; a non-prefix is flagged as a mismatch.
+        .alert("确认同意", isPresented: $showRestateDialog) {
+            TextField("请逐字输入声明", text: $restateTyped)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            Button("取消", role: .cancel) { restateTyped = "" }
+            Button("确认") {
                 consented = true
                 consentedAt = Date().timeIntervalSince1970
-                showRestateDialog = false
+                restateTyped = ""
             }
+            .disabled(restateTyped.trimmingCharacters(in: .whitespacesAndNewlines) != DisclaimerView.restatement)
+        } message: {
+            Text("请复述以下声明，以确认您已阅读并同意免责声明：\n\(DisclaimerView.restatement)\(restateMismatch ? "\n输入与声明不一致，请对照上方文字重新输入。" : "")")
         }
+    }
+
+    /// The typed restatement matches the statement so far, or
+    /// diverges from it (a non-prefix, non-empty input).
+    private var restateMismatch: Bool {
+        let trimmed = restateTyped.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty
+            && trimmed != DisclaimerView.restatement
+            && !DisclaimerView.restatement.hasPrefix(trimmed)
     }
 }
 
@@ -526,67 +552,5 @@ private struct _ConsentBar: View {
             }
         }
         .background(ConcordTheme.cardBackground)
-    }
-}
-
-/// Restatement dialog (FlClash _RestateDialog): shows the
-/// statement and asks the user to type it out exactly. Confirm
-/// stays disabled until the typed text matches; a non-prefix is
-/// flagged as a mismatch. Typing it proves the user read it,
-/// instead of a single thoughtless tap.
-private struct _RestateDialog: View {
-    let statement: String
-    let onConfirm: () -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var typed = ""
-
-    private enum Restatement { case partial, diverged, complete }
-
-    private var restatement: Restatement {
-        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed == statement { return .complete }
-        if trimmed.isEmpty || statement.hasPrefix(trimmed) { return .partial }
-        return .diverged
-    }
-
-    var body: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("请复述以下声明，以确认您已阅读并同意免责声明。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Text(statement)
-                    .font(.footnote.weight(.semibold))
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
-                TextField("请逐字输入上方声明", text: $typed, axis: .vertical)
-                    .lineLimit(3...)
-                    .font(.footnote)
-                    .padding(12)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                if restatement == .diverged {
-                    Text("输入与声明不一致，请对照上方文字重新输入。")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                Spacer()
-            }
-            .padding(16)
-            .navigationTitle("确认同意")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("确认") { onConfirm() }
-                        .disabled(restatement != .complete)
-                }
-            }
-        }
     }
 }

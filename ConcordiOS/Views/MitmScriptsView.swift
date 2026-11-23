@@ -17,9 +17,11 @@ struct MitmScriptsView: View {
 
     @State private var editingScript: MitmScript?
     @State private var showNewEditor = false
-    @State private var showImportURL = false
+    @State private var showImportURLDialog = false
+    @State private var importURLText = ""
     @State private var showFileImporter = false
     @State private var urlScript: MitmScript?
+    @State private var renameText = ""
     @State private var deleteScript: MitmScript?
     @State private var showDeleteConfirm = false
     @State private var runResult: JSONValue?
@@ -69,7 +71,10 @@ struct MitmScriptsView: View {
                                 runMessage = "已复制核心脚本行，可粘贴进模块的 [Script] 段"
                             }
                         },
-                        onEditURL: { urlScript = script },
+                        onEditURL: {
+                            renameText = script.label
+                            urlScript = script
+                        },
                         onDelete: {
                             deleteScript = script
                             showDeleteConfirm = true
@@ -116,7 +121,10 @@ struct MitmScriptsView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button("从空白新建") { showNewEditor = true }
-                    Button("从链接导入") { showImportURL = true }
+                    Button("从链接导入") {
+                        importURLText = ""
+                        showImportURLDialog = true
+                    }
                     Button("从文件导入") { showFileImporter = true }
                 } label: {
                     Image(systemName: "plus.circle")
@@ -126,21 +134,51 @@ struct MitmScriptsView: View {
                 EditButton()
             }
         }
-        .sheet(item: $editingScript) { script in
-            MitmScriptEditorView(script: script)
+        // Upstream scripts.dart:259: editing a script pushes
+        // EditorPage — a full page push, not a sheet.
+        .navigationDestination(item: $editingScript) { script in
+            MitmScriptEditorView(script: script, pushed: true)
                 .environmentObject(scriptStore)
         }
-        .sheet(isPresented: $showNewEditor) {
-            MitmScriptEditorView(script: nil)
+        // Upstream scripts.dart:259: a new script is the same
+        // EditorPage push.
+        .navigationDestination(isPresented: $showNewEditor) {
+            MitmScriptEditorView(script: nil, pushed: true)
                 .environmentObject(scriptStore)
         }
-        .sheet(isPresented: $showImportURL) {
-            MitmScriptImportURLView()
-                .environmentObject(scriptStore)
+        // Upstream scripts.dart:160,293: URL import is an input
+        // dialog (dialogs.showUrlInput), not a sheet.
+        .alert("从链接导入", isPresented: $showImportURLDialog) {
+            TextField("脚本链接（https://…/*.js）", text: $importURLText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("取消", role: .cancel) {}
+            Button("导入") {
+                Task { await importScriptFromURL() }
+            }
+        } message: {
+            Text("下载后以链接的文件名命名；之后点「从链接更新」可重新下载。")
         }
-        .sheet(item: $urlScript) { script in
-            MitmScriptEditURLView(script: script)
-                .environmentObject(scriptStore)
+        // Upstream scripts.dart:193: no dedicated edit-URL UI —
+        // the closest is _showNameDialog → showCommonDialog
+        // (InputDialog), a rename dialog.
+        .alert("重命名脚本", isPresented: Binding(
+            get: { urlScript != nil },
+            set: { if !$0 { urlScript = nil } }
+        ), presenting: urlScript) { script in
+            TextField("脚本名", text: $renameText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("取消", role: .cancel) { urlScript = nil }
+            Button("重命名") {
+                let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty {
+                    scriptStore.rename(script, label: name)
+                }
+                urlScript = nil
+            }
+        } message: {
+            Text("输入新的脚本名。")
         }
         .fileImporter(
             isPresented: $showFileImporter,
@@ -176,6 +214,31 @@ struct MitmScriptsView: View {
         } catch {
             runResult = nil
             runMessage = "运行失败：\(error.localizedDescription)（核心只运行已被模块 [Script] 段引用的脚本，先复制核心脚本行进模块）"
+        }
+    }
+
+    /// Imports one script from a URL (the URL-import dialog's
+    /// action; was MitmScriptImportURLView's Import button).
+    private func importScriptFromURL() async {
+        let urlString = importURLText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: urlString),
+              url.scheme?.lowercased() == "https" || url.scheme?.lowercased() == "http" else {
+            scriptStore.lastError = "不是有效的 http(s) 链接"
+            return
+        }
+        do {
+            let data = try await mitmDownloadValidated(from: url)
+            guard let content = String(data: data, encoding: .utf8) else {
+                scriptStore.lastError = "下载的内容不是 UTF-8 文本"
+                return
+            }
+            let stem = url.lastPathComponent.isEmpty
+                ? "脚本" : url.deletingPathExtension().lastPathComponent
+            await scriptStore.create(
+                label: scriptStore.uniqueLabel(stem),
+                url: urlString, content: content)
+        } catch {
+            scriptStore.lastError = "下载失败：\(error.localizedDescription)"
         }
     }
 
@@ -235,9 +298,9 @@ private struct MitmScriptRow: View {
                     Button("复制核心脚本行", action: onCopyLine)
                     if script.isRemote {
                         Button("从链接更新", action: onUpdate)
-                        Button("编辑链接", action: onEditURL)
+                        Button("重命名", action: onEditURL)
                     } else {
-                        Button("设置来源链接", action: onEditURL)
+                        Button("重命名", action: onEditURL)
                     }
                     Button("删除", role: .destructive, action: onDelete)
                 } label: {
@@ -253,21 +316,42 @@ private struct MitmScriptRow: View {
 
 private struct MitmScriptEditorView: View {
     let script: MitmScript?
+    /// Upstream pushes EditorPage: when true the editor renders
+    /// as a pushed page in the caller's stack (no own
+    /// NavigationStack, no 取消 button); when false it is the old
+    /// sheet with its own stack and 取消 button.
+    let pushed: Bool
 
     @EnvironmentObject private var scriptStore: MitmScriptStore
     @Environment(\.dismiss) private var dismiss
     @State private var label: String
     @State private var text: String
 
-    init(script: MitmScript?) {
+    init(script: MitmScript?, pushed: Bool = false) {
         self.script = script
+        self.pushed = pushed
         _label = State(initialValue: script?.label ?? "")
         _text = State(initialValue: "")
     }
 
     var body: some View {
-        NavigationStack {
-            List {
+        if pushed {
+            editorContent
+        } else {
+            NavigationStack {
+                editorContent
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("取消") { dismiss() }
+                        }
+                    }
+            }
+        }
+    }
+
+    /// The editor page itself, shared by the sheet and pushed forms.
+    private var editorContent: some View {
+        List {
                 Section {
                     TextField("脚本名", text: $label)
                         .textInputAutocapitalization(.never)
@@ -319,11 +403,6 @@ private struct MitmScriptEditorView: View {
             .background(ConcordTheme.pageBackground)
             .navigationTitle(script?.label ?? "新建脚本")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("取消") { dismiss() }
-                }
-            }
             .task {
                 if let script {
                     text = scriptStore.content(of: script) ?? ""
@@ -333,123 +412,4 @@ private struct MitmScriptEditorView: View {
             }
         }
     }
-}
 
-// MARK: - Import from URL / edit URL
-
-private struct MitmScriptImportURLView: View {
-    @EnvironmentObject private var scriptStore: MitmScriptStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var urlText = ""
-    @State private var isImporting = false
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    TextField("脚本链接（https://…/*.js）", text: $urlText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    Text("下载后以链接的文件名命名；之后点「从链接更新」可重新下载。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Section {
-                    Button("导入") {
-                        let urlString = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard let url = URL(string: urlString),
-                              url.scheme?.lowercased() == "https" || url.scheme?.lowercased() == "http" else {
-                            scriptStore.lastError = "不是有效的 http(s) 链接"
-                            return
-                        }
-                        isImporting = true
-                        Task {
-                            defer { isImporting = false }
-                            do {
-                                let data = try await mitmDownloadValidated(from: url)
-                                guard let content = String(data: data, encoding: .utf8) else {
-                                    scriptStore.lastError = "下载的内容不是 UTF-8 文本"
-                                    return
-                                }
-                                let stem = url.lastPathComponent.isEmpty
-                                    ? "脚本" : url.deletingPathExtension().lastPathComponent
-                                await scriptStore.create(
-                                    label: scriptStore.uniqueLabel(stem),
-                                    url: urlString, content: content)
-                                if scriptStore.lastError == nil { dismiss() }
-                            } catch {
-                                scriptStore.lastError = "下载失败：\(error.localizedDescription)"
-                            }
-                        }
-                    }
-                    .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isImporting)
-                    if isImporting { ProgressView() }
-                    if let error = scriptStore.lastError {
-                        Text(error).font(.caption2).foregroundStyle(.red)
-                    }
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle("从链接导入")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("取消") { dismiss() }
-                }
-            }
-        }
-    }
-}
-
-private struct MitmScriptEditURLView: View {
-    let script: MitmScript
-
-    @EnvironmentObject private var scriptStore: MitmScriptStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var urlText: String
-
-    init(script: MitmScript) {
-        self.script = script
-        _urlText = State(initialValue: script.url ?? "")
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    TextField("来源链接（https://…/*.js），留空为本地脚本", text: $urlText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    Text("保存后会立即从该链接下载一次，覆盖当前内容。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Section {
-                    Button("保存并更新") {
-                        Task {
-                            await scriptStore.setURL(script, url: urlText)
-                            if scriptStore.lastError == nil { dismiss() }
-                        }
-                    }
-                    .disabled(scriptStore.updatingIds.contains(script.id))
-                    if scriptStore.updatingIds.contains(script.id) { ProgressView() }
-                    if let error = scriptStore.lastError {
-                        Text(error).font(.caption2).foregroundStyle(.red)
-                    }
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle("编辑链接")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("取消") { dismiss() }
-                }
-            }
-        }
-    }
-}

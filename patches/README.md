@@ -6,14 +6,13 @@ never copied into this repo: the GitHub workflow checks out
 build time. A local inspection copy lives at `../upstream/` (gitignored,
 never uploaded).
 
-- **Pinned upstream commit:** `646f8c9937ced53caca861630d5ece877ea1e0af`
-  (`fix(quic): leave Hysteria, Hysteria2 and ShadowQUIC sending to the peer's credit`, 2026-11-23)
-- **Produced from:** the rebase tree at `/home/hatch/workspace/scratch/v0.2.60/rebase` (8 commits
-  on top of `646f8c9`, `git format-patch 646f8c9`), rebased
-  2026-11-23 from the previous pin `9d1f485441de06ecdc13e181730b4d3e8a903183`.
-  Verified: the 8 patches apply to a fresh clone at `646f8c9`
-  with zero rejects and produce a tree byte-identical to the rebase tree
-  (see the "Rebase to 646f8c9" section). The local inspection copy at `../upstream/` (branch `ios-port`)
+- **Pinned upstream commit:** `b3fab9e0fb81330c65bf62dea47caef845468747`
+  (`test(mitm): write the module samples of the stored-file tests neutrally`, 2026-11-23)
+- **Produced from:** the rebase tree at `/home/hatch/workspace/scratch/v0.2.87/rebase` (fresh clone at
+  `b3fab9e`, the 8 patches below applied in order), rebased
+  2026-11-23 from the previous pin `646f8c9937ced53caca861630d5ece877ea1e0af`.
+  Verified: the 8 patches apply to a fresh clone at `b3fab9e`
+  with zero rejects (see the "Rebase to b3fab9e" section). The local inspection copy at `../upstream/` (branch `ios-port`)
   still points at the old pin until it is refreshed; the patches in this
   directory are the authority for the new pin.
 - **Apply order:** `01`, then `02`, then `03`, then `04`, then `05`, then `06`, then `07`, then `08` (filenames sort in order).
@@ -939,3 +938,72 @@ patched tree rewrites it. That is harmless here: the workflows run
 `cargo build` without `--locked`, so the runner regenerates the lock
 itself. Do not commit a locally regenerated lock into a patch unless the
 build is switched to `--locked`.
+
+## Rebase to b3fab9e (2026-11-23)
+
+All 8 patches apply cleanly to a fresh clone at `b3fab9e`, in order,
+with zero rejects and zero hand fixes — every patch is
+content-identical to its `646f8c9` version (only the `From` / `index`
+hashes and hunk line numbers shifted). Verified in
+`/home/hatch/workspace/scratch/v0.2.87/rebase` (fresh clone,
+`git checkout b3fab9e`, sequential `git apply --check` + `git apply`
+for `01`–`08`, all exit 0; `git diff --check` clean;
+`git status --porcelain` shows 24 changed files — 20 modified + 4
+new — and no `Cargo.lock` change). The patches were NOT regenerated.
+
+8 commits since `646f8c9` (all 2026-11-23):
+
+- `808d641` perf(anytls): hand received data frames to the relay
+  without a copy (zero-copy relay path for AnyTLS).
+- `43413e1` style(anytls): order the stream module's imports as
+  rustfmt does (import ordering only).
+- `92dfece` docs(agents): note the round-position effect on
+  Hysteria2 CRR (agent guidance only).
+- `b6f59c7` fix(android): link libconcord.so without identical code
+  folding (Android link fix; no iOS effect).
+- `e32ef81` fix(mitm): say a resource path that is still a URL has
+  not been downloaded.
+- `2436ece` fix(mitm): read a module's stored files in its preview.
+- `7b33294` test(config): keep a module's USER-AGENT and URL-REGEX
+  rules (test-only).
+- `b3fab9e` test(mitm): write the module samples of the stored-file
+  tests neutrally (test-only).
+
+`schema/api.json` is byte-identical between `646f8c9` and `b3fab9e`
+(`git diff 646f8c9 b3fab9e -- schema/api.json` empty) — still **72
+methods**, none added, removed, or renamed.
+
+Worth adding (both ride along with this rebase, no separate work):
+
+- `2436ece`: `Mitm::read_module` now shows stored local file names
+  for downloaded module resources — before, the module preview
+  named every fetched script / map-local / jq file by its URL, so
+  the host's module page showed them all as missing even though the
+  section in force reads the stored files. The preview now names
+  them by the files the store keeps (through the same
+  `name_stored_files` that `compose` uses); a file not stored yet
+  still shows as not downloaded. Verified present in the rebase
+  tree: `name_stored_files` in `crates/config/src/mitm/modules.rs`.
+- `e32ef81`: an un-downloaded resource error now says "has not been
+  downloaded" — before, a module/profile line naming a remote file
+  by URL produced a confusing error when the file had not been
+  fetched yet. Verified present in the rebase tree: the
+  `"{param} {} has not been downloaded"` format string in
+  `crates/mitm/src/rules.rs`.
+
+Not necessary: `808d641` (AnyTLS zero-copy — a perf-only core change
+that rides along with the rebase; no API or UI surface, no Swift
+work), `43413e1` (style only), `92dfece` (docs only),
+`b6f59c7` (Android-only), `7b33294` and `b3fab9e` (test-only).
+
+**No Swift changes needed for this rebase.** `api.json` is unchanged
+(72 methods, no signature changes), so no new methods to wire and no
+decoder changes. The two worth-adding items are core-side behaviour
+that the existing Swift MITM module views already display through
+`mitm.readModule`.
+
+Local verification approach (Linux): fresh clone + `git apply`, as
+above. No `cargo check` re-run — the patches are content-identical
+to the `646f8c9` versions that passed host cargo checks, and the
+macOS runner (which has `xcrun` and the iOS SDK) is the verification
+for the full staticlib build, as before.

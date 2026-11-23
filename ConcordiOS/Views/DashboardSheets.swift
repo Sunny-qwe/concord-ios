@@ -1116,13 +1116,10 @@ private struct PillSegmentedControl: View {
                 Button { selection = index } label: {
                     Text(title)
                         .font(.subheadline.weight(.semibold))
-                        // v0.2.77: selected segment is white with
-                        // accent text (was solid accent fill) — every
-                        // page's rounded boxes are white now.
-                        .foregroundStyle(selection == index ? ConcordTheme.accent : Color(.label))
+                        .foregroundStyle(selection == index ? .white : Color(.label))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
-                        .background(selection == index ? ConcordTheme.cardBackground : Color.clear, in: Capsule())
+                        .background(selection == index ? ConcordTheme.accent : Color.clear, in: Capsule())
                 }
                 .buttonStyle(.plain)
             }

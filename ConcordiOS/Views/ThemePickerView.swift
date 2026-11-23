@@ -57,11 +57,8 @@ struct ThemePickerView: View {
                                 .fontWeight(.semibold)
                                 .padding(.horizontal, 14)
                                 .padding(.vertical, 6)
-                                // v0.2.77: preview mode pill is white with
-                                // accent text (was solid accent fill) to
-                                // match the real Dashboard mode segment.
-                                .background(mode == "规则" ? ConcordTheme.cardBackground : ConcordTheme.softFill, in: Capsule())
-                                .foregroundStyle(mode == "规则" ? ConcordTheme.accent : Color(.label))
+                                .background(mode == "规则" ? themeStore.accentColor : ConcordTheme.softFill, in: Capsule())
+                                .foregroundStyle(mode == "规则" ? .white : Color(.label))
                         }
                     }
                     // NAGRAM-style VPN row (v0.2.46 ITEM 2): the

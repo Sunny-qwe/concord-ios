@@ -1065,17 +1065,9 @@ struct ProxiesView: View {
     /// card style, proxies.dart).
     /// A plain VStack, NOT a NavigationStack: a NavigationStack
     /// inside a popover reports no usable ideal height, so the card
-    /// rendered clipped to ~1 row (v0.2.27). The level is state, and
-    /// the popover sizes itself to the VStack — the same as FlClash's
-    /// PopupMenu sizing to its content.
-    private enum MenuDestination: Hashable {
-        case sort, layout, size, iconStyle
-    }
-
-    private enum MenuLevel: Hashable {
-        case root
-        case options(MenuDestination)
-    }
+    /// rendered clipped to ~1 row (v0.2.27). Each row's expansion is
+    /// state, and the card sizes itself to the VStack — the same as
+    /// FlClash's PopupMenu sizing to its content.
 
     /// The ⋯ menu as its own View with its own state — NOT a
     /// computed property on ProxiesView. The menu's level and 风格
@@ -1098,137 +1090,186 @@ struct ProxiesView: View {
         /// scroll target lives in ProxiesView's @State.
         var onScrollToSelected: (() -> Void)?
 
-        @State private var menuLevel: MenuLevel = .root
+        // v0.2.73: every submenu row expands INLINE (accordion)
+        // below its own row inside this same card — no drill-down,
+        // no separate pop-up. Each row owns one boolean; tapping
+        // anywhere on the row toggles it (MuYu video behaviour).
         @State private var styleExpanded = false
+        @State private var sortExpanded = false
+        @State private var layoutExpanded = false
+        @State private var sizeExpanded = false
+        @State private var iconStyleExpanded = false
 
         var body: some View {
             VStack(spacing: 0) {
-                switch menuLevel {
-                case .root:
-                    // Scroll-to-selected (MuYu video build, f_044/f_045):
-                    // the ⋯ menu's first row in tab style. The
-                    // checked-out MuYu code has it as a separate bar
-                    // item instead (proxies.dart iconActions); the video
-                    // is the newer build and the user's live reference.
-                    // List / card style keep their per-header locate
-                    // buttons, so the row is tab-only.
-                    if let onScrollToSelected {
-                        Button {
-                            onScrollToSelected()
-                            isPresented = false
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "location.fill")
-                                    .font(.system(size: 19, weight: .semibold))
-                                    .frame(width: 22)
-                                Text("滚动到已选")
-                                Spacer()
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 12)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    // 风格 expands INLINE (v0.2.57, MuYu video
-                    // f_023/f_026): the three style rows appear directly
-                    // below this row inside the same popup — 标签页 ✓ /
-                    // 列表 / 卡片 — while the sibling rows stay visible.
-                    // The chevron-down is MuYu's (shown expanded in the
-                    // frames). Tapping a style applies it and closes
-                    // the menu (menuOptionRow); tapping 风格 only
-                    // toggles the expansion.
+                // Scroll-to-selected (MuYu video build, f_044/f_045):
+                // the ⋯ menu's first row in tab style. The
+                // checked-out MuYu code has it as a separate bar
+                // item instead (proxies.dart iconActions); the video
+                // is the newer build and the user's live reference.
+                // List / card style keep their per-header locate
+                // buttons, so the row is tab-only.
+                if let onScrollToSelected {
                     Button {
-                        withAnimation { styleExpanded.toggle() }
+                        onScrollToSelected()
+                        isPresented = false
                     } label: {
                         HStack(spacing: 12) {
-                            Image(systemName: "list.bullet")
+                            Image(systemName: "location.fill")
                                 .font(.system(size: 19, weight: .semibold))
                                 .frame(width: 22)
-                            Text("风格")
+                            Text("滚动到已选")
                             Spacer()
-                            Image(systemName: "chevron.down")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 12)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    if styleExpanded {
-                        ForEach(ProxyStyleStore.Style.allCases, id: \.self) { style in
-                            menuOptionRow(label: style.label, selected: styleStore.style == style) {
-                                styleStore.style = style
-                            }
-                        }
-                    }
-                    // 排序 (MuYu: three horizontal lines, decreasing —
-                    // SF line.3.horizontal.decrease; the old
-                    // arrow.up.arrow.down up/down arrows do not match).
-                    menuRow(icon: "line.3.horizontal.decrease", label: "排序", destination: .sort)
-                    menuRow(icon: "square.grid.2x2", label: "布局", destination: .layout)
-                    // 尺寸 (MuYu: a "Tt" glyph — SF Symbols has none,
-                    // so the custom TtIcon in CustomGlyphs.swift).
-                    // Drills down like the other rows.
-                    Button { menuLevel = .options(.size) } label: {
-                        HStack(spacing: 12) {
-                            TtIcon(size: 20)
-                                .frame(width: 22)
-                            Text("尺寸")
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 12)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    if styleStore.style != .tab {
-                        menuRow(icon: "photo", label: "图标样式", destination: .iconStyle)
-                    }
-                    Divider()
-                        .padding(.vertical, 4)
-                    Button {
-                        styleStore.hideTimeout.toggle()
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "eye.slash")
-                                .font(.system(size: 19, weight: .semibold))
-                                .frame(width: 22)
-                            Text("隐藏超时代理")
-                            Spacer()
-                            if styleStore.hideTimeout {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(ConcordTheme.accent)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 12)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                case .options(let dest):
-                    menuOptionsView(for: dest)
                 }
+                // 风格 expands INLINE (v0.2.57, MuYu video
+                // f_023/f_026): the three style rows appear directly
+                // below this row inside the same popup — 标签页 ✓ /
+                // 列表 / 卡片 — while the sibling rows stay visible.
+                // Chevron: > collapsed, ∨ expanded (MuYu IMG_1214
+                // vs the expanded frames). Tapping a style applies
+                // it and closes the menu (menuOptionRow); tapping
+                // 风格 only toggles the expansion. Tapping anywhere
+                // on the row toggles it — the chevron is only a
+                // visual indicator (v0.2.73).
+                expandableMenuRow(
+                    icon: Image(systemName: "list.bullet")
+                        .font(.system(size: 19, weight: .semibold)),
+                    label: "风格",
+                    expanded: styleExpanded
+                ) {
+                    withAnimation { styleExpanded.toggle() }
+                }
+                if styleExpanded {
+                    ForEach(ProxyStyleStore.Style.allCases, id: \.self) { style in
+                        menuOptionRow(label: style.label, selected: styleStore.style == style) {
+                            styleStore.style = style
+                        }
+                    }
+                }
+                // 排序 (MuYu: three horizontal lines, decreasing —
+                // SF line.3.horizontal.decrease; the old
+                // arrow.up.arrow.down up/down arrows do not match).
+                // v0.2.73: inline accordion like 风格 — the sort
+                // options appear directly below this row; the whole
+                // row toggles it.
+                expandableMenuRow(
+                    icon: Image(systemName: "line.3.horizontal.decrease")
+                        .font(.system(size: 19, weight: .semibold)),
+                    label: "排序",
+                    expanded: sortExpanded
+                ) {
+                    withAnimation { sortExpanded.toggle() }
+                }
+                if sortExpanded {
+                    ForEach(ProxySort.allCases) { option in
+                        menuOptionRow(label: option.rawValue, selected: styleStore.sort == option) {
+                            styleStore.sort = option
+                        }
+                    }
+                }
+                expandableMenuRow(
+                    icon: Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 19, weight: .semibold)),
+                    label: "布局",
+                    expanded: layoutExpanded
+                ) {
+                    withAnimation { layoutExpanded.toggle() }
+                }
+                if layoutExpanded {
+                    ForEach(ProxyStyleStore.Layout.allCases, id: \.self) { layout in
+                        menuOptionRow(label: layout.rawValue, selected: styleStore.layout == layout) {
+                            styleStore.layout = layout
+                        }
+                    }
+                }
+                // 尺寸 (MuYu: a "Tt" glyph — SF Symbols has none,
+                // so the custom TtIcon in CustomGlyphs.swift).
+                // v0.2.73: inline accordion like 风格.
+                expandableMenuRow(
+                    icon: TtIcon(size: 20),
+                    label: "尺寸",
+                    expanded: sizeExpanded
+                ) {
+                    withAnimation { sizeExpanded.toggle() }
+                }
+                if sizeExpanded {
+                    ForEach(ProxyStyleStore.CardType.allCases, id: \.self) { type in
+                        menuOptionRow(label: type.rawValue, selected: styleStore.cardType == type) {
+                            styleStore.cardType = type
+                        }
+                    }
+                }
+                if styleStore.style != .tab {
+                    expandableMenuRow(
+                        icon: Image(systemName: "photo")
+                            .font(.system(size: 19, weight: .semibold)),
+                        label: "图标样式",
+                        expanded: iconStyleExpanded
+                    ) {
+                        withAnimation { iconStyleExpanded.toggle() }
+                    }
+                    if iconStyleExpanded {
+                        ForEach(ProxyStyleStore.IconStyle.allCases, id: \.self) { style in
+                            menuOptionRow(label: style.rawValue, selected: styleStore.iconStyle == style) {
+                                styleStore.iconStyle = style
+                            }
+                        }
+                    }
+                }
+                Divider()
+                    .padding(.vertical, 4)
+                Button {
+                    styleStore.hideTimeout.toggle()
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "eye.slash")
+                            .font(.system(size: 19, weight: .semibold))
+                            .frame(width: 22)
+                        Text("隐藏超时代理")
+                        Spacer()
+                        if styleStore.hideTimeout {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(ConcordTheme.accent)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
             .frame(minWidth: 160, maxWidth: 280)
             .font(.subheadline)
             .foregroundStyle(Color(.label))
-            .onDisappear { menuLevel = .root; styleExpanded = false }
+            .onDisappear { styleExpanded = false; sortExpanded = false; layoutExpanded = false; sizeExpanded = false; iconStyleExpanded = false }
         }
 
-        private func menuRow(icon: String, label: String, destination: MenuDestination) -> some View {
-            Button { menuLevel = .options(destination) } label: {
+        /// One expandable menu row (v0.2.73): the whole row is the tap
+        /// target — icon, label, empty space and chevron all toggle the
+        /// inline expansion (`.contentShape(Rectangle())` makes the
+        /// Button cover the full row width). The chevron is only a
+        /// visual indicator: > collapsed, ∨ expanded (MuYu). The icon
+        /// is a generic View so the SF Symbol rows and the custom
+        /// TtIcon row share this helper.
+        private func expandableMenuRow<Icon: View>(
+            icon: Icon,
+            label: String,
+            expanded: Bool,
+            action: @escaping () -> Void
+        ) -> some View {
+            Button(action: action) {
                 HStack(spacing: 12) {
-                    Image(systemName: icon)
-                        .font(.system(size: 19, weight: .semibold))
+                    icon
                         .frame(width: 22)
                     Text(label)
                     Spacer()
-                    Image(systemName: "chevron.right")
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1237,63 +1278,6 @@ struct ProxiesView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-        }
-
-        /// A submenu: a back header plus the options with a checkmark on
-        /// the current value. Tapping one applies it and closes the menu,
-        /// as FlClash's popup does on pick.
-        private func menuOptionsView(for dest: MenuDestination) -> some View {
-            VStack(spacing: 0) {
-                Button { menuLevel = .root } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text(menuTitle(for: dest))
-                            .fontWeight(.semibold)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 12)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                Divider()
-                switch dest {
-                case .sort:
-                    ForEach(ProxySort.allCases) { option in
-                        menuOptionRow(label: option.rawValue, selected: styleStore.sort == option) {
-                            styleStore.sort = option
-                        }
-                    }
-                case .layout:
-                    ForEach(ProxyStyleStore.Layout.allCases, id: \.self) { layout in
-                        menuOptionRow(label: layout.rawValue, selected: styleStore.layout == layout) {
-                            styleStore.layout = layout
-                        }
-                    }
-                case .size:
-                    ForEach(ProxyStyleStore.CardType.allCases, id: \.self) { type in
-                        menuOptionRow(label: type.rawValue, selected: styleStore.cardType == type) {
-                            styleStore.cardType = type
-                        }
-                    }
-                case .iconStyle:
-                    ForEach(ProxyStyleStore.IconStyle.allCases, id: \.self) { style in
-                        menuOptionRow(label: style.rawValue, selected: styleStore.iconStyle == style) {
-                            styleStore.iconStyle = style
-                        }
-                    }
-                }
-            }
-        }
-
-        private func menuTitle(for dest: MenuDestination) -> String {
-            switch dest {
-            case .sort: return "排序"
-            case .layout: return "布局"
-            case .size: return "尺寸"
-            case .iconStyle: return "图标样式"
-            }
         }
 
         private func menuOptionRow(label: String, selected: Bool, action: @escaping () -> Void) -> some View {

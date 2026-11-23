@@ -107,11 +107,32 @@ enum ConcordTheme {
             ? Color(.secondarySystemFill)
             : Color.white
     }
-    /// Selected-tab capsule fill in the floating bar (v0.2.68):
-    /// the theme accent — the video's selected tab is a solid
-    /// magenta capsule with a white icon + label (was grey
-    /// systemFill with a blue icon).
-    static var tabSelectedFill: Color { accent }
+    /// v0.2.82: true when the theme is the DEFAULT blue (the blue
+    /// the user starts on) with no custom accent hex. The MuYu
+    /// light-tint designs (tab-bar capsule, upload curve) apply to
+    /// every OTHER accent colour; the default blue keeps its
+    /// current look exactly.
+    static var isDefaultBlueTheme: Bool {
+        ThemeStore.shared.accent == .blue && ThemeStore.shared.customAccentHex == nil
+    }
+    /// Selected-tab capsule fill in the floating bar (v0.2.82):
+    /// the video's selected tab is a LIGHT tint of the accent
+    /// (#FED5EC under magenta), NOT the solid magenta capsule the
+    /// v0.2.68 comment claimed (that was a misread). Applies to
+    /// every accent EXCEPT the default blue theme, which keeps the
+    /// solid accent capsule. The tint is accent at 25% opacity, so
+    /// it composites over the bar background in both light and
+    /// dark mode.
+    static var tabSelectedFill: Color {
+        isDefaultBlueTheme ? accent : accent.opacity(0.25)
+    }
+    /// Selected-tab icon/label colour in the floating bar
+    /// (v0.2.82): solid accent on the light-tint capsule (every
+    /// accent except the default blue); white on the solid capsule
+    /// for the default blue theme.
+    static var tabSelectedForeground: Color {
+        isDefaultBlueTheme ? .white : accent
+    }
     /// Unselected tab icon/label grey.
     static let tabUnselected = Color(red: 0.25, green: 0.25, blue: 0.28)
     /// Bottom content clearance for the floating tab bar (v0.2.59,

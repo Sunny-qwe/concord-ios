@@ -384,9 +384,11 @@ struct ContentView: View {
     }
 
     /// Floating white capsule bar (reference bottom bar): the selected
-    /// tab gets a solid accent capsule with a white icon + label
-    /// (v0.2.68 — was a grey capsule with a blue icon; the video's
-    /// selected tab is a solid magenta capsule, white on it).
+    /// tab gets a LIGHT tint of the accent with a solid-accent icon
+    /// + label (v0.2.82 — the video's selected tab is a light pink
+    /// capsule, NOT the solid magenta capsule + white icon the
+    /// v0.2.68 comment claimed). The default blue theme keeps the
+    /// solid accent capsule + white icon.
     private var floatingTabBar: some View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.self) { tab in
@@ -406,7 +408,7 @@ struct ContentView: View {
                                 .matchedGeometryEffect(id: "tabPill", in: tabPillNamespace)
                         }
                     }
-                    .foregroundStyle(selectedTab == tab ? .white : ConcordTheme.tabUnselected)
+                    .foregroundStyle(selectedTab == tab ? ConcordTheme.tabSelectedForeground : ConcordTheme.tabUnselected)
                 }
                 .buttonStyle(.plain)
             }

@@ -1199,12 +1199,12 @@ struct DashboardView: View {
                 set: { _ in Task { await proxyStore.toggle() } }
             ))
             .labelsHidden()
-            // NAGRAM-style row (v0.2.46 ITEM 2): the switch is
-            // iOS blue, matching the NAGRAM screenshot — not the
-            // theme accent. Same start/stop path as the play
-            // button (proxyStore.toggle()); start errors land in
-            // proxyStore.startError.
-            .tint(.blue)
+            // MuYu video: the switch follows the theme accent
+            // (magenta under the magenta theme, blue under the
+            // default blue theme). Same start/stop path as the
+            // play button (proxyStore.toggle()); start errors
+            // land in proxyStore.startError.
+            .tint(ConcordTheme.accent)
         }
         .concordCard(padding: 12)
         // The Toggle keeps its own tap (the inner control wins the
@@ -1747,7 +1747,7 @@ private struct VpnBadge: View {
         ZStack {
             if enabled {
                 FlowerBadgeShape()
-                    .fill(Color.blue)
+                    .fill(ConcordTheme.accent)
                     .frame(width: 48, height: 48)
                 VpnGlyphIcon(color: .white)
             } else {
@@ -2224,13 +2224,21 @@ private struct SpeedPanelView: View {
         let bytes = isUp ? trafficStore.current.up : trafficStore.current.down
         let total = isUp ? trafficStore.current.totalUp : trafficStore.current.totalDown
         let split = ConcordBytes.split(bytes)
+        // v0.2.82: upstream series2 — upload is the primary at 45%
+        // (a light tint under any accent; the video's upload area
+        // is light pink, not orange). Applies to every accent
+        // EXCEPT the default blue theme, which keeps the orange
+        // upload. The waveform itself applies its own opacity on
+        // top, so 45% here renders upload at 45% of download's
+        // strength, matching upstream.
+        let uploadColor = ConcordTheme.isDefaultBlueTheme ? Color.orange : ConcordTheme.accent.opacity(0.45)
         // v0.2.68: the area waveform is the panel's BACKGROUND
         // (theme-tinted, numbers overlaid), like the video.
         return ZStack(alignment: .leading) {
             SpeedPanelAreaWaveform(
                 history: trafficStore.history,
                 value: isUp ? \.up : \.down,
-                color: isUp ? Color.orange : ConcordTheme.accent
+                color: isUp ? uploadColor : ConcordTheme.accent
             )
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {

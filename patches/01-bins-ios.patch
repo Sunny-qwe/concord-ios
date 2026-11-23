@@ -1,4 +1,4 @@
-From 4bc1194f433d58bec8e8bbaa34f365997d4cb9c1 Mon Sep 17 00:00:00 2001
+From 8e6bafa3d0208dc33846088efdedb586e91210e1 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Sun, 22 Nov 2026 06:19:28 +0000
 Subject: [PATCH 1/8] ios: add bins/ios staticlib crate

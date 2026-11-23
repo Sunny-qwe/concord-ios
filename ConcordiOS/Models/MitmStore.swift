@@ -227,8 +227,12 @@ struct MitmExchangeAction: Codable {
     let kind: String
     let phase: String?
     let detail: String?
+    /// The module whose line acted; nil/empty for the profile's
+    /// own (upstream 9d1f485; the wire has carried this since
+    /// 0c9788f, the app only decodes it now).
+    var module: String? = nil
 
-    var kindLabel: String {
+    static func kindLabel(for kind: String) -> String {
         switch kind {
         case "url-rewrite": return "URL 重写"
         case "header-rewrite": return "头重写"
@@ -238,6 +242,8 @@ struct MitmExchangeAction: Codable {
         default: return kind
         }
     }
+
+    var kindLabel: String { Self.kindLabel(for: kind) }
 
     var phaseLabel: String? {
         switch phase {
@@ -259,6 +265,10 @@ struct MitmExchangeDetail: Codable {
     let originalUrl: String?
     let proto: String?
     let status: Int32
+    /// The response's reason phrase as the client got it
+    /// (upstream 9d1f485, b678d79): the standard one for its
+    /// status, e.g. "OK". Omitted when there is none.
+    var reason: String? = nil
     let requestSize: Int64
     let responseSize: Int64
     let error: String?
@@ -272,6 +282,7 @@ struct MitmExchangeDetail: Codable {
         case start, pending, duration, ttfb, method, url, status, error, connection, actions
         case originalUrl = "original-url"
         case proto
+        case reason
         case requestSize = "request-size"
         case responseSize = "response-size"
         case requestHeader = "request-header"

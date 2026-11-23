@@ -1522,6 +1522,13 @@ struct MitmExchangeSummary: Codable, Identifiable {
     var kind: String? = nil
     /// A rewrite, a local map or a script acted on it.
     var rewritten: Bool? = nil
+    /// The kinds of the actions that acted on it, each once, in
+    /// the order they first acted (upstream 9d1f485, b678d79).
+    /// Omitted when none acted.
+    var actionKinds: [String]? = nil
+    /// What answered it in place of its server; nil when the
+    /// request went to the server (upstream 9d1f485, b678d79).
+    var answer: ConcordMitmAnswer? = nil
     /// The connection it went out on, as `connection.watch` numbers it.
     var connectionId: UInt64? = nil
     /// The process behind that connection, kept after it closed.
@@ -1537,8 +1544,30 @@ struct MitmExchangeSummary: Codable, Identifiable {
         case contentType = "content-type"
         case statusClass = "status-class"
         case kind, rewritten
+        case actionKinds = "action-kinds"
+        case answer
         case connectionId = "connection-id"
         case app
+    }
+}
+
+/// What answered a request in place of its server (upstream
+/// 9d1f485 MitmAnswer, kebab-case): reject = the rules rejected
+/// it, redirect = a url-rewrite 302/307 line, map-local = a local
+/// map, script = a request script answered or aborted it.
+enum ConcordMitmAnswer: String, Codable {
+    case reject
+    case redirect
+    case mapLocal = "map-local"
+    case script
+
+    var label: String {
+        switch self {
+        case .reject: return "本地拒绝"
+        case .redirect: return "本地重定向"
+        case .mapLocal: return "本地映射"
+        case .script: return "脚本应答"
+        }
     }
 }
 

@@ -429,6 +429,16 @@ struct MitmExchangeDetailView: View {
     /// it loads or when the open JSON does not decode as one.
     private var detail: MitmExchangeDetail? { mitmStore.exchangeDetailTyped }
 
+    /// Status with the response reason phrase when the core sent
+    /// one (upstream 9d1f485, b678d79): e.g. "200 OK".
+    private var statusText: String {
+        if summary.pending ?? false { return "进行中" }
+        if let reason = detail?.reason, !reason.isEmpty {
+            return "\(summary.status) \(reason)"
+        }
+        return "\(summary.status)"
+    }
+
     /// The loaded side's Content-Type, for body rendering.
     private var bodyContentType: String {
         detail?.headerValue("Content-Type", response: bodyKind == .response) ?? ""
@@ -474,7 +484,19 @@ struct MitmExchangeDetailView: View {
                     if let proto = detail?.proto, !proto.isEmpty {
                         LabeledContent("协议", value: proto)
                     }
-                    LabeledContent("状态", value: (summary.pending ?? false) ? "进行中" : "\(summary.status)")
+                    LabeledContent("状态", value: statusText)
+                    // Upstream 9d1f485 (b678d79): what answered it
+                    // in place of its server; nil = went to the server.
+                    if let answer = summary.answer {
+                        LabeledContent("应答", value: answer.label)
+                    } else if !(summary.pending ?? false), summary.status != 0 {
+                        LabeledContent("应答", value: "服务器")
+                    }
+                    // Upstream 9d1f485 (b678d79): the kinds of the
+                    // actions that acted on it, each once.
+                    if let kinds = summary.actionKinds, !kinds.isEmpty {
+                        LabeledContent("处理动作", value: kinds.map { MitmExchangeAction.kindLabel(for: $0) }.joined(separator: "、"))
+                    }
                     if summary.status != 0, let ttfb = detail?.ttfb {
                         LabeledContent("首字节时间", value: "\(ttfb) ms")
                     }
@@ -502,6 +524,11 @@ struct MitmExchangeDetailView: View {
                                 }
                                 if let text = action.detail, !text.isEmpty {
                                     Text(text)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let module = action.module, !module.isEmpty {
+                                    Text(module)
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }

@@ -1,4 +1,4 @@
-From 5ad4845132f74633fc67c63ec3b47220ae1205d6 Mon Sep 17 00:00:00 2001
+From 5decfbf28f6b8642414190cd0e101b2e4c68e373 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Sun, 22 Nov 2026 06:19:28 +0000
 Subject: [PATCH 2/8] ios: promote FakeDevice to a production packet-channel
@@ -727,7 +727,7 @@ index 4a701e1..0874cda 100644
      let Some(handler) = deps.dns.clone() else {
          return Ok(None);
 diff --git a/schema/api.json b/schema/api.json
-index ddb17f9..a9a6dc5 100644
+index 110e012..4ab98fb 100644
 --- a/schema/api.json
 +++ b/schema/api.json
 @@ -4624,9 +4624,28 @@

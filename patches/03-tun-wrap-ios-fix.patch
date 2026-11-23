@@ -1,4 +1,4 @@
-From 69ab0fdf767463c75d7893a5b79e6e6269ff842f Mon Sep 17 00:00:00 2001
+From 05b924001226984c68d75e622d87f37d56f89041 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Sun, 22 Nov 2026 06:19:28 +0000
 Subject: [PATCH 3/8] ios: cfg-gate TunDevice::wrap name/index lookup off iOS

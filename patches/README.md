@@ -6,14 +6,14 @@ never copied into this repo: the GitHub workflow checks out
 build time. A local inspection copy lives at `../upstream/` (gitignored,
 never uploaded).
 
-- **Pinned upstream commit:** `0c9788fc2476b69dcc00c7a578978857d755cfad`
-  (`refactor(xtask): list tracked files once for public_tree and the MITM check`, 2026-11-22)
+- **Pinned upstream commit:** `9d1f485441de06ecdc13e181730b4d3e8a903183`
+  (`build(deps): take url 2.5.9 for RUSTSEC-2026-0592`, 2026-11-23)
 - **Produced from:** the rebase tree at `/home/hatch/workspace/scratch/v0.2.60/rebase` (8 commits
-  on top of `0c9788f`, `git format-patch 0c9788f`), rebased
-  2026-11-22 from the previous pin `4db36a472bd3f290195dec55dfc30ac2ebc03b7a`.
-  Verified: the 8 patches apply to a fresh clone at `0c9788f`
+  on top of `9d1f485`, `git format-patch 9d1f485`), rebased
+  2026-11-23 from the previous pin `0c9788fc2476b69dcc00c7a578978857d755cfad`.
+  Verified: the 8 patches apply to a fresh clone at `9d1f485`
   with zero rejects and produce a tree byte-identical to the rebase tree
-  (see the "Rebase to 0c9788f" section). The local inspection copy at `../upstream/` (branch `ios-port`)
+  (see the "Rebase to 9d1f485" section). The local inspection copy at `../upstream/` (branch `ios-port`)
   still points at the old pin until it is refreshed; the patches in this
   directory are the authority for the new pin.
 - **Apply order:** `01`, then `02`, then `03`, then `04`, then `05`, then `06`, then `07`, then `08` (filenames sort in order).
@@ -749,3 +749,75 @@ user finally sees the tightened UI. `LaunchScreen.storyboard` is still
 referenced (`UILaunchStoryboardName` in `ConcordiOS/Info.plist`,
 `PBXBuildFile` in `project.pbxproj`) — its absence was the cause of
 the 1.22x scaling.
+
+## Rebase to 9d1f485 (2026-11-23)
+
+All 8 patches applied cleanly with **zero conflicts and zero content
+changes** — `01`, `02`, `03`, `05`, `06`, `07`, `08` are byte-identical
+to their `0c9788f` versions (only the `index` hashes and hunk line
+numbers shifted), and `04` differs only in two hunk line numbers
+(`vendor/PATCHES.md` 32 → 33 and 97 → 98, because upstream added an
+h3 row above them). The watch report's expected clean rebase held:
+no patch touches the files this batch changed. New patch commits on
+top of `9d1f485` in `/home/hatch/workspace/scratch/v0.2.60/rebase`,
+regenerated with `git format-patch 9d1f485`; the regenerated patches
+applied to a fresh clone at `9d1f485` produce a tree byte-identical to
+the rebase tree (0 diff lines, verified before any `cargo` invocation;
+no `Cargo.lock` regeneration involved — never commit it).
+
+15 commits since `0c9788f`, in two batches. `b678d79` (7 commits,
+2026-11-22 20:43–22:10) is all MITM capture records: `152f632`
+action kinds + local answer on each record, `21958e3` the response
+reason phrase, `2de2c17` each header/body rewrite rule as its own
+action, `aaa0f27` the capture wire types moved to their own module
+(`crates/mitm/src/capture/wire.rs`), docs (`8b64e39`, `8c32b58`) and
+a test (`b678d79`). `9d1f485` (8 commits, 2026-11-23 00:16) is the
+`url` 2.5.9 security upgrade (`RUSTSEC-2026-0592`, `Cargo.lock`
+only), test/docs/build-config fixes, and a TUN compile fix
+(`3e9887f`: `tun-rs` `into_sync` only on Linux/Android — no iOS
+effect).
+
+`schema/api.json` at the new HEAD still has **72 methods** — none
+added, removed, or changed. The only schema change is two fields on
+`MitmExchangeSummary`: `action-kinds` (array of strings, each kind
+once, in the order they first acted) and `answer` (`MitmAnswer` or
+null: `reject` | `redirect` | `map-local` | `script` — what answered
+in place of the server; absent when the request went to the server).
+The full exchange (`mitm.exchange`, Rust `Exchange`) also gains
+`reason` (the response reason phrase, e.g. "OK") — the schema does
+not type the detail result, so it shows up only in the wire type.
+The `Action` shape is unchanged (`kind`, `phase`, `detail`,
+`module`); `2de2c17` is behavioural — each header/body rewrite rule
+is now its own action instead of being merged per kind.
+
+**The Swift side changes for this rebase (v0.2.71):**
+- `MitmExchangeSummary` gains `actionKinds: [String]?` and
+  `answer: ConcordMitmAnswer?` (new enum, kebab-case raw values
+  with Chinese labels), both `var` with `nil` defaults so older
+  cores and the sample data still decode.
+- `MitmExchangeDetail` gains `reason: String?`; `MitmExchangeAction`
+  gains `module: String?` (the module whose line acted) plus a
+  static `kindLabel(for:)` so the summary's action kinds can reuse
+  the same labels.
+- The capture detail page (`MitmExchangeDetailView`) shows the
+  reason phrase with the status ("200 OK"), the local answer
+  ("本地拒绝" / "本地重定向" / "本地映射" / "脚本应答", or "服务器"
+  when the request went to it), the action kinds ("处理动作"), and
+  the module on each matched-rule row.
+
+Local verification at the new pin (Linux): the rebase itself is the
+verification for the Rust side (all 8 patches apply cleanly, fresh
+clone + patches byte-identical to the rebase tree). The `cargo check`
+host verification was not re-run this time — the patches are
+content-identical to the `0c9788f` versions that passed it, and the
+upstream changes in this batch do not touch any patched file. The
+macOS runner (which has `xcrun` and the iOS SDK) is the verification
+for the full staticlib build, as before.
+
+Note: `Cargo.lock` in the upstream tree is stale against the patched
+manifests (patch `01` adds the `bins/ios` member, patch `04` re-sources
+nix — neither commit regenerates the lock). Any `cargo` invocation in the
+patched tree rewrites it. That is harmless here: the workflows run
+`cargo build` without `--locked`, so the runner regenerates the lock
+itself. Do not commit a locally regenerated lock into a patch unless the
+build is switched to `--locked`.

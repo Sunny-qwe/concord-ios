@@ -394,7 +394,7 @@ struct MitmModulesView: View {
             urlEditError = nil
             return
         }
-        if let updated = await moduleStore.changeUrl(module, url) {
+        if let updated = await moduleStore.changeUrl(module, url: url) {
             urlEditModule = nil
             urlEditError = nil
             offerConsent(updated)
@@ -1444,7 +1444,7 @@ struct MitmModuleDetailView: View {
             urlEditError = nil
             return
         }
-        if let updated = await moduleStore.changeUrl(module, url) {
+        if let updated = await moduleStore.changeUrl(module, url: url) {
             urlEditModule = nil
             urlEditError = nil
             if moduleStore.awaitsConsent(updated) {

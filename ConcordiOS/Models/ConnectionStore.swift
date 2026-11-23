@@ -179,11 +179,31 @@ enum ConnectionGroupBy: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Status filter for the Requests list (upstream ConnectionStatus,
+/// connection_filters.dart:8 — all / active / failed).
+enum ConnectionStatusFilter: String, CaseIterable, Identifiable {
+    case all = "全部"
+    case active = "活动"
+    case failed = "失败"
+
+    var id: String { rawValue }
+}
+
+/// One minute's records, in the list's existing order (upstream
+/// RecordMinuteList: a header closes each minute's records).
+struct ConnectionMinuteGroup {
+    let minute: Date
+    var rows: [LiveConnection]
+}
+
 final class ConnectionStore: ObservableObject {
     @Published var connections: [LiveConnection] = []
     @Published var searchText = ""
     @Published var sort: ConnectionSort = .newest
     @Published var showOnlyActive = false
+    /// Status filter (upstream ConditionFilterRow): all / active /
+    /// failed. Session-only; filters in addition to search/facets.
+    @Published var statusFilter: ConnectionStatusFilter = .all
     @Published var lastError: String?
     @Published var lastUpdated: Date?
     /// The result message of the last network.update call.
@@ -289,14 +309,93 @@ final class ConnectionStore: ObservableObject {
     }
 
     var filtered: [LiveConnection] {
-        sorted(connections.filter { matchesSearch($0) && matchesFacets($0) })
+        sorted(connections.filter { matchesSearch($0) && matchesFacets($0) && matchesStatus($0, isLive: true) })
     }
 
     /// Recent connections matching the search text, facets and sort
     /// (the view used to filter these itself with search only).
     var recentFiltered: [LiveConnection] {
-        sorted(recentConnections.filter { matchesSearch($0) && matchesFacets($0) })
+        sorted(recentConnections.filter { matchesSearch($0) && matchesFacets($0) && matchesStatus($0, isLive: false) })
     }
+
+    /// Unfiltered held totals for the status segments (upstream
+    /// ConnectionRows.counts / offerCounts: the counts shown are
+    /// the held totals, not affected by search/facets). All = live
+    /// + recent held; active = live (still open — the recent feed
+    /// holds only closed rows); failed = failureKind set in either
+    /// table.
+    var statusCountAll: Int { connections.count + recentConnections.count }
+    var statusCountActive: Int { connections.count }
+    var statusCountFailed: Int {
+        (connections + recentConnections).filter { $0.failureKind != nil }.count
+    }
+
+    func statusCount(for status: ConnectionStatusFilter) -> Int {
+        switch status {
+        case .all: return statusCountAll
+        case .active: return statusCountActive
+        case .failed: return statusCountFailed
+        }
+    }
+
+    /// The status filter, in addition to search/facets. A live row
+    /// is active by definition (it is still open); a recent row is
+    /// closed, so it only passes the failed status when its dial
+    /// failed.
+    private func matchesStatus(_ connection: LiveConnection, isLive: Bool) -> Bool {
+        switch statusFilter {
+        case .all: return true
+        case .active: return isLive
+        case .failed: return connection.failureKind != nil
+        }
+    }
+
+    /// Groups a list into consecutive runs sharing a `start` minute
+    /// (upstream recordMinuteGroups / RecordMinuteList). Follows the
+    /// list's existing order — never re-sorts by time, so under a
+    /// non-time sort one minute may appear in several runs.
+    func minuteGroups(_ list: [LiveConnection]) -> [ConnectionMinuteGroup] {
+        var groups: [ConnectionMinuteGroup] = []
+        for connection in list {
+            let minute = Self.minuteStart(of: connection.start)
+            if groups.last?.minute == minute {
+                groups[groups.count - 1].rows.append(connection)
+            } else {
+                groups.append(ConnectionMinuteGroup(minute: minute, rows: [connection]))
+            }
+        }
+        return groups
+    }
+
+    /// The minute a date falls in, with seconds zeroed.
+    static func minuteStart(of date: Date) -> Date {
+        Calendar.current.date(
+            from: Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        ) ?? date
+    }
+
+    /// Upstream recordMinuteLabel: today `HH:mm`, other days
+    /// `MM-DD HH:mm`.
+    static func minuteLabel(_ minute: Date) -> String {
+        if Calendar.current.isDateInToday(minute) {
+            return minuteTimeFormatter.string(from: minute)
+        }
+        return minuteDateFormatter.string(from: minute)
+    }
+
+    private static let minuteTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    private static let minuteDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter
+    }()
 
     /// Group key for one connection under the active grouping
     /// (upstream trackerInfoGroupers: app/process, host, rule, exit).

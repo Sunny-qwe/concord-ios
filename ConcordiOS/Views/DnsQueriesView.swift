@@ -691,6 +691,10 @@ private struct DnsEntryDetailView: View {
                         }
                     }
                 }
+                // v0.2.86 (Item 3): the connections that used this
+                // query (upstream dns_query_detail.dart, shown only
+                // when non-empty — the sub-view hides itself).
+                DnsRelatedConnectionsView(dnsId: entry.dnsId)
                 if let error = entry.error {
                     Section("错误") {
                         DnsErrorRow(error: error)
@@ -728,6 +732,107 @@ private struct DnsEntryDetailView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
         }
+    }
+}
+
+/// The connections that used this DNS query (FlClash:
+/// dns_query_detail.dart `相关的连接`,
+/// related_connections.dart `RelatedConnectionRow`): the
+/// connections whose `dnsQueries` contains this entry's id,
+/// newest first (upstream connection_log.dart `resolvedBy`).
+/// Hidden when the id is 0 (the core never sends one) or when
+/// nothing references it. Tapping a row opens that
+/// connection's detail, same as the Requests page.
+private struct DnsRelatedConnectionsView: View {
+    let dnsId: UInt64
+
+    @EnvironmentObject private var connectionStore: ConnectionStore
+    @State private var selected: LiveConnection?
+    @State private var selectedIsLive = true
+
+    /// Live + recent connections referencing this query, newest
+    /// first. Upstream scans its full 2000-entry log; we scan
+    /// the live table + the 200-entry recent list, so a very old
+    /// connection may not appear.
+    private var related: [(connection: LiveConnection, isLive: Bool)] {
+        guard dnsId != 0 else { return [] }
+        let liveIds = Set(connectionStore.connections.map(\.id))
+        return (connectionStore.connections + connectionStore.recentConnections)
+            .filter { $0.dnsQueries.contains(dnsId) }
+            .sorted { $0.start > $1.start }
+            .map { ($0, liveIds.contains($0.id)) }
+    }
+
+    var body: some View {
+        Group {
+            if !related.isEmpty {
+                Section("相关的连接 \(related.count)") {
+                    ForEach(related, id: \.connection.id) { item in
+                        Button {
+                            selected = item.connection
+                            selectedIsLive = item.isLive
+                        } label: {
+                            relatedRow(item.connection, isLive: item.isLive)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .sheet(item: $selected) { connection in
+            ConnectionDetailView(connection: connection, isLive: selectedIsLive)
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                .presentationDragIndicator(.visible)
+        }
+    }
+
+    /// One related row (upstream RelatedConnectionRow, minus the
+    /// app icon — we have no app-icon source): process name (or
+    /// host), failure or route + live/closed + duration, chevron.
+    private func relatedRow(_ connection: LiveConnection, isLive: Bool) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Self.title(for: connection))
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+                subtitle(for: connection, isLive: isLive)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private static func title(for connection: LiveConnection) -> String {
+        if let process = connection.process, !process.isEmpty { return process }
+        return connection.host ?? connection.destination
+    }
+
+    /// Upstream subtitle: on failure red "失败" + the failure-kind
+    /// label; otherwise destination + first proxy + 活动/已关闭 +
+    /// duration. Empty parts are dropped, as upstream does.
+    @ViewBuilder
+    private func subtitle(for connection: LiveConnection, isLive: Bool) -> some View {
+        if let kind = connection.failureKind {
+            // Upstream RelatedConnectionRow: the WHOLE failure
+            // subtitle is error-red, not just the "失败" prefix.
+            Text("失败 · \(ConcordConnectionFailure.label(for: kind))")
+                .foregroundStyle(.red)
+        } else {
+            Text(Self.routeText(for: connection, isLive: isLive))
+        }
+    }
+
+    private static func routeText(for connection: LiveConnection, isLive: Bool) -> String {
+        let firstProxy = connection.chains.first ?? connection.proxy ?? ""
+        let lifetime = "\(isLive ? "活动" : "已关闭") \(ConcordFormat.duration(seconds: connection.durationSeconds))"
+        return [connection.destination, firstProxy, lifetime]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
     }
 }
 

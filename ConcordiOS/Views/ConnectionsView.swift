@@ -286,6 +286,7 @@ struct ConnectionsView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
                 .padding(.bottom, 4)
+                statusFilterBar
                 if let message = connectionStore.networkUpdateMessage {
                     Text(message)
                         .font(.caption2)
@@ -503,22 +504,84 @@ struct ConnectionsView: View {
         .background(Color.secondary.opacity(0.15), in: Capsule())
     }
 
+    /// Status segment bar (upstream ConditionFilterRow,
+    /// connection_filter_row.dart): a horizontally scrollable row
+    /// of compact segment buttons `全部 N` / `活动 N` / `失败 N`
+    /// with the unfiltered held totals, tapping filters the list;
+    /// the `+` button opens the same filter menu as the ⋯ button
+    /// (upstream's add-condition dialog has no Swift equivalent
+    /// here — no new condition editor is invented).
+    private var statusFilterBar: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(ConnectionStatusFilter.allCases) { status in
+                        statusSegmentButton(status)
+                    }
+                }
+            }
+            Menu {
+                filterMenuContent
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(.label))
+                    .frame(width: 30, height: 30)
+                    .background(Color.secondary.opacity(0.15), in: Circle())
+            }
+            .accessibilityLabel("添加筛选条件")
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 4)
+    }
+
+    /// One status segment: label + thousands-formatted count
+    /// (upstream NumberFormat.decimalPattern('en')). Selected
+    /// segments are accent-tinted, like the facet chips.
+    private func statusSegmentButton(_ status: ConnectionStatusFilter) -> some View {
+        let selected = connectionStore.statusFilter == status
+        return Button { connectionStore.statusFilter = status } label: {
+            Text("\(status.rawValue) \(Self.groupedCount(connectionStore.statusCount(for: status)))")
+                .font(.caption.weight(selected ? .semibold : .regular))
+                .foregroundStyle(selected ? ConcordTheme.accent : Color(.label))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    selected ? ConcordTheme.accent.opacity(0.15) : Color.secondary.opacity(0.15),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Thousands-grouped count (upstream `_grouped`).
+    private static let groupedNumberFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "en_US")
+        return formatter
+    }()
+
+    private static func groupedCount(_ count: Int) -> String {
+        groupedNumberFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
+    }
+
     /// The connection list, flat or grouped into sections
     /// (upstream recordGroupings).
     @ViewBuilder
     private func connectionList(_ list: [LiveConnection], isLive: Bool) -> some View {
         if connectionStore.groupBy == .none {
-            List(list) { connection in
-                Button { detail = connection; detailIsLive = isLive } label: {
-                    connectionRow(connection, isLive: isLive)
-                }
-                .buttonStyle(.plain)
-                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                    if isLive {
-                        Button("断开", role: .destructive) {
-                            Task { await connectionStore.close(connection) }
-                        }
+            // Flat list with per-minute separator rows (upstream
+            // RecordMinuteList): after each minute's records, a
+            // footnote row `HH:mm  N` (today) or `MM-DD HH:mm  N`.
+            // The grouped branch below stays unchanged — minute
+            // separators are not shown while grouped.
+            List {
+                ForEach(Array(connectionStore.minuteGroups(list).enumerated()), id: \.offset) { item in
+                    ForEach(item.element.rows) { connection in
+                        connectionRowButton(connection, isLive: isLive)
                     }
+                    minuteSeparatorRow(item.element)
                 }
             }
             .listStyle(.insetGrouped)
@@ -530,17 +593,7 @@ struct ConnectionsView: View {
                 ForEach(connectionStore.grouped(list, by: connectionStore.groupBy), id: \.key) { group in
                     Section("\(group.key)（\(group.rows.count)）") {
                         ForEach(group.rows) { connection in
-                            Button { detail = connection; detailIsLive = isLive } label: {
-                                connectionRow(connection, isLive: isLive)
-                            }
-                            .buttonStyle(.plain)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                if isLive {
-                                    Button("断开", role: .destructive) {
-                                        Task { await connectionStore.close(connection) }
-                                    }
-                                }
-                            }
+                            connectionRowButton(connection, isLive: isLive)
                         }
                     }
                 }
@@ -550,6 +603,33 @@ struct ConnectionsView: View {
             // v0.2.66: tab-bar clearance for pushed pages.
             .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
         }
+    }
+
+    /// One row's Button (shared by the flat and grouped branches):
+    /// opens the detail sheet, swipe-to-disconnect on live rows.
+    private func connectionRowButton(_ connection: LiveConnection, isLive: Bool) -> some View {
+        Button { detail = connection; detailIsLive = isLive } label: {
+            connectionRow(connection, isLive: isLive)
+        }
+        .buttonStyle(.plain)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            if isLive {
+                Button("断开", role: .destructive) {
+                    Task { await connectionStore.close(connection) }
+                }
+            }
+        }
+    }
+
+    /// Per-minute separator row (upstream RecordMinuteHeader,
+    /// record_minute_list.dart): the minute label, emphasized,
+    /// followed by the count in that minute.
+    private func minuteSeparatorRow(_ group: ConnectionMinuteGroup) -> some View {
+        Text("\(ConnectionStore.minuteLabel(group.minute))  \(group.rows.count)")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 2)
     }
 
     /// One connection row, rebuilt to the video's card style
@@ -605,15 +685,36 @@ struct ConnectionsView: View {
                     }
                 }
                 .lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(Self.ruleText(connection))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Text("→")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    chainCapsule(connection.proxy ?? connection.chains.last ?? "—", isLast: true)
+                if let failureKind = connection.failureKind {
+                    // Failed dial (upstream tracker_info_item.dart
+                    // _buildRow): the subtitle is `规则 (payload) ·
+                    // 失败原因`, the whole line error-red, with no
+                    // lifetime appended. The row shows only the kind
+                    // label — the detail page shows kind + message.
+                    HStack(spacing: 6) {
+                        Text(Self.ruleText(connection))
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .lineLimit(1)
+                        Text("·")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                        Text(ConcordConnectionFailure.label(for: failureKind))
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .lineLimit(1)
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        Text(Self.ruleText(connection))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Text("→")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        chainCapsule(connection.proxy ?? connection.chains.last ?? "—", isLast: true)
+                    }
                 }
                 Text(connection.source)
                     .font(.caption2)
@@ -659,14 +760,33 @@ struct ConnectionDetailView: View {
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var dnsStore: DnsStore
+    @EnvironmentObject private var proxyStore: ProxyStore
+    @EnvironmentObject private var client: ConcordClient
     @Environment(\.dismiss) private var dismiss
 
+    /// Upstream tracker_info_detail.dart: the detail page has
+    /// three tabs in order — 时间线, HTTP 请求 (only while MITM
+    /// captures), 信息. "概览" maps to upstream's "信息".
     private enum DetailTab: String, CaseIterable {
-        case overview = "概览"
+        case timeline = "时间线"
         case http = "HTTP 请求"
+        case info = "信息"
     }
 
-    @State private var tab = DetailTab.overview
+    @State private var tab = DetailTab.timeline
+
+    /// The timeline's once-per-open inputs: the rule-list check
+    /// and the MITM exchanges (see loadTimelineSupport).
+    @State private var standingRuleIndex: Int?
+    @State private var httpExchanges: [MitmExchangeSummary] = []
+    @State private var timelineSupportLoaded = false
+
+    /// The tabs the picker offers: all three while MITM captures,
+    /// otherwise 时间线 + 信息 (upstream always shows the tab bar
+    /// when there are 2+ tabs).
+    private var visibleTabs: [DetailTab] {
+        showHttpTab ? DetailTab.allCases : [.timeline, .info]
+    }
 
     /// The HTTP Requests tab exists only while MITM is capturing
     /// for this connection (upstream tracker_info_item.dart:
@@ -678,18 +798,27 @@ struct ConnectionDetailView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if showHttpTab {
-                    Picker("详情", selection: $tab) {
-                        ForEach(DetailTab.allCases, id: \.self) { tab in
-                            Text(tab.rawValue).tag(tab)
-                        }
+                Picker("详情", selection: $tab) {
+                    ForEach(visibleTabs, id: \.self) { tab in
+                        Text(tab.rawValue).tag(tab)
                     }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal)
-                    .padding(.vertical, 4)
                 }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 4)
                 if tab == .http && showHttpTab {
                     MitmView(initialConnectionId: connection.id)
+                } else if tab == .timeline {
+                    ConnectionTimelineView(
+                        connection: connection,
+                        isLive: isLive,
+                        dnsEntries: resolvedDnsEntries,
+                        exchanges: httpExchanges,
+                        nodeDelayMs: nodeDelayMs,
+                        pickedGroupType: pickedGroup?.type,
+                        standingRuleIndex: standingRuleIndex,
+                        onOpenRequests: showHttpTab ? { self.tab = .http } : nil
+                    )
                 } else {
                     overviewList
                 }
@@ -703,8 +832,65 @@ struct ConnectionDetailView: View {
                 }
             }
             // Load the DNS entries so the DNS 查询 row above can
-            // resolve the connection's dnsQueries ids to domains.
-            .task { await dnsStore.refresh() }
+            // resolve the connection's dnsQueries ids to domains,
+            // plus the timeline's once-per-open inputs.
+            .task {
+                await dnsStore.refresh()
+                await loadTimelineSupport()
+            }
+        }
+    }
+
+    /// The connection's DNS queries, newest first (upstream
+    /// `_LinkedQueries.of`: the dns.watch log, newest first;
+    /// DnsStore.entries is already newest-first).
+    private var resolvedDnsEntries: [ConcordDnsEntry] {
+        let ids = Set(connection.dnsQueries)
+        return dnsStore.entries.filter { ids.contains($0.dnsId) }
+    }
+
+    /// The group that picked this connection's node (upstream
+    /// `groupsProvider.getGroup(chains[1])`).
+    private var pickedGroup: ProxyGroup? {
+        guard connection.chains.count > 1 else { return nil }
+        return proxyStore.groups.first { $0.name == connection.chains[1] }
+    }
+
+    /// The picked node's last tested delay (upstream
+    /// `delayProvider(proxyName: chains.first, testUrl:
+    /// pickedBy?.testUrl)`), via the store's existing lookup.
+    private var nodeDelayMs: Int32? {
+        guard let group = pickedGroup, let node = connection.chains.first else { return nil }
+        return proxyStore.latency(forNodeNamed: node, inGroup: group)
+    }
+
+    /// Once when the detail opens (upstream `_standingRuleIndex`):
+    /// verify the rule at `ruleIndex` is still the same rule
+    /// (type + payload) against the current rule table, and fetch
+    /// the MITM exchanges for the timeline's HTTP step. When the
+    /// rule list cannot be read at all, the raw index is shown
+    /// instead of hiding the number.
+    private func loadTimelineSupport() async {
+        guard !timelineSupportLoaded else { return }
+        timelineSupportLoaded = true
+        if let index = connection.ruleIndex {
+            if let list = try? await client.ruleList() {
+                let idx = Int(index)
+                if idx >= 0, idx < list.rules.count,
+                   list.rules[idx].type == (connection.rule ?? ""),
+                   list.rules[idx].payload == (connection.rulePayload ?? "") {
+                    standingRuleIndex = idx
+                } else {
+                    standingRuleIndex = nil
+                }
+            } else {
+                standingRuleIndex = Int(index)
+            }
+        }
+        if showHttpTab {
+            if let list = try? await client.mitmExchanges(connection: connection.id) {
+                httpExchanges = list.result.exchanges
+            }
         }
     }
 

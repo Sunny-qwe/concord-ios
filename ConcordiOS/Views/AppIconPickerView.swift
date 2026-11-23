@@ -45,65 +45,90 @@ struct AppIconPickerView: View {
     @State private var statusIsError = false
 
     var body: some View {
-        List {
-            if !UIApplication.shared.supportsAlternateIcons {
-                Text("当前设备不支持切换图标（supportsAlternateIcons 为 false）。自签安装也可能被系统拒绝，见下方错误信息。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Section {
-                ForEach(Self.options) { option in
-                    Button {
-                        select(option)
-                    } label: {
-                        HStack(spacing: 12) {
-                            AppIconPreview(resource: option.previewResource)
-                                .frame(width: 56, height: 56)
-                                .clipShape(RoundedRectangle(cornerRadius: 13))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(option.title).font(.footnote.weight(.semibold))
-                                Text(option.subtitle).font(.caption2).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if currentIconName == option.iconName {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(ConcordTheme.accent)
+        ScrollViewReader { proxy in
+            List {
+                if !UIApplication.shared.supportsAlternateIcons {
+                    Text("当前设备不支持切换图标（supportsAlternateIcons 为 false）。自签安装也可能被系统拒绝，见下方错误信息。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Section {
+                    ForEach(Self.options) { option in
+                        Button {
+                            select(option)
+                        } label: {
+                            HStack(spacing: 12) {
+                                AppIconPreview(resource: option.previewResource)
+                                    .frame(width: 56, height: 56)
+                                    .clipShape(RoundedRectangle(cornerRadius: 13))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.title).font(.footnote.weight(.semibold))
+                                    Text(option.subtitle).font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if currentIconName == option.iconName {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(ConcordTheme.accent)
+                                }
                             }
                         }
+                        .disabled(isChanging || !UIApplication.shared.supportsAlternateIcons)
                     }
-                    .disabled(isChanging || !UIApplication.shared.supportsAlternateIcons)
+                } footer: {
+                    Text("切换后系统会弹出确认框，确认后主屏幕图标立即更换。图标文件都在 App 里，不联网。")
+                        .font(.footnote)
                 }
-            } footer: {
-                Text("切换后系统会弹出确认框，确认后主屏幕图标立即更换。图标文件都在 App 里，不联网。")
-                    .font(.footnote)
-            }
-            if isChanging {
-                Section {
-                    ProgressView("正在切换图标…")
+                if isChanging {
+                    Section {
+                        ProgressView("正在切换图标…")
+                    }
+                }
+                if let message = statusMessage {
+                    Section {
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(statusIsError ? .red : .secondary)
+                            .textSelection(.enabled)
+                    }
+                    .id("iconError")
+                }
+                // v0.2.72: invisible scrollable space below the error
+                // card so its bottom can clear the floating tab bar —
+                // the v0.2.66 contentMargins alone left the card's
+                // bottom edge cut off (IMG_1213).
+                if statusMessage != nil {
+                    Section {
+                        Color.clear
+                            .frame(height: ConcordTheme.tabBarClearance)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                    }
                 }
             }
-            if let message = statusMessage {
-                Section {
-                    Text(message)
-                        .font(.caption2)
-                        .foregroundStyle(statusIsError ? .red : .secondary)
-                        .textSelection(.enabled)
+            // v0.2.66: tab-bar clearance for pushed pages.
+            .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+            .scrollContentBackground(.hidden)
+            .font(.footnote.weight(.semibold))
+            .background(ConcordTheme.pageBackground)
+            .listStyle(.insetGrouped)
+            .navigationTitle("App 图标")
+            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(true)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left")
+                    }
                 }
             }
-        }
-        // v0.2.66: tab-bar clearance for pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
-        .background(ConcordTheme.pageBackground)
-        .listStyle(.insetGrouped)
-        .navigationTitle("App 图标")
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
+            // v0.2.72: reveal the error card when it appears — it is
+            // appended below the fold when a switch fails.
+            .onChange(of: statusMessage) { _, message in
+                if message != nil {
+                    DispatchQueue.main.async {
+                        withAnimation { proxy.scrollTo("iconError", anchor: .bottom) }
+                    }
                 }
             }
         }

@@ -56,18 +56,22 @@ import Darwin
 //     strictly closer to the first-level row style than 17 regular.
 
 enum ConcordTheme {
-    /// Page background (v0.2.68, FlClash Material 3 seeded scheme):
-    /// a light tint of the theme accent in light mode — accent 10%
-    /// over white. Blue #007AFF -> #E6F2FF (230,242,255); magenta
-    /// #B86CA2 -> #F4E7F0 (244,231,240), close to the MuYu
-    /// video's #F1E7EA page. Dark mode tints subtly too (accent 8%
+    /// Page background (v0.2.72): light gray again
+    /// (systemGroupedBackground #F2F2F7) in light mode — the user
+    /// wants 浅灰色， not the v0.2.68 accent tint (blue #007AFF
+    /// tinted the page light blue). The magenta theme keeps its
+    /// pink tint (the user chose 品红 to match the MuYu video's
+    /// pink page #F1E7EA). Dark mode tints subtly too (accent 8%
     /// into black); pure-black mode stays pure black.
     static var pageBackground: Color {
         if ThemeStore.shared.pureBlack && ThemeStore.shared.isDark { return .black }
         if ThemeStore.shared.isDark {
             return Color.black.mixed(with: accent, amount: 0.08)
         }
-        return Color.white.mixed(with: accent, amount: 0.16)
+        if ThemeStore.shared.accent == .magenta {
+            return Color.white.mixed(with: accent, amount: 0.16)
+        }
+        return Color(.systemGroupedBackground)
     }
     /// Card background: the same seeded tint, lighter — accent 8%
     /// over white in light mode. Blue -> #EBF5FF (235,245,255);

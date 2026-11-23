@@ -206,3 +206,23 @@ struct WavyProgressBar: View {
         }
     }
 }
+
+/// A "Tt" text-size glyph (MuYu's 尺寸 menu icon): a capital T
+/// followed by a smaller lowercase t, like Flutter's text_fields
+/// icon. SF Symbols has no Tt, so this draws the two letters as
+/// Text on a shared baseline.
+struct TtIcon: View {
+    var size: CGFloat = 20
+    var color: Color = Color(.label)
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 1) {
+            Text("T")
+                .font(.system(size: size * 0.85, weight: .semibold))
+            Text("t")
+                .font(.system(size: size * 0.62, weight: .semibold))
+        }
+        .foregroundStyle(color)
+        .frame(width: size, height: size)
+    }
+}

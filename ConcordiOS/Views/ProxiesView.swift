@@ -695,7 +695,7 @@ struct ProxiesView: View {
                 } else {
                     ToolbarItem(placement: .topBarLeading) {
                         Text("tab.proxies".l10n)
-                            .font(.system(size: 24, weight: .semibold))
+                            .font(.system(size: 24, weight: .bold))
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         topBarPill
@@ -766,6 +766,39 @@ struct ProxiesView: View {
                 if let current = proxyStore.testError { notice = current }
             }
         }
+        .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
+        // ⋯ menu overlay (v0.2.72): a custom overlay, NOT a system
+        // .popover — the popover's content never received taps
+        // on-device (IMG_1212). The overlay is part of the normal
+        // view hierarchy, so its rows hit-test normally. A nearly
+        // invisible tap catcher dismisses on any tap outside the
+        // card; the card sits just below the nav bar with an arrow
+        // pointing up at the ⋯ button, like the MuYu popup.
+        .overlay {
+            if showMoreMenu {
+                GeometryReader { geo in
+                    ZStack(alignment: .topTrailing) {
+                        Color.black.opacity(0.001)
+                            .onTapGesture { showMoreMenu = false }
+                        VStack(alignment: .trailing, spacing: 0) {
+                            menuArrow
+                                .padding(.trailing, 18)
+                                .padding(.bottom, -1)
+                            ProxiesMoreMenuView(
+                                isPresented: $showMoreMenu,
+                                onScrollToSelected: styleStore.style == .tab ? { scrollToSelected(in: selectedGroup) } : nil
+                            )
+                            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
+                            .shadow(color: .black.opacity(0.18), radius: 16, x: 0, y: 6)
+                        }
+                        .padding(.top, geo.safeAreaInsets.top + 44 + 6)
+                        .padding(.trailing, 12)
+                    }
+                }
+                .ignoresSafeArea()
+            }
+        }
+        .onDisappear { showMoreMenu = false }
     }
 
     // MARK: - Top bar
@@ -951,8 +984,30 @@ struct ProxiesView: View {
         .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 2)
     }
 
+    /// The ⋯ menu overlay's arrow: a small triangle at the card's
+    /// top, pointing up at the ⋯ button (MuYu's popup has the
+    /// same arrow). 16 wide, 12 tall, filled with the card colour.
+    private var menuArrow: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 0, y: 12))
+            path.addLine(to: CGPoint(x: 8, y: 0))
+            path.addLine(to: CGPoint(x: 16, y: 12))
+            path.closeSubpath()
+        }
+        .fill(ConcordTheme.cardBackground)
+        .frame(width: 16, height: 12)
+    }
+
+    /// The ⋯ button toggles the menu overlay (v0.2.72: a custom
+    /// overlay, NOT a system .popover — the popover presented
+    /// fine but its content never received taps on-device
+    /// (IMG_1212: every row dead). The page lives in the sliding
+    /// tab container's offset HStack, and the system popover's
+    /// hit-testing does not survive that container; an overlay
+    /// inside the normal view hierarchy hit-tests normally.
+    /// The overlay itself lives on the NavigationStack below.
     private var moreButton: some View {
-        Button { showMoreMenu = true } label: {
+        Button { showMoreMenu.toggle() } label: {
             Image(systemName: "ellipsis")
                 .rotationEffect(.degrees(90))
                 .font(.system(size: 19, weight: .semibold))
@@ -962,12 +1017,6 @@ struct ProxiesView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("更多")
         .background(ConcordTheme.cardBackground, in: Circle())
-        .popover(isPresented: $showMoreMenu, attachmentAnchor: .point(.bottom), arrowEdge: .top) {
-            ProxiesMoreMenuView(
-                isPresented: $showMoreMenu,
-                onScrollToSelected: styleStore.style == .tab ? { scrollToSelected(in: selectedGroup) } : nil
-            )
-        }
     }
 
     /// The bolt: in tab style it tests the current group (FlClash
@@ -1070,6 +1119,7 @@ struct ProxiesView: View {
                         } label: {
                             HStack(spacing: 12) {
                                 Image(systemName: "location.fill")
+                                    .font(.system(size: 19, weight: .semibold))
                                     .frame(width: 22)
                                 Text("滚动到已选")
                                 Spacer()
@@ -1093,6 +1143,7 @@ struct ProxiesView: View {
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "list.bullet")
+                                .font(.system(size: 19, weight: .semibold))
                                 .frame(width: 22)
                             Text("风格")
                             Spacer()
@@ -1112,9 +1163,29 @@ struct ProxiesView: View {
                             }
                         }
                     }
-                    menuRow(icon: "arrow.up.arrow.down", label: "排序", destination: .sort)
+                    // 排序 (MuYu: three horizontal lines, decreasing —
+                    // SF line.3.horizontal.decrease; the old
+                    // arrow.up.arrow.down up/down arrows do not match).
+                    menuRow(icon: "line.3.horizontal.decrease", label: "排序", destination: .sort)
                     menuRow(icon: "square.grid.2x2", label: "布局", destination: .layout)
-                    menuRow(icon: "textformat.size", label: "尺寸", destination: .size)
+                    // 尺寸 (MuYu: a "Tt" glyph — SF Symbols has none,
+                    // so the custom TtIcon in CustomGlyphs.swift).
+                    // Drills down like the other rows.
+                    Button { menuLevel = .options(.size) } label: {
+                        HStack(spacing: 12) {
+                            TtIcon(size: 20)
+                                .frame(width: 22)
+                            Text("尺寸")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                     if styleStore.style != .tab {
                         menuRow(icon: "photo", label: "图标样式", destination: .iconStyle)
                     }
@@ -1125,6 +1196,7 @@ struct ProxiesView: View {
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: "eye.slash")
+                                .font(.system(size: 19, weight: .semibold))
                                 .frame(width: 22)
                             Text("隐藏超时代理")
                             Spacer()
@@ -1145,7 +1217,6 @@ struct ProxiesView: View {
             .frame(minWidth: 160, maxWidth: 280)
             .font(.subheadline)
             .foregroundStyle(Color(.label))
-            .presentationCompactAdaptation(.popover)
             .onDisappear { menuLevel = .root; styleExpanded = false }
         }
 
@@ -1153,6 +1224,7 @@ struct ProxiesView: View {
             Button { menuLevel = .options(destination) } label: {
                 HStack(spacing: 12) {
                     Image(systemName: icon)
+                        .font(.system(size: 19, weight: .semibold))
                         .frame(width: 22)
                     Text(label)
                     Spacer()
@@ -2259,7 +2331,7 @@ private struct IconGroupCard: View, Equatable {
             HStack(alignment: .top, spacing: m.nameIconGap) {
                 Text(name)
                     .font(.callout)
-                    .fontWeight(.semibold)
+                    .fontWeight(.bold)
                     .lineLimit(1)
                 Spacer()
                 if iconStyle != .hidden {
@@ -2533,7 +2605,7 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(name)
                         .font(.subheadline)
-                        .fontWeight(.semibold)
+                        .fontWeight(.bold)
                         .lineLimit(1)
                     Text(selectedName ?? "")
                         .font(.caption2)

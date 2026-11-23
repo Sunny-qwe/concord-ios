@@ -104,7 +104,7 @@ struct ToolsView: View {
                     // page (scaffold.dart:780); the 18pt bold here
                     // was the v0.2.50-era guess.
                     Text("tools.title".l10n)
-                        .font(.system(size: 24, weight: .semibold))
+                        .font(.system(size: 24, weight: .bold))
                     toolSection(header: nil) {
                         ToolRow(icon: "clock", title: "tools.requests".l10n) { navPath.append(.requests) }
                         Divider().padding(.leading, 54)
@@ -234,6 +234,7 @@ struct ToolsView: View {
                 }
             }
         }
+        .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
     }
 
     /// One card: an optional 13pt section label above a 24pt-radius

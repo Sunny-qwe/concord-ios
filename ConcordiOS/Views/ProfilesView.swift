@@ -123,7 +123,7 @@ struct ProfilesView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Text("title.profiles".l10n)
-                        .font(.system(size: 24, weight: .semibold))
+                        .font(.system(size: 24, weight: .bold))
                 }
                 if hasProfiles && !picker {
                     // MuYu (v0.2.68): ONE capsule holding refresh +
@@ -152,11 +152,20 @@ struct ProfilesView: View {
                         .padding(.vertical, 6)
                         .background(ConcordTheme.cardBackground, in: Capsule())
                     }
+                    // v0.2.72: the + gets the same white circular
+                    // background as the neighbouring pill and the
+                    // Proxies ⋯ button — the bare plus.circle outline
+                    // had no rounded background (IMG_1216). Plain
+                    // `plus` on the circle (plus.circle would draw
+                    // a second circle outline inside it).
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
                             addProfileMenuItems
                         } label: {
-                            Image(systemName: "plus.circle")
+                            Image(systemName: "plus")
+                                .font(.system(size: 19, weight: .semibold))
+                                .frame(width: 44, height: 44)
+                                .background(ConcordTheme.cardBackground, in: Circle())
                         }
                         .accessibilityLabel("添加配置")
                     }
@@ -304,6 +313,7 @@ struct ProfilesView: View {
                 }
             }
         }
+        .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
     }
 
     // MARK: - Add menu (FlClash AddProfileMenu, minus TV-only

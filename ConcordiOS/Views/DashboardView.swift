@@ -680,7 +680,7 @@ struct DashboardView: View {
             // (scaffold.dart:780); the 18pt bold here was the
             // v0.2.50-era guess. Pushed pages keep 17pt inline.
             Text("tab.dashboard".l10n)
-                .font(.system(size: 24, weight: .semibold))
+                .font(.system(size: 24, weight: .bold))
             Spacer()
             // D-M2: core-status button — shown only while the VPN
             // is off, one tap starts it (the same path as the play

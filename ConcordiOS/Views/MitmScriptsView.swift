@@ -99,7 +99,7 @@ struct MitmScriptsView: View {
                             .font(.system(.caption, design: .monospaced))
                             .lineLimit(1)
                         Spacer()
-                        Text("\(ConcordFormat.bytes(Int64(file.size))) · \(ConcordRelativeTime.string(since: file.modified))")
+                        Text(resourceFileSubtitle(for: file))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -259,6 +259,15 @@ struct MitmScriptsView: View {
         }
         let label = scriptStore.uniqueLabel(url.deletingPathExtension().lastPathComponent)
         Task { await scriptStore.create(label: label, url: nil, content: content) }
+    }
+
+    /// Resource-file subtitle ("12 KB · 3 天前"). Split into two
+    /// plain lets: the inline interpolation with both formatters
+    /// timed out the type-checker (v0.2.85 CI run #238).
+    private func resourceFileSubtitle(for file: MitmResourceFile) -> String {
+        let sizeText = ConcordFormat.bytes(Int64(file.size))
+        let timeText = ConcordRelativeTime.string(since: file.modified)
+        return "\(sizeText) · \(timeText)"
     }
 }
 

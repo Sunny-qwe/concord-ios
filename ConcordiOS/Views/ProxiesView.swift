@@ -1367,8 +1367,12 @@ struct ProxiesView: View {
                                     .fontWeight(.semibold)
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 8)
-                                    .background(selectedVisibleGroup?.id == group.id ? ConcordTheme.accent : Color(.secondarySystemBackground), in: Capsule())
-                                    .foregroundStyle(selectedVisibleGroup?.id == group.id ? .white : .secondary)
+                                    // v0.2.77: selected group pill is white
+                                    // with accent text (was solid accent
+                                    // fill) — every page's rounded boxes
+                                    // are white now, like the reference.
+                                    .background(selectedVisibleGroup?.id == group.id ? ConcordTheme.cardBackground : Color(.secondarySystemBackground), in: Capsule())
+                                    .foregroundStyle(selectedVisibleGroup?.id == group.id ? ConcordTheme.accent : .secondary)
                                     .buttonStyle(.plain)
                                 }
                             }
@@ -1662,8 +1666,12 @@ struct ProxiesView: View {
                     }
                     .frame(maxWidth: .infinity)
                     .frame(height: 40)
-                    .background(selected ? ConcordTheme.accent : ConcordTheme.cardBackground, in: Capsule())
-                    .foregroundStyle(selected ? .white : .secondary)
+                    // v0.2.77: selected folder pill is white with
+                    // accent text (was solid accent fill) — same
+                    // as the Dashboard mode segment; selection is
+                    // shown by the accent text, not the fill.
+                    .background(ConcordTheme.cardBackground, in: Capsule())
+                    .foregroundStyle(selected ? ConcordTheme.accent : .secondary)
                 }
                 .buttonStyle(.plain)
             }

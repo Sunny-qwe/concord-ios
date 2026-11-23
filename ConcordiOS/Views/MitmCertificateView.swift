@@ -46,99 +46,7 @@ struct MitmCertificateView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Section("CA 证书") {
-                if settingsStore.mitmAvailable, let info = settingsStore.mitmCertificate {
-                    labeled("主题", info.subject)
-                    labeled("指纹", info.fingerprint)
-                    labeled("有效期自", info.notBefore)
-                    labeled("有效期至", info.notAfter)
-                    // Primary entry: the system install flow. The
-                    // app builds a .mobileconfig with the CA and
-                    // hands it to iOS, which prompts the install —
-                    // the app itself cannot install a system CA.
-                    Button {
-                        installProfile()
-                    } label: {
-                        Label("安装描述文件（去 Safari 安装）", systemImage: "arrow.down.doc.fill")
-                    }
-                    .disabled(isInstallingProfile)
-                    if isInstallingProfile {
-                        ProgressView()
-                    }
-                    if let installHint {
-                        Text(installHint)
-                            .font(.footnote)
-                            .foregroundStyle(Color.orange)
-                    }
-                    if let installMessage {
-                        Text(installMessage)
-                            .font(.footnote)
-                            .foregroundStyle(installFailed ? Color.red : Color.secondary)
-                    }
-                    // CA 证书是解密流量的信任根：导出前先确认，
-                    // 别随手发出去。
-                    Button("导出 CA 证书（PEM）") {
-                        showExportCAConfirm = true
-                    }
-                    .alert("导出 CA 证书？", isPresented: $showExportCAConfirm) {
-                        Button("导出") { exportCA(pem: info.pem) }
-                        Button("取消", role: .cancel) {}
-                    } message: {
-                        Text("CA 证书是解密流量的信任根，请只导出到自己的设备上使用。")
-                    }
-                    .alert("导出 CA 证书", isPresented: $showCAExportAlert) {
-                        Button("好", role: .cancel) {}
-                    } message: {
-                        Text(caExportMessage ?? "CA 证书已保存。")
-                    }
-                } else {
-                    Text(settingsStore.mitmStatusMessage ?? "尚未读取 CA 状态")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                Button("刷新 CA 状态") {
-                    Task { await settingsStore.refreshMitmStatus() }
-                }
-                Button("生成 CA 证书") {
-                    Task {
-                        if await generateCertificate() {
-                            installHint = "CA 已生成：下一步点「安装描述文件」，按系统提示装好，再去「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任。"
-                        }
-                    }
-                }
-                // FlClash mitm.dart:253-340 _regenerate: confirm,
-                // then generate a new CA. The old CA stays installed
-                // in iOS Settings until the user removes it — the
-                // note after regenerating says so.
-                Button("重新生成 CA 证书", role: .destructive) {
-                    showRegenerateConfirm = true
-                }
-                .disabled(!settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
-                .alert("重新生成 CA 证书吗？", isPresented: $showRegenerateConfirm) {
-                    Button("重新生成", role: .destructive) {
-                        Task {
-                            // Only claim a new CA when generation
-                            // actually succeeded (Item C rule 2).
-                            if await generateCertificate() {
-                                regenerateNote = "已生成新的 CA 证书。旧 CA 还留在 iPhone「设置 → 通用 → VPN 与设备管理」里，请先删掉旧的，再安装并完全信任新的 CA，否则 HTTPS 解密会失败。"
-                            }
-                        }
-                    }
-                    Button("取消", role: .cancel) {}
-                } message: {
-                    Text("旧 CA 会失效，所有用旧 CA 解密过的配置都要换新 CA。生成后需要重新安装并信任新 CA。")
-                }
-                if let regenerateNote {
-                    Text(regenerateNote)
-                        .font(.footnote)
-                        .foregroundStyle(.orange)
-                }
-                // Upstream mitm.dart:441-448 (mitmEngineCompatibility):
-                // what the MITM engine does and does not do.
-                Text("支持指定域名的 HTTPS 解密、URL 跳转/拦截、请求头和正文重写、本地响应、请求/响应脚本、$httpClient、$task.fetch、计时器与持久存储。脚本有较短的运行时间和大小限制。暂不支持定时/事件脚本、二进制/完整头脚本模式，超大正文原样传输。模块为部分兼容。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
+            caCertificateSection
             Section("信任检测") {
                 Text("检测会请核心签发一张 mitm-check.concord.invalid 的叶证书，再用系统信任库验证它（只在本地验证，不联网）。通过 = CA 已安装且已完全信任；不通过 = CA 还没装，或装了但没在「证书信任设置」里打开完全信任——本应用无法区分这两种情况。")
                     .font(.footnote)
@@ -159,74 +67,7 @@ struct MitmCertificateView: View {
                 }
                 .disabled(isCheckingTrust || !settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
             }
-            Section("MITM 配置") {
-                if showRestartTip {
-                    HStack {
-                        Text("VPN 相关配置已改动，点击重启")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                        Spacer()
-                        Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
-                            Task { await restartVpn() }
-                        }
-                        .font(.caption2)
-                        .disabled(isRestartingVpn)
-                        Button(action: { showRestartTip = false }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .bold))
-                        }
-                        .foregroundStyle(.secondary)
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("不再提示")
-                    }
-                }
-                Toggle("启用 MITM", isOn: $settingsStore.mitmEnabled)
-                    // Save on change, like the settings page's copy
-                    // of this pair (audit B37): without this the
-                    // switch silently reverted on leaving the page
-                    // unless "保存并应用" was tapped.
-                    .onChange(of: settingsStore.mitmEnabled) { _, _ in
-                        settingsStore.save()
-                        showRestartTipIfNeeded()
-                    }
-                Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
-                    .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
-                // v0.2.68 (MuYu): the trusted-server-certificate
-                // fingerprint input moved here from the 常规 MITM
-                // 选项 section — the 选项 page (MitmOptionsView)
-                // has no such row in the video.
-                TextField("受信任的服务器证书指纹（可选）", text: $settingsStore.mitmTrustedFingerprint)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save() }
-                Text("填入某个服务器证书的 SHA-256 指纹后，只信任该指纹的证书（解密 TLS 随之开启）；留空则用本应用 CA 的指纹。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                NavigationLink {
-                    MitmHostnameEditorView().concordNavBarBackground()
-                } label: {
-                    HStack {
-                        Text("主机名")
-                        Spacer()
-                        Text(mitmHostnameSummary)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Button("校验 MITM 配置") {
-                    Task { await settingsStore.validateMitmConfig() }
-                }
-                if !settingsStore.mitmIssues.isEmpty {
-                    ForEach(settingsStore.mitmIssues, id: \.self) { issue in
-                        Text(issue)
-                            .font(.footnote)
-                            .foregroundStyle(.red)
-                    }
-                }
-                Button("保存并应用") {
-                    Task { await settingsStore.applyMitmSettings() }
-                }
-            }
+            mitmConfigSection
             Section("签发叶证书") {
                 TextField("主机名，如 example.com", text: $issueHost)
                     .autocapitalization(.none)
@@ -272,6 +113,182 @@ struct MitmCertificateView: View {
                   settingsStore.client.mode == .live,
                   TunnelManager.shared.isRunning else { return }
             Task { await checkTrust() }
+        }
+    }
+    /// The "CA 证书" section: CA details, install / export /
+    /// regenerate (with their nested confirm alerts) and the
+    /// upstream engine-capability note. Extracted so the main
+    /// `body` stays small enough for the type checker.
+    @ViewBuilder
+    private var caCertificateSection: some View {
+        Section("CA 证书") {
+            if settingsStore.mitmAvailable, let info = settingsStore.mitmCertificate {
+                labeled("主题", info.subject)
+                labeled("指纹", info.fingerprint)
+                labeled("有效期自", info.notBefore)
+                labeled("有效期至", info.notAfter)
+                // Primary entry: the system install flow. The
+                // app builds a .mobileconfig with the CA and
+                // hands it to iOS, which prompts the install —
+                // the app itself cannot install a system CA.
+                Button {
+                    installProfile()
+                } label: {
+                    Label("安装描述文件（去 Safari 安装）", systemImage: "arrow.down.doc.fill")
+                }
+                .disabled(isInstallingProfile)
+                if isInstallingProfile {
+                    ProgressView()
+                }
+                if let installHint {
+                    Text(installHint)
+                        .font(.footnote)
+                        .foregroundStyle(Color.orange)
+                }
+                if let installMessage {
+                    Text(installMessage)
+                        .font(.footnote)
+                        .foregroundStyle(installFailed ? Color.red : Color.secondary)
+                }
+                // CA 证书是解密流量的信任根：导出前先确认，
+                // 别随手发出去。
+                Button("导出 CA 证书（PEM）") {
+                    showExportCAConfirm = true
+                }
+                .alert("导出 CA 证书？", isPresented: $showExportCAConfirm) {
+                    Button("导出") { exportCA(pem: info.pem) }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("CA 证书是解密流量的信任根，请只导出到自己的设备上使用。")
+                }
+                .alert("导出 CA 证书", isPresented: $showCAExportAlert) {
+                    Button("好", role: .cancel) {}
+                } message: {
+                    Text(caExportMessage ?? "CA 证书已保存。")
+                }
+            } else {
+                Text(settingsStore.mitmStatusMessage ?? "尚未读取 CA 状态")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Button("刷新 CA 状态") {
+                Task { await settingsStore.refreshMitmStatus() }
+            }
+            Button("生成 CA 证书") {
+                Task {
+                    if await generateCertificate() {
+                        installHint = "CA 已生成：下一步点「安装描述文件」，按系统提示装好，再去「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任。"
+                    }
+                }
+            }
+            // FlClash mitm.dart:253-340 _regenerate: confirm,
+            // then generate a new CA. The old CA stays installed
+            // in iOS Settings until the user removes it — the
+            // note after regenerating says so.
+            Button("重新生成 CA 证书", role: .destructive) {
+                showRegenerateConfirm = true
+            }
+            .disabled(!settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
+            .alert("重新生成 CA 证书吗？", isPresented: $showRegenerateConfirm) {
+                Button("重新生成", role: .destructive) {
+                    Task {
+                        // Only claim a new CA when generation
+                        // actually succeeded (Item C rule 2).
+                        if await generateCertificate() {
+                            regenerateNote = "已生成新的 CA 证书。旧 CA 还留在 iPhone「设置 → 通用 → VPN 与设备管理」里，请先删掉旧的，再安装并完全信任新的 CA，否则 HTTPS 解密会失败。"
+                        }
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("旧 CA 会失效，所有用旧 CA 解密过的配置都要换新 CA。生成后需要重新安装并信任新 CA。")
+            }
+            if let regenerateNote {
+                Text(regenerateNote)
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
+            // Upstream mitm.dart:441-448 (mitmEngineCompatibility):
+            // what the MITM engine does and does not do.
+            Text("支持指定域名的 HTTPS 解密、URL 跳转/拦截、请求头和正文重写、本地响应、请求/响应脚本、$httpClient、$task.fetch、计时器与持久存储。脚本有较短的运行时间和大小限制。暂不支持定时/事件脚本、二进制/完整头脚本模式，超大正文原样传输。模块为部分兼容。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The "MITM 配置" section: restart tip, the enable /
+    /// decrypt toggles, trusted-fingerprint field, hostname
+    /// link, validate, issue list and save. Extracted so the
+    /// main `body` stays small enough for the type checker.
+    @ViewBuilder
+    private var mitmConfigSection: some View {
+        Section("MITM 配置") {
+            if showRestartTip {
+                HStack {
+                    Text("VPN 相关配置已改动，点击重启")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
+                        Task { await restartVpn() }
+                    }
+                    .font(.caption2)
+                    .disabled(isRestartingVpn)
+                    Button(action: { showRestartTip = false }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("不再提示")
+                }
+            }
+            Toggle("启用 MITM", isOn: $settingsStore.mitmEnabled)
+                // Save on change, like the settings page's copy
+                // of this pair (audit B37): without this the
+                // switch silently reverted on leaving the page
+                // unless "保存并应用" was tapped.
+                .onChange(of: settingsStore.mitmEnabled) { _, _ in
+                    settingsStore.save()
+                    showRestartTipIfNeeded()
+                }
+            Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
+                .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
+            // v0.2.68 (MuYu): the trusted-server-certificate
+            // fingerprint input moved here from the 常规 MITM
+            // 选项 section — the 选项 page (MitmOptionsView)
+            // has no such row in the video.
+            TextField("受信任的服务器证书指纹（可选）", text: $settingsStore.mitmTrustedFingerprint)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save() }
+            Text("填入某个服务器证书的 SHA-256 指纹后，只信任该指纹的证书（解密 TLS 随之开启）；留空则用本应用 CA 的指纹。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            NavigationLink {
+                MitmHostnameEditorView().concordNavBarBackground()
+            } label: {
+                HStack {
+                    Text("主机名")
+                    Spacer()
+                    Text(mitmHostnameSummary)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Button("校验 MITM 配置") {
+                Task { await settingsStore.validateMitmConfig() }
+            }
+            if !settingsStore.mitmIssues.isEmpty {
+                ForEach(settingsStore.mitmIssues, id: \.self) { issue in
+                    Text(issue)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+            Button("保存并应用") {
+                Task { await settingsStore.applyMitmSettings() }
+            }
         }
     }
 

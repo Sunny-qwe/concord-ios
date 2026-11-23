@@ -59,60 +59,14 @@ struct MitmModulesView: View {
 
     var body: some View {
         List {
-            if showRestartTip {
-                Section {
-                    HStack {
-                        Text("VPN 相关配置已改动，点击重启")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                        Spacer()
-                        Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
-                            Task { await restartVpn() }
-                        }
-                        .font(.caption2)
-                        .disabled(isRestartingVpn)
-                        Button(action: { showRestartTip = false }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .bold))
-                        }
-                        .foregroundStyle(.secondary)
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("不再提示")
-                    }
-                }
-            }
+            restartTipSection
             if moduleStore.modules.isEmpty {
                 Text("暂无模块")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             ForEach(moduleStore.modules) { module in
-                MitmModuleRow(
-                    module: module,
-                    status: statusByName[module.name],
-                    statusNote: statusNote,
-                    statusError: statusError,
-                    isLoadingStatus: isLoadingStatus,
-                    isRefetching: refetchingNames.contains(module.name),
-                    refetchError: refetchErrorByName[module.name],
-                    onToggle: { on in toggle(module, on: on) },
-                    onMoveUp: { Task { await moduleStore.moveUp(module) } },
-                    onMoveDown: { Task { await moduleStore.moveDown(module) } },
-                    onDelete: {
-                        deleteModule = module
-                        showDeleteConfirm = true
-                    },
-                    onAwaitingConsent: {
-                        consentModule = module
-                        showConsentAlert = true
-                    },
-                    onDismissAwaiting: {
-                        Task { await moduleStore.answerConsent(module, agreed: false) }
-                    },
-                    onShowDetail: { detailModule = module },
-                    onRefetch: { Task { await refetch(module) } },
-                    onExpand: { Task { await refreshStatusIfNeeded() } }
-                )
+                moduleRow(for: module)
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
@@ -124,20 +78,7 @@ struct MitmModulesView: View {
         .navigationTitle("模块")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("从链接导入") {
-                        urlText = ""
-                        showImportURLDialog = true
-                    }
-                    Button("从文件导入") { showImportFilePicker = true }
-                    Button("粘贴模块文本导入") { showPasteImport = true }
-                    Button("新建空白模块") { showBlankEditorPage = true }
-                } label: {
-                    Image(systemName: "plus.circle")
-                }
-                .accessibilityLabel("导入模块")
-            }
+            modulesToolbar
         }
         .task { await refreshStatus() }
         .refreshable { await refreshStatus() }
@@ -240,6 +181,85 @@ struct MitmModulesView: View {
             }
         } message: {
             Text("删除“\(deleteModule?.name ?? "")”？它的文本和已下载的脚本都会删掉。")
+        }
+    }
+
+    /// The restart-tip banner (MuYu showMitmRestartTip), as its own
+    /// section so the list body stays small enough to type-check
+    /// (v0.2.85 CI run #241 timeout).
+    @ViewBuilder
+    private var restartTipSection: some View {
+        if showRestartTip {
+            Section {
+                HStack {
+                    Text("VPN 相关配置已改动，点击重启")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
+                        Task { await restartVpn() }
+                    }
+                    .font(.caption2)
+                    .disabled(isRestartingVpn)
+                    Button(action: { showRestartTip = false }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("不再提示")
+                }
+            }
+        }
+    }
+
+    /// One module row, as a helper so the ForEach in `body` is a
+    /// one-liner: the 15-param MitmModuleRow call timed out the
+    /// type-checker when inlined (v0.2.85 CI run #241).
+    private func moduleRow(for module: MitmModule) -> some View {
+        MitmModuleRow(
+            module: module,
+            status: statusByName[module.name],
+            statusNote: statusNote,
+            statusError: statusError,
+            isLoadingStatus: isLoadingStatus,
+            isRefetching: refetchingNames.contains(module.name),
+            refetchError: refetchErrorByName[module.name],
+            onToggle: { on in toggle(module, on: on) },
+            onMoveUp: { Task { await moduleStore.moveUp(module) } },
+            onMoveDown: { Task { await moduleStore.moveDown(module) } },
+            onDelete: {
+                deleteModule = module
+                showDeleteConfirm = true
+            },
+            onAwaitingConsent: {
+                consentModule = module
+                showConsentAlert = true
+            },
+            onDismissAwaiting: {
+                Task { await moduleStore.answerConsent(module, agreed: false) }
+            },
+            onShowDetail: { detailModule = module },
+            onRefetch: { Task { await refetch(module) } },
+            onExpand: { Task { await refreshStatusIfNeeded() } }
+        )
+    }
+
+    @ToolbarContentBuilder
+    private var modulesToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button("从链接导入") {
+                    urlText = ""
+                    showImportURLDialog = true
+                }
+                Button("从文件导入") { showImportFilePicker = true }
+                Button("粘贴模块文本导入") { showPasteImport = true }
+                Button("新建空白模块") { showBlankEditorPage = true }
+            } label: {
+                Image(systemName: "plus.circle")
+            }
+            .accessibilityLabel("导入模块")
         }
     }
 
@@ -799,123 +819,9 @@ struct MitmModuleDetailView: View {
                     }
                 }
 
-                // FlClash mitm_modules.dart:629-633: local-file
-                // attachments, local modules only.
-                if module.url == nil {
-                    Section("本地附件") {
-                        let attachments = moduleStore.attachments(of: module)
-                        if attachments.isEmpty {
-                            Text("还没有本地附件。Map Local 行里 data=引用的文件可以先贴在这里，模块会用它。")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(attachments, id: \.self) { name in
-                            HStack {
-                                Text(name)
-                                    .font(.system(.caption, design: .monospaced))
-                                Spacer()
-                                Button(role: .destructive) {
-                                    detachAttachment = name
-                                    showDetachConfirm = true
-                                } label: {
-                                    Image(systemName: "trash")
-                                        .foregroundStyle(.red)
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("移除附件 \(name)")
-                            }
-                        }
-                        Button("添加本地文件") { showAttachmentImporter = true }
-                        Text("附件按内容命名存在核心资源目录；Map Local 行用 data=文件名引用它。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        if let error = moduleStore.lastError {
-                            Text(error).font(.caption2).foregroundStyle(.red)
-                        }
-                    }
-                }
+                localAttachmentsSection
 
-                if let content = shownContent {
-                    Section("解析出的内容") {
-                        if content.coreParsed {
-                            coreNote(content: content)
-                        }
-                        linesRow(title: "解密域名", key: "hostname", section: "mitm", lines: content.insertedHostname + content.hostname, content: content)
-                        linesRow(title: "URL 重写", key: "url-rewrite", section: "url rewrite", lines: content.urlRewrite, content: content)
-                        linesRow(title: "头重写", key: "header-rewrite", section: "header rewrite", lines: content.headerRewrite, content: content)
-                        linesRow(title: "正文重写", key: "body-rewrite", section: "body rewrite", lines: content.bodyRewrite, content: content)
-                        linesRow(title: "本地映射", key: "map-local", section: "map local", lines: content.mapLocal, content: content)
-                        linesRow(title: "请求体模拟", key: "request-body-mock", section: "request body mock", lines: content.requestBodyMock, content: content)
-                        linesRow(title: "跳过验证域名", key: nil, section: "mitm", lines: content.skipVerifyHostname, content: content)
-                        linesRow(title: "客户端来源", key: nil, section: "mitm", lines: content.clientSourceAddress, content: content)
-                        linesRow(title: "脚本", key: "script", section: "script", lines: content.script, content: content)
-                        linesRow(title: "规则", key: "rules", section: "rule", lines: content.rules, content: content)
-                        linesRow(title: "待下载资源", key: nil, section: "", lines: content.resourceUrls.sorted(), content: content)
-                        if !content.skipped.isEmpty {
-                            NavigationLink("跳过的行（\(content.skipped.count)）") {
-                                MitmModuleSkippedView(skipped: content.skipped).concordNavBarBackground()
-                            }
-                        }
-                    }
-
-                    if !content.arguments.isEmpty {
-                        MitmModuleArgumentsSection(
-                            module: module,
-                            arguments: content.arguments,
-                            onAwaitingConsent: { showConsent = true }
-                        )
-                    }
-
-                    // FlClash mitm_modules.dart:55-76: run one script
-                    // line when the module is enabled and MITM is on.
-                    if !content.script.isEmpty {
-                        Section("脚本（mitm.runScript）") {
-                            ForEach(content.script, id: \.self) { line in
-                                let name = Self.scriptName(of: line)
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(name.isEmpty ? line : name)
-                                            .font(.footnote.weight(.semibold))
-                                            .lineLimit(1)
-                                        Text(line)
-                                            .font(.system(.caption, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(2)
-                                    }
-                                    Spacer()
-                                    Button(runningScript == name ? "运行中…" : "运行") {
-                                        Task { await runScriptLine(line) }
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                    .disabled(runningScript != nil
-                                              || !module.enabled
-                                              || !settingsStore.mitmEnabled)
-                                }
-                            }
-                            if !module.enabled || !settingsStore.mitmEnabled {
-                                Text("先启用模块并打开 MITM，才能运行脚本。")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            if let runMessage {
-                                Text(runMessage)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            if let runResult {
-                                JSONValueView(value: runResult)
-                                    .frame(minHeight: 60)
-                            }
-                        }
-                    }
-                } else {
-                    Section {
-                        Text("模块文本丢失，请重新导入。")
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                    }
-                }
+                parsedContentSection
 
                 Section("操作") {
                     if module.url != nil {
@@ -945,18 +851,7 @@ struct MitmModuleDetailView: View {
                     if let message = validateMessage {
                         Text(message).font(.caption2).foregroundStyle(.secondary)
                     }
-                    if let issues = validateIssues, !issues.isEmpty {
-                        ForEach(issues.keys.sorted(), id: \.self) { list in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(list).font(.caption2).fontWeight(.semibold)
-                                ForEach(issues[list] ?? [], id: \.index) { issue in
-                                    Text("第 \(issue.index + 1) 行：\(issue.message)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.red)
-                                }
-                            }
-                        }
-                    }
+                    validationIssuesSection
                     Button("删除模块", role: .destructive) { showDeleteConfirm = true }
                 }
             }
@@ -1059,6 +954,159 @@ struct MitmModuleDetailView: View {
             }
         } message: {
             Text(detailConsentMessage)
+        }
+    }
+
+    /// Local-file attachments (FlClash mitm_modules.dart:629-633,
+    /// local modules only), as its own section so the detail body
+    /// stays small enough to type-check (v0.2.85 CI run #241).
+    @ViewBuilder
+    private var localAttachmentsSection: some View {
+        if let module, module.url == nil {
+            Section("本地附件") {
+                let attachments = moduleStore.attachments(of: module)
+                if attachments.isEmpty {
+                    Text("还没有本地附件。Map Local 行里 data=引用的文件可以先贴在这里，模块会用它。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(attachments, id: \.self) { name in
+                    HStack {
+                        Text(name)
+                            .font(.system(.caption, design: .monospaced))
+                        Spacer()
+                        Button(role: .destructive) {
+                            detachAttachment = name
+                            showDetachConfirm = true
+                        } label: {
+                            Image(systemName: "trash")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("移除附件 \(name)")
+                    }
+                }
+                Button("添加本地文件") { showAttachmentImporter = true }
+                Text("附件按内容命名存在核心资源目录；Map Local 行用 data=文件名引用它。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if let error = moduleStore.lastError {
+                    Text(error).font(.caption2).foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    /// The parsed content, arguments and per-line script runner, as
+    /// its own section so the detail body stays small enough to
+    /// type-check (v0.2.85 CI run #241). The nested `if let module`
+    /// keeps the "text lost" else branch firing only when a module
+    /// exists but its content is nil — exactly as before.
+    @ViewBuilder
+    private var parsedContentSection: some View {
+        if let module {
+            if let content = shownContent {
+                Section("解析出的内容") {
+                    if content.coreParsed {
+                        coreNote(content: content)
+                    }
+                    linesRow(title: "解密域名", key: "hostname", section: "mitm", lines: content.insertedHostname + content.hostname, content: content)
+                    linesRow(title: "URL 重写", key: "url-rewrite", section: "url rewrite", lines: content.urlRewrite, content: content)
+                    linesRow(title: "头重写", key: "header-rewrite", section: "header rewrite", lines: content.headerRewrite, content: content)
+                    linesRow(title: "正文重写", key: "body-rewrite", section: "body rewrite", lines: content.bodyRewrite, content: content)
+                    linesRow(title: "本地映射", key: "map-local", section: "map local", lines: content.mapLocal, content: content)
+                    linesRow(title: "请求体模拟", key: "request-body-mock", section: "request body mock", lines: content.requestBodyMock, content: content)
+                    linesRow(title: "跳过验证域名", key: nil, section: "mitm", lines: content.skipVerifyHostname, content: content)
+                    linesRow(title: "客户端来源", key: nil, section: "mitm", lines: content.clientSourceAddress, content: content)
+                    linesRow(title: "脚本", key: "script", section: "script", lines: content.script, content: content)
+                    linesRow(title: "规则", key: "rules", section: "rule", lines: content.rules, content: content)
+                    linesRow(title: "待下载资源", key: nil, section: "", lines: content.resourceUrls.sorted(), content: content)
+                    if !content.skipped.isEmpty {
+                        NavigationLink("跳过的行（\(content.skipped.count)）") {
+                            MitmModuleSkippedView(skipped: content.skipped).concordNavBarBackground()
+                        }
+                    }
+                }
+
+                if !content.arguments.isEmpty {
+                    MitmModuleArgumentsSection(
+                        module: module,
+                        arguments: content.arguments,
+                        onAwaitingConsent: { showConsent = true }
+                    )
+                }
+
+                // FlClash mitm_modules.dart:55-76: run one script
+                // line when the module is enabled and MITM is on.
+                if !content.script.isEmpty {
+                    Section("脚本（mitm.runScript）") {
+                        ForEach(content.script, id: \.self) { line in
+                            let name = Self.scriptName(of: line)
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(name.isEmpty ? line : name)
+                                        .font(.footnote.weight(.semibold))
+                                        .lineLimit(1)
+                                    Text(line)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                                Spacer()
+                                Button(runningScript == name ? "运行中…" : "运行") {
+                                    Task { await runScriptLine(line) }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(runningScript != nil
+                                          || !module.enabled
+                                          || !settingsStore.mitmEnabled)
+                            }
+                        }
+                        if !module.enabled || !settingsStore.mitmEnabled {
+                            Text("先启用模块并打开 MITM，才能运行脚本。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let runMessage {
+                            Text(runMessage)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let runResult {
+                            JSONValueView(value: runResult)
+                                .frame(minHeight: 60)
+                        }
+                    }
+                }
+            } else {
+                Section {
+                    Text("模块文本丢失，请重新导入。")
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    /// The merged-config validation issues (grouped by list), as its
+    /// own view so the detail body stays small enough to type-check:
+    /// the nested ForEach with the `Text("第 \(issue.index + 1)...")`
+    /// line timed out the type-checker when inlined (v0.2.85 CI
+    /// run #241).
+    @ViewBuilder
+    private var validationIssuesSection: some View {
+        if let issues = validateIssues, !issues.isEmpty {
+            ForEach(issues.keys.sorted(), id: \.self) { list in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(list).font(.caption2).fontWeight(.semibold)
+                    ForEach(issues[list] ?? [], id: \.index) { issue in
+                        Text("第 \(issue.index + 1) 行：\(issue.message)")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
         }
     }
 

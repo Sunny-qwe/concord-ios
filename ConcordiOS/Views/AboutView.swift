@@ -62,36 +62,144 @@ struct UpdateChecker {
         let assets: [ReleaseAsset]
     }
 
-    /// Numeric dotted-version comparison ("0.2.54" > "0.2.53";
-    /// non-numeric segments compare as 0). Used by checkRelease so
-    /// an unreleased running build is not "older" than the latest
-    /// release.
-    private static func isVersion(_ candidate: String, newerThan current: String) -> Bool {
-        let cand = candidate.split(separator: ".").map { Int($0) ?? 0 }
-        let curr = current.split(separator: ".").map { Int($0) ?? 0 }
-        for i in 0..<max(cand.count, curr.count) {
-            let a = i < cand.count ? cand[i] : 0
-            let b = i < curr.count ? curr[i] : 0
-            if a != b { return a > b }
-        }
-        return false
+    /// Semver version comparison (FlClash
+    /// lib/common/release_version.dart `ReleaseVersion`): an
+    /// optional leading `v`, exactly `major.minor.patch`, an
+    /// optional `-prerelease` of dot-separated identifiers, and an
+    /// optional `+build` that only breaks a precedence tie. A
+    /// release outranks its own prereleases (0.2.87 > 0.2.87-beta.1);
+    /// prerelease identifiers compare numerically when both are
+    /// numeric, numeric sorts below alphanumeric, otherwise
+    /// lexically; a longer identifier list wins when the shared
+    /// prefix ties (0.2.87-beta.2 > 0.2.87-beta.1). Tags that do
+    /// not parse as semver fall back to the old numeric dotted
+    /// comparison, so an unreleased running build is still not
+    /// "older" than the latest release.
+    private struct ParsedVersion {
+        let major: Int
+        let minor: Int
+        let patch: Int
+        let prerelease: [String]
+        let build: Int
     }
 
-    static func checkRelease(currentVersion: String) async -> ReleaseResult? {
-        guard let url = URL(string: "https://api.github.com/repos/Sunny-qwe/concord-ios/releases/latest") else {
+    private static func parseVersion(_ tag: String) -> ParsedVersion? {
+        var rest = tag.trimmingCharacters(in: .whitespaces)
+        if rest.hasPrefix("v") { rest = String(rest.dropFirst()) }
+        var build = 0
+        if let plus = rest.firstIndex(of: "+") {
+            guard let value = Int(rest[rest.index(after: plus)...]) else { return nil }
+            build = value
+            rest = String(rest[..<plus])
+        }
+        var prerelease: [String] = []
+        if let dash = rest.firstIndex(of: "-") {
+            let pre = String(rest[rest.index(after: dash)...])
+            guard !pre.isEmpty else { return nil }
+            prerelease = pre.split(separator: ".").map(String.init)
+            rest = String(rest[..<dash])
+        }
+        let parts = rest.split(separator: ".")
+        guard parts.count == 3,
+              let major = Int(parts[0]),
+              let minor = Int(parts[1]),
+              let patch = Int(parts[2]) else { return nil }
+        return ParsedVersion(major: major, minor: minor, patch: patch, prerelease: prerelease, build: build)
+    }
+
+    /// Upstream `_compareIdentifier`: numeric identifiers compare
+    /// numerically, a numeric identifier sorts below an
+    /// alphanumeric one, two alphanumeric identifiers compare
+    /// lexically.
+    private static func comparePrereleaseIdentifier(_ a: String, _ b: String) -> ComparisonResult {
+        let numberA = a.allSatisfy(\.isNumber) ? Int(a) : nil
+        let numberB = b.allSatisfy(\.isNumber) ? Int(b) : nil
+        switch (numberA, numberB) {
+        case let (x?, y?): return x < y ? .orderedAscending : (x > y ? .orderedDescending : .orderedSame)
+        case (_?, nil): return .orderedAscending
+        case (nil, _?): return .orderedDescending
+        default: return a < b ? .orderedAscending : (a > b ? .orderedDescending : .orderedSame)
+        }
+    }
+
+    private static func compareVersions(_ candidate: String, _ current: String) -> ComparisonResult {
+        guard let cand = parseVersion(candidate), let curr = parseVersion(current) else {
+            // Fallback: the old numeric dotted comparison.
+            let candParts = candidate.split(separator: ".").map { Int($0) ?? 0 }
+            let currParts = current.split(separator: ".").map { Int($0) ?? 0 }
+            for i in 0..<max(candParts.count, currParts.count) {
+                let a = i < candParts.count ? candParts[i] : 0
+                let b = i < currParts.count ? currParts[i] : 0
+                if a != b { return a > b ? .orderedDescending : .orderedAscending }
+            }
+            return .orderedSame
+        }
+        for (a, b) in [(cand.major, curr.major), (cand.minor, curr.minor), (cand.patch, curr.patch)] {
+            if a != b { return a > b ? .orderedDescending : .orderedAscending }
+        }
+        if cand.prerelease.isEmpty, curr.prerelease.isEmpty {
+            // Both are releases: precedence tied, compare build below.
+        } else if cand.prerelease.isEmpty || curr.prerelease.isEmpty {
+            // A release outranks a prerelease of the same core version.
+            return cand.prerelease.isEmpty ? .orderedDescending : .orderedAscending
+        } else {
+            for i in 0..<min(cand.prerelease.count, curr.prerelease.count) {
+                let order = comparePrereleaseIdentifier(cand.prerelease[i], curr.prerelease[i])
+                if order != .orderedSame { return order }
+            }
+            if cand.prerelease.count != curr.prerelease.count {
+                return cand.prerelease.count > curr.prerelease.count ? .orderedDescending : .orderedAscending
+            }
+        }
+        if cand.build != curr.build {
+            return cand.build > curr.build ? .orderedDescending : .orderedAscending
+        }
+        return .orderedSame
+    }
+
+    private static func isVersion(_ candidate: String, newerThan current: String) -> Bool {
+        compareVersions(candidate, current) == .orderedDescending
+    }
+
+    /// Channel (FlClash `request.dart:113` checkForUpdate(channel)):
+    /// stable reads `releases/latest`, which never names a
+    /// prerelease; prerelease reads the releases list
+    /// (`releases?per_page=100`, newest first — upstream
+    /// `newestOfAllReleases` reads the same list) and takes the
+    /// first non-draft release. The repo has never tagged a
+    /// prerelease, so until one exists the prerelease channel
+    /// returns the same newest stable release.
+    static func checkRelease(currentVersion: String, channel: UpdateChannel = .stable) async -> ReleaseResult? {
+        let urlString: String
+        switch channel {
+        case .stable:
+            urlString = "https://api.github.com/repos/Sunny-qwe/concord-ios/releases/latest"
+        case .prerelease:
+            urlString = "https://api.github.com/repos/Sunny-qwe/concord-ios/releases?per_page=100"
+        }
+        guard let url = URL(string: urlString) else {
             return nil
         }
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let releaseJSON: [String: Any]?
+            switch channel {
+            case .stable:
+                releaseJSON = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            case .prerelease:
+                let releases = (try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+                releaseJSON = releases.first { ($0["draft"] as? Bool) != true && $0["tag_name"] is String }
+            }
+            guard let json = releaseJSON,
                   let tag = json["tag_name"] as? String else {
                 return nil
             }
             let cleanTag = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-            // Numeric comparison, not string inequality: a running
+            // Semver comparison, not string inequality: a running
             // unreleased build (e.g. 0.2.54) is newer than the
             // latest release (0.2.53) and must not be told to
-            // "update" to it.
+            // "update" to it; a prerelease (0.2.87-beta.1) is newer
+            // than 0.2.86 but older than its own 0.2.87 release.
             let isNew = Self.isVersion(cleanTag, newerThan: currentVersion)
             let assets = ((json["assets"] as? [[String: Any]]) ?? []).compactMap { asset -> ReleaseAsset? in
                 guard let name = asset["name"] as? String,
@@ -148,7 +256,7 @@ struct AboutView: View {
     private func checkForUpdate() async {
         isCheckingUpdate = true
         defer { isCheckingUpdate = false }
-        if let result = await UpdateChecker.checkRelease(currentVersion: version) {
+        if let result = await UpdateChecker.checkRelease(currentVersion: version, channel: settingsStore.updateChannel) {
             releaseResult = result
             updateCheckFailed = false
         } else {
@@ -251,6 +359,24 @@ struct AboutView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .listRowBackground(Color.clear)
+            }
+            // v0.2.86 Item 17: update channel (FlClash
+            // AppSettingProps.updateChannel; rs.1 has the setting +
+            // labels but no channel-picker UI in source, so this
+            // segmented picker follows our Settings style). The
+            // manual check above reads this channel; the automatic
+            // check tracks the latest commit (UpdateChecker.check)
+            // and has no channel to follow.
+            Section("更新渠道") {
+                Picker("更新渠道", selection: $settingsStore.updateChannel) {
+                    ForEach(UpdateChannel.allCases) { channel in
+                        Text(channel.label).tag(channel)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("正式版只提示正式发布的版本；预览版还会提示测试版。仓库目前尚未发布过预览版，选预览版时仍会显示最新正式版。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             Section("更多") {
                 aboutLink(

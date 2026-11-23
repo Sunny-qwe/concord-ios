@@ -575,6 +575,24 @@ enum YamlClashKeys {
         "tls": ["certificate", "private-key"],
         "listeners": ["name", "type", "port", "listen", "proxy", "udp"],
         "experimental": ["sniffer", "quic-go"],
+        // proxy-groups: upstream clash_schema.dart:1298-1352
+        // (_proxyGroupFields + _proxyGroup's include-all-* +
+        // _proxyGroupVariants). The union of all group-type variants
+        // (fieldsFor(null), clash_schema.dart:132-147): when a group's
+        // `type` is unknown/absent upstream offers every variant's
+        // fields, so this flat per-section list does the same —
+        // select's default-selected, url-test/smart's tolerance,
+        // smart's policy-priority, load-balance's strategy/hash-key.
+        // (CustomSubscriptionEditorView's CustomGroup already bakes
+        // tolerance + policy-priority; the key names match.)
+        "proxy-groups": ["name", "type", "proxies", "use", "use-position",
+                         "url", "interval", "lazy", "timeout", "max-failed-times",
+                         "empty-fallback", "expected-status", "filter",
+                         "exclude-filter", "exclude-type", "disable-udp",
+                         "hidden", "icon", "include-all",
+                         "include-all-proxies", "include-all-providers",
+                         "default-selected", "tolerance", "policy-priority",
+                         "strategy", "hash-key"],
     ]
 
     static let topLevel: [String] = [

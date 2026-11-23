@@ -881,8 +881,8 @@ final class ProfileStore: ObservableObject {
     /// Removes one profile's file + list entry. This is the
     /// low-level primitive: deleting the ACTIVE profile must go
     /// through deleteProfile(_:) instead, which switches to the
-    /// next profile (or stops the VPN when none remain) — deleting
-    /// here alone would leave the tunnel running deleted config.
+    /// next profile (or to the all-direct minimal config when none
+    /// remain) — deleting here alone would leave the tunnel running deleted config.
     /// Kept synchronous because UnifiedImport replaces the
     /// "我的节点" profile through it; that call site still needs
     /// migrating to deleteProfile (open seam, see report).
@@ -897,8 +897,10 @@ final class ProfileStore: ObservableObject {
     /// Deletes a profile the FlClash way (profiles.dart
     /// deleteProfile): remove it, then — when it was active —
     /// switch to the first remaining profile (and apply it); when
-    /// none remain, clear the current config + inspect and stop
-    /// the VPN. The tunnel never keeps running deleted config.
+    /// none remain, write the minimal general-only config and apply
+    /// it live, so the VPN keeps running in all-direct mode
+    /// (FlClash no-profile mode) instead of stopping. The tunnel
+    /// never keeps running deleted config.
     /// profile.clearEffect cannot be called: it takes the numeric
     /// id the host assigned the profile, and this app never learns
     /// one (profiles are UUIDs; the core keeps its provider
@@ -928,16 +930,54 @@ final class ProfileStore: ObservableObject {
             }
             return
         }
-        // No profiles remain: clear the stale shared config + the
-        // stale inspect, and stop the VPN (FlClash setRunning(false)).
+        // No profiles remain: replace the shared config with the
+        // minimal general-only config and keep the VPN running in
+        // all-direct mode (FlClash no-profile mode) instead of
+        // stopping it. Writing the file alone is NOT enough: the
+        // extension only reads config.yaml at startTunnel, so the
+        // running core must also be told (config.apply, mirroring
+        // applyProfile step 3) or it keeps the deleted profile's
+        // config in memory.
         inspect = nil
-        if let shared = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)?
-            .appendingPathComponent(ConfigStore.configFileName) {
-            try? FileManager.default.removeItem(at: shared)
+        var applyError: Error?
+        do {
+            let shared = try MinimalConfig.writeToSharedConfig()
+            await onProfileApplied?()
+            if client.mode == .live, TunnelManager.shared.isRunning {
+                do {
+                    let result = try await client.configApply(profilePath: shared.path)
+                    applyWarnings = result.warnings
+                    inspect = try await client.profileInspect(path: shared.path)
+                } catch {
+                    applyError = error
+                }
+            } else if client.mode == .sample {
+                // Sample transport: apply + inspect against the mock core.
+                do {
+                    let result = try await client.configApply(profilePath: shared.path)
+                    applyWarnings = result.warnings
+                    inspect = try await client.profileInspect(path: shared.path)
+                } catch {
+                    // The mock never throws; ignore.
+                }
+            }
+            // Tunnel stopped: the written file takes effect at the next VPN start.
+            if let applyError {
+                lastError = "已删除 \(name)，直连配置已写入，但即时生效失败：\(applyError.localizedDescription)（下次启动 VPN 时生效）"
+                statusMessage = "已删除 \(name)，没有剩余订阅"
+            } else {
+                statusMessage = "已删除 \(name)，没有剩余订阅，已切换到直连模式"
+                lastError = nil
+            }
+        } catch {
+            // The shared config still holds the deleted profile: the
+            // tunnel keeps running it in memory, and a VPN restart
+            // would resurrect it. Report honestly; do not stop the
+            // tunnel (the no-profile mode never stops it) and do not
+            // delete config.yaml.
+            lastError = "已删除 \(name)，但写入直连配置失败：\(error.localizedDescription)"
+            statusMessage = "已删除 \(name)，没有剩余订阅"
         }
-        await TunnelManager.shared.stop()
-        statusMessage = "已删除 \(name)，没有剩余订阅，VPN 已停止"
-        lastError = nil
     }
 
     /// Persist a reordered list built outside the List (the FlClash

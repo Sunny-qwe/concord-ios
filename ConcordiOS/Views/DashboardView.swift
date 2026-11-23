@@ -1129,29 +1129,40 @@ struct DashboardView: View {
             // FlClash outbound_mode.dart DashboardConnectedGroup: one
             // connected pill — outer radius 26, height 52, icon 18,
             // selected segment primary-filled, inner radius 12.
-            HStack(spacing: 0) {
-                ForEach(Array(OutboundMode.allCases.enumerated()), id: \.element) { index, mode in
-                    let selected = settingsStore.mode == mode
-                    Button { settingsStore.mode = mode } label: {
-                        VStack(spacing: 2) {
-                            Image(systemName: modeIcon(mode))
-                                .font(.system(size: 18, weight: .semibold))
-                            Text(modeShortLabel(mode))
-                                .font(.caption2)
-                                .fontWeight(.semibold)
+            // FlClash outbound_mode.dart noProfileDirect: with no
+            // active profile there are no rules/proxies, so every
+            // mode goes direct — show the notice instead of the
+            // mode buttons.
+            if profileStore.activeProfile == nil {
+                Text("未使用配置，全部直连")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+            } else {
+                HStack(spacing: 0) {
+                    ForEach(Array(OutboundMode.allCases.enumerated()), id: \.element) { index, mode in
+                        let selected = settingsStore.mode == mode
+                        Button { settingsStore.mode = mode } label: {
+                            VStack(spacing: 2) {
+                                Image(systemName: modeIcon(mode))
+                                    .font(.system(size: 18, weight: .semibold))
+                                Text(modeShortLabel(mode))
+                                    .font(.caption2)
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 52)
+                            .background(
+                                selected ? ConcordTheme.accent : Color.clear,
+                                in: connectedSegmentShape(index: index, count: OutboundMode.allCases.count)
+                            )
+                            .foregroundStyle(selected ? .white : Color(.label))
                         }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 52)
-                        .background(
-                            selected ? ConcordTheme.accent : Color.clear,
-                            in: connectedSegmentShape(index: index, count: OutboundMode.allCases.count)
-                        )
-                        .foregroundStyle(selected ? .white : Color(.label))
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
+                .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 26))
             }
-            .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 26))
             if let message = settingsStore.generalApplyMessage, !densityCompact {
                 Text(message)
                     .font(.caption2)

@@ -539,9 +539,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             forSecurityApplicationGroupIdentifier: appGroupID) else {
             throw TunnelSetupError.noAppGroup
         }
-        let configURL = container.appendingPathComponent(configFileName)
-        guard FileManager.default.fileExists(atPath: configURL.path) else {
-            throw TunnelSetupError.noConfig
+        // v0.2.86 Batch 4 (#8): no-profile mode — FlClash starts
+        // with no profile selected (noProfileDirect) by applying a
+        // minimal general-only config instead of refusing to start.
+        // The extension cannot see ProfileStore, so a missing
+        // shared config.yaml IS the no-profile signal: write the
+        // minimal config first and proceed instead of throwing
+        // .noConfig. A write failure propagates — never silently
+        // start with no config. When the file exists the profile
+        // path below is unchanged, and the minimal config is in
+        // place before config.apply reads it.
+        var configURL = container.appendingPathComponent(configFileName)
+        if !FileManager.default.fileExists(atPath: configURL.path) {
+            configURL = try MinimalConfig.writeToSharedConfig()
         }
         recordStartup("configuration")
 

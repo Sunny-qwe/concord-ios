@@ -41,6 +41,27 @@ enum LogLevel: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Update channel (FlClash: enum.dart:831 `UpdateChannel { stable,
+/// pre }`, AppSettingProps `updateChannel`, default stable —
+/// models/config.dart:284; labels l10n_zh.dart:195-201 更新渠道 /
+/// 正式版 / 预览版). The rs line publishes only prereleases and
+/// offers no channel picker in source, so the picker below is our
+/// own, in Settings style; the setting name and labels mirror
+/// upstream. The repo has never tagged a prerelease, so the
+/// prerelease channel is a placeholder until one exists.
+enum UpdateChannel: String, CaseIterable, Identifiable {
+    case stable = "stable"
+    case prerelease = "prerelease"
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .stable: return "正式版"
+        case .prerelease: return "预览版"
+        }
+    }
+}
+
 final class SettingsStore: ObservableObject {
     // General (config.general)
     @Published var mode: OutboundMode = .rule
@@ -115,6 +136,11 @@ final class SettingsStore: ObservableObject {
     @Published var onlyStatisticsProxy: Bool = false
     @Published var checkCertificate: Bool = true
     @Published var autoCheckUpdate: Bool = false
+    /// Update channel (FlClash AppSettingProps.updateChannel,
+    /// default stable). Only the release-based check reads it
+    /// (AboutView); the automatic check tracks the latest commit
+    /// (UpdateChecker.check), which has no channel.
+    @Published var updateChannel: UpdateChannel = .stable
     @Published var openLogs: Bool = false
     /// Whether the environment watermark overlay shows (MuYu
     /// 常规 → 日志与诊断 → 显示环境水印, v0.2.68). Default true;
@@ -395,6 +421,7 @@ final class SettingsStore: ObservableObject {
         var autoCloseConnections: Bool
         var checkCertificate: Bool
         var autoCheckUpdate: Bool
+        var updateChannel: String
         var openLogs: Bool
         var showEnvironmentWatermark: Bool
         var routeExcludeAddress: [String]
@@ -418,7 +445,7 @@ final class SettingsStore: ObservableObject {
 
         // The MITM fields are new: decode them leniently so settings
         // saved before they existed still load.
-        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, openLogs: Bool = false, showEnvironmentWatermark: Bool = true, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftncsi.com", "www.msftncsi.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 64, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict", keepAliveIdle: Int = 0, keepAliveInterval: Int = 0, disableKeepAlive: Bool = false, includeAllNetworks: Bool = false, excludeLocalNetworks: Bool = true, excludeAPNs: Bool = true, excludeCellularServices: Bool = true, enforceRoutes: Bool = false, excludeDeviceCommunication: Bool = true, onlyStatisticsProxy: Bool = false, appendSystemDns: Bool = false, systemProxy: Bool = false, bypassDomain: [String] = []) {
+        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, updateChannel: String = "stable", openLogs: Bool = false, showEnvironmentWatermark: Bool = true, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftncsi.com", "www.msftncsi.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 64, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict", keepAliveIdle: Int = 0, keepAliveInterval: Int = 0, disableKeepAlive: Bool = false, includeAllNetworks: Bool = false, excludeLocalNetworks: Bool = true, excludeAPNs: Bool = true, excludeCellularServices: Bool = true, enforceRoutes: Bool = false, excludeDeviceCommunication: Bool = true, onlyStatisticsProxy: Bool = false, appendSystemDns: Bool = false, systemProxy: Bool = false, bypassDomain: [String] = []) {
             self.mode = mode
             self.logLevel = logLevel
             self.mixedPort = mixedPort
@@ -453,6 +480,7 @@ final class SettingsStore: ObservableObject {
             self.autoCloseConnections = autoCloseConnections
             self.checkCertificate = checkCertificate
             self.autoCheckUpdate = autoCheckUpdate
+            self.updateChannel = updateChannel
             self.openLogs = openLogs
             self.showEnvironmentWatermark = showEnvironmentWatermark
             self.routeExcludeAddress = routeExcludeAddress
@@ -547,6 +575,7 @@ final class SettingsStore: ObservableObject {
             autoCloseConnections = try c.decodeIfPresent(Bool.self, forKey: .autoCloseConnections) ?? false
             checkCertificate = try c.decodeIfPresent(Bool.self, forKey: .checkCertificate) ?? true
             autoCheckUpdate = try c.decodeIfPresent(Bool.self, forKey: .autoCheckUpdate) ?? false
+            updateChannel = try c.decodeIfPresent(String.self, forKey: .updateChannel) ?? "stable"
             openLogs = try c.decodeIfPresent(Bool.self, forKey: .openLogs) ?? false
             showEnvironmentWatermark = try c.decodeIfPresent(Bool.self, forKey: .showEnvironmentWatermark) ?? true
             routeExcludeAddress = try c.decodeIfPresent([String].self, forKey: .routeExcludeAddress) ?? []
@@ -614,7 +643,7 @@ final class SettingsStore: ObservableObject {
     }
 
     func save() {
-        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, openLogs: openLogs, showEnvironmentWatermark: showEnvironmentWatermark, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, dnsListen: dnsListen, dnsPreferH3: dnsPreferH3, dnsUseHosts: dnsUseHosts, dnsUseSystemHosts: dnsUseSystemHosts, dnsRespectRules: dnsRespectRules, dnsIpv6Timeout: dnsIpv6Timeout, dnsCacheAlgorithm: dnsCacheAlgorithm, dnsCacheMaxSize: dnsCacheMaxSize, dnsEnhancedMode: dnsEnhancedMode, dnsFakeIpRange6: dnsFakeIpRange6, dnsFakeIpFilter: dnsFakeIpFilter, dnsFakeIpFilterMode: dnsFakeIpFilterMode, dnsFakeIpTtl: dnsFakeIpTtl, dnsDefaultNameserver: dnsDefaultNameserver, dnsNameserverPolicy: dnsNameserverPolicy, dnsExtraNameservers: dnsExtraNameservers, dnsFallback: dnsFallback, dnsFallbackLazyQuery: dnsFallbackLazyQuery, dnsProxyServerNameserver: dnsProxyServerNameserver, dnsProxyServerNameserverPolicy: dnsProxyServerNameserverPolicy, dnsDirectNameserver: dnsDirectNameserver, dnsDirectNameserverFollowPolicy: dnsDirectNameserverFollowPolicy, dnsFallbackFilterGeoip: dnsFallbackFilterGeoip, dnsFallbackFilterGeoipCode: dnsFallbackFilterGeoipCode, dnsFallbackFilterGeosite: dnsFallbackFilterGeosite, dnsFallbackFilterIpcidr: dnsFallbackFilterIpcidr, dnsFallbackFilterDomain: dnsFallbackFilterDomain, interfaceName: interfaceName, interfaceNameMode: interfaceNameMode, userAgents: userAgents, authEnabled: authEnabled, authUsername: authUsername, authPassword: authPassword, externalControllerSecret: externalControllerSecret, externalControllerEnabled: externalControllerEnabled, mitmSkipServerCertVerify: mitmSkipServerCertVerify, mitmAutoQuicBlock: mitmAutoQuicBlock, mitmTrustedFingerprint: mitmTrustedFingerprint, mitmCapture: mitmCapture, mitmCaptureEntries: mitmCaptureEntries, hideIp: hideIp, dnsIpv6: dnsIpv6, findProcessModeSetting: findProcessModeSetting, keepAliveIdle: keepAliveIdle, keepAliveInterval: keepAliveInterval, disableKeepAlive: disableKeepAlive, includeAllNetworks: includeAllNetworks, excludeLocalNetworks: excludeLocalNetworks, excludeAPNs: excludeAPNs, excludeCellularServices: excludeCellularServices, enforceRoutes: enforceRoutes, excludeDeviceCommunication: excludeDeviceCommunication, onlyStatisticsProxy: onlyStatisticsProxy, appendSystemDns: appendSystemDns, systemProxy: systemProxy, bypassDomain: bypassDomain)
+        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, updateChannel: updateChannel.rawValue, openLogs: openLogs, showEnvironmentWatermark: showEnvironmentWatermark, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, dnsListen: dnsListen, dnsPreferH3: dnsPreferH3, dnsUseHosts: dnsUseHosts, dnsUseSystemHosts: dnsUseSystemHosts, dnsRespectRules: dnsRespectRules, dnsIpv6Timeout: dnsIpv6Timeout, dnsCacheAlgorithm: dnsCacheAlgorithm, dnsCacheMaxSize: dnsCacheMaxSize, dnsEnhancedMode: dnsEnhancedMode, dnsFakeIpRange6: dnsFakeIpRange6, dnsFakeIpFilter: dnsFakeIpFilter, dnsFakeIpFilterMode: dnsFakeIpFilterMode, dnsFakeIpTtl: dnsFakeIpTtl, dnsDefaultNameserver: dnsDefaultNameserver, dnsNameserverPolicy: dnsNameserverPolicy, dnsExtraNameservers: dnsExtraNameservers, dnsFallback: dnsFallback, dnsFallbackLazyQuery: dnsFallbackLazyQuery, dnsProxyServerNameserver: dnsProxyServerNameserver, dnsProxyServerNameserverPolicy: dnsProxyServerNameserverPolicy, dnsDirectNameserver: dnsDirectNameserver, dnsDirectNameserverFollowPolicy: dnsDirectNameserverFollowPolicy, dnsFallbackFilterGeoip: dnsFallbackFilterGeoip, dnsFallbackFilterGeoipCode: dnsFallbackFilterGeoipCode, dnsFallbackFilterGeosite: dnsFallbackFilterGeosite, dnsFallbackFilterIpcidr: dnsFallbackFilterIpcidr, dnsFallbackFilterDomain: dnsFallbackFilterDomain, interfaceName: interfaceName, interfaceNameMode: interfaceNameMode, userAgents: userAgents, authEnabled: authEnabled, authUsername: authUsername, authPassword: authPassword, externalControllerSecret: externalControllerSecret, externalControllerEnabled: externalControllerEnabled, mitmSkipServerCertVerify: mitmSkipServerCertVerify, mitmAutoQuicBlock: mitmAutoQuicBlock, mitmTrustedFingerprint: mitmTrustedFingerprint, mitmCapture: mitmCapture, mitmCaptureEntries: mitmCaptureEntries, hideIp: hideIp, dnsIpv6: dnsIpv6, findProcessModeSetting: findProcessModeSetting, keepAliveIdle: keepAliveIdle, keepAliveInterval: keepAliveInterval, disableKeepAlive: disableKeepAlive, includeAllNetworks: includeAllNetworks, excludeLocalNetworks: excludeLocalNetworks, excludeAPNs: excludeAPNs, excludeCellularServices: excludeCellularServices, enforceRoutes: enforceRoutes, excludeDeviceCommunication: excludeDeviceCommunication, onlyStatisticsProxy: onlyStatisticsProxy, appendSystemDns: appendSystemDns, systemProxy: systemProxy, bypassDomain: bypassDomain)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
         saveSharedFiles()
@@ -1096,6 +1125,7 @@ final class SettingsStore: ObservableObject {
         autoCloseConnections = saved.autoCloseConnections
         checkCertificate = saved.checkCertificate
         autoCheckUpdate = saved.autoCheckUpdate
+        updateChannel = UpdateChannel(rawValue: saved.updateChannel) ?? .stable
         openLogs = saved.openLogs
         showEnvironmentWatermark = saved.showEnvironmentWatermark
         routeExcludeAddress = saved.routeExcludeAddress

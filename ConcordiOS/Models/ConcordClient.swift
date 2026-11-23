@@ -1339,7 +1339,7 @@ struct ConcordServiceItem: Codable, Identifiable {
     let epoch: UInt64
     let version: UInt64
     let hits: [ConcordRouteHit]?
-    /// Upstream 0c9788f: the address the service saw the check come
+    /// Upstream c7aa654: the address the service saw the check come
     /// from, which a node that sends the service out another way
     /// does not share with its other traffic. Only checks whose
     /// answer names it carry one. A `var` so it actually decodes

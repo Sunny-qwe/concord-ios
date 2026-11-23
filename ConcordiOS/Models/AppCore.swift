@@ -602,7 +602,35 @@ final class AppCore {
         guard !TunnelManager.shared.isRunning else {
             throw AppCoreError.tunnelRunning
         }
-        guard let configURL = sharedConfigURL(),
+        // v0.2.86 Batch 4 (#8): no-profile mode — FlClash starts
+        // with no profile selected (noProfileDirect) by applying a
+        // minimal general-only config instead of refusing to start.
+        // The existing "current profile" source of truth is
+        // ProfileStore.activeProfile (the profile whose isActive
+        // flag is set); when it is nil there is no profile to apply,
+        // so write the minimal config into the shared config.yaml
+        // first and boot on that instead of throwing .noConfig.
+        // The write is skipped when the shared file already holds
+        // exactly the minimal config, so a repeat boot keeps its
+        // signature and reuses the already-running core below
+        // instead of restarting it. A write failure propagates —
+        // never silently start with no config. When a profile IS
+        // active the path below is unchanged: a missing shared
+        // file still throws .noConfig.
+        let noProfileMode = Self.profileStore?.activeProfile == nil
+        var configURL = sharedConfigURL()
+        if noProfileMode {
+            let alreadyMinimal: Bool = {
+                guard let url = configURL,
+                      let data = try? Data(contentsOf: url),
+                      let text = String(data: data, encoding: .utf8) else { return false }
+                return text == MinimalConfig.yaml
+            }()
+            if !alreadyMinimal {
+                configURL = try MinimalConfig.writeToSharedConfig()
+            }
+        }
+        guard let configURL = configURL,
               FileManager.default.fileExists(atPath: configURL.path),
               let initialSignature = configSignature(for: configURL) else {
             throw AppCoreError.noConfig
@@ -673,7 +701,10 @@ final class AppCore {
         // If it is still missing, say so with the real download
         // reason instead of letting the core fail later with its TLS
         // error — the Proxies banner shows this verbatim.
-        if !GeoSeed.isPresent(GeoSeed.mmdbFileName, in: home) {
+        // v0.2.86 Batch 4 (#8): skipped in no-profile mode — the
+        // minimal config has no GEOIP/GEOSITE rules, so the geo
+        // files are not needed to start. Profile mode unchanged.
+        if !noProfileMode, !GeoSeed.isPresent(GeoSeed.mmdbFileName, in: home) {
             let reason: String
             if let failure = appSeed.failures.first(where: { $0.file == GeoSeed.mmdbFileName }) {
                 reason = failure.error.localizedDescription

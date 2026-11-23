@@ -2772,6 +2772,22 @@ private struct ProxyNodeCard: View, Equatable {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(selected ? .white : ConcordTheme.accent)
                     }
+                } else if selected {
+                    // FlClash SelectionBadge (card.dart:205-219,
+                    // selection_mark.dart): a 22pt solid-primary
+                    // circle + white ✓, INLINE in the name row —
+                    // upstream has no corner overlay. (v0.2.79: the
+                    // v0.2.68 corner overlay half-overlapped the
+                    // card's top-right edge and floated in the gap
+                    // between cards in the 2-column grid.)
+                    ZStack {
+                        Circle()
+                            .fill(ConcordTheme.accent)
+                            .frame(width: 22, height: 22)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
                 }
             }
             if cardType == .loose {
@@ -2804,25 +2820,6 @@ private struct ProxyNodeCard: View, Equatable {
         .frame(height: cardHeight, alignment: .center)
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
         .contentShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-        // Selected checkmark (v0.2.68, video f_020/f_043): an
-        // accent solid circle + white ✓ HALF OVERLAPPING the
-        // card's top-right edge — its centre sits on the corner,
-        // so half the circle is outside the card. A pinned node
-        // keeps the in-card pin badge above instead, so the pin
-        // is not lost.
-        .overlay(alignment: .topTrailing) {
-            if selected && !pinned {
-                ZStack {
-                    Circle()
-                        .fill(ConcordTheme.accent)
-                        .frame(width: 22, height: 22)
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .offset(x: 11, y: -11)
-            }
-        }
     }
 }
 

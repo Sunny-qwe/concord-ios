@@ -19,7 +19,7 @@ import Combine
 // the module store sweeps unreferenced files out of resources, and
 // a standalone script must survive that sweep.
 
-struct MitmScript: Codable, Identifiable, Equatable {
+struct MitmScript: Codable, Identifiable, Equatable, Hashable {
     var id: String
     var label: String
     var url: String?

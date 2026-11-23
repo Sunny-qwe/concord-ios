@@ -694,7 +694,7 @@ struct MitmMenuNotice: Identifiable {
     let text: String
 }
 
-struct MitmRuleEditorRequest: Identifiable {
+struct MitmRuleEditorRequest: Identifiable, Hashable {
     let id = UUID()
     let module: MitmModule?
     let initialText: String
@@ -946,11 +946,11 @@ extension View {
                 get: { model.ruleEditor },
                 set: { model.ruleEditor = $0 }
             )) { request in
-                MitmModuleTextEditorView(module: request.module, initialText: request.initialText, pushed: true, onSaved: { saved in
+                MitmModuleTextEditorView(module: request.module, initialText: request.initialText, onSaved: { saved in
                     if let saved, let name = request.attachmentName, let data = request.attachmentData {
                         Task { await moduleStore.attachFile(saved, fileName: name, data: data) }
                     }
-                })
+                }, pushed: true)
             }
     }
 }

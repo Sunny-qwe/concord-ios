@@ -288,7 +288,7 @@ struct ProfilesView: View {
             // Export: the system save-file picker; success shows
             // the green banner, failure an alert (upstream
             // _handleExportFile, profiles.dart:381).
-            .fileExporter(isPresented: $showFileExporter, document: $exportDocument, contentType: .yaml, defaultFilename: exportFileName) { result in
+            .fileExporter(isPresented: $showFileExporter, document: exportDocument, contentType: .yaml, defaultFilename: exportFileName) { result in
                 switch result {
                 case .success:
                     copyNotice = "导出成功"

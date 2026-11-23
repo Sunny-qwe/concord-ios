@@ -4,6 +4,14 @@ import SwiftUI
 // The Dashboard stats sheet and the Tools > DNS查询 page share this view; the sheet
 // presents it in records-only mode, the Tools page with the manual query + filters.
 
+/// DNS capsule fill (v0.2.82): neutral grey measured from the MuYu
+/// video DNS sheet (#B8B8B8, dominant fill tone in f_014). The video's
+/// type ([A]/[AAAA]), initiator （其他/代理） and cache （缓存） capsules
+/// are all this grey — not blue/orange, and NOT the theme accent (they
+/// stay grey under the magenta theme). Fixed grey: dark text reads well
+/// on it in both light and dark mode.
+fileprivate let dnsCapsuleFill = Color(red: 184/255, green: 184/255, blue: 184/255)
+
 // MARK: - DNS queries (FlClash: DnsQueriesView, lib/views/dns_queries.dart)
 
 /// Record-list filter: all, failed only, cache hits, live lookups.
@@ -125,9 +133,17 @@ struct DnsQueriesView: View {
     /// Scrolls to the newest row (the top: the list is
     /// newest-first). Called when follow mode is on and a new
     /// record arrives, or when follow mode is just turned on.
+    /// v0.2.82 (DNS freeze): the scroll must never run
+    /// synchronously inside onChange/layout — on iOS 17 an animated
+    /// scrollTo fired from onChange while the sheet is presenting
+    /// can wedge the List's layout and freeze the app (tapping
+    /// DNS查询 on the Dashboard, VPN off). Deferring to the next
+    /// runloop lets the current update/layout pass finish first.
     private func scrollToNewest(_ proxy: ScrollViewProxy) {
         if let id = foldedEntries.first?.id {
-            withAnimation { proxy.scrollTo(id, anchor: .top) }
+            DispatchQueue.main.async {
+                withAnimation { proxy.scrollTo(id, anchor: .top) }
+            }
         }
     }
 
@@ -213,6 +229,13 @@ struct DnsQueriesView: View {
                     .foregroundStyle(.secondary)
                 if let error = dnsStore.lastError, dnsStore.filtered.isEmpty {
                     Text(error).font(.caption2).foregroundStyle(.red)
+                } else if dnsStore.filtered.isEmpty, client.mode == .live, !TunnelManager.shared.isRunning {
+                    // v0.2.82: the appear refresh is skipped with the
+                    // VPN off (see .task above), so lastError is never
+                    // set — show the same reason statically instead
+                    // of a bare "暂无记录".
+                    Text("VPN 隧道未运行：请先在仪表盘启动 VPN，再查看实时数据")
+                        .font(.caption2).foregroundStyle(.red)
                 }
             } else {
                 ForEach(foldedEntries) { folded in
@@ -244,15 +267,14 @@ struct DnsQueriesView: View {
                         .font(.caption2.weight(.semibold))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.blue.opacity(0.12), in: Capsule())
+                        .background(dnsCapsuleFill, in: Capsule())
                     if folded.count > 1 {
                         Text("×\(folded.count)")
                             .font(.caption2)
                             .fontWeight(.semibold)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.12), in: Capsule())
-                            .foregroundStyle(.orange)
+                            .background(dnsCapsuleFill, in: Capsule())
                     }
                     Spacer()
                     Text("\(entry.delay) ms")
@@ -273,14 +295,14 @@ struct DnsQueriesView: View {
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.15), in: Capsule())
+                            .background(dnsCapsuleFill, in: Capsule())
                     }
                     if entry.cached == true {
                         Text("缓存")
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.secondary.opacity(0.15), in: Capsule())
+                            .background(dnsCapsuleFill, in: Capsule())
                     }
                     if !entry.upstream.isEmpty {
                         Text(entry.upstream)
@@ -339,9 +361,25 @@ struct DnsQueriesView: View {
                 }
             }
             .refreshable { await dnsStore.refresh() }
-            .task { if dnsStore.entries.isEmpty { await dnsStore.refresh() } }
-            .onChange(of: foldedEntries.first?.id) { _, _ in
-                if followEnd { scrollToNewest(proxy) }
+            .task {
+                // v0.2.82 (DNS freeze): with the VPN off in live mode
+                // the refresh can never succeed (dns.watch reads the
+                // extension snapshot only) — so skip it on appear and
+                // let the sheet open with zero store work. Pull-to-
+                // refresh and the toolbar button still load when the
+                // tunnel is up. Sample mode always refreshes
+                // (built-in sample data, no tunnel needed).
+                if dnsStore.entries.isEmpty
+                    && (TunnelManager.shared.isRunning || client.mode == .sample) {
+                    await dnsStore.refresh()
+                }
+            }
+            .onChange(of: foldedEntries.first?.id) { old, _ in
+                // v0.2.82 (DNS freeze): skip the initial population
+                // (nil -> first id) — the list is already at the top;
+                // only follow when a genuinely newer record arrives
+                // while viewing (old id non-nil -> new id).
+                if old != nil, followEnd { scrollToNewest(proxy) }
             }
             .sheet(item: $selectedEntry) { entry in
                 DnsEntryDetailView(entry: entry)
@@ -481,6 +519,12 @@ struct DnsQueriesView: View {
                     // bare "暂无记录" (audit B16).
                     if let error = dnsStore.lastError, dnsStore.filtered.isEmpty {
                         Text(error).font(.caption2).foregroundStyle(.red)
+                    } else if dnsStore.filtered.isEmpty, client.mode == .live, !TunnelManager.shared.isRunning {
+                        // v0.2.82: the appear refresh is skipped with
+                        // the VPN off (see .task above), so lastError
+                        // is never set — same reason, statically.
+                        Text("VPN 隧道未运行：请先在仪表盘启动 VPN，再查看实时数据")
+                            .font(.caption2).foregroundStyle(.red)
                     }
                 } else {
                     ForEach(foldedEntries) { folded in
@@ -497,15 +541,14 @@ struct DnsQueriesView: View {
                                             .fontWeight(.semibold)
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 2)
-                                            .background(Color.orange.opacity(0.12), in: Capsule())
-                                            .foregroundStyle(.orange)
+                                            .background(dnsCapsuleFill, in: Capsule())
                                     }
                                     Spacer()
                                     Text(entry.type)
                                         .font(.caption2)
                                         .padding(.horizontal, 6)
                                         .padding(.vertical, 2)
-                                        .background(Color.blue.opacity(0.12), in: Capsule())
+                                        .background(dnsCapsuleFill, in: Capsule())
                                 }
                                 Text("上游 \(entry.upstream) · \(entry.delay) ms · \(entry.cached == true ? "缓存命中" : "实时查询")\(entry.initiator.isEmpty ? "" : " · 发起方 \(entry.initiator)")")
                                     .font(.caption2)
@@ -563,8 +606,8 @@ private struct DnsKeywordChip: View {
                 .font(.caption2.weight(.semibold))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background((isError ? Color.red : Color.blue).opacity(0.12), in: Capsule())
-                .foregroundStyle(isError ? .red : .blue)
+                .background(isError ? Color.red.opacity(0.12) : dnsCapsuleFill, in: Capsule())
+                .foregroundStyle(isError ? Color.red : Color.primary)
         }
         .buttonStyle(.plain)
     }

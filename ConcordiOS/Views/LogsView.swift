@@ -187,7 +187,13 @@ struct LogsView: View {
                             .contentMargins(.bottom, ConcordTheme.tabBarClearance)
                             .onChange(of: logStore.filtered.count) { _, _ in
                                 if logStore.autoScroll, followingLogs, let last = logStore.filtered.last {
-                                    proxy.scrollTo(last.id, anchor: .bottom)
+                                    // v0.2.82 (DNS freeze): never scroll
+                                    // synchronously inside onChange — defer
+                                    // to the next runloop so the current
+                                    // update/layout pass finishes first.
+                                    DispatchQueue.main.async {
+                                        proxy.scrollTo(last.id, anchor: .bottom)
+                                    }
                                 }
                             }
                         }
@@ -249,7 +255,11 @@ struct LogsView: View {
                             .contentMargins(.bottom, ConcordTheme.tabBarClearance)
                             .onChange(of: eventStore.filtered.count) { _, _ in
                                 if logStore.autoScroll, followingEvents, let last = eventStore.filtered.last {
-                                    proxy.scrollTo(last.id, anchor: .bottom)
+                                    // v0.2.82 (DNS freeze): same defer as
+                                    // the logs list above.
+                                    DispatchQueue.main.async {
+                                        proxy.scrollTo(last.id, anchor: .bottom)
+                                    }
                                 }
                             }
                         }

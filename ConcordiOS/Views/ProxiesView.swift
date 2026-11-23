@@ -1525,7 +1525,9 @@ struct ProxiesView: View {
             } else {
                 ScrollViewReader { reader in
                     ScrollView {
-                        LazyVStack(spacing: 12) {
+                        // MuYu proxyGridSpacing = 8.0 (v0.2.81;
+                        // was 12; the screenshot's gap is ~7.3pt).
+                        LazyVStack(spacing: 8) {
                             ForEach(listGroups) { group in
                                 listGroupCard(group, width: width)
                                     .id(groupHeaderID(group.name))
@@ -2186,8 +2188,11 @@ private struct GroupBrandIconView: View {
             content
                 .frame(width: max(size - 12, 4), height: max(size - 12, 4))
                 .frame(width: size, height: size)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                // MuYu icon_card.dart: tile radius = AppCorner.xl
+                // (24) − shrink (12) = 12pt (v0.2.81; was 8pt,
+                // which made the tile look almost square).
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 }
@@ -2602,28 +2607,37 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
             HStack(spacing: 10) {
                 groupIconView(icon: icon, name: name, iconStyle: iconStyle)
                 VStack(alignment: .leading, spacing: 2) {
+                    // MuYu ListHeader (v0.2.81): name = callout
+                    // 16pt emphasized, subtitle + type = caption1
+                    // 12pt emphasized grey. Was subheadline 15pt
+                    // + caption2 11pt — visibly smaller than MuYu.
                     Text(name)
-                        .font(.subheadline)
+                        .font(.callout)
                         .fontWeight(.bold)
                         .lineLimit(1)
                     Text(selectedName ?? "")
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .frame(minHeight: 13, alignment: .leading)
                 }
                 Spacer()
                 Text(typeDisplay)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                // MuYu ExpandIcon in a tonal compact IconButton
+                // (v0.2.81): the screenshot's light-grey circle is
+                // ~36pt with a ~14pt chevron (was 30pt / 12pt).
                 Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(.black)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 36, height: 36)
                     .background(Color(.systemGray4), in: Circle())
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            // MuYu card padding is 6pt all round (v0.2.81; was
+            // 12 horizontal / 10 vertical). Row stays 60pt:
+            // 48pt icon + 2×6pt padding.
+            .padding(6)
             .contentShape(Rectangle())
             .onTapGesture(perform: onToggleExpand)
             if expanded {
@@ -2639,27 +2653,31 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
 /// user-imported icon pack (matched by group name), else the
 /// group's first character. Filled puts it in a rounded tile,
 /// plain shows it bare, hidden leaves a small gap so the title
-/// lines up with the card names below. Size is 40pt (v0.2.56):
-/// MuYu's header icon fills the header row (listHeaderHeight
-/// 61pt; IMG_1182 brand icons measure ~40pt) — the old 28pt
-/// tile was visibly smaller than MuYu's.
+/// lines up with the card names below.
+// MuYu list.dart _GroupIcon (v0.2.81): the plain icon fills the
+// header row height (listHeaderHeight − card padding = 48pt), and
+// the filled tile is the same 48pt with 6pt inner padding (36pt
+// icon) and a 14pt radius (AppCorner.xl 24 − _headerInset 10).
+// The old 40pt icon + 8pt tile radius left the logo visibly
+// smaller than MuYu's and the tile almost square ("有的都没有圆角").
 private func groupIconView(icon: String, name: String, iconStyle: ProxyStyleStore.IconStyle) -> some View {
     let content: some View = GroupIconImageView(icon: icon, name: name)
     switch iconStyle {
     case .hidden:
-        return AnyView(Color.clear.frame(width: 4, height: 40))
+        return AnyView(Color.clear.frame(width: 4, height: 48))
     case .plain:
         return AnyView(
             content
                 .foregroundStyle(ConcordTheme.accent)
-                .frame(width: 40, height: 40)
+                .frame(width: 48, height: 48)
         )
     case .filled:
         return AnyView(
             content
-                .frame(width: 40, height: 40)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(width: 36, height: 36)
+                .frame(width: 48, height: 48)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
         )
     }
 }

@@ -75,8 +75,23 @@ final class ProxyStyleStore: ObservableObject {
         sort = ProxySort(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.sort") ?? "") ?? .default
         layout = Layout(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.layout") ?? "") ?? .standard
         cardType = CardType(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.cardType") ?? "") ?? .standard
-        iconStyle = IconStyle(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.iconStyle") ?? "") ?? .filled
+        iconStyle = Self.migratedIconStyle(from: Self.defaults.string(forKey: "ConcordiOS.proxies.iconStyle"))
         hideTimeout = Self.defaults.bool(forKey: "ConcordiOS.proxies.hideTimeout")
+    }
+
+    /// MuYu's default icon style is plain (bare logos), and its
+    /// config migrates a stored 'filled'/'standard' to 'plain'
+    /// (config.dart:494-496). Ours defaulted to filled （色块 grey
+    /// tiles), so the user never saw the bare logos in the MuYu
+    /// screenshots. v0.2.81: default plain, and a stored filled
+    /// （色块 — plus the old English keys, defensively) migrates
+    /// to plain on load. The user can switch back to 色块 in the
+    /// ⋯ menu (图标样式）.
+    private static func migratedIconStyle(from stored: String?) -> IconStyle {
+        switch stored {
+        case "色块", "filled", "standard": return .plain
+        default: return IconStyle(rawValue: stored ?? "") ?? .plain
+        }
     }
 
     private func save() {
@@ -98,7 +113,7 @@ final class ProxyStyleStore: ObservableObject {
         sort = ProxySort(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.sort") ?? "") ?? .default
         layout = Layout(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.layout") ?? "") ?? .standard
         cardType = CardType(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.cardType") ?? "") ?? .standard
-        iconStyle = IconStyle(rawValue: Self.defaults.string(forKey: "ConcordiOS.proxies.iconStyle") ?? "") ?? .filled
+        iconStyle = Self.migratedIconStyle(from: Self.defaults.string(forKey: "ConcordiOS.proxies.iconStyle"))
         hideTimeout = Self.defaults.bool(forKey: "ConcordiOS.proxies.hideTimeout")
     }
 
@@ -163,6 +178,11 @@ final class IconPackStore: ObservableObject {
     private var lowerMap: [String: String] = [:]
     private var normMap: [String: String] = [:]
     private var orderedNorm: [(norm: String, url: String)] = []
+    /// Raw lowercased pack names in file order, for the
+    /// boundary-aware prefix match in step (d) of
+    /// resolveIconURL (v0.2.81): separators are kept, so a word
+    /// boundary can be checked after the query.
+    private var orderedRaw: [(raw: String, url: String)] = []
     /// Memoized iconURL results (v0.2.68 perf fix): the fallback
     /// scan in step (d) walks the whole pack, and the lookup runs
     /// once per icon per page rebuild — so a name that misses the
@@ -216,6 +236,7 @@ final class IconPackStore: ObservableObject {
         var lower: [String: String] = [:]
         var norm: [String: String] = [:]
         var ordered: [(String, String)] = []
+        var rawOrdered: [(String, String)] = []
         for entry in orderedIcons {
             exact[entry.name] = entry.url
             let low = entry.name.lowercased()
@@ -223,11 +244,13 @@ final class IconPackStore: ObservableObject {
             let n = Self.normalize(entry.name)
             if norm[n] == nil { norm[n] = entry.url }
             ordered.append((n, entry.url))
+            rawOrdered.append((low, entry.url))
         }
         exactMap = exact
         lowerMap = lower
         normMap = norm
         orderedNorm = ordered
+        orderedRaw = rawOrdered
         urlMemo = [:]
     }
 
@@ -248,16 +271,23 @@ final class IconPackStore: ObservableObject {
 
     /// Resolves a group's icon URL from the imported pack, or nil.
     /// (a) exact name match; (b) case-insensitive exact match;
-    /// (c) normalized exact match; (d) normalized prefix match
-    /// first (either direction), then normalized contains (either
-    /// direction), scanning in file order — so group "YouTube"
-    /// matches pack entry "YouTube 油管". First duplicate wins at
-    /// every step. An empty normalized group name never matches:
-    /// an empty string is contained in everything. Step (d) also
-    /// requires both sides to be at least 2 characters: a
-    /// single-character name would match almost anything ("x" is
-    /// contained in "netflix"), and 1-character names are already
-    /// handled exactly by (a)–(c) above.
+    /// (c) normalized exact match; (d) boundary-aware prefix
+    /// match (v0.2.81, on the raw lowercased names, file order):
+    /// the pack name starts with the query and the next character
+    /// is a word boundary, OR the query starts with the pack name
+    /// and the remainder is a generic mode suffix （自动/手动/
+    /// 故障转移/直连/代理）. So "YouTube" matches "YouTube 油管"
+    /// and "Apple TV", "TikTok" matches "TikTok直播", "中国自动"
+    /// matches the "中国" flag — but "Apple" never matches
+    /// "AppleTV"/"GoogleDrive", "AppleTV"/"AppleSiri" never match
+    /// "Apple", "中国" never matches "中国香港", and the old
+    /// contains fallback (which matched "Pineapple" for "Apple")
+    /// is gone. MuYu's brandIconFor is exact-only; this is the
+    /// closest disciplined equivalent for a user pack whose
+    /// entries carry mode suffixes. First duplicate wins at every
+    /// step. An empty normalized group name never matches: an
+    /// empty string is contained in everything. Step (d) also
+    /// requires both sides to be at least 2 characters.
     /// Results are memoized (see urlMemo): the step-(d) scan is
     /// O(pack) and this runs once per icon per page rebuild.
     func iconURL(for groupName: String) -> URL? {
@@ -267,6 +297,15 @@ final class IconPackStore: ObservableObject {
         return result
     }
 
+    /// Generic mode suffixes a group name may carry after its
+    /// region/brand name: "中国自动" is still the "中国" flag,
+    /// "国内直连" is still "国内". Anything else after the pack
+    /// name ("AppleTV", "AppleSiri", "GoogleDrive") is a
+    /// different brand and must not match.
+    private static let genericModeSuffixes: Set<String> = [
+        "自动", "手动", "故障转移", "直连", "代理",
+    ]
+
     private func resolveIconURL(for groupName: String) -> URL? {
         if let raw = exactMap[groupName], let url = URL(string: raw) { return url }
         let lower = groupName.lowercased()
@@ -274,12 +313,37 @@ final class IconPackStore: ObservableObject {
         let norm = Self.normalize(groupName)
         guard !norm.isEmpty else { return nil }
         if let raw = normMap[norm], let url = URL(string: raw) { return url }
-        guard norm.count >= 2 else { return nil }
-        for (n, raw) in orderedNorm where n.count >= 2 && (n.hasPrefix(norm) || norm.hasPrefix(n)) {
-            if let url = URL(string: raw) { return url }
-        }
-        for (n, raw) in orderedNorm where n.count >= 2 && (n.contains(norm) || norm.contains(n)) {
-            if let url = URL(string: raw) { return url }
+        guard norm.count >= 2, lower.count >= 2 else { return nil }
+        // A Latin brand name may be followed by a CJK descriptor
+        // ("TikTok直播" is still TikTok); a CJK name may not
+        // continue into another CJK word ("中国" is not "中国香港").
+        let queryHasLatin = lower.contains(where: { $0.isASCII && $0.isLetter })
+        for (praw, raw) in orderedRaw {
+            guard praw.count >= 2 else { continue }
+            if praw.hasPrefix(lower) {
+                // Pack-longer: "YouTube" → "YouTube 油管" (next
+                // char is a space); "Apple" → "AppleTV" is
+                // rejected (next char "t" is an ASCII letter).
+                let idx = praw.index(praw.startIndex, offsetBy: lower.count)
+                if idx == praw.endIndex {
+                    if let url = URL(string: raw) { return url }
+                } else {
+                    let next = praw[idx]
+                    let asciiWordChar = next.isASCII && (next.isLetter || next.isNumber)
+                    if !asciiWordChar && (queryHasLatin || !next.isLetter) {
+                        if let url = URL(string: raw) { return url }
+                    }
+                }
+            } else if lower.hasPrefix(praw) {
+                // Query-longer: only a generic mode suffix may
+                // follow — "中国自动" → "中国", "国内直连" →
+                // "国内"; "AppleTV"/"AppleSiri" → "Apple" is
+                // rejected.
+                let rest = lower.dropFirst(praw.count)
+                if Self.genericModeSuffixes.contains(String(rest)) {
+                    if let url = URL(string: raw) { return url }
+                }
+            }
         }
         return nil
     }
@@ -366,6 +430,7 @@ final class IconPackStore: ObservableObject {
         lowerMap = [:]
         normMap = [:]
         orderedNorm = []
+        orderedRaw = []
         urlMemo = [:]
         packName = nil
         iconCount = 0

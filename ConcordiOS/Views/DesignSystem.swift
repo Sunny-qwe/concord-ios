@@ -768,9 +768,15 @@ struct CachedIconImage<Placeholder: View>: View {
     var body: some View {
         Group {
             if let image {
+                // v0.2.81: scaledToFit, not scaledToFill — MuYu
+                // uses BoxFit.scaleDown (fit inside, never crop).
+                // scaledToFill cropped non-square pack images
+                // (region flags) into sharp squares, so a flag
+                // showed only its middle slice. Square brand
+                // logos are unaffected.
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .scaledToFit()
             } else {
                 placeholder()
             }

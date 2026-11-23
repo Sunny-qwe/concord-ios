@@ -1,4 +1,4 @@
-From a5a17f0f29d298c37f40ecd97af57ad6672eabe0 Mon Sep 17 00:00:00 2001
+From b67ff780c2f820b6cbf33628eb0acb766760bdf8 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Sun, 22 Nov 2026 06:19:28 +0000
 Subject: [PATCH 5/8] ios: enable rquickjs bindgen for iOS

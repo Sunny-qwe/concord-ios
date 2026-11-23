@@ -381,8 +381,7 @@ struct MitmView: View {
                 for id in ids {
                     group.addTask {
                         do {
-                            let result = try await client.mitmExchanges(connection: id).result
-                            return try result.decoded(as: MitmExchangeList.self)
+                            return try await client.mitmExchanges(connection: id).result
                         } catch {
                             return nil
                         }
@@ -759,7 +758,7 @@ final class MitmExchangeMenuModel: ObservableObject {
             if let detail {
                 resolvedDetail = detail
             } else {
-                resolvedDetail = try? await client.mitmExchange(id: summary.exchangeId).result.decoded(as: MitmExchangeDetail.self)
+                resolvedDetail = (try? await client.mitmExchange(id: summary.exchangeId).result) ?? nil
             }
             guard let full = resolvedDetail else {
                 notice = MitmMenuNotice(text: "读取详情失败：这条请求的记录已清除")
@@ -806,7 +805,7 @@ final class MitmExchangeMenuModel: ObservableObject {
             if let detail {
                 resolvedDetail = detail
             } else {
-                resolvedDetail = try? await client.mitmExchange(id: summary.exchangeId).result.decoded(as: MitmExchangeDetail.self)
+                resolvedDetail = (try? await client.mitmExchange(id: summary.exchangeId).result) ?? nil
             }
             guard let full = resolvedDetail else {
                 notice = MitmMenuNotice(text: "读取详情失败：这条请求的记录已清除")

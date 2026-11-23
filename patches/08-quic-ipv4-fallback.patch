@@ -1,4 +1,4 @@
-From 7d2ffd7e7d1513fbef7e6d7bfa2edb19ddacd4c9 Mon Sep 17 00:00:00 2001
+From d120f9e73ebedac2c132b5515b8a63d4cb55f6fd Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Sun, 22 Nov 2026 06:19:29 +0000
 Subject: [PATCH 8/8] dns: try every resolved address for a QUIC upstream

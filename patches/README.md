@@ -6,14 +6,14 @@ never copied into this repo: the GitHub workflow checks out
 build time. A local inspection copy lives at `../upstream/` (gitignored,
 never uploaded).
 
-- **Pinned upstream commit:** `9d1f485441de06ecdc13e181730b4d3e8a903183`
-  (`build(deps): take url 2.5.9 for RUSTSEC-2026-0592`, 2026-11-23)
+- **Pinned upstream commit:** `646f8c9937ced53caca861630d5ece877ea1e0af`
+  (`fix(quic): leave Hysteria, Hysteria2 and ShadowQUIC sending to the peer's credit`, 2026-11-23)
 - **Produced from:** the rebase tree at `/home/hatch/workspace/scratch/v0.2.60/rebase` (8 commits
-  on top of `9d1f485`, `git format-patch 9d1f485`), rebased
-  2026-11-23 from the previous pin `0c9788fc2476b69dcc00c7a578978857d755cfad`.
-  Verified: the 8 patches apply to a fresh clone at `9d1f485`
+  on top of `646f8c9`, `git format-patch 646f8c9`), rebased
+  2026-11-23 from the previous pin `9d1f485441de06ecdc13e181730b4d3e8a903183`.
+  Verified: the 8 patches apply to a fresh clone at `646f8c9`
   with zero rejects and produce a tree byte-identical to the rebase tree
-  (see the "Rebase to 9d1f485" section). The local inspection copy at `../upstream/` (branch `ios-port`)
+  (see the "Rebase to 646f8c9" section). The local inspection copy at `../upstream/` (branch `ios-port`)
   still points at the old pin until it is refreshed; the patches in this
   directory are the authority for the new pin.
 - **Apply order:** `01`, then `02`, then `03`, then `04`, then `05`, then `06`, then `07`, then `08` (filenames sort in order).
@@ -813,6 +813,124 @@ content-identical to the `0c9788f` versions that passed it, and the
 upstream changes in this batch do not touch any patched file. The
 macOS runner (which has `xcrun` and the iOS SDK) is the verification
 for the full staticlib build, as before.
+
+Note: `Cargo.lock` in the upstream tree is stale against the patched
+manifests (patch `01` adds the `bins/ios` member, patch `04` re-sources
+nix — neither commit regenerates the lock). Any `cargo` invocation in the
+patched tree rewrites it. That is harmless here: the workflows run
+`cargo build` without `--locked`, so the runner regenerates the lock
+itself. Do not commit a locally regenerated lock into a patch unless the
+build is switched to `--locked`.
+
+## Rebase to 646f8c9 (2026-11-23)
+
+Patch `02` needed one hand-resolved conflict; `01`, `03`, `04`, `05`,
+`06`, `07`, `08` are content-identical to their `9d1f485` versions
+(only the `From` hashes, `index` hashes and hunk line numbers
+shifted). The `04` conflict the watch report expected (one context-line
+offset) did NOT materialize — the `Cargo.toml` hunk only shifted
+302 → 300. New patch commits on top of `646f8c9` in
+`/home/hatch/workspace/scratch/v0.2.60/rebase`, regenerated with
+`git format-patch 646f8c9`; the regenerated patches applied to a fresh
+clone at `646f8c9` produce a tree byte-identical to the rebase tree
+(0 diff lines, verified before any `cargo` invocation; no
+`Cargo.lock` regeneration involved — never commit it).
+
+Patch `02` conflict, `crates/engine/src/engine/tun.rs`: upstream
+deleted the `/// StopTun.` doc comment above `stop_vpn_tun`
+(9d1f485 line 108 → 646f8c9 line 108 is the bare `pub async fn`),
+and our hunk carried that line as context after the inserted
+`start_channel_tun`. Resolved by keeping our `start_channel_tun`
+verbatim and NOT re-adding the comment. The `crates/api/Cargo.toml`
+hunk auto-merged: upstream added a dependency (`base64`) and gave
+`concord-engine` a `features = ["mitm"]` in the region the patch
+touches, so only the hunk context lines changed. The patch intent
+(`start_channel_tun`, `DeviceSource::Channel`, the packet-channel
+FFI) is unchanged.
+
+55 commits since `9d1f485` (2026-11-23 00:45–06:34), dominated by an
+API-typing refactor wave (`50ef2b9`, `fd82eed`, `2cff326`: MITM
+validate / module views / module status, capture / certificate /
+script answers and the probe + profile answers are now typed on the
+wire), the engine split into modules (`af2e894`, `171bb13`,
+`148c93f`), a QUIC refactor (`462b2e8`, `e1e1b0c`, `4f5e32e`,
+`ac0430f`), the TUN/netstack tidy (`f316190`, `2ea8e31`, `bc22dbf`,
+`4553f21`), and YAML rulesets moving to `concord-config`
+(`1ac6125`). User-visible: `646f8c9` Hysteria / Hysteria2 /
+ShadowQUIC send to the peer's credit window (QUIC stability);
+`335673c` Hysteria2's initial receive window now takes effect;
+`f30896f` a DNS query error names the bad field; `b6e129c` a config
+key that defines a YAML anchor is treated as a template (no more
+`unknown_key` warning for `rule-anchor` style keys); `02730c7`
+building a config no longer drags geo addresses, UA and trust
+config into `force`; `f169d89` MITM capture builds the header list
+only while capturing; `c00991f` the config schema now lists each
+fixed option's legal values. TUN changes are Linux/Android only
+(`bc22dbf`, `10e2dbf`, `f316190`, `2ea8e31`); iOS is unaffected.
+
+`schema/api.json` at the new HEAD still has **72 methods** — none
+added, removed, or renamed. The change that matters: the 4 MITM
+capture methods' results are now strong types instead of the generic
+`MitmResult` (`{result: <untyped JSON>}`) — `mitm.runScript` →
+`MitmScriptResult` (`{result: MitmScriptOutput {logs: string[],
+result?: string, error?: string}}`), `mitm.exchanges` →
+`MitmExchangesResult` (`{result: MitmExchangeList}`),
+`mitm.exchange` → `MitmExchangeResult` (`{result: MitmExchange |
+null}` — null when the capture no longer holds the exchange),
+`mitm.body` → `MitmBodyResult` (`{result: MitmBody | null}` —
+null when the capture no longer holds the body). `MitmExchangeList`
+gains `closed` (the connection had closed when its list was taken,
+so the list is whole); `MitmExchange` gains `route`
+(`MitmRouteNote`: the rule that decided the request and the chain
+it left through, exit first). The v0.2.71 fields are all still on
+the wire (`action-kinds`, `answer`, `reason`, per-rule `actions`
+with `module`). Also new in the schema: `c00991f` puts each fixed
+option's legal values in the config schema — the core side of a
+future config-editor dropdown; the App does not build that UI in
+this version.
+
+**The Swift side changes for this rebase (v0.2.75):**
+- The 4 capture methods now decode typed result wrappers
+  (`MitmScriptResult` / `MitmExchangesResult` /
+  `MitmExchangeResult` / `MitmBodyResult`, in ConcordClient.swift)
+  instead of the generic `ConcordMitmResult` + open-JSON re-decode
+  (`JSONValue.decoded(as:)`, removed as unused). `MitmScriptOutput`
+  is new (`logs`, optional `result` / `error`).
+- `MitmExchangeList` gains `closed: Bool?` (optional-with-default
+  so sample data that omits it still decodes).
+- `MitmExchangeDetail` (MitmStore.swift) now mirrors the full
+  `MitmExchange` wire shape: it gains `actionKinds`, `answer`,
+  `host`, `path`, `contentType`, `statusClass`, `kind`, `rewritten`,
+  `connectionId`, `app`, and `route` (`ConcordMitmRouteNote`:
+  `rule`, `rule-payload`, `chains`), all optional-with-default.
+  The v0.2.71 detail fields keep working through it (`reason`,
+  per-rule `actions` with `module`) and through the summary
+  (`answer`, `actionKinds`).
+- `MitmStore` handles the new nulls: `mitm.exchange` / `mitm.body`
+  returning `null` now shows "该记录已不在抓包缓存中" /
+  "该正文已不在抓包缓存中" instead of a generic decode failure.
+  The raw-JSON sections still show the full detail (the typed
+  detail round-trips back to JSONValue).
+- Sample data returns the typed wrappers (`MitmScriptResult` /
+  `MitmExchangesResult` / `MitmExchangeResult` / `MitmBodyResult`);
+  `sampleExchangeDetail` (open JSON) is replaced by
+  `sampleExchangeDetailTyped` (a `MitmExchangeDetail` with the same
+  values). The script-run displays in MitmStore / MitmModulesView /
+  MitmScriptsView convert the typed output back to JSONValue, so
+  the displayed JSON is unchanged in shape.
+- No other Swift changes: every other new schema field is optional
+  or ignored by the existing decoders, and no App UI changed.
+
+Local verification at the new pin (Linux): the rebase itself is the
+verification for the Rust side (all 8 patches apply cleanly, fresh
+clone + patches byte-identical to the rebase tree). The `cargo check`
+host verification was not re-run this time — patches `01` / `03` /
+`04` / `05` / `06` / `07` / `08` are content-identical to the
+`9d1f485` versions that passed it, and patch `02`'s only change is
+the deleted `StopTun` comment line (the `start_channel_tun` body
+and the `Cargo.toml` additions are unchanged). The macOS runner
+(which has `xcrun` and the iOS SDK) is the verification for the full
+staticlib build, as before.
 
 Note: `Cargo.lock` in the upstream tree is stale against the patched
 manifests (patch `01` adds the `bins/ios` member, patch `04` re-sources

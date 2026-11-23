@@ -101,19 +101,18 @@ enum ConcordSampleData {
         case "mitm.issueCertificate":
             result = AnyEncodable(ConcordMitmPem(pem: ""))
         case "mitm.runScript":
-            result = AnyEncodable(ConcordMitmResult(result: .object([
-                "output": .string("示例脚本输出：规则已应用（示例数据）"),
-            ])))
+            result = AnyEncodable(MitmScriptResult(result: MitmScriptOutput(
+                logs: ["示例脚本输出：规则已应用（示例数据）"], result: nil, error: nil)))
         case "mitm.exchanges":
-            result = AnyEncodable(ConcordMitmResult(result: jsonValue(sampleExchangeList)))
+            result = AnyEncodable(MitmExchangesResult(result: sampleExchangeList))
         case "mitm.query":
             result = AnyEncodable(sampleMitmQuery(paramsData: paramsData))
         case "mitm.exchange":
-            result = AnyEncodable(ConcordMitmResult(result: sampleExchangeDetail))
+            result = AnyEncodable(MitmExchangeResult(result: sampleExchangeDetailTyped))
         case "mitm.body":
-            result = AnyEncodable(ConcordMitmResult(result: jsonValue(MitmBody(
+            result = AnyEncodable(MitmBodyResult(result: MitmBody(
                 data: Data("示例响应正文：{\"ok\":true}".utf8).base64EncodedString(),
-                truncated: false, encoding: ""))))
+                truncated: false, encoding: "")))
         case "config.apply":
             result = AnyEncodable(ConcordConfigApplyResult(warnings: [
                 ConcordWarning(level: "warning", code: "unknown_key", path: "proxies[0]", message: "示例警告：某个节点类型在当前核心版本不受支持，已跳过")
@@ -317,22 +316,18 @@ enum ConcordSampleData {
         ]
     }
 
-    static var sampleExchangeDetail: JSONValue {
-        .object([
-            "id": .int(1),
-            "start": .string("2026-11-17T09:00:00Z"),
-            "duration": .int(87),
-            "method": .string("GET"),
-            "url": .string("https://www.google.com/"),
-            "status": .int(200),
-            "request-size": .int(512),
-            "response-size": .int(2048),
-            "proto": .string("HTTP/1.1"),
-            "ttfb": .int(42),
-            "request-header": .object(["user-agent": .string("示例"), "accept": .string("*/*")]),
-            "response-header": .object(["content-type": .string("text/html")]),
-            "actions": .array([.object(["kind": .string("allow"), "phase": .string("request"), "detail": .string("")])]),
-        ])
+    /// Sample full exchange (upstream 646f8c9 MitmExchange): the
+    /// same values the old open-JSON sample carried, as a typed
+    /// MitmExchangeDetail.
+    static var sampleExchangeDetailTyped: MitmExchangeDetail {
+        MitmExchangeDetail(
+            exchangeId: 1, start: "2026-11-17T09:00:00Z", pending: false, duration: 87,
+            ttfb: 42, method: "GET", url: "https://www.google.com/", originalUrl: nil,
+            proto: "HTTP/1.1", status: 200, requestSize: 512, responseSize: 2048,
+            error: nil, connection: nil,
+            requestHeader: ["user-agent": ["示例"], "accept": ["*/*"]],
+            responseHeader: ["content-type": ["text/html"]],
+            actions: [MitmExchangeAction(kind: "allow", phase: "request", detail: "")])
     }
 
     // MARK: Sample values

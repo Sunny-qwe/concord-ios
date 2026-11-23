@@ -1122,7 +1122,7 @@ struct MitmModuleDetailView: View {
         runningScript = name
         defer { runningScript = nil }
         do {
-            runResult = try await client.mitmRunScript(name: name).result
+            runResult = ConcordSampleData.jsonValue(try await client.mitmRunScript(name: name).result)
             runMessage = "脚本 \(name) 已运行"
         } catch {
             runResult = nil

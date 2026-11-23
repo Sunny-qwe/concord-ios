@@ -171,7 +171,7 @@ struct MitmScriptsView: View {
         isRunning = true
         defer { isRunning = false }
         do {
-            runResult = try await client.mitmRunScript(name: script.label).result
+            runResult = ConcordSampleData.jsonValue(try await client.mitmRunScript(name: script.label).result)
             runMessage = "脚本“\(script.label)”已运行"
         } catch {
             runResult = nil

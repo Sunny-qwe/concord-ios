@@ -1,4 +1,4 @@
-From 5decfbf28f6b8642414190cd0e101b2e4c68e373 Mon Sep 17 00:00:00 2001
+From ef4f9e51782cfbb1860418280b054b314746360a Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
 Date: Sun, 22 Nov 2026 06:19:28 +0000
 Subject: [PATCH 2/8] ios: promote FakeDevice to a production packet-channel
@@ -23,17 +23,17 @@ Subject: [PATCH 2/8] ios: promote FakeDevice to a production packet-channel
  create mode 100644 crates/tun/src/channel.rs
 
 diff --git a/crates/api/Cargo.toml b/crates/api/Cargo.toml
-index 704d763..0ac40cf 100644
+index d143629..dc3f43b 100644
 --- a/crates/api/Cargo.toml
 +++ b/crates/api/Cargo.toml
 @@ -19,6 +19,7 @@ debug = []
  concord-common = { workspace = true, features = ["io"] }
- concord-engine = { workspace = true }
+ concord-engine = { workspace = true, features = ["mitm"] }
  concord-proto = { workspace = true }
 +concord-tun = { workspace = true }
  tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
  futures-util = { workspace = true }
- serde_json = { workspace = true }
+ base64 = { workspace = true }
 diff --git a/crates/api/src/channels.rs b/crates/api/src/channels.rs
 new file mode 100644
 index 0000000..185103c
@@ -209,7 +209,7 @@ index 9880329..2f2e8b0 100644
  pub use concord_common::sync;
  pub use concord_engine::ControllerCors;
 diff --git a/crates/engine/src/engine/tun.rs b/crates/engine/src/engine/tun.rs
-index c763638..b10cd2a 100644
+index f9f31cd..f05dd2a 100644
 --- a/crates/engine/src/engine/tun.rs
 +++ b/crates/engine/src/engine/tun.rs
 @@ -4,7 +4,7 @@ use std::sync::Arc;
@@ -260,9 +260,9 @@ index c763638..b10cd2a 100644
 +        Ok(())
 +    }
 +
-     /// `StopTun`.
      pub async fn stop_vpn_tun(&self) {
          {
+             let mut slot = self.tun.lock().await;
 diff --git a/crates/ffi/src/abi.rs b/crates/ffi/src/abi.rs
 index 06d33c3..4ae4534 100644
 --- a/crates/ffi/src/abi.rs
@@ -384,7 +384,7 @@ index fdaabde..4c87a42 100644
  pub use callback::{Deliver, Release};
  pub use hub::{Hub, Receiver, hub, install, set_notice};
 diff --git a/crates/proto/src/types/live.rs b/crates/proto/src/types/live.rs
-index 441d436..3f81a01 100644
+index b21b1a2..9fb06a1 100644
 --- a/crates/proto/src/types/live.rs
 +++ b/crates/proto/src/types/live.rs
 @@ -410,8 +410,8 @@ pub enum EngineState {
@@ -727,10 +727,10 @@ index 4a701e1..0874cda 100644
      let Some(handler) = deps.dns.clone() else {
          return Ok(None);
 diff --git a/schema/api.json b/schema/api.json
-index 110e012..4ab98fb 100644
+index b2ddd03..81047fb 100644
 --- a/schema/api.json
 +++ b/schema/api.json
-@@ -4624,9 +4624,28 @@
+@@ -4608,9 +4608,28 @@
              "kind",
              "handle"
            ]

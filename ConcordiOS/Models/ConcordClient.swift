@@ -1155,8 +1155,38 @@ struct ConcordMitmPem: Codable {
     let pem: String
 }
 
-struct ConcordMitmResult: Codable {
-    let result: JSONValue
+// MARK: - MITM capture results (upstream 646f8c9)
+//
+// The 4 capture methods used to return the generic MitmResult
+// (`{result: <untyped JSON>}`); at 646f8c9 each returns its own
+// strong type, still wrapped in `{result: ...}`. The client
+// decodes the typed shape directly — no open-JSON re-decode.
+// mitm.exchange / mitm.body return `result: null` when the
+// capture no longer holds the exchange / body.
+
+/// What a script the user ran wrote, and its `$done` value as JSON
+/// (upstream MitmScriptOutput). `logs` is always present; `result`
+/// / `error` are absent when the script wrote nothing / did not fail.
+struct MitmScriptOutput: Codable {
+    let logs: [String]
+    var result: String? = nil
+    var error: String? = nil
+}
+
+struct MitmScriptResult: Codable {
+    let result: MitmScriptOutput
+}
+
+struct MitmExchangesResult: Codable {
+    let result: MitmExchangeList
+}
+
+struct MitmExchangeResult: Codable {
+    let result: MitmExchangeDetail?
+}
+
+struct MitmBodyResult: Codable {
+    let result: MitmBody?
 }
 
 // MARK: - Validation / config-read types (config.validate,
@@ -1591,6 +1621,10 @@ struct MitmExchangeList: Codable {
     let capturing: Bool
     let since: String?
     let exchanges: [MitmExchangeSummary]
+    /// The connection had closed when its list was taken, so the
+    /// list is whole (upstream 646f8c9 MitmExchangeList.closed).
+    /// Optional-with-default so sample data that omits it still decodes.
+    var closed: Bool? = nil
 }
 
 // MARK: - MITM query types (mitm.query, upstream 0c9788f)
@@ -1720,13 +1754,6 @@ struct MitmBody: Codable {
 }
 
 extension JSONValue {
-    /// Re-decodes this open JSON value as a typed struct (used for
-    /// mitm.exchanges / exchange, whose results are open JSON).
-    func decoded<T: Decodable>(as type: T.Type) throws -> T {
-        let data = try JSONEncoder().encode(self)
-        return try JSONDecoder().decode(T.self, from: data)
-    }
-
     /// Pretty-printed JSON for the detail views.
     var prettyPrinted: String {
         guard let data = try? JSONEncoder().encode(self),
@@ -2506,24 +2533,24 @@ final class ConcordClient: ObservableObject {
         return try await call(method: "mitm.issueCertificate", params: MitmIssueParams(host: host), resultType: ConcordMitmPem.self)
     }
 
-    func mitmRunScript(name: String) async throws -> ConcordMitmResult {
+    func mitmRunScript(name: String) async throws -> MitmScriptResult {
         struct MitmScriptParams: Encodable { let name: String }
-        return try await call(method: "mitm.runScript", params: MitmScriptParams(name: name), resultType: ConcordMitmResult.self)
+        return try await call(method: "mitm.runScript", params: MitmScriptParams(name: name), resultType: MitmScriptResult.self)
     }
 
-    func mitmExchanges(connection: UInt64) async throws -> ConcordMitmResult {
+    func mitmExchanges(connection: UInt64) async throws -> MitmExchangesResult {
         struct MitmExchangesParams: Encodable { let connection: UInt64 }
-        return try await call(method: "mitm.exchanges", params: MitmExchangesParams(connection: connection), resultType: ConcordMitmResult.self)
+        return try await call(method: "mitm.exchanges", params: MitmExchangesParams(connection: connection), resultType: MitmExchangesResult.self)
     }
 
-    func mitmExchange(id: Int64) async throws -> ConcordMitmResult {
+    func mitmExchange(id: Int64) async throws -> MitmExchangeResult {
         struct MitmExchangeParams: Encodable { let id: Int64 }
-        return try await call(method: "mitm.exchange", params: MitmExchangeParams(id: id), resultType: ConcordMitmResult.self)
+        return try await call(method: "mitm.exchange", params: MitmExchangeParams(id: id), resultType: MitmExchangeResult.self)
     }
 
-    func mitmBody(id: Int64, response: Bool = false) async throws -> ConcordMitmResult {
+    func mitmBody(id: Int64, response: Bool = false) async throws -> MitmBodyResult {
         struct MitmBodyParams: Encodable { let id: Int64; let response: Bool }
-        return try await call(method: "mitm.body", params: MitmBodyParams(id: id, response: response), resultType: ConcordMitmResult.self)
+        return try await call(method: "mitm.body", params: MitmBodyParams(id: id, response: response), resultType: MitmBodyResult.self)
     }
 }
 

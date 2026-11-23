@@ -90,7 +90,8 @@ final class MitmStore: ObservableObject {
         isRunningScript = true
         defer { isRunningScript = false }
         do {
-            scriptResult = try await client.mitmRunScript(name: name).result
+            let output = try await client.mitmRunScript(name: name).result
+            scriptResult = ConcordSampleData.jsonValue(output)
             scriptMessage = "脚本 \(name) 已运行"
         } catch {
             scriptResult = nil
@@ -152,8 +153,7 @@ final class MitmStore: ObservableObject {
         isLoadingExchanges = true
         defer { isLoadingExchanges = false }
         do {
-            let result = try await client.mitmExchanges(connection: connection).result
-            let list = try result.decoded(as: MitmExchangeList.self)
+            let list = try await client.mitmExchanges(connection: connection).result
             capturing = list.capturing
             exchanges = list.exchanges
             exchangesSince = list.since
@@ -187,8 +187,16 @@ final class MitmStore: ObservableObject {
         isLoadingDetail = true
         defer { isLoadingDetail = false }
         do {
-            exchangeDetail = try await client.mitmExchange(id: summary.exchangeId).result
-            exchangeDetailTyped = try? exchangeDetail?.decoded(as: MitmExchangeDetail.self)
+            // Upstream 646f8c9: mitm.exchange returns `result: null`
+            // when the capture no longer holds the exchange.
+            guard let detail = try await client.mitmExchange(id: summary.exchangeId).result else {
+                exchangeDetail = nil
+                exchangeDetailTyped = nil
+                detailMessage = "该记录已不在抓包缓存中"
+                return
+            }
+            exchangeDetailTyped = detail
+            exchangeDetail = ConcordSampleData.jsonValue(detail)
             detailMessage = nil
         } catch {
             detailMessage = "读取详情失败：\(error.localizedDescription)"
@@ -201,7 +209,14 @@ final class MitmStore: ObservableObject {
     @MainActor
     func loadBody(id: Int64, response: Bool) async {
         do {
-            exchangeBody = try await client.mitmBody(id: id, response: response).result.decoded(as: MitmBody.self)
+            // Upstream 646f8c9: mitm.body returns `result: null`
+            // when the capture no longer holds the body.
+            guard let body = try await client.mitmBody(id: id, response: response).result else {
+                exchangeBody = nil
+                detailMessage = "该正文已不在抓包缓存中"
+                return
+            }
+            exchangeBody = body
             detailMessage = nil
         } catch {
             detailMessage = "读取正文失败：\(error.localizedDescription)"
@@ -212,7 +227,11 @@ final class MitmStore: ObservableObject {
     /// the copy/export menu fetches bodies on demand (upstream
     /// `withExchange` + `_body`).
     func loadBodyData(id: Int64, response: Bool) async -> MitmBody? {
-        try? await client.mitmBody(id: id, response: response).result.decoded(as: MitmBody.self)
+        do {
+            return try await client.mitmBody(id: id, response: response).result
+        } catch {
+            return nil
+        }
     }
 }
 
@@ -276,6 +295,36 @@ struct MitmExchangeDetail: Codable {
     let requestHeader: [String: [String]]?
     let responseHeader: [String: [String]]?
     let actions: [MitmExchangeAction]?
+    /// The kinds of the actions that acted on it, each once, in
+    /// the order they first acted (upstream 9d1f485; the wire
+    /// carries this on the detail too, not just the summary).
+    /// Omitted when none acted.
+    var actionKinds: [String]? = nil
+    /// What answered it in place of its server; nil when the
+    /// request went to the server (upstream 9d1f485).
+    var answer: ConcordMitmAnswer? = nil
+    /// The fields the detail wire carries that the summary
+    /// already shows (upstream 646f8c9 MitmExchange): all
+    /// optional-with-default so the raw-JSON round-trip keeps
+    /// them and older cores that omit them still decode.
+    var host: String? = nil
+    /// With its query.
+    var path: String? = nil
+    /// The response's content type, without parameters, in lower case.
+    var contentType: String? = nil
+    /// 1xx / 2xx / 3xx / 4xx / 5xx, or failed / pending.
+    var statusClass: String? = nil
+    /// json / html / script / css / image / font / media / text / other.
+    var kind: String? = nil
+    /// A rewrite, a local map or a script acted on it.
+    var rewritten: Bool? = nil
+    /// The connection it went out on, as `connection.watch` numbers it.
+    var connectionId: UInt64? = nil
+    /// The process behind that connection, kept after it closed.
+    var app: ConcordMitmApp? = nil
+    /// The rule that decided the request and the chain it left
+    /// through, exit first (upstream 646f8c9 MitmRouteNote).
+    var route: ConcordMitmRouteNote? = nil
 
     enum CodingKeys: String, CodingKey {
         case exchangeId = "id"
@@ -287,6 +336,14 @@ struct MitmExchangeDetail: Codable {
         case responseSize = "response-size"
         case requestHeader = "request-header"
         case responseHeader = "response-header"
+        case actionKinds = "action-kinds"
+        case answer
+        case host, path
+        case contentType = "content-type"
+        case statusClass = "status-class"
+        case kind, rewritten
+        case connectionId = "connection-id"
+        case app, route
     }
 
     /// A header's values, case-insensitive on the name.
@@ -303,5 +360,19 @@ struct MitmExchangeDetail: Codable {
     func sortedHeaders(response: Bool) -> [(String, [String])] {
         let headers = response ? responseHeader : requestHeader
         return (headers ?? [:]).sorted { $0.key.lowercased() < $1.key.lowercased() }
+    }
+}
+
+/// The rule that decided a request and the chain it left through,
+/// exit first (upstream 646f8c9 MitmRouteNote).
+struct ConcordMitmRouteNote: Codable {
+    var rule: String? = nil
+    var rulePayload: String? = nil
+    let chains: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case rule
+        case rulePayload = "rule-payload"
+        case chains
     }
 }

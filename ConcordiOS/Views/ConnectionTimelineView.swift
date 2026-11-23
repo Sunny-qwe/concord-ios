@@ -458,7 +458,7 @@ struct TimelineRailRow: View {
             Spacer().frame(height: Self.dotGap)
             railSegmentFlexible(visible: !last)
         }
-        .frame(width: Self.slotWidth, maxHeight: .infinity, alignment: .top)
+        .frame(width: Self.slotWidth, alignment: .top).frame(maxHeight: .infinity)
     }
 
     private func railSegment(height: CGFloat, visible: Bool) -> some View {
@@ -471,7 +471,7 @@ struct TimelineRailRow: View {
     private func railSegmentFlexible(visible: Bool) -> some View {
         Rectangle()
             .fill(Color(.separator))
-            .frame(width: Self.railWidth, maxHeight: .infinity)
+            .frame(width: Self.railWidth).frame(maxHeight: .infinity)
             .opacity(visible ? 1 : 0)
     }
 

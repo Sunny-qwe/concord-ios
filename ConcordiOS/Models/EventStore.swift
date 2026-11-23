@@ -33,6 +33,34 @@ struct StampedCoreEvent: Identifiable {
     var receivedAtMillis: Int64 { Int64(receivedAt.timeIntervalSince1970 * 1000) }
 }
 
+/// One MITM script `$notification.post` ready to show as a top
+/// banner (v0.2.86 item 4, upstream lib/core/api/dto.dart
+/// `ScriptNotificationEvent`: ONLY script / title / subtitle /
+/// body / url — the core's extra `at` / `connection` / `exchange`
+/// fields are NOT part of the banner). `text` is the non-empty
+/// parts of title, subtitle, body joined with "\n" (upstream
+/// `ScriptNotificationEvent.text`).
+struct ScriptNotificationItem: Identifiable, Equatable {
+    /// Content key (EventStore.key(for:)) — the same notification
+    /// re-read from the snapshot is the same item, never re-shown.
+    let id: String
+    let script: String
+    let text: String
+    let url: String
+
+    /// Upstream core_manager.dart `scriptNotificationLink`: only
+    /// http/https URLs with a non-empty host are openable; anything
+    /// else makes the banner non-tappable (it still shows).
+    var linkURL: URL? {
+        guard let parsed = URL(string: url),
+              let scheme = parsed.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = parsed.host, !host.isEmpty
+        else { return nil }
+        return parsed
+    }
+}
+
 final class EventStore: ObservableObject {
     @Published var entries: [StampedCoreEvent] = []
     /// Cumulative count of events ever seen (v0.2.68): unlike
@@ -43,6 +71,27 @@ final class EventStore: ObservableObject {
     @Published var typeFilter = "全部"
     @Published var lastError: String?
     @Published var lastUpdated: Date?
+    /// The newest unread script notification to show as a banner,
+    /// or nil when there is none (v0.2.86 item 4; upstream mobile
+    /// never stacks banners — application.dart
+    /// `stackedBanners: !isMobileView` — so only the latest is
+    /// kept, never a queue).
+    @Published var pendingScriptNotification: ScriptNotificationItem?
+    /// Last time a banner was shown (upstream Throttler, 1 s,
+    /// fire: true — the first call shows immediately, repeats
+    /// within 1 s are dropped, not queued).
+    private var lastScriptNotificationShownAt: Date?
+    /// The first refresh() only establishes the baseline: events
+    /// already in the snapshot at launch are history, not new
+    /// arrivals — upstream's feed is a live stream, so a banner
+    /// must only fire for notifications that arrive AFTER the
+    /// first load.
+    private var eventsBaselineLoaded = false
+    /// refresh() is now called from the 1 s tick AND from
+    /// Dashboard / LogsView — guard against overlapping runs (the
+    /// merge is idempotent, but totalEventCount would
+    /// double-count a fresh event seen by two concurrent runs).
+    private var refreshInFlight = false
 
     let client: ConcordClient
 
@@ -95,12 +144,27 @@ final class EventStore: ObservableObject {
         return parts.joined(separator: "|")
     }
 
+    /// Dismiss the pending script-notification banner (× button,
+    /// auto-dismiss, or the app leaving the foreground — upstream
+    /// only shows while resumed).
+    @MainActor
+    func dismissScriptNotification() {
+        pendingScriptNotification = nil
+    }
+
     @MainActor
     func refresh() async {
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
+        defer { refreshInFlight = false }
         do {
             let fresh = try await client.eventEntries()
             let now = Date()
             var byKey = Dictionary(uniqueKeysWithValues: entries.map { ($0.key, $0) })
+            // New script notifications seen in this refresh (v0.2.86
+            // item 4): only entries the store has never seen before
+            // can banner — a re-read of the snapshot is not new.
+            var newNotices: [ConcordCoreEvent] = []
             for event in fresh {
                 let key = Self.key(for: event)
                 if byKey[key] == nil {
@@ -108,6 +172,9 @@ final class EventStore: ObservableObject {
                     // Count every fresh event ever seen, even past
                     // the 500-entry cap (v0.2.68: totalEventCount).
                     totalEventCount += 1
+                    if event.type == "scriptNotification" {
+                        newNotices.append(event)
+                    }
                 }
             }
             // Keep only events still in the latest buffer (the
@@ -120,6 +187,36 @@ final class EventStore: ObservableObject {
             entries = merged
             lastUpdated = Date()
             lastError = nil
+            // Script-notification banner (upstream
+            // core_manager.dart `_onScriptNotification`): discard
+            // when the text is empty; several arrivals in one
+            // refresh show only the newest one (mobile never
+            // stacks); arrivals within 1 s of the previous banner
+            // are dropped, not queued (upstream Throttler, 1 s,
+            // fire: true). The foreground gate lives in the banner
+            // host (scenePhase == .active) — the poll only runs
+            // while the app is active anyway (TrafficStore stops
+            // its tick in the background).
+            if eventsBaselineLoaded, let notice = newNotices.last {
+                var parts: [String] = []
+                if let title = notice.title, !title.isEmpty { parts.append(title) }
+                if let subtitle = notice.subtitle, !subtitle.isEmpty { parts.append(subtitle) }
+                if let body = notice.body, !body.isEmpty { parts.append(body) }
+                let text = parts.joined(separator: "\n")
+                if !text.isEmpty {
+                    let throttled = lastScriptNotificationShownAt.map { now.timeIntervalSince($0) < 1 } ?? false
+                    if !throttled {
+                        pendingScriptNotification = ScriptNotificationItem(
+                            id: Self.key(for: notice),
+                            script: notice.script ?? "",
+                            text: text,
+                            url: notice.url ?? ""
+                        )
+                        lastScriptNotificationShownAt = now
+                    }
+                }
+            }
+            eventsBaselineLoaded = true
         } catch {
             lastError = error.localizedDescription
         }

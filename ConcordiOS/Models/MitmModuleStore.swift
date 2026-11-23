@@ -134,6 +134,16 @@ final class MitmModuleStore: ObservableObject {
     @Published var modules: [MitmModule] = []
     @Published var statusMessage: String?
     @Published var lastError: String?
+    /// The module name the core-unavailable guard last refused, and
+    /// a counter that ticks on every refusal. Upstream every
+    /// add/edit/update path goes through readMitmModule → core RPC,
+    /// which throws core_unavailable when the core is not connected,
+    /// and safeRun(silence: false) shows a confirm dialog titled
+    /// with the module name. Views watch the counter — a plain
+    /// String would not re-fire for the same module twice — and show
+    /// that dialog (title = the name, content = the sentence below).
+    @Published var coreUnavailableName = ""
+    @Published private(set) var coreUnavailableCount = 0
     /// Result of the live re-apply after a module change (nil while
     /// the tunnel is stopped: the merge takes effect at next start).
     @Published var applyMessage: String?
@@ -1084,6 +1094,32 @@ final class MitmModuleStore: ObservableObject {
         return out
     }
 
+    /// True when the core can read a module right now: the client is
+    /// live AND the tunnel is running. Upstream every add/edit/update
+    /// path goes through readMitmModule → core RPC, which throws
+    /// core_unavailable when the core is not connected; the local
+    /// Swift parse never calls the core, so without this guard an
+    /// add/edit/update succeeds with the VPN off — the opposite of
+    /// upstream. AppCore.isRunning does NOT count (the live transport
+    /// is only ExtensionConcordTransport, so with the VPN off a unary
+    /// call fails) and sample mode does NOT count (a Mock transport
+    /// would fake success). On refusal records the sentence
+    /// (l10n_zh coreUnavailableTip, verbatim) in lastError and ticks
+    /// coreUnavailableCount so the views show the confirm dialog
+    /// titled with the module name; nothing is written and the row is
+    /// untouched — the same "keep as-is" as upstream's _save exiting
+    /// on a readMitmModule throw before File.write.
+    @MainActor
+    private func guardCoreRunning(named name: String) -> Bool {
+        guard client?.mode == .live, TunnelManager.shared.isRunning else {
+            lastError = "核心未运行，请在核心启动后重试"
+            coreUnavailableName = name
+            coreUnavailableCount += 1
+            return false
+        }
+        return true
+    }
+
     // MARK: - Add / edit / update
 
     /// Imports from a URL or another app's install link
@@ -1098,6 +1134,7 @@ final class MitmModuleStore: ObservableObject {
             lastError = "不是有效的模块链接"
             return nil
         }
+        guard guardCoreRunning(named: moduleName(from: urlString)) else { return nil }
         isBusy = true
         defer { isBusy = false }
         do {
@@ -1131,6 +1168,7 @@ final class MitmModuleStore: ObservableObject {
             lastError = "模块内容为空"
             return nil
         }
+        guard guardCoreRunning(named: moduleName(from: fileName)) else { return nil }
         isBusy = true
         defer { isBusy = false }
         do {
@@ -1163,6 +1201,7 @@ final class MitmModuleStore: ObservableObject {
     @discardableResult
     func edit(_ module: MitmModule, text: String) async -> MitmModule? {
         guard let index = modules.firstIndex(where: { $0.id == module.id }) else { return nil }
+        guard guardCoreRunning(named: module.name) else { return nil }
         isBusy = true
         defer { isBusy = false }
         do {
@@ -1188,6 +1227,7 @@ final class MitmModuleStore: ObservableObject {
     @discardableResult
     func update(_ module: MitmModule) async -> MitmModule? {
         guard let index = modules.firstIndex(where: { $0.id == module.id }) else { return nil }
+        guard guardCoreRunning(named: module.name) else { return nil }
         isBusy = true
         defer { isBusy = false }
         do {
@@ -1220,6 +1260,51 @@ final class MitmModuleStore: ObservableObject {
         }
     }
 
+    /// Moves a subscribed module to a new URL (upstream
+    /// MitmModulesAction.changeUrl → _refresh + _save): the new URL
+    /// is downloaded first — on download failure the old URL is kept
+    /// and only lastError is set — then the text is saved through
+    /// save(url:), so the row takes the new url/name/desc/system and
+    /// a move while enabled resets `accepted`. Returns the saved
+    /// module, or nil when the move failed.
+    @MainActor
+    @discardableResult
+    func changeUrl(_ module: MitmModule, url: String) async -> MitmModule? {
+        guard let index = modules.firstIndex(where: { $0.id == module.id }) else { return nil }
+        // Upstream _editModuleUrl checks this before the core call,
+        // so a duplicate wins over the core-down error too.
+        if modules.contains(where: { $0.id != module.id && $0.url == url }) {
+            lastError = "模块当前已存在"
+            return nil
+        }
+        guard guardCoreRunning(named: module.name) else { return nil }
+        guard let downloadURL = URL(string: url) else {
+            lastError = "不是有效的模块链接"
+            return nil
+        }
+        isBusy = true
+        defer { isBusy = false }
+        do {
+            let data = try await mitmDownloadValidated(from: downloadURL)
+            guard let text = String(data: data, encoding: .utf8), !text.isEmpty else {
+                lastError = "更新失败：下载内容为空"
+                return nil
+            }
+            let previousText = readText(module)
+            var updated = try await save(module, text: text, added: false, previousText: previousText, url: url)
+            updated.lastUpdateTime = Date()
+            modules[index] = updated
+            persist()
+            await refreshModuleFiles()
+            statusMessage = updated.enabled ? "已更新模块 \(updated.name)" : "已更新模块 \(updated.name)（含新脚本，已暂停，需手动开启）"
+            lastError = nil
+            return updated
+        } catch {
+            lastError = "更新失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
     /// The core of add/edit/update: parse, download the resources the
     /// new content names, write the text file, and decide the enabled
     /// flag by the script-consent rules. Returns the saved row.
@@ -1227,7 +1312,7 @@ final class MitmModuleStore: ObservableObject {
     /// editing one down to empty (`content.isEmpty && !edited`) —
     /// the blank template still needs a line before it can be
     /// created, exactly as upstream rejects it.
-    private func save(_ module: MitmModule, text: String, added: Bool, previousText: String?, edited: Bool = false) async throws -> MitmModule {
+    private func save(_ module: MitmModule, text: String, added: Bool, previousText: String?, edited: Bool = false, url: String? = nil) async throws -> MitmModule {
         let firstContent = MitmModuleParser.parse(text: text, values: module.arguments, resources: module.resources)
         if firstContent.isEmpty && !edited {
             throw MitmModuleError(message: "模块内容为空或无法识别")
@@ -1248,6 +1333,10 @@ final class MitmModuleStore: ObservableObject {
         saved.name = content.name ?? module.name
         saved.description = content.description ?? ""
         saved.system = content.system
+        // A move to a new subscription URL (changeUrl) takes the new
+        // url; every other save keeps the module's own (upstream
+        // _save: url: url ?? current.url).
+        saved.url = url ?? module.url
         saved.resources = mergedResources
         saved.lastUpdateTime = Date()
         // Whether the new content asks about anything besides
@@ -1293,6 +1382,14 @@ final class MitmModuleStore: ObservableObject {
                 saved.scripts = content.declaredScripts
             }
         }
+        // Upstream _save: a move to a new URL while enabled resets
+        // `accepted` (re-consent on next enable) — even when the
+        // scripts are unchanged, so this sits outside the
+        // brings-new-scripts branch above (which only pauses when
+        // scripts actually changed).
+        if let url, url != module.url, module.enabled {
+            saved.accepted = nil
+        }
         return saved
     }
 
@@ -1306,6 +1403,7 @@ final class MitmModuleStore: ObservableObject {
     @MainActor
     func setArguments(_ module: MitmModule, values: [String: String]) async {
         guard let index = modules.firstIndex(where: { $0.id == module.id }) else { return }
+        guard guardCoreRunning(named: module.name) else { return }
         isBusy = true
         defer { isBusy = false }
         lastError = nil

@@ -223,6 +223,13 @@ struct MitmModuleContent {
     var coreIgnored: [String] = []
     /// How many lines the core could not read.
     var coreIssueCount: Int = 0
+    /// How many of the core's rules use Surge extended matching
+    /// (upstream MitmModuleRule.extendedMatching, which the core
+    /// reads but does not apply). Counted from the core's rule list
+    /// only — the Swift parser's `rules` strings are never scanned
+    /// for it, so the offline path leaves this at 0 and the detail
+    /// page shows no note.
+    var coreExtendedMatchingCount: Int = 0
     /// The lines the core could not read, by list (the core's
     /// mitm.readModule `issues`, keyed like mitm.validate:
     /// hostname, url-rewrite, header-rewrite, body-rewrite,
@@ -4252,6 +4259,7 @@ enum MitmModuleParser {
         content.coreAsksConsent = view.asksConsent
         content.coreIssueCount = view.issues.values.reduce(0) { $0 + $1.count }
         content.coreIssuesByList = view.issues
+        content.coreExtendedMatchingCount = view.rules.filter(\.extendedMatching).count
         content.coreIgnored = view.ignored.map { ignored in
             var line = "第 \(ignored.line) 行（\(coreIgnoreLabel(ignored.reason))）"
             if let detail = ignored.detail, !detail.isEmpty { line += "：\(detail)" }

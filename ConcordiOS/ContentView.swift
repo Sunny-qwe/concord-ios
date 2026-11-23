@@ -39,6 +39,7 @@ struct ContentView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var logStore: LogStore
+    @EnvironmentObject private var eventStore: EventStore
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var client: ConcordClient
@@ -231,7 +232,13 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active: trafficStore.start()
-            case .background: trafficStore.stop()
+            case .background:
+                trafficStore.stop()
+                // v0.2.86 item 4: upstream only shows a script
+                // notification while resumed — a banner showing
+                // when the app backgrounds is discarded, not kept
+                // for the return.
+                eventStore.dismissScriptNotification()
             default: break
             }
         }
@@ -244,6 +251,10 @@ struct ContentView: View {
         // next tick after returning refreshes within 1 s.
         .onChange(of: selectedTab) { _, tab in
             trafficStore.liveTickPaused = tab != .dashboard
+            // v0.2.86 item 4: pick up a script notification
+            // immediately on a tab switch (the 1 s poll below only
+            // fires while the Dashboard tick runs).
+            Task { await eventStore.refresh() }
         }
         // NOTE (audit A1): a node picked while the VPN was off is
         // applied on the tunnel-connected edge by ProxyStore's own
@@ -256,6 +267,31 @@ struct ContentView: View {
             // S8: keep the due-update gate in sync when the user
             // flips the switch in Settings while the app runs.
             profileStore.globalAutoUpdateEnabled = enabled
+        }
+        // v0.2.86 item 4 (MITM `$notification.post` banner):
+        // poll the events snapshot on TrafficStore's 1 s tick — NO
+        // new permanent Timer (the snapshot file is the buffer, so
+        // a new script notification is only visible on a refresh).
+        // `$current` fires on every tick while the Dashboard tab is
+        // selected; on other tabs the tick skips the traffic
+        // refresh (liveTickPaused) but the per-node sampler still
+        // runs, so `$nodeSpeeds` covers those tabs while traffic
+        // is flowing (a script can only post while requests flow).
+        // EventStore.refresh() itself detects new
+        // `scriptNotification` entries and raises the banner; the
+        // banner host lives in ScriptNotificationBanner.swift.
+        .onReceive(trafficStore.$current) { _ in
+            Task { await eventStore.refresh() }
+        }
+        .onReceive(trafficStore.$nodeSpeeds) { _ in
+            Task { await eventStore.refresh() }
+        }
+        // v0.2.86 item 4: the banner mount point — exactly one
+        // overlay at the ContentView root, above the sliding tab
+        // container; the banner UI itself lives in
+        // ScriptNotificationBanner.swift, NOT here.
+        .overlay(alignment: .top) {
+            ScriptNotificationBannerHost()
         }
     }
 

@@ -1,6 +1,17 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Upstream String.webUri (FlClash common/string.dart:13-22):
+/// http/https/ftp with a host. The URL-input dialog's validator
+/// (showUrlInput: empty → "值不能为空", not a URL → "值必须为URL").
+private func isMitmModuleURL(_ text: String) -> Bool {
+    guard let url = URL(string: text),
+          let scheme = url.scheme?.lowercased(),
+          ["http", "https", "ftp"].contains(scheme),
+          let host = url.host, !host.isEmpty else { return false }
+    return true
+}
+
 // MARK: - MITM modules (FlClash: MITM modules page)
 // Surge .sgmodule / Loon .plugin / Quantumult X / Stash override
 // modules, parsed by MitmModuleParser and merged into the config
@@ -56,6 +67,34 @@ struct MitmModulesView: View {
     /// Dismissed with ×, or by restarting.
     @State private var showRestartTip = false
     @State private var isRestartingVpn = false
+    /// The confirm dialog for a module operation that failed
+    /// (upstream safeRun silence:false): title = module name,
+    /// content = the failure. The core-down case is the core tip
+    /// sentence ("核心未运行，请在核心启动后重试"); anything else is
+    /// the store's lastError. Ticked by the store's
+    /// coreUnavailableCount, so add/edit/update failures from the
+    /// editor and paste sheets — which have no list display slot —
+    /// still surface here.
+    @State private var listErrorTitle = ""
+    @State private var listErrorMessage = ""
+    @State private var showListErrorAlert = false
+    /// The row menu's URL editor (upstream _editModuleUrl): the
+    /// module being moved and its new URL text.
+    @State private var urlEditModule: MitmModule?
+    @State private var urlEditText = ""
+    @State private var urlEditError: String?
+    @State private var showUrlEditDialog = false
+    /// The row menu's 编辑 target for a local module (upstream
+    /// openMitmModuleEditor): a different type from MitmModule so
+    /// its navigationDestination(item:) does not clash with the
+    /// detail page's (two destinations for the same type conflict).
+    @State private var editTarget: EditTarget?
+
+    /// A row-menu "编辑" target (see editTarget).
+    private struct EditTarget: Identifiable, Hashable {
+        let module: MitmModule
+        var id: String { module.id }
+    }
 
     var body: some View {
         List {
@@ -105,6 +144,34 @@ struct MitmModulesView: View {
         .navigationDestination(item: $detailModule) { module in
             MitmModuleDetailView(moduleId: module.id)
         }
+        // Upstream openMitmModuleEditor pushes EditorPage
+        // (module_editor.dart:48) — the row menu's 编辑 for a local
+        // module, a full page push, not a sheet. The text file can
+        // be missing: that renders an error page, never a blank
+        // sheet (see the detail page's editor destination).
+        .navigationDestination(item: $editTarget) { target in
+            if let text = moduleStore.text(of: target.module) {
+                MitmModuleTextEditorView(
+                    module: target.module,
+                    initialText: text,
+                    onSaved: { saved in offerConsent(saved) },
+                    pushed: true
+                )
+            } else {
+                List {
+                    Section {
+                        Text("模块文本丢失，请重新导入。")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .font(.footnote.weight(.semibold))
+                .background(ConcordTheme.pageBackground)
+                .navigationTitle(target.module.name)
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
         // Upstream mitm_modules.dart:160: URL import is an input
         // dialog (dialogs.showUrlInput), not a sheet.
         .alert("从链接导入模块", isPresented: $showImportURLDialog) {
@@ -117,6 +184,23 @@ struct MitmModulesView: View {
             }
         } message: {
             Text("每行一个模块链接，也支持 surge:// / loon:// 安装链接。")
+        }
+        // Upstream _editModuleUrl (mitm_modules.dart:147): the
+        // module's subscription URL is edited in a URL-input dialog
+        // (dialogs.showUrlInput, title "URL").
+        .alert("URL", isPresented: $showUrlEditDialog) {
+            TextField("模块链接", text: $urlEditText, axis: .vertical)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("取消", role: .cancel) {
+                urlEditModule = nil
+                urlEditError = nil
+            }
+            Button("保存") {
+                Task { await saveUrlEdit() }
+            }
+        } message: {
+            Text(urlEditError ?? "输入新的订阅链接。")
         }
         // Upstream mitm_modules.dart:189: file import is the
         // system file picker.
@@ -182,6 +266,22 @@ struct MitmModulesView: View {
         } message: {
             Text("删除“\(deleteModule?.name ?? "")”？它的文本和已下载的脚本都会删掉。")
         }
+        // The confirm dialog for a failed module operation (item 7).
+        .alert(listErrorTitle, isPresented: $showListErrorAlert) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            Text(listErrorMessage)
+        }
+        .onChange(of: moduleStore.coreUnavailableCount) { _, _ in
+            // A pushed detail page shows the dialog itself (its own
+            // onChange); this one only fires for list-level
+            // failures — imports, the row menu, the blank editor and
+            // the paste sheet.
+            guard detailModule == nil else { return }
+            listErrorTitle = moduleStore.coreUnavailableName
+            listErrorMessage = "核心未运行，请在核心启动后重试"
+            showListErrorAlert = true
+        }
     }
 
     /// The restart-tip banner (MuYu showMitmRestartTip), as its own
@@ -241,8 +341,81 @@ struct MitmModulesView: View {
             },
             onShowDetail: { detailModule = module },
             onRefetch: { Task { await refetch(module) } },
-            onExpand: { Task { await refreshStatusIfNeeded() } }
+            onExpand: { Task { await refreshStatusIfNeeded() } },
+            onUpdate: { Task { await updateModule(module) } },
+            onEditUrl: {
+                urlEditModule = module
+                urlEditText = module.url ?? ""
+                urlEditError = nil
+                showUrlEditDialog = true
+            },
+            onEdit: { editTarget = EditTarget(module: module) }
         )
+    }
+
+    /// The row menu's 更新 (upstream _updateModule): re-downloads
+    /// the module, then offers the consent prompt when it awaits
+    /// it. A download failure surfaces in the error dialog; the
+    /// core-down case fires from the store's coreUnavailableCount
+    /// onChange too — same title and message.
+    private func updateModule(_ module: MitmModule) async {
+        if let updated = await moduleStore.update(module) {
+            offerConsent(updated)
+        } else if let error = moduleStore.lastError {
+            listErrorTitle = module.name
+            listErrorMessage = error
+            showListErrorAlert = true
+        }
+    }
+
+    /// Saves the URL-edit dialog (upstream _editModuleUrl):
+    /// validates like showUrlInput (empty → "值不能为空", not a URL
+    /// → "值必须为URL"), returns silently when unchanged, then
+    /// moves the module with changeUrl and offers the consent prompt
+    /// when it awaits it. A failed check re-opens the dialog with
+    /// the error as its message (upstream's dialog stays open on a
+    /// validation error); the core-down case is the store event's
+    /// confirm dialog instead, so the dialog just closes.
+    private func saveUrlEdit() async {
+        guard let module = urlEditModule else { return }
+        let url = urlEditText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if url.isEmpty {
+            urlEditError = "值不能为空"
+            reopenUrlEditDialog()
+            return
+        }
+        if !isMitmModuleURL(url) {
+            urlEditError = "值必须为URL"
+            reopenUrlEditDialog()
+            return
+        }
+        if url == module.url {
+            urlEditModule = nil
+            urlEditError = nil
+            return
+        }
+        if let updated = await moduleStore.changeUrl(module, url) {
+            urlEditModule = nil
+            urlEditError = nil
+            offerConsent(updated)
+        } else if let error = moduleStore.lastError {
+            if error == "核心未运行，请在核心启动后重试" {
+                urlEditModule = nil
+                urlEditError = nil
+            } else {
+                // Duplicate ("模块当前已存在") or download failure:
+                // back into the dialog with the error as its message.
+                urlEditError = error
+                reopenUrlEditDialog()
+            }
+        }
+    }
+
+    /// Re-presents the URL-edit dialog on the next runloop turn:
+    /// setting isPresented synchronously inside the dismissing
+    /// button's action is swallowed by the dismissal.
+    private func reopenUrlEditDialog() {
+        DispatchQueue.main.async { showUrlEditDialog = true }
     }
 
     @ToolbarContentBuilder
@@ -462,6 +635,12 @@ private struct MitmModuleRow: View {
     /// Called when the row expands, so the list can load the status
     /// if it has none yet.
     let onExpand: () -> Void
+    /// The long-press menu's 更新: re-downloads the module.
+    let onUpdate: () -> Void
+    /// The long-press menu's URL: edits the subscription URL.
+    let onEditUrl: () -> Void
+    /// The long-press menu's 编辑: opens the text editor.
+    let onEdit: () -> Void
 
     @EnvironmentObject private var moduleStore: MitmModuleStore
     /// Tapping the row expands it in place to show the core's live
@@ -511,6 +690,23 @@ private struct MitmModuleRow: View {
                 Label("删除", systemImage: "trash")
             }
         }
+        .contextMenu {
+            rowContextMenu
+        }
+    }
+
+    /// The long-press menu (upstream _MitmModuleRow
+    /// ContextMenuRegion): remote modules 更新 / URL / 删除, local
+    /// modules 编辑 / 删除.
+    @ViewBuilder
+    private var rowContextMenu: some View {
+        if module.url != nil {
+            Button("更新", action: onUpdate)
+            Button("URL", action: onEditUrl)
+        } else {
+            Button("编辑", action: onEdit)
+        }
+        Button("删除", role: .destructive, action: onDelete)
     }
 
     /// The expanded detail: the old collapsed-row badges and
@@ -760,6 +956,21 @@ struct MitmModuleDetailView: View {
     @State private var showAttachmentImporter = false
     @State private var detachAttachment: String?
     @State private var showDetachConfirm = false
+    /// The confirm dialog for a module operation that failed
+    /// (upstream safeRun silence:false): title = module name,
+    /// content = the failure — the core tip sentence when the core
+    /// is down, the store's lastError otherwise. Ticked by the
+    /// store's coreUnavailableCount, so edit (editor page),
+    /// setArguments and update failures all surface here.
+    @State private var detailErrorTitle = ""
+    @State private var detailErrorMessage = ""
+    @State private var showDetailErrorAlert = false
+    /// The 来源 row's URL editor (upstream _editModuleUrl): the
+    /// module being moved and its new URL text.
+    @State private var urlEditModule: MitmModule?
+    @State private var urlEditText = ""
+    @State private var urlEditError: String?
+    @State private var showUrlEditDialog = false
 
     private var module: MitmModule? {
         moduleStore.modules.first { $0.id == moduleId }
@@ -777,84 +988,11 @@ struct MitmModuleDetailView: View {
 
     var body: some View {
         List {
-            if showRestartTip {
-                Section {
-                    HStack {
-                        Text("VPN 相关配置已改动，点击重启")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
-                        Spacer()
-                        Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
-                            Task { await restartVpn() }
-                        }
-                        .font(.caption2)
-                        .disabled(isRestartingVpn)
-                        Button(action: { showRestartTip = false }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 9, weight: .bold))
-                        }
-                        .foregroundStyle(.secondary)
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("不再提示")
-                    }
-                }
-            }
-            if let module {
-                Section {
-                    // FlClash mitm_modules.dart detail build: the
-                    // enabled toggle is the first section.
-                    Toggle("启用模块", isOn: Binding(
-                        get: { module.enabled },
-                        set: { on in toggleDetail(module, on: on) }
-                    ))
-                    Text(module.description.isEmpty ? "（无描述）" : module.description)
-                        .font(.footnote)
-                    LabeledContent("来源", value: module.url ?? "本地")
-                    LabeledContent("上次更新", value: ConcordRelativeTime.string(since: module.lastUpdateTime))
-                    if let tip = module.systemTip {
-                        Text(tip).font(.caption2).foregroundStyle(.orange)
-                    }
-                    if let message = moduleStore.applyMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-
-                localAttachmentsSection
-
-                parsedContentSection
-
-                Section("操作") {
-                    if module.url != nil {
-                        Button("更新（重新下载）") {
-                            Task {
-                                // FlClash mitm_modules.dart:224:
-                                // consent right after an update that
-                                // brings new scripts — the module now
-                                // awaits consent persistently, so the
-                                // prompt is offered when it does.
-                                if let updated = await moduleStore.update(module),
-                                   moduleStore.awaitsConsent(updated) {
-                                    showConsent = true
-                                }
-                            }
-                        }
-                        .disabled(moduleStore.isBusy)
-                    }
-                    Button("编辑原文") { showEditorPage = true }
-                    if client.mode == .live && tunnelManager.isRunning {
-                        Button("校验合并后的 MITM 配置") {
-                            Task { await validate() }
-                        }
-                        .disabled(isValidating)
-                    }
-                    if isValidating { ProgressView() }
-                    if let message = validateMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    validationIssuesSection
-                    Button("删除模块", role: .destructive) { showDeleteConfirm = true }
-                }
-            }
+            detailRestartTipSection
+            detailInfoSection
+            localAttachmentsSection
+            parsedContentSection
+            detailActionsSection
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
@@ -955,6 +1093,156 @@ struct MitmModuleDetailView: View {
         } message: {
             Text(detailConsentMessage)
         }
+        // The confirm dialog for a failed module operation (item 7).
+        .alert(detailErrorTitle, isPresented: $showDetailErrorAlert) {
+            Button("确定", role: .cancel) {}
+        } message: {
+            Text(detailErrorMessage)
+        }
+        .onChange(of: moduleStore.coreUnavailableCount) { _, _ in
+            detailErrorTitle = moduleStore.coreUnavailableName
+            detailErrorMessage = "核心未运行，请在核心启动后重试"
+            showDetailErrorAlert = true
+        }
+        // Upstream _editModuleUrl (mitm_modules.dart:147): the
+        // module's subscription URL is edited in a URL-input dialog
+        // (dialogs.showUrlInput, title "URL").
+        .alert("URL", isPresented: $showUrlEditDialog) {
+            TextField("模块链接", text: $urlEditText, axis: .vertical)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("取消", role: .cancel) {
+                urlEditModule = nil
+                urlEditError = nil
+            }
+            Button("保存") {
+                Task { await saveUrlEdit() }
+            }
+        } message: {
+            Text(urlEditError ?? "输入新的订阅链接。")
+        }
+    }
+
+    /// The restart-tip banner (MuYu showMitmRestartTip), as its own
+    /// section so the detail body stays small enough to type-check
+    /// (v0.2.86: the ~180-line detail body was already over the
+    /// 150-line risk limit before Batch 2 added to it).
+    @ViewBuilder
+    private var detailRestartTipSection: some View {
+        if showRestartTip {
+            Section {
+                HStack {
+                    Text("VPN 相关配置已改动，点击重启")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
+                        Task { await restartVpn() }
+                    }
+                    .font(.caption2)
+                    .disabled(isRestartingVpn)
+                    Button(action: { showRestartTip = false }) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("不再提示")
+                }
+            }
+        }
+    }
+
+    /// The info section (enabled toggle, description, source, last
+    /// update), as its own section so the detail body stays small
+    /// enough to type-check (see detailRestartTipSection).
+    @ViewBuilder
+    private var detailInfoSection: some View {
+        if let module {
+            Section {
+                // FlClash mitm_modules.dart detail build: the
+                // enabled toggle is the first section.
+                Toggle("启用模块", isOn: Binding(
+                    get: { module.enabled },
+                    set: { on in toggleDetail(module, on: on) }
+                ))
+                Text(module.description.isEmpty ? "（无描述）" : module.description)
+                    .font(.footnote)
+                if let url = module.url {
+                    // Upstream _sourceItems: the 来源 row opens the
+                    // URL editor when the module is remote.
+                    Button(action: {
+                        urlEditModule = module
+                        urlEditText = url
+                        urlEditError = nil
+                        showUrlEditDialog = true
+                    }) {
+                        LabeledContent("来源", value: url)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    LabeledContent("来源", value: "本地")
+                }
+                LabeledContent("上次更新", value: ConcordRelativeTime.string(since: module.lastUpdateTime))
+                if let tip = module.systemTip {
+                    Text(tip).font(.caption2).foregroundStyle(.orange)
+                }
+                if let message = moduleStore.applyMessage {
+                    Text(message).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// The actions section (update / edit / validate / delete), as
+    /// its own section so the detail body stays small enough to
+    /// type-check (see detailRestartTipSection).
+    @ViewBuilder
+    private var detailActionsSection: some View {
+        if let module {
+            Section("操作") {
+                if module.url != nil {
+                    Button("更新（重新下载）") {
+                        Task {
+                            // FlClash mitm_modules.dart:224:
+                            // consent right after an update that
+                            // brings new scripts — the module now
+                            // awaits consent persistently, so the
+                            // prompt is offered when it does.
+                            if let updated = await moduleStore.update(module) {
+                                if moduleStore.awaitsConsent(updated) {
+                                    showConsent = true
+                                }
+                            } else if let error = moduleStore.lastError {
+                                // A download failure surfaces here;
+                                // the core-down case also ticks
+                                // coreUnavailableCount, so the confirm
+                                // dialog fires from its onChange too
+                                // — same title and message, so the
+                                // double set is harmless.
+                                detailErrorTitle = module.name
+                                detailErrorMessage = error
+                                showDetailErrorAlert = true
+                            }
+                        }
+                    }
+                    .disabled(moduleStore.isBusy)
+                }
+                Button("编辑原文") { showEditorPage = true }
+                if client.mode == .live && tunnelManager.isRunning {
+                    Button("校验合并后的 MITM 配置") {
+                        Task { await validate() }
+                    }
+                    .disabled(isValidating)
+                }
+                if isValidating { ProgressView() }
+                if let message = validateMessage {
+                    Text(message).font(.caption2).foregroundStyle(.secondary)
+                }
+                validationIssuesSection
+                Button("删除模块", role: .destructive) { showDeleteConfirm = true }
+            }
+        }
     }
 
     /// Local-file attachments (FlClash mitm_modules.dart:629-633,
@@ -1019,7 +1307,7 @@ struct MitmModuleDetailView: View {
                     linesRow(title: "跳过验证域名", key: nil, section: "mitm", lines: content.skipVerifyHostname, content: content)
                     linesRow(title: "客户端来源", key: nil, section: "mitm", lines: content.clientSourceAddress, content: content)
                     linesRow(title: "脚本", key: "script", section: "script", lines: content.script, content: content)
-                    linesRow(title: "规则", key: "rules", section: "rule", lines: content.rules, content: content)
+                    linesRow(title: "规则", key: "rules", section: "rule", lines: content.rules, content: content, note: extendedMatchingNote(for: content))
                     linesRow(title: "待下载资源", key: nil, section: "", lines: content.resourceUrls.sorted(), content: content)
                     if !content.skipped.isEmpty {
                         NavigationLink("跳过的行（\(content.skipped.count)）") {
@@ -1135,6 +1423,53 @@ struct MitmModuleDetailView: View {
         }
     }
 
+    /// Saves the URL-edit dialog (upstream _editModuleUrl) — the
+    /// list's saveUrlEdit, but the consent prompt here is the
+    /// detail's own showConsent flag.
+    private func saveUrlEdit() async {
+        guard let module = urlEditModule else { return }
+        let url = urlEditText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if url.isEmpty {
+            urlEditError = "值不能为空"
+            reopenUrlEditDialog()
+            return
+        }
+        if !isMitmModuleURL(url) {
+            urlEditError = "值必须为URL"
+            reopenUrlEditDialog()
+            return
+        }
+        if url == module.url {
+            urlEditModule = nil
+            urlEditError = nil
+            return
+        }
+        if let updated = await moduleStore.changeUrl(module, url) {
+            urlEditModule = nil
+            urlEditError = nil
+            if moduleStore.awaitsConsent(updated) {
+                showConsent = true
+            }
+        } else if let error = moduleStore.lastError {
+            if error == "核心未运行，请在核心启动后重试" {
+                urlEditModule = nil
+                urlEditError = nil
+            } else {
+                // Duplicate ("模块当前已存在") or download failure:
+                // back into the dialog with the error as its message.
+                urlEditError = error
+                reopenUrlEditDialog()
+            }
+        }
+    }
+
+    /// Re-presents the URL-edit dialog on the next runloop turn:
+    /// setting isPresented synchronously inside the dismissing
+    /// button's action is swallowed by the dismissal.
+    private func reopenUrlEditDialog() {
+        DispatchQueue.main.async { showUrlEditDialog = true }
+    }
+
     /// MuYu showMitmRestartTip's gate, on iOS: only when the VPN
     /// is running and MITM is on (the tip's tap restarts it).
     private func showRestartTipIfNeeded() {
@@ -1156,13 +1491,22 @@ struct MitmModuleDetailView: View {
         }
     }
 
+    /// Upstream MitmModuleView: the "路由规则" item's note, shown
+    /// only when the count is > 0 (0 => null). The count comes from
+    /// the core's rules (parseWithCore) — the Swift parser never
+    /// sets it, so offline there is no note, exactly as upstream
+    /// shows no rules section at all without the core.
+    private func extendedMatchingNote(for content: MitmModuleContent) -> String? {
+        content.coreExtendedMatchingCount == 0 ? nil : "其中 \(content.coreExtendedMatchingCount) 条使用扩展匹配"
+    }
+
     /// One MITM list as an openable row (upstream _linesItem):
     /// the count, or how many lines are flagged invalid out of the
     /// count, opening the list's lines. Empty lists stay a plain
     /// count row. The script list's lines get a run button, like
     /// upstream's per-line run menu.
     @ViewBuilder
-    private func linesRow(title: String, key: String?, section: String, lines: [String], content: MitmModuleContent) -> some View {
+    private func linesRow(title: String, key: String?, section: String, lines: [String], content: MitmModuleContent, note: String? = nil) -> some View {
         let issues = lineIssues(for: key, section: section, lines: lines, content: content)
         let invalid = lines.filter { issues[$0] != nil }.count
         if lines.isEmpty {
@@ -1182,8 +1526,13 @@ struct MitmModuleDetailView: View {
                 HStack {
                     Text(title)
                     Spacer()
-                    Text(invalid == 0 ? "\(lines.count) 条" : "\(invalid) 条无效 · 共 \(lines.count) 条")
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(invalid == 0 ? "\(lines.count) 条" : "\(invalid) 条无效 · 共 \(lines.count) 条")
+                        if let note {
+                            Text(note)
+                        }
+                    }
+                    .foregroundStyle(.secondary)
                 }
             }
         }

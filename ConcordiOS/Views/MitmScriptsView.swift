@@ -88,7 +88,7 @@ struct MitmScriptsView: View {
                 }
                 urlScript = nil
             }
-        } message: {
+        } message: { _ in
             Text("输入新的脚本名。")
         }
         .fileImporter(
@@ -199,6 +199,7 @@ struct MitmScriptsView: View {
         }
     }
 
+    @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {

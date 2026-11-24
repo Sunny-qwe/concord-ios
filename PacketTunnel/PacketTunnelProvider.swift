@@ -438,9 +438,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let ns = e as NSError
             return String("\(ns.localizedDescription) [\(ns.domain):\(ns.code)]".prefix(2048))
         }
-        let record = StartupDiagnosticRecord(id: startupID, stage: stage, detail: detail, date: Date())
+        let file = container.appendingPathComponent("vpn-startup.json")
+        let previous = (try? Data(contentsOf: file)).flatMap {
+            try? JSONDecoder().decode(StartupDiagnosticRecord.self, from: $0)
+        }
+        // Preserve the last useful stage and error when stopTunnel follows failure.
+        let stopDetail: String?
+        if stage == "stopped", let previous, previous.id == startupID {
+            stopDetail = "停止前阶段：\(previous.stage)；\(previous.detail ?? "无扩展错误详情")；\(detail ?? "")"
+        } else {
+            stopDetail = detail
+        }
+        let record = StartupDiagnosticRecord(id: startupID, stage: stage, detail: stopDetail, date: Date())
         guard let data = try? JSONEncoder().encode(record) else { return }
-        try? data.write(to: container.appendingPathComponent("vpn-startup.json"), options: .atomic)
+        try? data.write(to: file, options: .atomic)
     }
 
     // MARK: - C callbacks (non-capturing; the provider is passed as context)
@@ -769,7 +780,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         isStopping = true
-        recordStartup("stopped")
+        let stopError = NSError(domain: "NEProviderStopReason", code: reason.rawValue,
+                                userInfo: [NSLocalizedDescriptionKey: "系统停止原因：\(reason.rawValue)"])
+        recordStartup("stopped", error: stopError)
         writeVPNDiagnostics(stage: "stopped")
         // Interface B8 (stop-part): drop the stale snapshots now,
         // while the files still belong to this run — the app must

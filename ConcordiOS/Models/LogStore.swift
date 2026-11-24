@@ -106,6 +106,8 @@ final class LogStore: ObservableObject {
         if let connectionDiagnosticText, !connectionDiagnosticText.isEmpty {
             sections.append("== 连接诊断 ==\n" + connectionDiagnosticText)
         }
+        let tunnel = TunnelManager.shared
+        sections.append("== 系统 VPN 状态 ==\n状态码：\(tunnel.status.rawValue)\n启动错误：\(tunnel.lastError ?? "无")\n系统断开错误：\(tunnel.lastSystemDisconnectError ?? "暂未获取")")
         sections.append("== VPN 启动诊断 ==\n" + (TunnelManager.shared.lastStartupDiagnostic() ?? "暂无最近的 VPN 启动诊断（扩展未写入或已超过 180 秒）"))
         if let lastError {
             sections.append("== 日志拉取错误 ==\n\(lastError)")

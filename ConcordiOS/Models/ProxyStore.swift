@@ -761,6 +761,10 @@ final class ProxyStore: ObservableObject {
             // title + loading state) is not held up by it
             // (v0.2.40 title-delay fix); the parsed result is
             // applied back on the main actor below.
+            if client.mode == .live, TunnelManager.shared.isRunning, !groups.isEmpty {
+                lastError = error.localizedDescription
+                return
+            }
             if let profile = activeProfile {
                 let store = profileStore
                 let local = await Task.detached { store?.localProxyGroups(for: profile) }.value
@@ -1354,6 +1358,21 @@ final class ProxyStore: ObservableObject {
     /// read only changes the line (or leaves it out) — the test
     /// always runs. Returns the report line, or nil in sample mode
     /// (no real core).
+    /// Do not start a second core while NetworkExtension is transitioning.
+    @MainActor
+    private func verifyDelayBackend() async throws {
+        guard client.mode == .live else { return }
+        switch TunnelManager.shared.status {
+        case .connected:
+            _ = try await client.configGeneral()
+        case .disconnected, .invalid:
+            break
+        default:
+            throw NSError(domain: "DelayBackend", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "VPN 正在切换，暂不能测速；请等待连接完成或完全断开"])
+        }
+    }
+
     @MainActor
     private func unifiedDelayDiagnosticLine(useAppCore: Bool) async -> String? {
         guard client.mode == .live else { return nil }
@@ -1845,6 +1864,13 @@ final class ProxyStore: ObservableObject {
         // (v0.2.49, IMG_1163: every row showed 测速失败 from an
         // earlier completed run while a new run was still in
         // flight). Fresh results land per batch below.
+        do {
+            try await verifyDelayBackend()
+        } catch {
+            throwError = error
+            noteTestError(error)
+            return
+        }
         clearLatencies(for: targets)
         applyLatencies()
         // A new test supersedes the old failure: clear the banner
@@ -2095,6 +2121,13 @@ final class ProxyStore: ObservableObject {
         // Clear the stale result for this node first (v0.2.49,
         // same as the group path): the chip shows the testing
         // state, not the previous run's -2.
+        do {
+            try await verifyDelayBackend()
+        } catch {
+            noteTestError(error)
+            AppCore.recordDelayTestReport("单节点未测速：\(error.localizedDescription)")
+            return
+        }
         clearLatencies(for: [target])
         applyLatencies()
         let useAppCore = client.mode == .live && !TunnelManager.shared.isRunning

@@ -128,6 +128,7 @@ final class TunnelManager: ObservableObject {
             if new == .disconnected,
                old == .connected || old == .connecting || old == .reasserting,
                !self.userInitiatedStop {
+                self.captureLastDisconnectError()
                 self.unexpectedDisconnect = true
                 if old == .connecting, !self.reachedConnectedThisStart {
                     // FAILED START (never reached .connected): the
@@ -462,6 +463,18 @@ final class TunnelManager: ObservableObject {
     /// startup record for this run — used by the Dashboard's
     /// unexpected-disconnect banner so an extension-side failure
     /// shows its stage instead of a generic message.
+    /// System error is separate from extension records, including early launch failures.
+    @Published private(set) var lastSystemDisconnectError: String?
+
+    func captureLastDisconnectError() {
+        manager?.connection.fetchLastDisconnectError { [weak self] error in
+            guard let error else { return }
+            let ns = error as NSError
+            let detail = "\(ns.localizedDescription) [\(ns.domain):\(ns.code)]"
+            Task { @MainActor in self?.lastSystemDisconnectError = detail }
+        }
+    }
+
     func lastStartupDiagnostic() -> String? {
         guard let container = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),

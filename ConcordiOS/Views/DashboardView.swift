@@ -2412,7 +2412,7 @@ private struct StatusIpSlotView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             } else if ipFetchFailed {
-                Text("服务失败")
+                Text("IP 查询失败")
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(.red)
                     .lineLimit(1)

@@ -761,6 +761,10 @@ final class ProxyStore: ObservableObject {
             // title + loading state) is not held up by it
             // (v0.2.40 title-delay fix); the parsed result is
             // applied back on the main actor below.
+            if client.mode == .live, TunnelManager.shared.isRunning, !groups.isEmpty {
+                lastError = error.localizedDescription
+                return
+            }
             if let profile = activeProfile {
                 let store = profileStore
                 let local = await Task.detached { store?.localProxyGroups(for: profile) }.value
@@ -1354,28 +1358,53 @@ final class ProxyStore: ObservableObject {
     /// read only changes the line (or leaves it out) — the test
     /// always runs. Returns the report line, or nil in sample mode
     /// (no real core).
+    /// Do not start a second core while NetworkExtension is transitioning.
+    @MainActor
+    private func verifyDelayBackend() async throws {
+        guard client.mode == .live else { return }
+        switch TunnelManager.shared.status {
+        case .connected:
+            _ = try await client.configGeneral()
+        case .disconnected, .invalid:
+            break
+        default:
+            throw NSError(domain: "DelayBackend", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "VPN 正在切换，暂不能测速；请等待连接完成或完全断开"])
+        }
+    }
+
     @MainActor
     private func unifiedDelayDiagnosticLine(useAppCore: Bool) async -> String? {
         guard client.mode == .live else { return nil }
-        let switchText = (settingsStore?.unifiedDelay ?? false) ? "开" : "关"
-        if useAppCore {
-            await AppCore.shared.applyUnifiedDelay()
-            do {
-                let general = try await AppCore.shared.configGeneral()
-                let coreText = (general.unifiedDelay ?? false) ? "开" : "关"
-                return "统一延迟测试：设置开关\(switchText)，测速核心实际值\(coreText)"
-            } catch {
-                return "统一延迟测试：设置开关\(switchText)，测速核心实际值读取失败（\(error.localizedDescription)）"
+        guard let settings = settingsStore else {
+            return "统一延迟测试：设置未就绪，未修改核心开关"
+        }
+        let enabled = settings.unifiedDelay
+        let switchText = enabled ? "开" : "关"
+        do {
+            if useAppCore {
+                try await AppCore.shared.setUnifiedDelay(enabled)
+            } else {
+                try await client.setUnifiedDelay(enabled)
             }
-        } else {
-            await settingsStore?.applyUnifiedDelayToTunnel()
-            do {
-                let general = try await client.configGeneral()
-                let coreText = (general.unifiedDelay ?? false) ? "开" : "关"
-                return "统一延迟测试：设置开关\(switchText)，测速核心实际值\(coreText)"
-            } catch {
-                return "统一延迟测试：设置开关\(switchText)，测速核心实际值读取失败（\(error.localizedDescription)）"
+        } catch {
+            return "统一延迟测试：设置开关\(switchText)，写入失败（\(error.localizedDescription)）"
+        }
+        do {
+            let general: ConcordGeneralState
+            if useAppCore {
+                general = try await AppCore.shared.configGeneral()
+            } else {
+                general = try await client.configGeneral()
             }
+            guard let actual = general.unifiedDelay else {
+                return "统一延迟测试：设置开关\(switchText)，核心响应缺少 unifiedDelay，无法确认是否生效"
+            }
+            let coreText = actual ? "开" : "关"
+            let verification = actual == enabled ? "（已校验）" : "（不一致，设置未生效）"
+            return "统一延迟测试：设置开关\(switchText)，测速核心实际值\(coreText)\(verification)"
+        } catch {
+            return "统一延迟测试：设置开关\(switchText)，测速核心实际值读取失败（\(error.localizedDescription)）"
         }
     }
 
@@ -1835,6 +1864,13 @@ final class ProxyStore: ObservableObject {
         // (v0.2.49, IMG_1163: every row showed 测速失败 from an
         // earlier completed run while a new run was still in
         // flight). Fresh results land per batch below.
+        do {
+            try await verifyDelayBackend()
+        } catch {
+            throwError = error
+            noteTestError(error)
+            return
+        }
         clearLatencies(for: targets)
         applyLatencies()
         // A new test supersedes the old failure: clear the banner
@@ -2085,6 +2121,13 @@ final class ProxyStore: ObservableObject {
         // Clear the stale result for this node first (v0.2.49,
         // same as the group path): the chip shows the testing
         // state, not the previous run's -2.
+        do {
+            try await verifyDelayBackend()
+        } catch {
+            noteTestError(error)
+            AppCore.recordDelayTestReport("单节点未测速：\(error.localizedDescription)")
+            return
+        }
         clearLatencies(for: [target])
         applyLatencies()
         let useAppCore = client.mode == .live && !TunnelManager.shared.isRunning

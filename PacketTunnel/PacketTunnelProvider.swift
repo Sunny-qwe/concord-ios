@@ -438,9 +438,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let ns = e as NSError
             return String("\(ns.localizedDescription) [\(ns.domain):\(ns.code)]".prefix(2048))
         }
-        let record = StartupDiagnosticRecord(id: startupID, stage: stage, detail: detail, date: Date())
+        let file = container.appendingPathComponent("vpn-startup.json")
+        let previous = (try? Data(contentsOf: file)).flatMap {
+            try? JSONDecoder().decode(StartupDiagnosticRecord.self, from: $0)
+        }
+        // Preserve the last useful stage and error when stopTunnel follows failure.
+        let stopDetail: String?
+        if stage == "stopped", let previous, previous.id == startupID {
+            stopDetail = "停止前阶段：\(previous.stage)；\(previous.detail ?? "无扩展错误详情")；\(detail ?? "")"
+        } else {
+            stopDetail = detail
+        }
+        let record = StartupDiagnosticRecord(id: startupID, stage: stage, detail: stopDetail, date: Date())
         guard let data = try? JSONEncoder().encode(record) else { return }
-        try? data.write(to: container.appendingPathComponent("vpn-startup.json"), options: .atomic)
+        try? data.write(to: file, options: .atomic)
     }
 
     // MARK: - C callbacks (non-capturing; the provider is passed as context)
@@ -641,10 +652,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 // fold them into this patch, or it would clobber the
                 // overlay values applied above.
                 var patch = general
+                // Accept existing general.json files without rewriting user settings.
+                if let legacy = patch.removeValue(forKey: "unified_delay"),
+                   patch["unifiedDelay"] == nil {
+                    patch["unifiedDelay"] = legacy
+                }
                 if let overrides = effectiveTopLevelOverrides(section: "general") {
-                    for (key, snake) in ["ipv6": "ipv6", "unified-delay": "unified_delay", "tcp-concurrent": "tcp_concurrent"] {
+                    for (key, wire) in ["ipv6": "ipv6", "unified-delay": "unifiedDelay", "tcp-concurrent": "tcp_concurrent"] {
                         if let value = overrides[key] {
-                            patch[snake] = value
+                            patch[wire] = value
                         }
                     }
                 }
@@ -764,7 +780,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         isStopping = true
-        recordStartup("stopped")
+        let stopError = NSError(domain: "NEProviderStopReason", code: reason.rawValue,
+                                userInfo: [NSLocalizedDescriptionKey: "系统停止原因：\(reason.rawValue)"])
+        recordStartup("stopped", error: stopError)
         writeVPNDiagnostics(stage: "stopped")
         // Interface B8 (stop-part): drop the stale snapshots now,
         // while the files still belong to this run — the app must
@@ -841,8 +859,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard var request = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
               request["method"] as? String != nil,
               let appID = (request["id"] as? NSNumber)?.intValue else {
-            // Not a JSON-RPC request: nothing to forward.
-            completionHandler?(nil)
+            // Return an explicit protocol error, never an indistinguishable nil reply.
+            completionHandler?(errorEnvelope(id: nil, message: "无效的扩展请求：需要 method 和数字 id"))
             return
         }
         // config.apply with no overlay gets the MITM + DNS overlays

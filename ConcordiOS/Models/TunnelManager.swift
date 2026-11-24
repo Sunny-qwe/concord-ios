@@ -114,6 +114,9 @@ final class TunnelManager: ObservableObject {
             let new = connection.status
             self.status = new
             if new == .connected {
+                self.lastError = nil
+                self.pendingStartFailureMessage = nil
+                self.lastSystemDisconnectError = nil
                 self.unexpectedDisconnect = false
                 self.reachedConnectedThisStart = true
                 self.connectedAt = Date()
@@ -128,6 +131,7 @@ final class TunnelManager: ObservableObject {
             if new == .disconnected,
                old == .connected || old == .connecting || old == .reasserting,
                !self.userInitiatedStop {
+                self.captureLastDisconnectError()
                 self.unexpectedDisconnect = true
                 if old == .connecting, !self.reachedConnectedThisStart {
                     // FAILED START (never reached .connected): the
@@ -348,16 +352,25 @@ final class TunnelManager: ObservableObject {
     @MainActor
     private func confirmTunnelUp() async throws {
         let deadline = Date().addingTimeInterval(45)
+        var sawConnecting = false
         while Date() < deadline {
-            switch status {
+            let current = manager?.connection.status ?? status
+            switch current {
             case .connected:
+                lastError = nil
+                pendingStartFailureMessage = nil
                 return
-            case .disconnected:
+            case .connecting, .reasserting:
+                sawConnecting = true
+            case .disconnected where sawConnecting || unexpectedDisconnect:
                 let message = lastStartupDiagnostic()
                     ?? "VPN 启动失败（扩展未完成启动）"
                 lastError = message
+                captureLastDisconnectError()
                 throw TunnelError.startFailed(message)
             default:
+                // The initial disconnected state may precede the system's
+                // connecting notification; it is not a failed attempt yet.
                 break
             }
             try await Task.sleep(nanoseconds: 200_000_000)
@@ -462,6 +475,23 @@ final class TunnelManager: ObservableObject {
     /// startup record for this run — used by the Dashboard's
     /// unexpected-disconnect banner so an extension-side failure
     /// shows its stage instead of a generic message.
+    /// System error is separate from extension records, including early launch failures.
+    @Published private(set) var lastSystemDisconnectError: String?
+
+    func captureLastDisconnectError() {
+        let requestedStartupID = currentStartupID
+        manager?.connection.fetchLastDisconnectError { [weak self] error in
+            guard let error else { return }
+            let ns = error as NSError
+            let detail = "\(ns.localizedDescription) [\(ns.domain):\(ns.code)]"
+            Task { @MainActor in
+                guard let self, self.currentStartupID == requestedStartupID,
+                      self.manager?.connection.status != .connected else { return }
+                self.lastSystemDisconnectError = detail
+            }
+        }
+    }
+
     func lastStartupDiagnostic() -> String? {
         guard let container = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
@@ -595,12 +625,77 @@ final class TunnelManager: ObservableObject {
     /// else 10 s (_snapshotTimeout), slow config / profile / provider
     /// / geo loads 60 s (the extension's own boot timeout for
     /// config.apply). An explicit timeoutSeconds overrides the table.
+    private struct QueuedMessage {
+        let data: Data
+        let deadline: Date
+        let startupID: String?
+        let connectedAt: Date?
+        let continuation: CheckedContinuation<Data, Error>
+    }
+    private var messageQueue: [QueuedMessage] = []
+    private var messageBusy = false
+
+    /// One active system IPC request, matching FlClash's provider queue.
+    @MainActor
     func sendProviderMessage(_ data: Data, timeoutSeconds: TimeInterval? = nil) async throws -> Data {
-        guard isRunning, let session = manager?.connection as? NETunnelProviderSession else {
+        try await withCheckedThrowingContinuation { continuation in
+            guard messageQueue.count < 128 else {
+                continuation.resume(throwing: TunnelError.noReply)
+                return
+            }
+            let timeout = timeoutSeconds ?? Self.timeoutForMethod(Self.methodName(in: data) ?? "?")
+            messageQueue.append(QueuedMessage(data: data, deadline: Date().addingTimeInterval(timeout),
+                                              startupID: currentStartupID, connectedAt: connectedAt,
+                                              continuation: continuation))
+            drainMessages()
+        }
+    }
+
+    @MainActor
+    private func drainMessages() {
+        guard !messageBusy, !messageQueue.isEmpty else { return }
+        messageBusy = true
+        let next = messageQueue.removeFirst()
+        Task { @MainActor in
+            do {
+                guard next.startupID == self.currentStartupID, next.connectedAt == self.connectedAt else {
+                    throw TunnelError.notRunning
+                }
+                guard next.deadline > Date() else {
+                    throw TunnelError.timedOut(Self.methodName(in: next.data) ?? "?", 0)
+                }
+                let reply = try await self.performProviderMessage(next.data, deadline: next.deadline,
+                                                                 startupID: next.startupID, connectedAt: next.connectedAt)
+                next.continuation.resume(returning: reply)
+            } catch {
+                next.continuation.resume(throwing: error)
+            }
+            self.messageBusy = false
+            self.drainMessages()
+        }
+    }
+
+    @MainActor
+    private func performProviderMessage(_ data: Data, deadline: Date, startupID: String?, connectedAt expectedConnectedAt: Date?) async throws -> Data {
+        // Reacquire the system's connection, rather than reusing a stale manager.
+        let managers = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[NETunnelProviderManager], Error>) in
+            NETunnelProviderManager.loadAllFromPreferences { managers, error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: managers ?? []) }
+            }
+        }
+        guard let active = managers.first(where: {
+            ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == Self.providerBundleID
+                && $0.connection.status == .connected
+        }), let session = active.connection as? NETunnelProviderSession else {
             throw TunnelError.notRunning
         }
         let method = Self.methodName(in: data) ?? "?"
-        let timeout = timeoutSeconds ?? Self.timeoutForMethod(method)
+        guard startupID == currentStartupID, expectedConnectedAt == connectedAt else {
+            throw TunnelError.notRunning
+        }
+        let timeout = deadline.timeIntervalSinceNow
+        guard timeout > 0 else { throw TunnelError.timedOut(method, 0) }
         return try await withCheckedThrowingContinuation { continuation in
             let claim = ReplyClaim()
             do {

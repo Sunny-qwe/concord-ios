@@ -570,14 +570,15 @@ final class AppCore {
     /// boot or the test itself. No-ops while the session is down
     /// (the next boot patches the current value instead).
     private func patchUnifiedDelay() async {
-        guard session != 0 else { return }
-        let unified = Self.settingsStore?.unifiedDelay ?? false
-        do {
-            _ = try await sendRequest(method: "config.patch", params: ["unified_delay": unified], resultType: EmptyResult.self)
-        } catch {
-            // Best-effort: the toggle stays off for this run; the
-            // next boot or toggle flip retries. Never fails boot.
-        }
+        guard session != 0, let settings = Self.settingsStore else { return }
+        // Boot and toggle observation stay best-effort. Manual tests use
+        // setUnifiedDelay directly so write failures appear in the report.
+        try? await setUnifiedDelay(settings.unifiedDelay)
+    }
+
+    /// Concord's JSON-RPC DTOs use camelCase (unlike profile YAML).
+    func setUnifiedDelay(_ enabled: Bool) async throws {
+        _ = try await sendRequest(method: "config.patch", params: ["unifiedDelay": enabled], resultType: EmptyResult.self)
     }
 
     /// Forces the current "统一延迟测试" value into the running

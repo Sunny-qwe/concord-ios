@@ -1926,11 +1926,19 @@ struct ProxiesView: View {
                         scrollNonce += 1
                     }
                 }
-            }
+            },
+            onScrollToSelected: { scrollToSelected(in: group) },
+            onTestAll: { Task { await proxyStore.testLatency(group: group) } },
+            onSearch: { isSearching = true }
         ) {
             LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
                 ForEach(nodes) { node in
-                    nodeCard(node, in: group, groupsByName: groupsByName)
+                    // v0.2.88: List-expanded nodes use the page
+                    // fill (grey in light mode) so they read as
+                    // rounded cards on the white group interior —
+                    // MuYu's node is one level above its scope.
+                    // Tab / Card / search keep the white default.
+                    nodeCard(node, in: group, groupsByName: groupsByName, fill: ConcordTheme.pageBackground)
                         .id(scrollID(nodeName: node.name, groupName: group.name))
                 }
             }
@@ -1960,7 +1968,7 @@ struct ProxiesView: View {
         return "\(Self.nodeTypeDisplayName(node.type))(\(selected))"
     }
 
-    private func nodeCard(_ node: ProxyNode, in group: ProxyGroup, groupsByName: [String: ProxyGroup]) -> some View {
+    private func nodeCard(_ node: ProxyNode, in group: ProxyGroup, groupsByName: [String: ProxyGroup], fill: Color = ConcordTheme.cardBackground) -> some View {
         ProxyNodeCard(
             name: node.name,
             type: Self.nodeTypeDisplayName(node.type),
@@ -1972,6 +1980,7 @@ struct ProxiesView: View {
             cardType: styleStore.cardType,
             cardHeight: cardHeight,
             memberIcon: memberIcon(for: node, groupsByName: groupsByName),
+            fill: fill,
             onTest: { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } }
         )
         .equatable()
@@ -2572,6 +2581,13 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
     let expandedContent: () -> ExpandedContent
     /// Header tap: toggle expand/collapse (+ scroll into view).
     let onToggleExpand: () -> Void
+    /// Expanded-header actions (MuYu list.dart, v0.2.88):
+    /// scroll to the selected node, test this group, open the
+    /// page search. Closures, so excluded from == like
+    /// onToggleExpand.
+    let onScrollToSelected: () -> Void
+    let onTestAll: () -> Void
+    let onSearch: () -> Void
 
     init(
         name: String,
@@ -2586,6 +2602,9 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
         groupType: String,
         nodeFingerprints: [ListGroupNodeFingerprint],
         onToggleExpand: @escaping () -> Void,
+        onScrollToSelected: @escaping () -> Void,
+        onTestAll: @escaping () -> Void,
+        onSearch: @escaping () -> Void,
         @ViewBuilder expandedContent: @escaping () -> ExpandedContent
     ) {
         self.name = name
@@ -2600,6 +2619,9 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
         self.groupType = groupType
         self.nodeFingerprints = nodeFingerprints
         self.onToggleExpand = onToggleExpand
+        self.onScrollToSelected = onScrollToSelected
+        self.onTestAll = onTestAll
+        self.onSearch = onSearch
         self.expandedContent = expandedContent
     }
 
@@ -2625,46 +2647,111 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                groupIconView(icon: icon, name: name, iconStyle: iconStyle)
-                VStack(alignment: .leading, spacing: 2) {
-                    // MuYu ListHeader (v0.2.81): name = callout
-                    // 16pt emphasized, subtitle + type = caption1
-                    // 12pt emphasized grey. Was subheadline 15pt
-                    // + caption2 11pt — visibly smaller than MuYu.
-                    Text(name)
-                        .font(.callout)
-                        .fontWeight(.bold)
-                        .lineLimit(1)
-                    Text(selectedName ?? "")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(minHeight: 13, alignment: .leading)
+                // Left cluster taps to toggle. The expanded
+                // action pill is NOT inside a tap-to-toggle area:
+                // a Button inside .onTapGesture would fire both,
+                // so the toggle tap lives only on the left cluster
+                // and on the collapsed trailing.
+                HStack(spacing: 10) {
+                    groupIconView(icon: icon, name: name, iconStyle: iconStyle)
+                    VStack(alignment: .leading, spacing: 2) {
+                        // MuYu ListHeader (v0.2.81): name = callout
+                        // 16pt emphasized, subtitle + type = caption1
+                        // 12pt emphasized grey. Was subheadline 15pt
+                        // + caption2 11pt — visibly smaller than MuYu.
+                        Text(name)
+                            .font(.callout)
+                            .fontWeight(.bold)
+                            .lineLimit(1)
+                        Text(selectedName ?? "")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(minHeight: 13, alignment: .leading)
+                    }
                 }
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onToggleExpand)
                 Spacer()
-                Text(typeDisplay)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                // MuYu ExpandIcon in a tonal compact IconButton
-                // (v0.2.81): the screenshot's light-grey circle is
-                // ~36pt with a ~14pt chevron (was 30pt / 12pt).
-                Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.black)
-                    .frame(width: 36, height: 36)
-                    .background(Color(.systemGray4), in: Circle())
+                if expanded {
+                    expandedHeaderActions
+                } else {
+                    HStack(spacing: 10) {
+                        Text(typeDisplay)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        // MuYu ExpandIcon in a tonal compact IconButton
+                        // (v0.2.81): the screenshot's light-grey circle is
+                        // ~36pt with a ~14pt chevron (was 30pt / 12pt).
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.black)
+                            .frame(width: 36, height: 36)
+                            .background(Color(.systemGray4), in: Circle())
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: onToggleExpand)
+                }
             }
             // MuYu card padding is 6pt all round (v0.2.81; was
             // 12 horizontal / 10 vertical). Row stays 60pt:
             // 48pt icon + 2×6pt padding.
             .padding(6)
-            .contentShape(Rectangle())
-            .onTapGesture(perform: onToggleExpand)
             if expanded {
                 expandedContent()
             }
         }
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    /// MuYu expanded header (list.dart, v0.2.88): a light pill
+    /// with target / bolt / magnifier, plus a separate grey
+    /// circle with a black up-triangle to collapse (IMG_1243 —
+    /// the triangle sits in its own circle, like the collapsed
+    /// chevron, not inside the pill). The pill fill is
+    /// pageBackground — the same grey as the node cards, one
+    /// level above the white group card. Icons use .primary so
+    /// they stay visible in dark mode, where the pill fill is
+    /// dark; the triangle circle keeps the existing black-on-
+    /// systemGray4, which reads in both modes.
+    private var expandedHeaderActions: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 14) {
+                Button(action: onScrollToSelected) {
+                    Image(systemName: "scope")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("滚动到已选")
+                Button(action: onTestAll) {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("测速本组")
+                Button(action: onSearch) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("搜索")
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(ConcordTheme.pageBackground, in: RoundedRectangle(cornerRadius: 18))
+            Button(action: onToggleExpand) {
+                Image(systemName: "triangle.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.black)
+                    .frame(width: 36, height: 36)
+                    .background(Color(.systemGray4), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("收起")
+        }
     }
 }
 
@@ -2733,6 +2820,16 @@ private struct ProxyNodeCard: View, Equatable {
     /// themselves groups (MuYu card.dart member icon, 16pt).
     /// Nil for leaf nodes — the core exposes no per-node icon.
     let memberIcon: String?
+    /// Fill (v0.2.88): the card's background. Default is
+    /// cardBackground (white in light mode) — Tab / Card / search
+    /// keep it. List-expanded passes pageBackground so the node
+    /// reads as a grey rounded card on the white group interior
+    /// (MuYu: the node is one level above its scope, FlClash
+    /// list.dart "Card fills one level above its scope"). In
+    /// dark mode pageBackground is black + 8% accent vs the
+    /// group's #1C1C1E + 8% — a subtle step, same order as
+    /// MuYu's near-white-on-white in light mode.
+    let fill: Color
     let onTest: () -> Void
 
     init(
@@ -2746,6 +2843,7 @@ private struct ProxyNodeCard: View, Equatable {
         cardType: ProxyStyleStore.CardType,
         cardHeight: CGFloat,
         memberIcon: String?,
+        fill: Color = ConcordTheme.cardBackground,
         onTest: @escaping () -> Void
     ) {
         self.name = name
@@ -2758,6 +2856,7 @@ private struct ProxyNodeCard: View, Equatable {
         self.cardType = cardType
         self.cardHeight = cardHeight
         self.memberIcon = memberIcon
+        self.fill = fill
         self.onTest = onTest
     }
 
@@ -2774,6 +2873,7 @@ private struct ProxyNodeCard: View, Equatable {
             && lhs.cardType == rhs.cardType
             && lhs.cardHeight == rhs.cardHeight
             && lhs.memberIcon == rhs.memberIcon
+            && lhs.fill == rhs.fill
     }
 
     var body: some View {
@@ -2856,7 +2956,7 @@ private struct ProxyNodeCard: View, Equatable {
         .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: cardHeight, alignment: .center)
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .background(fill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
         .contentShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
     }
 }

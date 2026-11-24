@@ -476,16 +476,13 @@ struct DnsQueriesView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .listRowBackground(Color.clear)
                 Toggle("跟随最新", isOn: $followEnd)
-                    .listRowBackground(Color.clear)
                     .onChange(of: followEnd) { _, on in
                         if on { scrollToNewest(proxy) }
                     }
                 Text("打开后新记录出现时回到顶部；向下翻看旧记录时请先关闭。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .listRowBackground(Color.clear)
                 HStack {
                     Text("记录类型")
                     Spacer()
@@ -497,7 +494,6 @@ struct DnsQueriesView: View {
                     }
                     .pickerStyle(.menu)
                 }
-                .listRowBackground(Color.clear)
                 HStack {
                     Text("发起方")
                     Spacer()
@@ -509,7 +505,6 @@ struct DnsQueriesView: View {
                     }
                     .pickerStyle(.menu)
                 }
-                .listRowBackground(Color.clear)
                 HStack {
                     Text("返回码")
                     Spacer()
@@ -521,7 +516,6 @@ struct DnsQueriesView: View {
                     }
                     .pickerStyle(.menu)
                 }
-                .listRowBackground(Color.clear)
                 if visibleEntries.isEmpty {
                     Text(dnsStore.filtered.isEmpty ? "暂无 DNS 查询记录" : "没有符合筛选的记录")
                         .font(.caption2)

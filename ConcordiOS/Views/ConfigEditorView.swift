@@ -201,8 +201,9 @@ struct ConfigEditorView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
-        .padding(12)
-        .background(ConcordTheme.cardBackground)
+        .concordCard(padding: 12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
     }
 
     private var statusArea: some View {
@@ -236,8 +237,9 @@ struct ConfigEditorView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(ConcordTheme.cardBackground)
+        .concordCard(padding: 12)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
     }
 
     // MARK: - Find + replace
@@ -288,8 +290,9 @@ struct ConfigEditorView: View {
                     .disabled(findText.isEmpty || findMatches.isEmpty)
             }
         }
-        .padding(12)
-        .background(ConcordTheme.cardBackground)
+        .concordCard(padding: 12)
+        .padding(.vertical, 4)
+        .padding(.horizontal, 16)
     }
 
     private func jumpToFindMatch() {
@@ -405,7 +408,9 @@ struct ConfigEditorView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
         }
-        .background(ConcordTheme.cardBackground)
+        .padding(.vertical, 4)
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.cardRadius))
+        .padding(.horizontal, 16)
     }
 
     /// The typed word's range at the caret — top-level or

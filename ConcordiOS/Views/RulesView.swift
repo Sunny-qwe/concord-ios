@@ -132,7 +132,7 @@ struct RulesView: View {
                         .autocorrectionDisabled()
                         .scrollContentBackground(.hidden)
                         .padding(8)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
                     Text("每行一条过滤表达式：代理组 filter: 用的反引号分隔正则列表，例如 (?i)港|hk 或 hk`jp。空行会被忽略。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)

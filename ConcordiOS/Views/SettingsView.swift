@@ -659,7 +659,7 @@ struct ProvidersView: View {
                     .textInputAutocapitalization(.never)
                     .scrollContentBackground(.hidden)
                     .padding(8)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                    .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
                 Button("导入") {
                     Task { await importProvidersFromURLs() }
                 }
@@ -679,7 +679,7 @@ struct ProvidersView: View {
                     .textInputAutocapitalization(.never)
                     .scrollContentBackground(.hidden)
                     .padding(8)
-                    .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                    .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
                 Button("载入") {
                     Task { await ruleStore.sideLoadProvider(name: sideLoadName, data: sideLoadText) }
                 }

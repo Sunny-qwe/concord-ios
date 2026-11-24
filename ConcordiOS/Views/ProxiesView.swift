@@ -619,7 +619,7 @@ struct ProxiesView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 10))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 4)
                     }
@@ -644,7 +644,7 @@ struct ProxiesView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+                        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 10))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 4)
                     }
@@ -879,7 +879,7 @@ struct ProxiesView: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10))
+            .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 10))
             .padding(.horizontal, 16)
             .padding(.vertical, 4)
             .onAppear {
@@ -1398,7 +1398,7 @@ struct ProxiesView: View {
                                     .fontWeight(.semibold)
                                     .padding(.horizontal, 14)
                                     .padding(.vertical, 8)
-                                    .background(selectedVisibleGroup?.id == group.id ? ConcordTheme.accent : Color(.secondarySystemBackground), in: Capsule())
+                                    .background(selectedVisibleGroup?.id == group.id ? ConcordTheme.accent : ConcordTheme.softFill, in: Capsule())
                                     .foregroundStyle(selectedVisibleGroup?.id == group.id ? .white : .secondary)
                                     .buttonStyle(.plain)
                                 }
@@ -2235,7 +2235,7 @@ private struct GroupBrandIconView: View {
                 // MuYu icon_card.dart: tile radius = AppCorner.xl
                 // (24) − shrink (12) = 12pt (v0.2.81; was 8pt,
                 // which made the tile look almost square).
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
@@ -2488,7 +2488,7 @@ private struct IconGroupCard: View, Equatable {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 8))
                 .onAppear(perform: onSearchAppear)
             } else {
                 Button(action: onSearchOpen) {
@@ -2798,7 +2798,7 @@ private func groupIconView(icon: String, name: String, iconStyle: ProxyStyleStor
             content
                 .frame(width: 36, height: 36)
                 .frame(width: 48, height: 48)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+                .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 14))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
         )
     }
@@ -3130,7 +3130,7 @@ private struct RuleSetRepairSheet: View {
                                         .font(.system(.caption, design: .monospaced))
                                         .padding(10)
                                 }
-                                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
+                                .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 8))
                             }
                         }
                     }

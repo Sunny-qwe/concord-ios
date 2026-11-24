@@ -276,33 +276,36 @@ struct ConnectionsView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 6)
                 }
-                HStack(spacing: 16) {
-                    Text("\(connectionStore.connections.count) 个连接")
-                    Text("上行 \(ConcordFormat.bytes(connectionStore.totalUpload))")
-                    Text("下行 \(ConcordFormat.bytes(connectionStore.totalDownload))")
-                    Spacer()
+                // v0.2.100 (A7): stats row + status messages in a
+                // rounded card instead of sitting bare on the page
+                // background. The filter bar below stays bare
+                // (upstream has it bare too).
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 16) {
+                        Text("\(connectionStore.connections.count) 个连接")
+                        Text("上行 \(ConcordFormat.bytes(connectionStore.totalUpload))")
+                        Text("下行 \(ConcordFormat.bytes(connectionStore.totalDownload))")
+                        Spacer()
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    if let message = connectionStore.networkUpdateMessage {
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if let error = connectionStore.lastError {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .concordCard(padding: 12)
                 .padding(.horizontal)
                 .padding(.bottom, 4)
                 statusFilterBar
-                if let message = connectionStore.networkUpdateMessage {
-                    Text(message)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal)
-                        .padding(.bottom, 4)
-                }
-                if let error = connectionStore.lastError {
-                    Text(error)
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal)
-                        .padding(.bottom, 4)
-                }
 
                 // Active facet chips (upstream RecordFilterScope
                 // keywords strip): one chip per active facet, tap x

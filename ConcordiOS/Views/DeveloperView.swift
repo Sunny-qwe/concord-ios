@@ -47,7 +47,6 @@ struct DeveloperView: View {
                         }
                     }
                 }
-                .listRowBackground(Color.clear)
             }
             Section("测试") {
                 Button("消息测试") {

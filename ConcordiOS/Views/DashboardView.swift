@@ -921,7 +921,7 @@ struct DashboardView: View {
     /// white circle. Tied to proxyStore.isRunning — the same state
     /// that drives the play button and the "运行中/未运行" pill.
     private var editButtonBackground: Color {
-        guard proxyStore.isRunning else { return Color.white }
+        guard proxyStore.isRunning else { return ConcordTheme.cardBackground }
         return colorScheme == .dark
             ? Color(red: 0.10, green: 0.28, blue: 0.60)
             : Color(red: 0.83, green: 0.92, blue: 1.0)
@@ -2381,6 +2381,8 @@ private struct DashboardWarningsPill: View {
             .accessibilityLabel("配置警告")
             .sheet(isPresented: $showWarningsDeck) {
                 ConfigWarningsDeck(warnings: trafficStore.lastWarnings)
+                    .concordCard()
+                    .padding()
                     .presentationDetents([.fraction(0.5625), .fraction(0.9)])
                     .presentationDragIndicator(.hidden)
                     .presentationBackground(ConcordTheme.pageBackground)
@@ -2879,7 +2881,7 @@ private struct ServicesCardView: View {
                 )
                 .foregroundStyle(Color(.label))
                 .frame(width: 40, height: 40)
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 12))
                 .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 if service?.status == "available" {

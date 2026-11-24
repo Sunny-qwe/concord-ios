@@ -557,7 +557,7 @@ struct ServiceStatusSheet: View {
                     )
                     .foregroundStyle(Color(.label))
                     .frame(width: 48, height: 48)
-                    .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 12))
                     .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     Circle()

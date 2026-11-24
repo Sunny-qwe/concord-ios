@@ -94,7 +94,7 @@ struct LogsView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
-                .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 10))
+                .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 10))
                 .padding(.horizontal)
                 .padding(.vertical, 4)
 
@@ -142,6 +142,7 @@ struct LogsView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .concordCard(padding: 12)
                         .padding(.horizontal)
                         .padding(.vertical, 4)
                     }
@@ -524,6 +525,7 @@ struct LogsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .concordCard(padding: 12)
     }
 
     /// Writes the bundled log export to a .txt file in Documents

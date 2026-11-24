@@ -859,8 +859,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         guard var request = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
               request["method"] as? String != nil,
               let appID = (request["id"] as? NSNumber)?.intValue else {
-            // Not a JSON-RPC request: nothing to forward.
-            completionHandler?(nil)
+            // Return an explicit protocol error, never an indistinguishable nil reply.
+            completionHandler?(errorEnvelope(id: nil, message: "无效的扩展请求：需要 method 和数字 id"))
             return
         }
         // config.apply with no overlay gets the MITM + DNS overlays

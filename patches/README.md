@@ -6,13 +6,13 @@ never copied into this repo: the GitHub workflow checks out
 build time. A local inspection copy lives at `../upstream/` (gitignored,
 never uploaded).
 
-- **Pinned upstream commit:** `b3fab9e0fb81330c65bf62dea47caef845468747`
-  (`test(mitm): write the module samples of the stored-file tests neutrally`, 2026-11-23)
-- **Produced from:** the rebase tree at `/home/hatch/workspace/scratch/v0.2.87/rebase` (fresh clone at
-  `b3fab9e`, the 8 patches below applied in order), rebased
-  2026-11-23 from the previous pin `646f8c9937ced53caca861630d5ece877ea1e0af`.
-  Verified: the 8 patches apply to a fresh clone at `b3fab9e`
-  with zero rejects (see the "Rebase to b3fab9e" section). The local inspection copy at `../upstream/` (branch `ios-port`)
+- **Pinned upstream commit:** `fdea08a92b5da4c93171161715e48e7f72fcb9a5`
+  (`feat(bench): add udp-multi and udp-crr workloads`, 2026-11-24)
+- **Produced from:** the rebase tree at `/home/hatch/workspace/scratch/v0.2.90/rebase` (fresh clone at
+  `fdea08a`, the 8 patches below applied in order), rebased
+  2026-11-24 from the previous pin `b3fab9e0fb81330c65bf62dea47caef845468747`.
+  Verified: the 8 patches apply to a fresh clone at `fdea08a`
+  with zero rejects (see the "Rebase to fdea08a" section). The local inspection copy at `../upstream/` (branch `ios-port`)
   still points at the old pin until it is refreshed; the patches in this
   directory are the authority for the new pin.
 - **Apply order:** `01`, then `02`, then `03`, then `04`, then `05`, then `06`, then `07`, then `08` (filenames sort in order).
@@ -1007,3 +1007,89 @@ above. No `cargo check` re-run — the patches are content-identical
 to the `646f8c9` versions that passed host cargo checks, and the
 macOS runner (which has `xcrun` and the iOS SDK) is the verification
 for the full staticlib build, as before.
+
+## Rebase to fdea08a (2026-11-24)
+
+All 8 patches apply cleanly to a fresh clone at `fdea08a`, in order,
+with zero rejects and zero hand fixes — every patch is
+content-identical to its `b3fab9e` version. The two known manual
+merge points from the `646f8c9` batch did NOT materialize this time:
+patch `02`'s `crates/engine/src/engine/tun.rs` doc line and patch
+`04`'s `vendor/PATCHES.md` one-line context offset both applied
+cleanly, because this batch touches neither file. Verified in
+`/home/hatch/workspace/scratch/v0.2.90/rebase` (fresh clone,
+`git checkout fdea08a92b5da4c93171161715e48e7f72fcb9a5`, sequential
+`git apply` for `01`–`08`, all exit 0; `git diff --check` clean;
+`git status --porcelain` shows 24 changed files — 20 modified + 4
+new — and no `Cargo.lock` change). The patches were NOT regenerated.
+
+11 commits since `b3fab9e` (2026-11-23 09:54 – 2026-11-24 06:04):
+
+- `0866812` feat(bench): add a page-load workload of concurrent
+  HTTPS fetches (bench only).
+- `8011658` refactor(tun,netstack): separate queue I/O and TCP
+  output scheduling — the 564-line `driver.rs` is split into
+  `driver/{rx,tx,dispatch}.rs`; replies/fragments built once, two
+  slot strategies shared.
+- `cfd9666` perf(tun,netstack): reuse the local TCP lookup when
+  delivering a segment; a forwarded packet needs no send resource;
+  a TIME_WAIT local connection keeps its owner on a replacement SYN.
+- `a0e419e` perf(anytls): let a draining stream read its frames
+  with the session's read half — a single draining stream borrows
+  the session's read half in its own relay task, saving one Tokio
+  task wakeup handoff per frame; the read half is returned on other
+  frames, writes, stream end, or session close.
+- `8949183` refactor(anytls): box the session's lent read half
+  (pure refactor, follows `a0e419e`).
+- `c226ca1` feat(bench): report the share of tcp-rr transactions
+  slower than `--rr-slow-ms` (bench only).
+- `8574eb9` + `2b52539` docs(agents): TUIC send-window measurement
+  vs Go; UDP round session hash std vs foldhash (docs only).
+- `a9602b8` perf(tunnel): evict one UDP flow per insert into a full
+  table, least recently active first — replaces a full-table scan
+  evicting the oldest 1/16th; a recency queue tracks last-seen
+  activity per flow.
+- `edb2924` docs(tunnel): shorten the UDP eviction comments.
+- `fdea08a` feat(bench): add udp-multi and udp-crr workloads
+  (bench only).
+
+`schema/api.json` is byte-identical between `b3fab9e` and `fdea08a`
+(`git diff b3fab9e fdea08a -- schema/api.json` empty) — still **72
+methods**, none added, removed, or renamed. No file changed by this
+batch is touched by any patch (`git diff --name-only
+b3fab9e..fdea08a` vs the patch file list: zero overlap).
+
+Worth adding (all ride along with this rebase, no separate work):
+
+- `a0e419e`: anytls single-stream direct read — download-type
+  traffic on anytls nodes is faster with lower CPU on iOS.
+  Verified present in the rebase tree: the lent reader in
+  `crates/proxy/src/anytls/session.rs` (`poll_lent`).
+- `cfd9666`: TCP ingress reuses the local lookup + TIME_WAIT
+  replacement-SYN ownership — TUN/TCP hot-path optimisation and a
+  correctness fix on the same path iOS uses. Verified present:
+  `TIME_WAIT` handling in `crates/netstack/src/tcp/mod.rs`.
+- `a9602b8`: UDP NAT per-insert LRU eviction — cheaper and fairer
+  when the table is full; DNS, QUIC, game and voice traffic share
+  the same UDP NAT on iOS. Verified present: the recency queue and
+  `evict_oldest` in `crates/tunnel/src/udp/nat.rs`.
+- `8011658`: driver split refactor — no visible function by itself,
+  but it is the structural basis for `cfd9666`; rebase after it
+  needs a TUN test. Verified present:
+  `crates/tun/src/stack/driver/{rx,tx,dispatch}.rs`.
+
+Not necessary: `0866812`, `c226ca1`, `fdea08a` (bench only);
+`8574eb9`, `2b52539`, `edb2924` (docs/comments only); `8949183`
+(pure refactor, rides along with `a0e419e`).
+
+**No Swift changes needed for this rebase.** `api.json` is unchanged
+(72 methods, no signature changes), so no new methods to wire and no
+decoder changes. The worth-adding items are core-side behaviour
+(performance on paths the existing Swift client already uses).
+
+Local verification approach (Linux): fresh clone + `git apply`, as
+above. No `cargo check` re-run — the patches are content-identical
+to the `b3fab9e` versions that passed host cargo checks, and the
+upstream changes in this batch touch no patched file; the macOS
+runner (which has `xcrun` and the iOS SDK) is the verification for
+the full staticlib build, as before.

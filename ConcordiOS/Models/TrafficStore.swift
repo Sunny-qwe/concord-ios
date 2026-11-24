@@ -1445,11 +1445,35 @@ final class TrafficStore: ObservableObject {
             servicesHeld = false
         }
         do {
-            services = try await client.probeServices(proxy: proxy, names: names ?? enabledServiceNames)
+            services = try await probeServicesThroughCore(proxy: proxy, names: names ?? enabledServiceNames)
             servicesError = nil
         } catch {
             servicesError = error.localizedDescription
         }
+    }
+
+    /// Runs one service probe against the tunnel core when it is
+    /// up, or the in-app core (booted on demand) when the VPN is
+    /// off (v0.2.89 Dashboard auto-check — MuYu probes services
+    /// on entry even with the VPN off; the tunnel core is gone
+    /// then, so the in-app core is the fallback, like the delay
+    /// test and DnsStore.runDns). If the tunnel starts while
+    /// AppCore is booting, AppCore refuses to run alongside it
+    /// (AppCoreError.tunnelRunning) — the tunnel core is used
+    /// instead, not reported as a failure.
+    private func probeServicesThroughCore(proxy: String, names: [String]) async throws -> [ConcordServiceItem] {
+        if client.mode == .sample || TunnelManager.shared.isRunning {
+            return try await client.probeServices(proxy: proxy, names: names)
+        }
+        do {
+            try await AppCore.shared.ensureStarted()
+        } catch {
+            if case AppCoreError.tunnelRunning = error {
+                return try await client.probeServices(proxy: proxy, names: names)
+            }
+            throw error
+        }
+        return try await AppCore.shared.probeServices(proxy: proxy, names: names)
     }
 
     /// Re-checks one service and merges the result into the current
@@ -1458,7 +1482,7 @@ final class TrafficStore: ObservableObject {
     @MainActor
     func probeService(proxy: String, name: String) async {
         do {
-            let fresh = try await client.probeServices(proxy: proxy, names: [name])
+            let fresh = try await probeServicesThroughCore(proxy: proxy, names: [name])
             guard let item = fresh.first else { return }
             if let index = services.firstIndex(where: { $0.name == name }) {
                 services[index] = item

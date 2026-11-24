@@ -1343,6 +1343,42 @@ final class ProxyStore: ObservableObject {
         }
     }
 
+    /// Forces the current "统一延迟测试" value into the core that
+    /// is about to run the delay test, then reads that core's ACTUAL
+    /// unified_delay back (v0.2.89): on-device, the switch ON / OFF
+    /// / flip / full restart all measured the same cold numbers, so
+    /// the value evidently never reached the test core — patching
+    /// immediately before the test closes the stale-core gap, and
+    /// the read-back makes the core's real value visible in the
+    /// report instead of guessed. Best-effort: a failed patch or
+    /// read only changes the line (or leaves it out) — the test
+    /// always runs. Returns the report line, or nil in sample mode
+    /// (no real core).
+    @MainActor
+    private func unifiedDelayDiagnosticLine(useAppCore: Bool) async -> String? {
+        guard client.mode == .live else { return nil }
+        let switchText = (settingsStore?.unifiedDelay ?? false) ? "开" : "关"
+        if useAppCore {
+            await AppCore.shared.applyUnifiedDelay()
+            do {
+                let general = try await AppCore.shared.configGeneral()
+                let coreText = (general.unifiedDelay ?? false) ? "开" : "关"
+                return "统一延迟测试：设置开关\(switchText)，测速核心实际值\(coreText)"
+            } catch {
+                return "统一延迟测试：设置开关\(switchText)，测速核心实际值读取失败（\(error.localizedDescription)）"
+            }
+        } else {
+            await settingsStore?.applyUnifiedDelayToTunnel()
+            do {
+                let general = try await client.configGeneral()
+                let coreText = (general.unifiedDelay ?? false) ? "开" : "关"
+                return "统一延迟测试：设置开关\(switchText)，测速核心实际值\(coreText)"
+            } catch {
+                return "统一延迟测试：设置开关\(switchText)，测速核心实际值读取失败（\(error.localizedDescription)）"
+            }
+        }
+    }
+
     /// One delay.test call with the 30 s outer guard (FlClash
     /// delayTestGuardDuration, lib/common/constant.dart:62, applied
     /// to the testDelay call in lib/core/interface.dart:195). The
@@ -1680,6 +1716,10 @@ final class ProxyStore: ObservableObject {
         var throwError: Error?
         var preloadNote: String?
         var channelNote: String?
+        /// The unified_delay force-apply + read-back line (v0.2.89):
+        /// set just before the test loop; nil in sample mode or when
+        /// the run exits before the loop (then the defer omits it).
+        var unifiedDelayDiagnostic: String?
         /// Set when this tap starts nothing because a test for the
         /// same group(s) is already in flight: the report still
         /// updates, so a stuck earlier run is visible instead of a
@@ -1715,6 +1755,7 @@ final class ProxyStore: ObservableObject {
             var lines = ["[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)）"]
             if let profileName { lines.append("当前订阅：\(profileName)") }
             lines.append("方法：delay.test（逐个，并行 \(Self.delayTestBatchSize) 个）；超时：\(timeoutMs)ms（单次调用另有 30s 兜底）")
+            if let unifiedDelayDiagnostic { lines.append(unifiedDelayDiagnostic) }
             lines.append("测速地址：\(urlText)")
             lines.append("目标：\(targets.count) 个节点；结果：成功 \(okCount)，超时(-1) \(timeoutCount)，失败(-2) \(failedCount)，未返回 \(untested)")
             let targetSample = targets.prefix(5).map { $0.proxyName }.joined(separator: "、")
@@ -1847,6 +1888,12 @@ final class ProxyStore: ObservableObject {
             preload = .ready(updated: [])
         }
         preloadSeconds = Int(Date().timeIntervalSince(preloadStart))
+        // v0.2.89: force the current "统一延迟测试" value into the
+        // core that is about to test, and read its actual value
+        // back for the report (see unifiedDelayDiagnosticLine) —
+        // the last thing before the loop, so no boot or flip in
+        // between can leave the test core stale.
+        unifiedDelayDiagnostic = await unifiedDelayDiagnosticLine(useAppCore: useAppCore)
         // One delay.test per target, at most delayTestBatchSize in
         // flight (see the constant above for why 10, not
         // upstream's iOS cap of 2). Each call carries the settings
@@ -2041,6 +2088,10 @@ final class ProxyStore: ObservableObject {
         clearLatencies(for: [target])
         applyLatencies()
         let useAppCore = client.mode == .live && !TunnelManager.shared.isRunning
+        // v0.2.89: the unified_delay force-apply + read-back line,
+        // set after the preload below; nil until then (and in sample
+        // mode), so the early writeReport calls omit it.
+        var unifiedDelayDiagnostic: String?
         // Writes the single-node diagnostic report (last-delay-
         // test-report.txt) for one outcome. `extra` carries the
         // channel diagnosis, if any; the preload line is added
@@ -2049,6 +2100,7 @@ final class ProxyStore: ObservableObject {
             var lines = ["[\(Self.reportTimestamp(startedAt))] 测速诊断（\(backend)，单节点）"]
             if let profileName { lines.append("当前订阅：\(profileName)") }
             lines.append("方法：delay.test；节点：\(target.proxyName)；测速地址：\(target.testUrl)；超时：\(delayTimeoutMs)ms（单次调用另有 30s 兜底）")
+            if let unifiedDelayDiagnostic { lines.append(unifiedDelayDiagnostic) }
             lines.append("结果：\(resultLine)")
             if let preloadNote { lines.append("提供方预加载：\(preloadNote)") }
             lines.append(contentsOf: extra)
@@ -2079,6 +2131,8 @@ final class ProxyStore: ObservableObject {
                 noteTestMessage(reason)
             }
         }
+        // v0.2.89: force-apply + read back, same as the group path.
+        unifiedDelayDiagnostic = await unifiedDelayDiagnosticLine(useAppCore: useAppCore)
         switch await runOneDelayTest(target: target, useAppCore: useAppCore) {
         case .value(_, let value):
             recordLatency(name: target.proxyName, url: target.testUrl, value: value)

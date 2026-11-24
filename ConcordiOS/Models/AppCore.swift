@@ -580,6 +580,19 @@ final class AppCore {
         }
     }
 
+    /// Forces the current "统一延迟测试" value into the running
+    /// in-app core (v0.2.89: the delay test calls this immediately
+    /// before each run). The boot patch and the flip observer
+    /// alone did not reach the test core — on-device, switch ON /
+    /// OFF / flip / full restart all measured the same cold
+    /// numbers — so a core that booted (or was left running) with
+    /// a stale value kept measuring cold. Best-effort and never
+    /// thrown: patchUnifiedDelay swallows failures, so a failed
+    /// patch never fails the test.
+    func applyUnifiedDelay() async {
+        await patchUnifiedDelay()
+    }
+
     /// Starts observing the "统一延迟测试" toggle (once): every
     /// change re-patches unified_delay into the running in-app
     /// core. dropFirst() skips the subscription's immediate
@@ -1033,6 +1046,30 @@ final class AppCore {
     /// core must already be started.
     func loadedProxyGroups() async throws -> ConcordProxyGroups {
         try await sendRequest(method: "proxy.groups", params: [:], resultType: ConcordProxyGroups.self, timeoutSeconds: 15)
+    }
+
+    /// Checks the known services through one proxy on the in-app
+    /// core (probe.services) — the VPN-off counterpart of
+    /// ConcordClient.probeServices, for the Dashboard auto-check
+    /// (v0.2.89): with the VPN off the tunnel core is gone, so the
+    /// dashboard probes through this core (booted on demand by the
+    /// caller, like the delay test). The 60 s RPC timeout mirrors
+    /// providerUpdate: a multi-service check over a slow network
+    /// legitimately takes a while. Throws when the core is
+    /// unreachable; the caller surfaces the error, never the probe.
+    func probeServices(proxy: String, names: [String] = concordProbeServiceNames, timeout: UInt64? = nil) async throws -> [ConcordServiceItem] {
+        var params: [String: Any] = ["proxy": proxy, "names": names]
+        if let timeout { params["timeout"] = timeout }
+        return try await sendRequest(method: "probe.services", params: params, resultType: ConcordServiceList.self, timeoutSeconds: 60).items
+    }
+
+    /// Reads the in-app core's general config (config.general) —
+    /// the VPN-off counterpart of ConcordClient.configGeneral, for
+    /// the delay-test diagnostic (v0.2.89): the report shows the
+    /// core's ACTUAL unified_delay instead of the switch's, so a
+    /// switch/core disagreement is visible on-device.
+    func configGeneral() async throws -> ConcordGeneralState {
+        try await sendRequest(method: "config.general", params: [:], resultType: ConcordGeneralState.self)
     }
 
     // MARK: Delay test

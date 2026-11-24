@@ -2251,6 +2251,8 @@ private struct DashboardTrafficEffects: View {
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var tunnelManager: TunnelManager
     @EnvironmentObject private var connectionStore: ConnectionStore
+    @EnvironmentObject private var eventStore: EventStore
+    @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var client: ConcordClient
 
     @Binding var tunnelStartedAt: Date?
@@ -2288,9 +2290,26 @@ private struct DashboardTrafficEffects: View {
                 await fetchIPInfo()
                 await trafficStore.refreshEngineStatus()
                 await refreshSubscription()
+                // v0.2.89: the stats row (实时连接/最近请求/DNS查询）
+                // refreshes on entry, like pull-to-refresh — it used
+                // to show the previous session's values (or zeros)
+                // until the user pulled. The refreshes throw while
+                // the tunnel is down (stale snapshots) and the stores
+                // keep their values then; with the VPN on (or just
+                // stopped) the fresh snapshots fill the row at once.
+                await connectionStore.refresh()
+                await eventStore.refresh()
+                await dnsStore.refresh()
+                // v0.2.89: probe on entry even with the VPN off, like
+                // MuYu — the old `client.mode == .sample ||
+                // tunnelManager.isRunning` gate skipped the probe in
+                // live mode with the VPN off, so the services card
+                // showed stale values. The probe itself now routes
+                // through the in-app core when the tunnel is down
+                // (TrafficStore.probeServices), so no gate is needed
+                // here.
                 if trafficStore.services.isEmpty,
-                   let proxy = proxyStore.selectedOutbound,
-                   client.mode == .sample || tunnelManager.isRunning {
+                   let proxy = proxyStore.selectedOutbound {
                     await trafficStore.serviceProbeStore.probeAll(proxy: proxy)
                 }
             }
@@ -2316,6 +2335,14 @@ private struct DashboardTrafficEffects: View {
                     Task {
                         await trafficStore.noteTunnelStopped()
                         await trafficStore.serviceProbeStore.reset()
+                        // v0.2.89: the tunnel going down used to
+                        // leave the services card on the last
+                        // tunnel-probe values; re-probe through the
+                        // in-app core so the card stays live with
+                        // the VPN off, like MuYu.
+                        if let proxy = proxyStore.selectedOutbound {
+                            await trafficStore.serviceProbeStore.probeAll(proxy: proxy)
+                        }
                     }
                 }
                 // D-M7: hold the service/IP-probe results through the

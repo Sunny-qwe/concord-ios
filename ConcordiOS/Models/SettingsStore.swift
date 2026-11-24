@@ -1284,6 +1284,20 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// Forces the current "统一延迟测试" value into the RUNNING
+    /// tunnel core (v0.2.89: the delay test calls this immediately
+    /// before each run). The boot patch (general.json at VPN start)
+    /// and the flip observer alone did not reach the test core —
+    /// on-device, switch ON / OFF / flip / full restart all
+    /// measured the same cold numbers — so a core that booted (or
+    /// was left running) with a stale value kept measuring cold.
+    /// Best-effort and never thrown: patchUnifiedDelayToTunnel
+    /// swallows failures, so a failed patch never fails the test.
+    @MainActor
+    func applyUnifiedDelayToTunnel() async {
+        await patchUnifiedDelayToTunnel(unifiedDelay)
+    }
+
     /// Push the general settings to the core (config.patch). Only the
     /// fields ConfigPatchParams accepts are sent (see ConcordClient);
     /// SOCKS port and sniffing, for example, are not patchable.

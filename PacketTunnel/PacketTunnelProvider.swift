@@ -835,6 +835,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if tun.dnsHijack {
             settings.dnsSettings = NEDNSSettings(servers: tun.dns)
         }
+        // Snapshot the utun fds that already exist BEFORE the new
+        // interface is created: in a reused extension process the
+        // previous session's fd is still open, and the scan below
+        // must not pick it over the new one.
+        let staleFds = utunFileDescriptors()
         recordStartup("network-settings")
         do {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -856,11 +861,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         lastAppliedNetworkSettings = settings
 
         // The utun fd only exists once the settings above are applied.
-        guard let tunFd = tunnelFileDescriptor() else {
-            appendStartupStep("tunnelFileDescriptor: nil")
+        // Prefer a fd that appeared with this boot (not in the
+        // pre-settings snapshot): in a reused process the old fd is
+        // still open and lower-numbered, so the plain first-match
+        // scan would adopt the stale one. Fd numbers are allocated
+        // lowest-free-first, so the newest fd is the highest.
+        let currentFds = utunFileDescriptors()
+        let newFds = currentFds.subtracting(staleFds)
+        guard let tunFd = newFds.max() ?? currentFds.max() else {
+            appendStartupStep("tunnelFileDescriptor: nil (stale=\(staleFds.sorted()), current=\(currentFds.sorted()))")
             throw TunnelSetupError.tunFdNotFound
         }
-        appendStartupStep("tunnelFileDescriptor: fd=\(tunFd)")
+        appendStartupStep("tunnelFileDescriptor: fd=\(tunFd) (stale=\(staleFds.sorted()), current=\(currentFds.sorted()))")
         Self.log.info("tunnel fd: \(tunFd, privacy: .public)")
         let handle = concord_ios_adopt_fd(tunFd)
         guard handle != 0 else {
@@ -938,18 +950,28 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // sees a stale "direct override active" flag from this run.
         ssidDirectController.stop()
         coreQueue.async {
-            // Best effort: ask the core to stop the tunnel and engine,
-            // then give it a moment before closing the session. The
-            // extension process exits after this returns anyway.
-            if self.session != 0 {
-                self.sendCoreNotification(method: "tun.stop", params: [:])
-                self.sendCoreNotification(method: "engine.stop", params: [:])
-            }
-            Self.log.info(
-                "tunnel stopping (reason \(reason.rawValue)): in \(self.packetsIn) out \(self.packetsOut) dropped-full \(self.packetsDroppedFull)")
-            self.coreQueue.asyncAfter(deadline: .now() + 0.2) {
-                self.tearDownCore()
-                completionHandler()
+            // Await tun.stop so the old runner tears down and closes
+            // its utun fd before the session closes: the old
+            // fire-and-forget stop left the fd open, and the next boot
+            // in this reused process adopted the stale fd. Bounded at
+            // 5 s; on timeout the teardown proceeds anyway. engine.stop
+            // stays fire-and-forget.
+            Task {
+                if self.session != 0 {
+                    do {
+                        _ = try await self.sendCoreRequest(method: "tun.stop", params: [:], timeoutSeconds: 5)
+                        Self.log.info("tun.stop ok")
+                    } catch {
+                        Self.log.info("tun.stop await failed: \(error, privacy: .public)")
+                    }
+                    self.sendCoreNotification(method: "engine.stop", params: [:])
+                }
+                self.coreQueue.async {
+                    Self.log.info(
+                        "tunnel stopping (reason \(reason.rawValue)): in \(self.packetsIn) out \(self.packetsOut) dropped-full \(self.packetsDroppedFull)")
+                    self.tearDownCore()
+                    completionHandler()
+                }
             }
         }
     }
@@ -1815,22 +1837,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // startup, so IPv6 packets still cannot enter the tunnel until
     // the VPN itself restarts; IPv4 is restored immediately.
 
-    /// Recovers the real utun file descriptor for this tunnel, ported
-    /// from MuYu (PacketTunnelNetworkConfiguration.tunnelFileDescriptor).
-    /// iOS hands the extension only packetFlow, not the fd — but the
-    /// utun socket IS in this process's fd table once the tunnel
-    /// network settings are applied, so scan fds 0...1024 for the one
-    /// whose peer is the `com.apple.net.utun_control` control socket.
-    /// Returns nil when no such fd exists (settings not applied yet,
-    /// or the tunnel is not up). Trial v0.2.93: this is the data-plane
-    /// entry point; the packet channel is not used.
-    private func tunnelFileDescriptor() -> Int32? {
+    /// Collects ALL utun file descriptors in this process whose peer
+    /// is the `com.apple.net.utun_control` control socket. Same peer
+    /// check as `tunnelFileDescriptor`, but returns the full set:
+    /// in a reused extension process the previous session's fd is
+    /// still open, so the caller must tell the stale fds apart from
+    /// the one created by the current boot.
+    private func utunFileDescriptors() -> Set<Int32> {
         var controlInfo = ctl_info()
         withUnsafeMutablePointer(to: &controlInfo.ctl_name) {
             $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: $0.pointee)) {
                 _ = strcpy($0, "com.apple.net.utun_control")
             }
         }
+        var found = Set<Int32>()
         for fileDescriptor: Int32 in 0...1024 {
             var address = sockaddr_ctl()
             var result: Int32 = -1
@@ -1850,10 +1870,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
             }
             if address.sc_id == controlInfo.ctl_id {
-                return fileDescriptor
+                found.insert(fileDescriptor)
             }
         }
-        return nil
+        return found
+    }
+
+    /// Recovers the real utun file descriptor for this tunnel, ported
+    /// from MuYu (PacketTunnelNetworkConfiguration.tunnelFileDescriptor).
+    /// iOS hands the extension only packetFlow, not the fd — but the
+    /// utun socket IS in this process's fd table once the tunnel
+    /// network settings are applied, so scan fds 0...1024 for the one
+    /// whose peer is the `com.apple.net.utun_control` control socket.
+    /// Returns nil when no such fd exists (settings not applied yet,
+    /// or the tunnel is not up). Trial v0.2.93: this is the data-plane
+    /// entry point; the packet channel is not used. The scan is
+    /// ascending, so the first match is the lowest-numbered fd.
+    private func tunnelFileDescriptor() -> Int32? {
+        utunFileDescriptors().min()
     }
 
     /// The tun.start params for one tun handle, factored out of

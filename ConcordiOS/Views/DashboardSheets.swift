@@ -395,6 +395,23 @@ struct OutboundIPSheet: View {
                         }
                         .padding(16)
                         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+                    } else if displayIp != nil {
+                        // v0.2.95 Bug 2: the third-party lookup failed
+                        // but the core's outboundIp IS known — show
+                        // the exit IP instead of hiding it behind
+                        // "查询失败". Geo / level need the lookup, so
+                        // only the IP row is shown, with a footnote
+                        // saying so.
+                        Text("基础信息")
+                            .font(.headline)
+                        VStack(spacing: 0) {
+                            infoRow(label: "IP 地址", value: maskedIp ?? "—")
+                        }
+                        .padding(16)
+                        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+                        Text("地理位置与等级需第三方查询，当前查询失败，仅显示出口 IP。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     } else if isChecking {
                         ProgressView("正在查询…")
                             .frame(maxWidth: .infinity, alignment: .center)

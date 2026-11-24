@@ -104,6 +104,12 @@ final class TrafficStore: ObservableObject {
     /// Last egress-IP probe attempt, for the 1 s tick retry throttle
     /// (maybeRetryOutboundIpProbe).
     private var lastOutboundIpProbeAt: Date?
+    /// Egress-IP retry count since the last successful probe
+    /// (maybeRetryOutboundIpProbe): the first 20 attempts run every
+    /// 3 s so the status card clears promptly once the core's RPC
+    /// is ready, then it backs off to every 10 s. Reset to 0
+    /// whenever probe() succeeds and sets outboundIp.
+    private var outboundIpProbeAttempts = 0
     @Published var coreMemoryBytes: UInt64?
     @Published var services: [ConcordServiceItem] = []
     @Published var isProbingServices = false
@@ -1383,8 +1389,12 @@ final class TrafficStore: ObservableObject {
             let result = try await client.probeOutboundIp()
             outboundIp = result.body
             outboundChains = result.chains
+            if outboundIp != nil {
+                outboundIpProbeAttempts = 0
+            }
         } catch {
             lastError = error.localizedDescription
+            IPLookupDiagnostics.recordError(source: "probe.outboundIp", error: error)
         }
     }
 
@@ -1395,17 +1405,23 @@ final class TrafficStore: ObservableObject {
     /// IPC throws and outboundIp stays nil forever, so the status
     /// card shows "IP 查询失败" even though the VPN proxies fine
     /// (v0.2.93 on-device: the core log proves traffic flows, yet
-    /// outboundIp was empty and ip-api.com also failed). Throttled
-    /// to one attempt per 10 s; the in-flight guard in probe()
-    /// keeps a 6 s-timeout attempt from overlapping itself.
-    /// Called from the 1 s tick (Dashboard-only work).
+    /// outboundIp was empty and ip-api.com also failed). v0.2.94
+    /// throttled the retry to one attempt per 10 s, which still
+    /// left the card red at 7 s uptime on-device (the first probe
+    /// at connect had failed and the retry was not due yet), so
+    /// v0.2.95 retries every 3 s for the first 20 attempts, then
+    /// every 10 s. The in-flight guard in probe() keeps a 6 s
+    /// timeout attempt from overlapping itself. Called from the
+    /// 1 s tick (Dashboard-only work).
     @MainActor
     private func maybeRetryOutboundIpProbe() {
         guard TunnelManager.shared.isRunning,
               outboundIp == nil,
               !isProbingOutboundIp else { return }
+        let interval: TimeInterval = outboundIpProbeAttempts < 20 ? 3 : 10
         if let last = lastOutboundIpProbeAt,
-           Date().timeIntervalSince(last) < 10 { return }
+           Date().timeIntervalSince(last) < interval { return }
+        outboundIpProbeAttempts += 1
         Task { await probe() }
     }
 

@@ -78,6 +78,11 @@ final class LogStore: ObservableObject {
         } else {
             sections.append("== 核心警告 ==\n" + warnings.map(\.message).joined(separator: "\n"))
         }
+        // IP lookup diagnostics (v0.2.95 Bug 2): the last few
+        // failed IP-source / probe.outboundIp attempts with their
+        // error domain + code, so a red "IP 查询失败" ships its
+        // cause in the export. Always present, even with no record.
+        sections.append("== IP 查询诊断 ==\n" + (IPLookupDiagnostics.lastDiagnosticText() ?? "暂无记录（尚未查询，或查询未失败）"))
         sections.append("== 应用内核心启动诊断 ==\n" + (AppCore.lastBootReportText() ?? "暂无记录（尚未在应用内启动过核心）"))
         sections.append("== 最近一次测速诊断 ==\n" + (AppCore.lastDelayTestReportText() ?? "暂无记录（尚未测速，或本次测速未写入诊断）"))
         // Per-profile delay diagnostics (v0.2.58): the section

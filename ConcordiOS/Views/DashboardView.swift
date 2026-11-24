@@ -1,5 +1,53 @@
 import SwiftUI
 
+// MARK: - IP lookup diagnostics (v0.2.95 Bug 2)
+//
+// On-device v0.2.94 the Dashboard IP query still failed red, and
+// nobody knew why: the app's URLSession requests never reached the
+// core (no ip-api.com entry in the core log), so they died before
+// TCP — most likely the app's DNS resolution — but every source
+// swallowed its error (`catch { return false }`). These lines are
+// the record of that: each failed source and each failed
+// probe.outboundIp writes one timestamped line here (last 8 kept),
+// and LogStore.fullExportText includes them, so the next on-device
+// failure ships its cause in the log export instead of a bare red
+// "IP 查询失败".
+struct IPLookupDiagnostics {
+    private static let storageKey = "concord.ipLookupDiagnostics"
+    private static let maxLines = 8
+
+    static func record(_ line: String) {
+        var lines = UserDefaults.standard.string(forKey: storageKey)
+            .map { $0.split(separator: "\n").map(String.init) } ?? []
+        lines.append("[\(timestamp())] \(line)")
+        if lines.count > maxLines {
+            lines.removeFirst(lines.count - maxLines)
+        }
+        UserDefaults.standard.set(lines.joined(separator: "\n"), forKey: storageKey)
+    }
+
+    static func lastDiagnosticText() -> String? {
+        guard let text = UserDefaults.standard.string(forKey: storageKey),
+              !text.isEmpty else { return nil }
+        return text
+    }
+
+    /// "source: <localizedDescription> (<domain> code <code>)" —
+    /// the (domain, code) is what tells a DNS failure
+    /// (NSURLErrorCannotFindHost, -1003) apart from a timeout
+    /// (-1001) or a refused connection (-1004).
+    static func recordError(source: String, error: Error) {
+        let nsError = error as NSError
+        record("\(source): \(error.localizedDescription) (\(nsError.domain) code \(nsError.code))")
+    }
+
+    private static func timestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: Date())
+    }
+}
+
 // MARK: - Dashboard (reference screenshots IMG_1082 / IMG_1083)
 // Layout, top to bottom: big title + edit button; status card (big
 // blue play button); network speed; outbound mode pills; VPN card;
@@ -341,6 +389,7 @@ struct DashboardView: View {
         // No source answered: keep the previous (or empty) values —
         // the card shows "服务失败" while running, or the skeleton
         // bars while not running, instead of stale numbers.
+        IPLookupDiagnostics.record("all IP sources failed")
         ipFetchFailed = true
     }
 
@@ -351,14 +400,28 @@ struct DashboardView: View {
         do {
             let request = URLRequest(url: url, timeoutInterval: 10)
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
-            let decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
-            guard decoded.status == "success" else { return false }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                IPLookupDiagnostics.record("ip-api.com: HTTP \(status)")
+                return false
+            }
+            let decoded: IPQualityInfo
+            do {
+                decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
+            } catch {
+                IPLookupDiagnostics.record("ip-api.com: decode failed: \(error.localizedDescription)")
+                return false
+            }
+            guard decoded.status == "success" else {
+                IPLookupDiagnostics.record("ip-api.com: status \(decoded.status ?? "?")")
+                return false
+            }
             ipInfo = decoded
             ipAsn = (try? JSONDecoder().decode(IPApiAsField.self, from: data))?.asNumber
             ipFetchFailed = false
             return true
         } catch {
+            IPLookupDiagnostics.recordError(source: "ip-api.com", error: error)
             return false
         }
     }
@@ -372,9 +435,16 @@ struct DashboardView: View {
         do {
             let request = URLRequest(url: url, timeoutInterval: 8)
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let ip = json["ip"] as? String, !ip.isEmpty else { return false }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                IPLookupDiagnostics.record("ident.me: HTTP \(status)")
+                return false
+            }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ip = json["ip"] as? String, !ip.isEmpty else {
+                IPLookupDiagnostics.record("ident.me: decode failed")
+                return false
+            }
             ipInfo = IPQualityInfo(
                 status: "success", message: nil,
                 country: json["country"] as? String, countryCode: nil,
@@ -386,6 +456,7 @@ struct DashboardView: View {
             ipFetchFailed = false
             return true
         } catch {
+            IPLookupDiagnostics.recordError(source: "ident.me", error: error)
             return false
         }
     }
@@ -398,9 +469,16 @@ struct DashboardView: View {
         do {
             let request = URLRequest(url: url, timeoutInterval: 8)
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let ip = json["ip"] as? String, !ip.isEmpty else { return false }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                IPLookupDiagnostics.record("api.ipify.org: HTTP \(status)")
+                return false
+            }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ip = json["ip"] as? String, !ip.isEmpty else {
+                IPLookupDiagnostics.record("api.ipify.org: decode failed")
+                return false
+            }
             ipInfo = IPQualityInfo(
                 status: "success", message: nil, country: nil, countryCode: nil,
                 city: nil, regionName: nil, isp: nil, org: nil, asn: nil,
@@ -409,6 +487,7 @@ struct DashboardView: View {
             ipFetchFailed = false
             return true
         } catch {
+            IPLookupDiagnostics.recordError(source: "api.ipify.org", error: error)
             return false
         }
     }
@@ -3140,6 +3219,16 @@ private struct OutboundIPSheetHost: View {
                 }
             }
         )
+        // v0.2.95 Bug 2: opening the sheet used to show a stale
+        // failure even though the core's outboundIp had never been
+        // (re-)probed since the tunnel connected — probe fresh on
+        // appear while the tunnel runs and the IP is still unknown,
+        // so the sheet can show the core IP instead.
+        .onAppear {
+            if TunnelManager.shared.isRunning, trafficStore.outboundIp == nil {
+                Task { await trafficStore.probe() }
+            }
+        }
     }
 }
 

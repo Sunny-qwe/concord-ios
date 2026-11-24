@@ -853,14 +853,38 @@ final class ProxyStore: ObservableObject {
             // changes. Same fallback the offline path has used since
             // v0.2.56 (selectedNodeName = pending).
             let now = (g.now ?? "").trimmingCharacters(in: .whitespaces)
+            // v0.2.95 Bug 1: the user's explicit pick is authoritative
+            // while the core has not confirmed it yet — a stale
+            // snapshot (written before the select) used to revert
+            // the UI to the old pick (自动选择）. New display order:
+            // pending -> now -> fixed. With no pending the chain
+            // is unchanged. A pending is dropped here, and only
+            // here, once the RAW core values confirm it: a
+            // non-empty pending is confirmed when g.now or g.fixed
+            // equals it; an empty pending "" (clear-pin) is
+            // confirmed when g.fixed is nil/empty. Until then the
+            // pending is kept and displayed.
+            let pending = profileID.flatMap { self.pendingSelection(profileID: $0, group: g.name) }
+            if let profileID, let pending {
+                let trimmedPending = pending.trimmingCharacters(in: .whitespaces)
+                let fixedTrimmed = (g.fixed ?? "").trimmingCharacters(in: .whitespaces)
+                let confirmed: Bool
+                if trimmedPending.isEmpty {
+                    confirmed = fixedTrimmed.isEmpty
+                } else {
+                    confirmed = now == trimmedPending || fixedTrimmed == trimmedPending
+                }
+                if confirmed {
+                    dropPendingSelection(profileID: profileID, group: g.name)
+                }
+            }
             let displayedPick: String?
-            if !now.isEmpty {
+            if let pending, !pending.trimmingCharacters(in: .whitespaces).isEmpty {
+                displayedPick = pending.trimmingCharacters(in: .whitespaces)
+            } else if !now.isEmpty {
                 displayedPick = now
             } else if let fixed = g.fixed, !fixed.trimmingCharacters(in: .whitespaces).isEmpty {
                 displayedPick = fixed.trimmingCharacters(in: .whitespaces)
-            } else if let profileID, let pending = self.pendingSelection(profileID: profileID, group: g.name),
-                      !pending.trimmingCharacters(in: .whitespaces).isEmpty {
-                displayedPick = pending.trimmingCharacters(in: .whitespaces)
             } else {
                 displayedPick = nil
             }
@@ -946,8 +970,13 @@ final class ProxyStore: ObservableObject {
     /// Apply remembered off-VPN selections to the now-reachable core.
     /// Entries for groups the core no longer has are dropped; entries
     /// the core rejects are kept for the next refresh instead of
-    /// dropping the user's choice. A re-fetch follows when anything
-    /// changed, so `now`/`fixed` show what the core actually picked.
+    /// dropping the user's choice. An accepted entry is NOT dropped
+    /// here (v0.2.95 Bug 1): it is dropped by fetchCoreGroups once
+    /// the core snapshot confirms the new pick — dropping on RPC
+    /// success let the next refresh show the stale `now` before the
+    /// snapshot caught up. A re-fetch follows when anything changed,
+    /// so `now`/`fixed` show what the core actually picked (and the
+    /// confirmation/drop in fetchCoreGroups runs there).
     private func applyPendingSelections(profileID: UUID) async {
         let pendings = loadPendingSelections()[profileID.uuidString] ?? [:]
         guard !pendings.isEmpty else { return }
@@ -960,7 +989,6 @@ final class ProxyStore: ObservableObject {
             do {
                 let result = try await client.proxySelect(group: groupName, proxy: proxy)
                 if result.changed { changed = true }
-                dropPendingSelection(profileID: profileID, group: groupName)
             } catch {
                 continue
             }
@@ -983,16 +1011,25 @@ final class ProxyStore: ObservableObject {
         guard client.mode == .live else { return }
         guard let profile = profileStore?.activeProfile else { return }
         await refresh(activeProfile: profile)
-        // The tunnel can report .connected a moment before the
-        // extension's core snapshot is readable; in that case the
-        // refresh above fell back to the local list and the
-        // selections are still pending. One bounded retry covers
-        // the boot race — the entries stay in UserDefaults either
-        // way, so a later manual refresh would still apply them.
-        if isLocalFallback, !(loadPendingSelections()[profile.id.uuidString]?.isEmpty ?? true) {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            guard !Task.isCancelled else { return }
-            await refresh(activeProfile: profile)
+        // v0.2.95 Bug 1: bounded retry loop (up to 3 attempts, 3 s
+        // apart) instead of the single isLocalFallback retry. The
+        // tunnel can report .connected a moment before the core is
+        // ready to accept proxy.select, so the first refresh can
+        // succeed while the select fails and the pick is lost from
+        // the UI. Each attempt re-reads the core groups first (the
+        // local fallback list cannot be applied); refresh() itself
+        // applies the pending selections. Stop early when the
+        // pending list is empty or the tunnel is no longer
+        // connected. The entries stay in UserDefaults either way,
+        // so a later manual refresh would still apply them.
+        for attempt in 0..<3 {
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                guard !Task.isCancelled else { return }
+                await refresh(activeProfile: profile)
+            }
+            if loadPendingSelections()[profile.id.uuidString]?.isEmpty ?? true { return }
+            guard isRunning else { return }
         }
     }
 
@@ -1038,20 +1075,60 @@ final class ProxyStore: ObservableObject {
         return await applySelect(group: group, proxy: pinned ? "" : node.name, profileID: profileID)
     }
 
+    /// The optimistic local pick (v0.2.95 Bug 1): the mapping the
+    /// old !isRunning catch branch had — type "select" sets
+    /// selectedNodeName; url-test/fallback/smart set the fixed pin
+    /// AND selectedNodeName (the displayed pick follows the pin).
+    /// An empty proxy clears both. Called BEFORE the RPC so the
+    /// tap is visible immediately, whatever the core does.
+    private func applyLocalPick(group: ProxyGroup, proxy: String) {
+        groups = groups.map { g in
+            guard g.name == group.name else { return g }
+            var g = g
+            if g.type == "select" {
+                g.selectedNodeName = proxy.isEmpty ? nil : proxy
+            } else {
+                g.fixed = proxy.isEmpty ? nil : proxy
+                // Keep the displayed pick in step with the pin
+                // (loadLocalGroups now reports the pick as
+                // selectedNodeName for computed groups).
+                g.selectedNodeName = proxy.isEmpty ? nil : proxy
+            }
+            return g
+        }
+    }
+
     @MainActor
     private func applySelect(group: ProxyGroup, proxy: String, profileID: UUID? = nil) async -> String? {
         // The selected outbound the dashboard probes through may
         // change with this pick (upstream _onRoute picks change):
         // capture it before so the probe store can be told after.
         let previousOutbound = selectedOutbound
+        // v0.2.95 Bug 1 (upstream FlClash card.dart
+        // selectGroupProxy / providers/actions/proxies.dart
+        // changeProxy): update the local pick OPTIMISTICALLY first
+        // — the local groups AND the saved pending selection —
+        // then call the RPC. The old order (RPC first, local
+        // update only on failure and only while the VPN was off)
+        // left a tap with the VPN on doing nothing visible when
+        // the RPC failed or the immediate refresh read a stale
+        // snapshot. The pending is dropped only once the core
+        // snapshot confirms the new pick (fetchCoreGroups).
+        if let profileID {
+            savePendingSelection(profileID: profileID, group: group.name, proxy: proxy)
+        }
+        applyLocalPick(group: group, proxy: proxy)
         do {
             let result = try await client.proxySelect(group: group.name, proxy: proxy)
-            // Record the live pick too, so the local fallback keeps
-            // showing it after the tunnel stops.
-            if let profileID {
-                savePendingSelection(profileID: profileID, group: group.name, proxy: proxy)
+            if result.changed {
+                // Pass the active profile so the post-apply refresh
+                // can prefer the pending pick over a stale snapshot
+                // (fetchCoreGroups, v0.2.95 Bug 1) — a bare
+                // refresh() has no profileID and would skip the
+                // pending lookup entirely.
+                let active = profileStore?.activeProfile
+                await refresh(activeProfile: active?.id == profileID ? active : nil)
             }
-            if result.changed { await refresh() }
             lastError = nil
             // v0.2.86 item 16: the selected outbound changed — the
             // service checks re-probe immediately through the new
@@ -1064,26 +1141,25 @@ final class ProxyStore: ObservableObject {
             }
             return nil
         } catch {
-            if !isRunning, let profileID {
-                savePendingSelection(profileID: profileID, group: group.name, proxy: proxy)
-                groups = groups.map { g in
-                    guard g.name == group.name else { return g }
-                    var g = g
-                    if g.type == "select" {
-                        g.selectedNodeName = proxy.isEmpty ? nil : proxy
-                    } else {
-                        g.fixed = proxy.isEmpty ? nil : proxy
-                        // Keep the displayed pick in step with the
-                        // pin (loadLocalGroups now reports the pick
-                        // as selectedNodeName for computed groups).
-                        g.selectedNodeName = proxy.isEmpty ? nil : proxy
-                    }
-                    return g
-                }
+            if !isRunning {
+                // Offline: the core is unreachable; the choice is
+                // already remembered above and applied locally, so
+                // the tap visibly takes effect and the pick is
+                // applied when the tunnel connects.
                 lastError = nil
                 return nil
             }
+            // VPN on but the RPC failed (core not ready yet): keep
+            // the optimistic pick and the pending selection, and
+            // retry once after ~3 s via applyPendingSelections.
             lastError = error.localizedDescription
+            if let profileID {
+                Task {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    guard !Task.isCancelled, isRunning else { return }
+                    await applyPendingSelections(profileID: profileID)
+                }
+            }
             return nil
         }
     }

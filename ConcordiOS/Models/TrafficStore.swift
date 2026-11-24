@@ -97,6 +97,13 @@ final class TrafficStore: ObservableObject {
     @Published var history: [TrafficPoint] = []
     @Published var outboundIp: String?
     @Published var outboundChains: [String] = []
+    /// In-flight guard for the egress-IP probe (probe()): the probe
+    /// is a 6 s-timeout RPC to the extension core, so overlapping
+    /// attempts must not pile up.
+    private var isProbingOutboundIp = false
+    /// Last egress-IP probe attempt, for the 1 s tick retry throttle
+    /// (maybeRetryOutboundIpProbe).
+    private var lastOutboundIpProbeAt: Date?
     @Published var coreMemoryBytes: UInt64?
     @Published var services: [ConcordServiceItem] = []
     @Published var isProbingServices = false
@@ -1230,6 +1237,10 @@ final class TrafficStore: ObservableObject {
                         // as the traffic snapshot, otherwise it freezes
                         // after the first read.
                         await self?.refreshEngineStatus()
+                        // The egress-IP probe is single-shot and can
+                        // miss once (see maybeRetryOutboundIpProbe);
+                        // retry while the tunnel runs and it is empty.
+                        await self?.maybeRetryOutboundIpProbe()
                     }
                     // The per-node speeds ride the same 1 s tick as
                     // the traffic snapshot (MuYu updateTraffic).
@@ -1364,6 +1375,10 @@ final class TrafficStore: ObservableObject {
 
     @MainActor
     func probe() async {
+        guard !isProbingOutboundIp else { return }
+        isProbingOutboundIp = true
+        defer { isProbingOutboundIp = false }
+        lastOutboundIpProbeAt = Date()
         do {
             let result = try await client.probeOutboundIp()
             outboundIp = result.body
@@ -1371,6 +1386,27 @@ final class TrafficStore: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// Retries the egress-IP probe while the tunnel runs and the IP
+    /// is still unknown. probe() is single-shot — it fires once in
+    /// start() and once when the tunnel connects — and if that one
+    /// attempt lands before the extension core's RPC is ready, the
+    /// IPC throws and outboundIp stays nil forever, so the status
+    /// card shows "IP 查询失败" even though the VPN proxies fine
+    /// (v0.2.93 on-device: the core log proves traffic flows, yet
+    /// outboundIp was empty and ip-api.com also failed). Throttled
+    /// to one attempt per 10 s; the in-flight guard in probe()
+    /// keeps a 6 s-timeout attempt from overlapping itself.
+    /// Called from the 1 s tick (Dashboard-only work).
+    @MainActor
+    private func maybeRetryOutboundIpProbe() {
+        guard TunnelManager.shared.isRunning,
+              outboundIp == nil,
+              !isProbingOutboundIp else { return }
+        if let last = lastOutboundIpProbeAt,
+           Date().timeIntervalSince(last) < 10 { return }
+        Task { await probe() }
     }
 
     @MainActor

@@ -311,37 +311,114 @@ struct DashboardView: View {
         }
     }
 
-    /// Public-IP lookup (same ip-api.com endpoint as IPQualityView).
-    /// The lookup runs even while the VPN is off, but the status
-    /// card does NOT show the result then: FlClash shows grey
-    /// skeleton bars while the core is not running, the real IP
-    /// only once it is running. When the VPN is on, URLSession
-    /// follows the tunnel, so the answer is the proxy egress IP;
-    /// when it is off, it is the phone's direct IP.
+    /// Public-IP lookup. ip-api.com first (full geo/org/ASN answer,
+    /// 10 s) — but on-device 0.2.93 the ip-api.com request died
+    /// before TCP (the core never saw it: most likely the app's DNS
+    /// resolution of ip-api.com), so a single source leaves the
+    /// status card red even though the VPN proxies fine. Fall back
+    /// to ident.me/json (8 s) and then api.ipify.org?format=json
+    /// (8 s, IP only): first success wins and clears ipFetchFailed;
+    /// only an all-sources failure sets it. The fallbacks carry
+    /// only the IP (ident.me also fills country / city / ASN when
+    /// present) — enough for the status card's fallbackQuery; the
+    /// geo/org enrichment stays ip-api.com-only. The lookup runs
+    /// even while the VPN is off, but the status card does NOT show
+    /// the result then: FlClash shows grey skeleton bars while the
+    /// core is not running, the real IP only once it is running.
+    /// When the VPN is on, URLSession follows the tunnel, so the
+    /// answer is the proxy egress IP; when it is off, it is the
+    /// phone's direct IP.
     private func fetchIPInfo() async {
-        guard let url = URL(string: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting") else { return }
         ipChecking = true
         defer { ipChecking = false }
+        // Interface B3 (DashboardView part): a stalled ip-api.com
+        // used to hang this lookup forever (URLSession.shared
+        // defaults: 60 s request / 7 days resource). 10 s, then
+        // the next source is tried instead of hanging.
+        if await fetchIPInfoFromIpApi() { return }
+        if await fetchIPInfoFromIdentMe() { return }
+        if await fetchIPInfoFromIpify() { return }
+        // No source answered: keep the previous (or empty) values —
+        // the card shows "服务失败" while running, or the skeleton
+        // bars while not running, instead of stale numbers.
+        ipFetchFailed = true
+    }
+
+    /// ip-api.com (primary): the only source returning the full
+    /// geo/org/ASN answer in one shape. True when it answered.
+    private func fetchIPInfoFromIpApi() async -> Bool {
+        guard let url = URL(string: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting") else { return false }
         do {
-            // Interface B3 (DashboardView part): a stalled ip-api.com
-            // used to hang this lookup forever (URLSession.shared
-            // defaults: 60 s request / 7 days resource). 10 s, then
-            // the card shows "服务失败" instead of hanging.
             let request = URLRequest(url: url, timeoutInterval: 10)
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { ipFetchFailed = true; return }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
             let decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
-            guard decoded.status == "success" else { ipFetchFailed = true; return }
+            guard decoded.status == "success" else { return false }
             ipInfo = decoded
             ipAsn = (try? JSONDecoder().decode(IPApiAsField.self, from: data))?.asNumber
             ipFetchFailed = false
+            return true
         } catch {
-            // No network or API error: keep the previous (or empty)
-            // values — the card shows "服务失败" while running, or
-            // the skeleton bars while not running, instead of stale
-            // numbers.
-            ipFetchFailed = true
+            return false
         }
+    }
+
+    /// ident.me/json (fallback): {"ip","country","city","aso",
+    /// "asn","timezone",...} — the IP plus geo/ASN when present.
+    /// Its "asn" is a string ("AS13335") or a number; ipAsn keeps
+    /// the bare "AS<n>" token like the ip-api.com path.
+    private func fetchIPInfoFromIdentMe() async -> Bool {
+        guard let url = URL(string: "https://ident.me/json") else { return false }
+        do {
+            let request = URLRequest(url: url, timeoutInterval: 8)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ip = json["ip"] as? String, !ip.isEmpty else { return false }
+            ipInfo = IPQualityInfo(
+                status: "success", message: nil,
+                country: json["country"] as? String, countryCode: nil,
+                city: json["city"] as? String, regionName: nil,
+                isp: json["aso"] as? String, org: json["aso"] as? String,
+                asn: identMeAsn(json["asn"]), timezone: json["timezone"] as? String,
+                query: ip, lat: nil, lon: nil)
+            ipAsn = identMeAsn(json["asn"])
+            ipFetchFailed = false
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// api.ipify.org (last resort): {"ip": "..."} — IP only.
+    /// Enough for the status card's fallbackQuery so the red error
+    /// clears; it carries no ASN, so ipAsn is cleared with it.
+    private func fetchIPInfoFromIpify() async -> Bool {
+        guard let url = URL(string: "https://api.ipify.org?format=json") else { return false }
+        do {
+            let request = URLRequest(url: url, timeoutInterval: 8)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let ip = json["ip"] as? String, !ip.isEmpty else { return false }
+            ipInfo = IPQualityInfo(
+                status: "success", message: nil, country: nil, countryCode: nil,
+                city: nil, regionName: nil, isp: nil, org: nil, asn: nil,
+                timezone: nil, query: ip, lat: nil, lon: nil)
+            ipAsn = nil
+            ipFetchFailed = false
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// ident.me's "asn" is a string ("AS13335") or a number — both
+    /// become the bare "AS<n>" token ipAsn keeps.
+    private func identMeAsn(_ value: Any?) -> String? {
+        if let s = value as? String, !s.isEmpty { return s }
+        if let n = value as? NSNumber { return "AS\(n.intValue)" }
+        return nil
     }
 
     /// The ip-api.com answer assessed like upstream (D-D3): the

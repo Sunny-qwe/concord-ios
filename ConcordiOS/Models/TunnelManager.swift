@@ -355,7 +355,6 @@ final class TunnelManager: ObservableObject {
         var sawConnecting = false
         while Date() < deadline {
             let current = manager?.connection.status ?? status
-            status = current
             switch current {
             case .connected:
                 lastError = nil
@@ -363,7 +362,7 @@ final class TunnelManager: ObservableObject {
                 return
             case .connecting, .reasserting:
                 sawConnecting = true
-            case .disconnected where sawConnecting:
+            case .disconnected where sawConnecting || unexpectedDisconnect:
                 let message = lastStartupDiagnostic()
                     ?? "VPN 启动失败（扩展未完成启动）"
                 lastError = message
@@ -480,11 +479,16 @@ final class TunnelManager: ObservableObject {
     @Published private(set) var lastSystemDisconnectError: String?
 
     func captureLastDisconnectError() {
+        let requestedStartupID = currentStartupID
         manager?.connection.fetchLastDisconnectError { [weak self] error in
             guard let error else { return }
             let ns = error as NSError
             let detail = "\(ns.localizedDescription) [\(ns.domain):\(ns.code)]"
-            Task { @MainActor in self?.lastSystemDisconnectError = detail }
+            Task { @MainActor in
+                guard let self, self.currentStartupID == requestedStartupID,
+                      self.manager?.connection.status != .connected else { return }
+                self.lastSystemDisconnectError = detail
+            }
         }
     }
 
@@ -623,7 +627,9 @@ final class TunnelManager: ObservableObject {
     /// config.apply). An explicit timeoutSeconds overrides the table.
     private struct QueuedMessage {
         let data: Data
-        let timeout: TimeInterval?
+        let deadline: Date
+        let startupID: String?
+        let connectedAt: Date?
         let continuation: CheckedContinuation<Data, Error>
     }
     private var messageQueue: [QueuedMessage] = []
@@ -637,7 +643,10 @@ final class TunnelManager: ObservableObject {
                 continuation.resume(throwing: TunnelError.noReply)
                 return
             }
-            messageQueue.append(QueuedMessage(data: data, timeout: timeoutSeconds, continuation: continuation))
+            let timeout = timeoutSeconds ?? Self.timeoutForMethod(Self.methodName(in: data) ?? "?")
+            messageQueue.append(QueuedMessage(data: data, deadline: Date().addingTimeInterval(timeout),
+                                              startupID: currentStartupID, connectedAt: connectedAt,
+                                              continuation: continuation))
             drainMessages()
         }
     }
@@ -649,7 +658,14 @@ final class TunnelManager: ObservableObject {
         let next = messageQueue.removeFirst()
         Task { @MainActor in
             do {
-                let reply = try await self.performProviderMessage(next.data, timeoutSeconds: next.timeout)
+                guard next.startupID == self.currentStartupID, next.connectedAt == self.connectedAt else {
+                    throw TunnelError.notRunning
+                }
+                guard next.deadline > Date() else {
+                    throw TunnelError.timedOut(Self.methodName(in: next.data) ?? "?", 0)
+                }
+                let reply = try await self.performProviderMessage(next.data, deadline: next.deadline,
+                                                                 startupID: next.startupID, connectedAt: next.connectedAt)
                 next.continuation.resume(returning: reply)
             } catch {
                 next.continuation.resume(throwing: error)
@@ -660,7 +676,7 @@ final class TunnelManager: ObservableObject {
     }
 
     @MainActor
-    private func performProviderMessage(_ data: Data, timeoutSeconds: TimeInterval?) async throws -> Data {
+    private func performProviderMessage(_ data: Data, deadline: Date, startupID: String?, connectedAt expectedConnectedAt: Date?) async throws -> Data {
         // Reacquire the system's connection, rather than reusing a stale manager.
         let managers = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[NETunnelProviderManager], Error>) in
             NETunnelProviderManager.loadAllFromPreferences { managers, error in
@@ -675,7 +691,11 @@ final class TunnelManager: ObservableObject {
             throw TunnelError.notRunning
         }
         let method = Self.methodName(in: data) ?? "?"
-        let timeout = timeoutSeconds ?? Self.timeoutForMethod(method)
+        guard startupID == currentStartupID, expectedConnectedAt == connectedAt else {
+            throw TunnelError.notRunning
+        }
+        let timeout = deadline.timeIntervalSinceNow
+        guard timeout > 0 else { throw TunnelError.timedOut(method, 0) }
         return try await withCheckedThrowingContinuation { continuation in
             let claim = ReplyClaim()
             do {

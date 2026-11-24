@@ -1421,6 +1421,31 @@ struct DashboardView: View {
                 .padding(10)
                 .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
             }
+            // Zombie tunnel (v0.2.96): the system reports .connected
+            // but the extension core does not answer. The manager
+            // probes once after start and auto-restarts at most once;
+            // this banner shows the in-progress / final state.
+            if let zombieNotice = tunnelManager.zombieNotice {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("VPN 核心无响应")
+                            .font(.footnote.weight(.semibold))
+                        Text(zombieNotice)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("重新连接") {
+                        Task { await proxyStore.toggle() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+            }
             // TUN restart needed (config B1): a live config change
             // killed the TUN runner and the extension could not
             // restart it — the config applied, but traffic no longer

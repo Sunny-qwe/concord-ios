@@ -91,6 +91,26 @@ final class TunnelManager: ObservableObject {
     /// "VPN 反复掉线，已暂停自动重连" banner. Cleared on the next
     /// manual start.
     @Published private(set) var crashLoopActive = false
+    // MARK: Zombie detection (v0.2.96)
+    //
+    // A "zombie" tunnel reports .connected but its extension core
+    // never answers (core log 0 entries, delay.test unreturned,
+    // probe.outboundIp notRunning): the system thinks the VPN is
+    // up while nothing proxies. The app probes the core once after
+    // every start and, at most once per manual start, restarts the
+    // tunnel to recover — never silently, never in a loop.
+    /// User-visible zombie state; nil = no zombie. Set when a
+    /// zombie is detected, cleared on a successful probe and on
+    /// manual stop/start.
+    @Published private(set) var zombieNotice: String?
+    /// True once the one auto-restart for this manual start has
+    /// been used. Reset only by a MANUAL start(); the auto-restart
+    /// path (startTunnel(manual: false)) preserves it.
+    private var zombieRestartAttempted = false
+    /// The in-flight zombie probe, so stop() / a new manual start
+    /// can cancel it and a stale probe can never restart a VPN the
+    /// user already stopped.
+    private var zombieProbeTask: Task<Void, Never>?
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
@@ -272,6 +292,23 @@ final class TunnelManager: ObservableObject {
     /// two cores must never run at once.
     @MainActor
     func start() async throws {
+        try await startTunnel(manual: true)
+    }
+
+    /// The shared start path. `manual: true` is a user-initiated
+    /// start: it resets the zombie-restart budget, cancels any
+    /// stale probe and clears the zombie notice. `manual: false`
+    /// is the zombie auto-restart: it preserves
+    /// zombieRestartAttempted so at most one auto-restart happens
+    /// per manual start.
+    @MainActor
+    private func startTunnel(manual: Bool) async throws {
+        if manual {
+            zombieRestartAttempted = false
+            zombieProbeTask?.cancel()
+            zombieProbeTask = nil
+            zombieNotice = nil
+        }
         try await prepare()
         guard let manager else {
             throw TunnelError.noManager
@@ -337,6 +374,91 @@ final class TunnelManager: ObservableObject {
         // failed start never arms them.
         try await confirmTunnelUp()
         _ = await OnDemandStore.shared.installRulesIfNeeded()
+        // The tunnel reports .connected — now verify the extension
+        // core actually answers (zombie check, v0.2.96).
+        launchZombieProbe()
+    }
+
+    /// Zombie probe (v0.2.96): 2 s grace for the extension core to
+    /// finish booting, then ONE config.general probe of the core,
+    /// bounded to ~10 s total. Success clears the notice; failure
+    /// (throw or timeout) is a zombie — handleZombieDetected()
+    /// restarts the tunnel at most once per manual start. Only
+    /// ever launched from startTunnel() after confirmTunnelUp —
+    /// never from the status observer or On-Demand reconnects.
+    @MainActor
+    private func launchZombieProbe() {
+        zombieProbeTask?.cancel()
+        zombieProbeTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            let alive = await self.probeExtensionCore()
+            guard !Task.isCancelled else { return }
+            if alive {
+                self.zombieNotice = nil
+                return
+            }
+            await self.handleZombieDetected()
+        }
+    }
+
+    /// One config.general call against the extension core, raced
+    /// against a 10 s sleep so a hung call cannot block past ~10 s.
+    /// Returns true only when the core answers.
+    @MainActor
+    private func probeExtensionCore() async -> Bool {
+        do {
+            let answered: ConcordGeneralState? = try await withThrowingTaskGroup(of: ConcordGeneralState?.self) { group in
+                group.addTask { try await ConcordClient().configGeneral() }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 10_000_000_000)
+                    return nil
+                }
+                guard let first = try await group.next() else { return nil }
+                group.cancelAll()
+                return first
+            }
+            return answered != nil
+        } catch {
+            return false
+        }
+    }
+
+    /// A zombie was detected (probe threw or timed out). Set the
+    /// visible notice and, if the one auto-restart for this manual
+    /// start is still unused, spend it: stop, then restart via the
+    /// internal path (which preserves zombieRestartAttempted and
+    /// launches a fresh probe). If the restart's probe also fails,
+    /// this runs again with the flag already set and only sets the
+    /// final error — never a second restart.
+    @MainActor
+    private func handleZombieDetected() async {
+        guard !zombieRestartAttempted else {
+            let message = "隧道已连接但核心无响应，重启后仍无响应，请检查配置或手动重新启动 VPN。"
+            zombieNotice = message
+            lastError = message
+            return
+        }
+        zombieRestartAttempted = true
+        zombieNotice = "隧道已连接但核心无响应，正在重启…"
+        await stop()
+        // stop() clears the notice as a manual stop would; restore
+        // the restarting notice for the auto-restart in progress.
+        zombieNotice = "隧道已连接但核心无响应，正在重启…"
+        do {
+            try await startTunnel(manual: false)
+        } catch {
+            // The restart itself never came up; confirmTunnelUp
+            // already set lastError — surface the final zombie text.
+            let message = "隧道已连接但核心无响应，重启后仍无响应，请检查配置或手动重新启动 VPN。"
+            zombieNotice = message
+            lastError = message
+        }
+        // If the restart succeeded, its own probe (launched by
+        // startTunnel) decides: success clears the notice, failure
+        // re-enters here with the flag set and only sets the final
+        // error above.
     }
 
     /// Waits up to 45 s for the tunnel to reach .connected after
@@ -501,10 +623,18 @@ final class TunnelManager: ObservableObject {
               // Correlate by ID when this run has one; a record from
               // an older run (different ID) is not this run's error.
               currentStartupID == nil || record.id == currentStartupID else { return nil }
+        let base: String
         if let detail = record.detail, !detail.isEmpty {
-            return "VPN \(record.stage)：\(detail)"
+            base = "VPN \(record.stage)：\(detail)"
+        } else {
+            base = "VPN 阶段：\(record.stage)"
         }
-        return "VPN 阶段：\(record.stage)"
+        // v0.2.96: append the extension's step trail when present,
+        // so LogStore's "== VPN 启动诊断 ==" export shows it.
+        if let steps = record.steps, !steps.isEmpty {
+            return base + "\n" + steps.joined(separator: "\n")
+        }
+        return base
     }
 
     /// The extension's vpn-diagnostics.json startedAt (audit D4):
@@ -554,6 +684,9 @@ final class TunnelManager: ObservableObject {
     @MainActor
     func stop() async {
         try? await prepare()
+        zombieProbeTask?.cancel()
+        zombieProbeTask = nil
+        zombieNotice = nil
         userInitiatedStop = true
         unexpectedDisconnect = false
         crashLoopActive = false
@@ -806,4 +939,9 @@ struct TunnelStartupDiagnosticRecord: Codable {
     let stage: String
     let detail: String?
     let date: Date
+    /// Extension step trail (v0.2.96, written by
+    /// PacketTunnelProvider into vpn-startup.json as "steps"):
+    /// timestamped strings like "19:06:52.123 tun.start: ok".
+    /// Optional so JSON without it still decodes as nil.
+    let steps: [String]?
 }

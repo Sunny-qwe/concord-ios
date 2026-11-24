@@ -59,7 +59,7 @@ final class Client {
         return EmptyResult() as! Result
     }
 '''
-swift += block(client, 'func configPatch(_ params: ConcordConfigPatchParams)')
+swift += block(client, 'func configPatch(_ params: ConcordConfigPatchParams)') + '\n'
 swift += block(client, 'func setUnifiedDelay(_ enabled: Bool)') + '\n}\n'
 swift += '''final class App {
     var captured: [String: Any] = [:]

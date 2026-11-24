@@ -1932,9 +1932,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let mtu = max(1280, min(65535,
                 (tunOverrides?["mtu"] as? NSNumber)?.intValue
                     ?? (json["mtu"] as? NSNumber)?.intValue ?? 1500))
-            let dns = json["dns"] as? [String] ?? ["223.5.5.5", "8.8.8.8"]
             let ipv6 = json["ipv6"] as? Bool ?? false
             let ipv6Address = json["ipv6-address"] as? String ?? "fdfe:dcba:9876::1/126"
+            // The tunnel DNS must be the core's own virtual address
+            // (198.18.0.2, the next host after the 198.18.0.1/30
+            // interface; fdfe:dcba:9876::2 for IPv6) — NOT a real
+            // upstream server. The core hijacks every server in
+            // tun.start's dns list, so listing a real upstream there
+            // (223.5.5.5 / 8.8.8.8) makes the core hijack its OWN
+            // upstream queries: they loop back into the tunnel instead
+            // of reaching the real server, every lookup fails
+            // ("no IP found"), and no traffic flows even though the
+            // VPN shows as connected. FlClash/MuYu hardcode 198.18.0.2
+            // (PacketTunnelNetworkConfiguration.ipv4DNS); the real
+            // upstream stays in the profile's dns.nameserver (DoH).
+            // tunnel.json's "dns" is therefore ignored here.
+            var dns = ["198.18.0.2"]
+            if ipv6 { dns.append("fdfe:dcba:9876::2") }
             let routeExcludeAddress = json["route-exclude-address"] as? [String] ?? []
             let bypassPrivateRoute = json["bypass-private-route"] as? Bool ?? false
             let dnsHijack = json["dns-hijack"] as? Bool ?? true
@@ -1943,7 +1957,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let loopbackDevice = LoopbackNetworkSettings.isEnabled(in: json)
             return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, loopbackDevice: loopbackDevice, congestionController: congestionController)
         }
-        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["223.5.5.5", "8.8.8.8"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true, loopbackDevice: false, congestionController: nil)
+        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["198.18.0.2"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true, loopbackDevice: false, congestionController: nil)
     }
 
     /// Parse a CIDR ("10.0.0.0/8" or "::1/128") into an excluded

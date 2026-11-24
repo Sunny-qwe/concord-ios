@@ -176,7 +176,7 @@ final class SettingsStore: ObservableObject {
     @Published var tunEnabled: Bool = true
     @Published var tunStack: String = "gvisor"
     @Published var tunMtu: Int = 1500
-    @Published var tunDns: String = "223.5.5.5, 8.8.8.8"
+    @Published var tunDns: String = "198.18.0.2"
 
     // DNS
     @Published var dnsEnabled: Bool = true
@@ -816,7 +816,7 @@ final class SettingsStore: ObservableObject {
             "enabled": tunEnabled,
             "stack": tunStack,
             "mtu": tunMtu,
-            "dns": dnsServers.isEmpty ? ["223.5.5.5", "8.8.8.8"] : dnsServers,
+            "dns": dnsServers.isEmpty ? ["198.18.0.2"] : dnsServers,
             "ipv6": ipv6,
             "route-exclude-address": routeExcludeAddress,
             "bypass-private-route": bypassPrivateRoute,

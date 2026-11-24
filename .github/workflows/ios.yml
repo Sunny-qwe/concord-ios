@@ -38,6 +38,9 @@ jobs:
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
 
+      - name: Verify unified-delay RPC encoding
+        run: python3 tools/test_unified_delay.py
+
       - name: Install Rust targets for iOS
         run: |
           rustup target add aarch64-apple-ios aarch64-apple-ios-sim
@@ -165,6 +168,10 @@ jobs:
         run: |
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           xcodebuild -version
+
+      - name: Verify unified-delay RPC encoding
+        if: steps.check.outputs.has_secrets == 'true'
+        run: python3 tools/test_unified_delay.py
 
       - name: Install Rust targets for iOS
         if: steps.check.outputs.has_secrets == 'true'

@@ -1982,7 +1982,23 @@ final class ConcordClient: ObservableObject {
     }
 
     func configPatch(_ params: ConcordConfigPatchParams) async throws {
-        _ = try await call(method: "config.patch", params: params, resultType: EmptyResult.self)
+        // Keep legacy encoding for other settings; only repair this field.
+        let encoded = try Self.requestEncoder.encode(AnyEncodable(params))
+        guard var object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
+            throw NSError(domain: "ConcordConfigPatch", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "无法编码通用设置"])
+        }
+        if let unifiedDelay = params.unifiedDelay {
+            object.removeValue(forKey: "unified_delay")
+            object["unifiedDelay"] = unifiedDelay
+        }
+        let data = try JSONSerialization.data(withJSONObject: object)
+        let _: EmptyResult = try await callRaw(method: "config.patch", paramsData: data, resultType: EmptyResult.self)
+    }
+
+    func setUnifiedDelay(_ enabled: Bool) async throws {
+        let data = try JSONSerialization.data(withJSONObject: ["unifiedDelay": enabled])
+        let _: EmptyResult = try await callRaw(method: "config.patch", paramsData: data, resultType: EmptyResult.self)
     }
 
     /// Patches only the core's mode (config.patch with just `mode`).

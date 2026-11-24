@@ -641,10 +641,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 // fold them into this patch, or it would clobber the
                 // overlay values applied above.
                 var patch = general
+                // Accept existing general.json files without rewriting user settings.
+                if let legacy = patch.removeValue(forKey: "unified_delay"),
+                   patch["unifiedDelay"] == nil {
+                    patch["unifiedDelay"] = legacy
+                }
                 if let overrides = effectiveTopLevelOverrides(section: "general") {
-                    for (key, snake) in ["ipv6": "ipv6", "unified-delay": "unified_delay", "tcp-concurrent": "tcp_concurrent"] {
+                    for (key, wire) in ["ipv6": "ipv6", "unified-delay": "unifiedDelay", "tcp-concurrent": "tcp_concurrent"] {
                         if let value = overrides[key] {
-                            patch[snake] = value
+                            patch[wire] = value
                         }
                     }
                 }

@@ -40,6 +40,29 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
+
+/* Kernel-control symbols for the utun fd scan (trial v0.2.93, MuYu's
+ * approach). Swift's Darwin module on iOS does NOT expose `ctl_info`,
+ * `sockaddr_ctl` or `CTLIOCGINFO` (sys/kern_control.h is not visible to
+ * Swift), so they are defined here — verbatim from MuYu's
+ * NECoreBridge.h, which is the bridging header of their extension
+ * target and the reason their identical Swift scan compiles. The
+ * values are the kernel ABI (CTLIOCGINFO is the ioctl to fetch a
+ * control's id by name); the structs match the kernel layout. */
+#define CTLIOCGINFO 0xc0644e03UL
+struct ctl_info {
+    u_int32_t ctl_id;
+    char ctl_name[96];
+};
+struct sockaddr_ctl {
+    u_char sc_len;
+    u_char sc_family;
+    u_int16_t ss_sysaddr;
+    u_int32_t sc_id;
+    u_int32_t sc_unit;
+    u_int32_t sc_reserved[5];
+};
 
 #ifdef __cplusplus
 extern "C" {

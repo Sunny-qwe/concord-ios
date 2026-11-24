@@ -366,6 +366,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let stage: String
         let detail: String?
         let date: Date
+        /// Step-by-step boot trail (v0.2.96): timestamped lines
+        /// appended by appendStartupStep during bootCore, so a
+        /// zombie tunnel's exported log shows the last step reached.
+        /// Optional so old vpn-startup.json files without it still decode.
+        let steps: [String]?
     }
 
     private enum TunnelSetupError: LocalizedError {        case noAppGroup
@@ -459,7 +464,43 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         } else {
             stopDetail = detail
         }
-        let record = StartupDiagnosticRecord(id: startupID, stage: stage, detail: stopDetail, date: Date())
+        // v0.2.96: carry the boot-step trail forward when this stage
+        // belongs to the same run; a new run starts with an empty list.
+        let preservedSteps: [String]? = {
+            guard let previous, previous.id == startupID else { return [] }
+            return previous.steps
+        }()
+        let record = StartupDiagnosticRecord(id: startupID, stage: stage, detail: stopDetail, date: Date(), steps: preservedSteps)
+        guard let data = try? JSONEncoder().encode(record) else { return }
+        try? data.write(to: file, options: .atomic)
+    }
+
+    /// Appends one timestamped boot step to vpn-startup.json's `steps`
+    /// list (v0.2.96 zombie-tunnel diagnostics). The line passed in is
+    /// "<step>: <detail>"; the "HH:mm:ss.SSS" timestamp is prepended
+    /// here so every step line has the same format. The list is capped
+    /// at the last 60 lines. If the stored record belongs to another
+    /// run (id mismatch) a fresh list is started; the stored stage /
+    /// detail are preserved and the date is refreshed to now. Never
+    /// throws: a missing or corrupt file, or a write failure, fails
+    /// silently so startTunnel is never broken by diagnostics.
+    private func appendStartupStep(_ step: String) {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) else { return }
+        let file = container.appendingPathComponent("vpn-startup.json")
+        guard let previous = (try? Data(contentsOf: file)).flatMap({
+            try? JSONDecoder().decode(StartupDiagnosticRecord.self, from: $0)
+        }) else { return }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        let line = "\(formatter.string(from: Date())) \(step)"
+        var steps = previous.id == startupID ? (previous.steps ?? []) : []
+        steps.append(line)
+        if steps.count > 60 { steps.removeFirst(steps.count - 60) }
+        let record = StartupDiagnosticRecord(
+            id: startupID, stage: previous.stage, detail: previous.detail,
+            date: Date(), steps: steps)
         guard let data = try? JSONEncoder().encode(record) else { return }
         try? data.write(to: file, options: .atomic)
     }
@@ -602,8 +643,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         Self.log.info("geo seed: seeded \(seed.seeded.joined(separator: ","), privacy: .public), present \(seed.alreadyPresent.joined(separator: ","), privacy: .public), failed \(seed.failures.map(\.file).joined(separator: ","), privacy: .public)")
 
         guard concord_ios_start() == 0 else {
+            appendStartupStep("concord_ios_start: failed, non-zero")
             throw TunnelSetupError.coreStartFailed
         }
+        appendStartupStep("concord_ios_start: ok")
         let sessionID = concord_ios_open_session(
             Self.deliverCallback, context, Self.releaseCallback)
         guard sessionID != 0 else {
@@ -644,8 +687,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
            let capture = mitmJSON["capture"] as? Bool {
             applyParams["options"] = ["mitmCapture": capture]
         }
-        _ = try await sendCoreRequest(method: "config.apply", params: applyParams, timeoutSeconds: 60)
-        _ = try await sendCoreRequest(method: "engine.start", params: [:], timeoutSeconds: 60)
+        do {
+            _ = try await sendCoreRequest(method: "config.apply", params: applyParams, timeoutSeconds: 60)
+            appendStartupStep("config.apply: ok")
+        } catch {
+            appendStartupStep("config.apply: failed: \(error)")
+            throw error
+        }
+        do {
+            _ = try await sendCoreRequest(method: "engine.start", params: [:], timeoutSeconds: 60)
+            appendStartupStep("engine.start: ok")
+        } catch {
+            appendStartupStep("engine.start: failed: \(error)")
+            throw error
+        }
         recordStartup("core-configured")
 
         // General settings saved in the app (general.json) are patched
@@ -698,7 +753,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // TUN must be enabled first: on iOS it is the only data plane,
         // and a disabled TUN fails the tunnel before any channel exists.
         let tun = readTunnelSettings(container: container)
+        appendStartupStep("readTunnelSettings: enabled=\(tun.enabled), mtu=\(tun.mtu), stack=\(tun.stack)")
         guard tun.enabled else {
+            appendStartupStep("readTunnelSettings: tun disabled")
             throw TunnelSetupError.tunDisabled
         }
         // MuYu's order: the utun interface only exists once the tunnel
@@ -759,14 +816,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             settings.dnsSettings = NEDNSSettings(servers: tun.dns)
         }
         recordStartup("network-settings")
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            self.setTunnelNetworkSettings(settings) { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                self.setTunnelNetworkSettings(settings) { error in
+                    if let error {
+                        continuation.resume(throwing: error)
+                    } else {
+                        continuation.resume()
+                    }
                 }
             }
+            appendStartupStep("setTunnelNetworkSettings: ok")
+        } catch {
+            appendStartupStep("setTunnelNetworkSettings: failed: \(error)")
+            throw error
         }
         // Kept for the path monitor (Batch F): a network change
         // re-asserts these exact settings.
@@ -774,19 +837,30 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         // The utun fd only exists once the settings above are applied.
         guard let tunFd = tunnelFileDescriptor() else {
+            appendStartupStep("tunnelFileDescriptor: nil")
             throw TunnelSetupError.tunFdNotFound
         }
+        appendStartupStep("tunnelFileDescriptor: fd=\(tunFd)")
         Self.log.info("tunnel fd: \(tunFd, privacy: .public)")
         let handle = concord_ios_adopt_fd(tunFd)
         guard handle != 0 else {
+            appendStartupStep("concord_ios_adopt_fd: returned 0")
             throw TunnelSetupError.tunAdoptFailed
         }
+        appendStartupStep("concord_ios_adopt_fd: handle=\(handle)")
         let tunParams = tunStartParams(handle: handle, tun: tun)
         recordStartup("tun-start")
         // sendCoreRequest throws on a JSON-RPC error; capture the
         // result so a tun.start success is explicit, not discarded
         // with `_ =` (the old code's silent-continue hid failures).
-        let tunStartResult = try await sendCoreRequest(method: "tun.start", params: tunParams, timeoutSeconds: 60)
+        let tunStartResult: Any
+        do {
+            tunStartResult = try await sendCoreRequest(method: "tun.start", params: tunParams, timeoutSeconds: 60)
+            appendStartupStep("tun.start: ok: \(String(String(describing: tunStartResult).prefix(200)))")
+        } catch {
+            appendStartupStep("tun.start: failed: \(error)")
+            throw error
+        }
         Self.log.info("tun.start ok: \(String(describing: tunStartResult), privacy: .public)")
         // Config B1: the runner this tun.start created is the
         // baseline — a later live apply/patch that moves the triple
@@ -795,7 +869,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         channelTunFingerprint = tunTripleFingerprint(overlay: overlay, patchParams: startupPatchParams)
         clearTunRestartNeeded()
 
-        try await subscribeToStreams()
+        do {
+            try await subscribeToStreams()
+            appendStartupStep("subscribeToStreams: ok")
+        } catch {
+            appendStartupStep("subscribeToStreams: failed: \(error)")
+            throw error
+        }
         // No startPump in this trial: the core reads/writes the utun fd
         // directly (Inherited path); the Swift packet pump is not used.
         startStabilityGuards()

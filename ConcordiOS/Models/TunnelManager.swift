@@ -403,12 +403,17 @@ final class TunnelManager: ObservableObject {
     /// message immediately with an error envelope while its core
     /// session is not open yet (PacketTunnelProvider
     /// handleAppMessage: `guard session != 0`, and the app-side
-    /// startupID / connectedAt guards in drainMessages /
-    /// performProviderMessage throw TunnelError.notRunning just as
-    /// fast when the tunnel flaps between enqueue and drain), so a
+    /// startupID guard in drainMessages /
+    /// performProviderMessage threw TunnelError.notRunning just as
+    /// fast when the tunnel flapped between enqueue and drain), so a
     /// tunnel that was still booting was declared a zombie and the
-    /// auto-restart disrupted it. A single fast failure must never
-    /// decide this on its own. Success clears the notice; failure
+    /// auto-restart disrupted it. v0.2.98 dropped the connectedAt
+    /// identity check in drainMessages / performProviderMessage
+    /// (the exact-Date comparison rejected live IPC whenever the
+    /// tunnel flapped between enqueue and drain); startupID is now
+    /// the only IPC-identity guard, and drainMessages waits up to
+    /// 2 s for a still-.connecting tunnel to settle. A single fast
+    /// failure must never decide this on its own. Success clears the notice; failure
     /// of all three attempts goes to handleZombieDetected(). Only
     /// ever launched from startTunnel() after confirmTunnelUp —
     /// never from the status observer or On-Demand reconnects.
@@ -857,7 +862,6 @@ final class TunnelManager: ObservableObject {
         let data: Data
         let deadline: Date
         let startupID: String?
-        let connectedAt: Date?
         let continuation: CheckedContinuation<Data, Error>
     }
     private var messageQueue: [QueuedMessage] = []
@@ -873,7 +877,7 @@ final class TunnelManager: ObservableObject {
             }
             let timeout = timeoutSeconds ?? Self.timeoutForMethod(Self.methodName(in: data) ?? "?")
             messageQueue.append(QueuedMessage(data: data, deadline: Date().addingTimeInterval(timeout),
-                                              startupID: currentStartupID, connectedAt: connectedAt,
+                                              startupID: currentStartupID,
                                               continuation: continuation))
             drainMessages()
         }
@@ -886,14 +890,27 @@ final class TunnelManager: ObservableObject {
         let next = messageQueue.removeFirst()
         Task { @MainActor in
             do {
-                guard next.startupID == self.currentStartupID, next.connectedAt == self.connectedAt else {
+                guard next.startupID == self.currentStartupID else {
                     throw TunnelError.notRunning
+                }
+                // v0.2.98: the tunnel may still be .connecting when a probe
+                // is enqueued right after confirmTunnelUp — wait briefly for
+                // the status to settle instead of failing immediately. The
+                // .connected notification can lag behind the IPC enqueue, and
+                // a fast notRunning here is what made the zombie probe
+                // misfire. Bounded to 2 s; performProviderMessage still
+                // re-checks .connected before sending.
+                if self.status == .connecting {
+                    let settleDeadline = Date().addingTimeInterval(2)
+                    while self.status == .connecting, Date() < settleDeadline {
+                        try? await Task.sleep(nanoseconds: 200_000_000)
+                    }
                 }
                 guard next.deadline > Date() else {
                     throw TunnelError.timedOut(Self.methodName(in: next.data) ?? "?", 0)
                 }
                 let reply = try await self.performProviderMessage(next.data, deadline: next.deadline,
-                                                                 startupID: next.startupID, connectedAt: next.connectedAt)
+                                                                 startupID: next.startupID)
                 next.continuation.resume(returning: reply)
             } catch {
                 next.continuation.resume(throwing: error)
@@ -904,7 +921,7 @@ final class TunnelManager: ObservableObject {
     }
 
     @MainActor
-    private func performProviderMessage(_ data: Data, deadline: Date, startupID: String?, connectedAt expectedConnectedAt: Date?) async throws -> Data {
+    private func performProviderMessage(_ data: Data, deadline: Date, startupID: String?) async throws -> Data {
         // Reacquire the system's connection, rather than reusing a stale manager.
         let managers = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[NETunnelProviderManager], Error>) in
             NETunnelProviderManager.loadAllFromPreferences { managers, error in
@@ -919,7 +936,7 @@ final class TunnelManager: ObservableObject {
             throw TunnelError.notRunning
         }
         let method = Self.methodName(in: data) ?? "?"
-        guard startupID == currentStartupID, expectedConnectedAt == connectedAt else {
+        guard startupID == currentStartupID else {
             throw TunnelError.notRunning
         }
         let timeout = deadline.timeIntervalSinceNow

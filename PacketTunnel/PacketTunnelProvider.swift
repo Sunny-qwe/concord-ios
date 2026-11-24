@@ -505,6 +505,25 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         try? data.write(to: file, options: .atomic)
     }
 
+    /// Boot counter (v0.2.98): persisted in the App Group container
+    /// so a reused extension process is distinguishable from a fresh
+    /// one. Incremented once per startTunnel and recorded as a boot
+    /// step in vpn-startup.json. Tells the next on-device test
+    /// whether a zombie only happens on a reused process (stale
+    /// utun fd, Cause 2a) vs a fresh one. Never throws: a missing
+    /// container or a write failure yields 0 and startTunnel is
+    /// never broken by diagnostics.
+    private func nextBootCount() -> Int {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) else { return 0 }
+        let file = container.appendingPathComponent("vpn-boot-count")
+        let current = (try? String(contentsOf: file, encoding: .utf8))
+            .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+        let next = current + 1
+        try? String(next).write(to: file, atomically: true, encoding: .utf8)
+        return next
+    }
+
     // MARK: - C callbacks (non-capturing; the provider is passed as context)
 
     private static let deliverCallback: ConcordIOSDeliver = { context, data, len in
@@ -543,6 +562,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // delay-run accumulator cannot leak into this run.
         resetRunState()
         recordStartup("extension-entered")
+        appendStartupStep("process.bootCount: \(nextBootCount())")
         let context = Unmanaged.passRetained(self).toOpaque()
         Task {
             do {
@@ -1643,7 +1663,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         timer.schedule(deadline: .now() + .seconds(30), repeating: .seconds(30))
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            guard self.session != 0, !self.isStopping, self.pumpRunning else { return }
+            guard self.session != 0, !self.isStopping else { return }
             guard let last = self.lastCoreMessageAt else { return }
             let silent = Date().timeIntervalSince(last)
             // Refresh the diagnostics file on every tick so the
@@ -1740,7 +1760,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func reapplyNetworkSettings() {
-        guard session != 0, !isStopping, pumpRunning,
+        guard session != 0, !isStopping,
               let settings = lastAppliedNetworkSettings else { return }
         Self.log.info("network path changed; re-applying tunnel network settings")
         setTunnelNetworkSettings(settings) { error in

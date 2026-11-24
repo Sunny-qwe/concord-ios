@@ -91,17 +91,25 @@ final class TunnelManager: ObservableObject {
     /// "VPN 反复掉线，已暂停自动重连" banner. Cleared on the next
     /// manual start.
     @Published private(set) var crashLoopActive = false
-    // MARK: Zombie detection (v0.2.96)
+    // MARK: Zombie detection (v0.2.96, patient probe v0.2.97)
     //
     // A "zombie" tunnel reports .connected but its extension core
     // never answers (core log 0 entries, delay.test unreturned,
     // probe.outboundIp notRunning): the system thinks the VPN is
-    // up while nothing proxies. The app probes the core once after
+    // up while nothing proxies. The app probes the core after
     // every start and, at most once per manual start, restarts the
     // tunnel to recover — never silently, never in a loop.
+    // v0.2.97: the probe is PATIENT — 8 s grace, then up to 3
+    // attempts a few seconds apart, and a zombie is declared only
+    // when ALL of them fail. v0.2.96 probed once at 2 s and the
+    // call failed FAST (~1 s, not the 10 s timeout) while the
+    // extension was still booting / between runs, so a healthy
+    // tunnel was declared a zombie and the auto-restart disrupted
+    // it. A final error also gets one delayed re-probe ~15 s later
+    // that clears the banner if the core has since answered.
     /// User-visible zombie state; nil = no zombie. Set when a
-    /// zombie is detected, cleared on a successful probe and on
-    /// manual stop/start.
+    /// zombie is detected, cleared on a successful probe, by the
+    /// recovery re-probe, and on manual stop/start.
     @Published private(set) var zombieNotice: String?
     /// True once the one auto-restart for this manual start has
     /// been used. Reset only by a MANUAL start(); the auto-restart
@@ -111,6 +119,12 @@ final class TunnelManager: ObservableObject {
     /// can cancel it and a stale probe can never restart a VPN the
     /// user already stopped.
     private var zombieProbeTask: Task<Void, Never>?
+    /// The one-off recovery re-probe (v0.2.97): scheduled when the
+    /// final zombie error is set, it fires once ~15 s later and
+    /// clears a stale banner if the core answers by then. It never
+    /// restarts anything and never re-schedules itself; cancelled
+    /// like the probe on manual stop / a new manual start.
+    private var zombieRecoveryTask: Task<Void, Never>?
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
@@ -307,6 +321,8 @@ final class TunnelManager: ObservableObject {
             zombieRestartAttempted = false
             zombieProbeTask?.cancel()
             zombieProbeTask = nil
+            zombieRecoveryTask?.cancel()
+            zombieRecoveryTask = nil
             zombieNotice = nil
         }
         try await prepare()
@@ -379,33 +395,75 @@ final class TunnelManager: ObservableObject {
         launchZombieProbe()
     }
 
-    /// Zombie probe (v0.2.96): 2 s grace for the extension core to
-    /// finish booting, then ONE config.general probe of the core,
-    /// bounded to ~10 s total. Success clears the notice; failure
-    /// (throw or timeout) is a zombie — handleZombieDetected()
-    /// restarts the tunnel at most once per manual start. Only
+    /// Zombie probe (v0.2.97): 8 s grace for the extension core to
+    /// finish booting, then up to THREE config.general probes 3 s
+    /// apart. Only when ALL attempts fail is the tunnel a zombie.
+    /// v0.2.96 probed once at 2 s and the call failed FAST (~1 s,
+    /// not the 10 s timeout) — the extension answers an app
+    /// message immediately with an error envelope while its core
+    /// session is not open yet (PacketTunnelProvider
+    /// handleAppMessage: `guard session != 0`, and the app-side
+    /// startupID / connectedAt guards in drainMessages /
+    /// performProviderMessage throw TunnelError.notRunning just as
+    /// fast when the tunnel flaps between enqueue and drain), so a
+    /// tunnel that was still booting was declared a zombie and the
+    /// auto-restart disrupted it. A single fast failure must never
+    /// decide this on its own. Success clears the notice; failure
+    /// of all three attempts goes to handleZombieDetected(). Only
     /// ever launched from startTunnel() after confirmTunnelUp —
     /// never from the status observer or On-Demand reconnects.
     @MainActor
     private func launchZombieProbe() {
         zombieProbeTask?.cancel()
+        zombieProbeTask = nil
+        zombieRecoveryTask?.cancel()
+        zombieRecoveryTask = nil
         zombieProbeTask = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            // 8 s grace: the tunnel reports .connected as soon as
+            // the network settings are in, while the extension's
+            // core session / RPC dispatcher may still be settling
+            // (and on an auto-restart, confirmTunnelUp can return
+            // on a stale .connected from the run being torn down).
+            // Probing at 2 s caught it mid-boot.
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
             guard !Task.isCancelled else { return }
-            let alive = await self.probeExtensionCore()
-            guard !Task.isCancelled else { return }
-            if alive {
-                self.zombieNotice = nil
-                return
+            // Up to 3 attempts, 3 s apart: each attempt is itself
+            // bounded to ~10 s by probeExtensionCore, so the worst
+            // case here is 8 + 10 + 3 + 10 + 3 + 10 ≈ 44 s after
+            // connect before a zombie is declared — silent all the
+            // while, and the tunnel keeps proxying if it is healthy.
+            for attempt in 1...3 {
+                if await self.probeExtensionCore() {
+                    self.zombieNotice = nil
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                if attempt < 3 {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    guard !Task.isCancelled else { return }
+                }
             }
+            // All attempts failed — but only declare a zombie while
+            // the tunnel is still up; if it dropped on its own the
+            // disconnect path owns the recovery, not the probe.
+            guard !Task.isCancelled, self.status == .connected else { return }
             await self.handleZombieDetected()
         }
     }
 
     /// One config.general call against the extension core, raced
     /// against a 10 s sleep so a hung call cannot block past ~10 s.
-    /// Returns true only when the core answers.
+    /// Returns true only when the core answers. A fresh
+    /// ConcordClient() is deliberate here, not a bug: the client
+    /// holds no session — init only reads the persisted mode, and
+    /// the live transport routes every call through
+    /// TunnelManager.shared.sendProviderMessage, which re-acquires
+    /// the system session per call — so a fresh instance is
+    /// identical to any shared one, and a fast failure is the
+    /// extension not being ready yet (see launchZombieProbe), not
+    /// the client. The patience lives in launchZombieProbe (grace
+    /// + retries), not here.
     @MainActor
     private func probeExtensionCore() async -> Bool {
         do {
@@ -425,19 +483,21 @@ final class TunnelManager: ObservableObject {
         }
     }
 
-    /// A zombie was detected (probe threw or timed out). Set the
+    /// A zombie was detected (all three probes failed). Set the
     /// visible notice and, if the one auto-restart for this manual
     /// start is still unused, spend it: stop, then restart via the
     /// internal path (which preserves zombieRestartAttempted and
     /// launches a fresh probe). If the restart's probe also fails,
     /// this runs again with the flag already set and only sets the
-    /// final error — never a second restart.
+    /// final error — never a second restart. After the final error,
+    /// a one-off recovery re-probe ~15 s later clears the banner
+    /// if the core has since answered (v0.2.97: the v0.2.96 banner
+    /// went stale — traffic flowing and the IP showing while
+    /// "VPN 核心无响应" stayed on screen).
     @MainActor
     private func handleZombieDetected() async {
         guard !zombieRestartAttempted else {
-            let message = "隧道已连接但核心无响应，重启后仍无响应，请检查配置或手动重新启动 VPN。"
-            zombieNotice = message
-            lastError = message
+            setFinalZombieError()
             return
         }
         zombieRestartAttempted = true
@@ -451,14 +511,47 @@ final class TunnelManager: ObservableObject {
         } catch {
             // The restart itself never came up; confirmTunnelUp
             // already set lastError — surface the final zombie text.
-            let message = "隧道已连接但核心无响应，重启后仍无响应，请检查配置或手动重新启动 VPN。"
-            zombieNotice = message
-            lastError = message
+            setFinalZombieError()
         }
         // If the restart succeeded, its own probe (launched by
         // startTunnel) decides: success clears the notice, failure
         // re-enters here with the flag set and only sets the final
         // error above.
+    }
+
+    /// The final zombie error text, plus the one-off recovery
+    /// re-probe that can clear it. Shared by both final-error
+    /// paths (restart budget already spent, restart itself failed).
+    /// lastError keeps the message as a record even if the banner
+    /// is later cleared by the recovery re-probe.
+    @MainActor
+    private func setFinalZombieError() {
+        let message = "隧道已连接但核心无响应，重启后仍无响应，请检查配置或手动重新启动 VPN。"
+        zombieNotice = message
+        lastError = message
+        scheduleZombieRecoveryReprobe()
+    }
+
+    /// One delayed re-probe ~15 s after the final zombie error:
+    /// if the core answers now, the banner was stale (the tunnel
+    /// recovered on its own) and is cleared. Never restarts, never
+    /// re-schedules — one shot. Cancelled on manual stop / a new
+    /// manual start, like the probe itself.
+    @MainActor
+    private func scheduleZombieRecoveryReprobe() {
+        zombieRecoveryTask?.cancel()
+        zombieRecoveryTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard !Task.isCancelled else { return }
+            // Only a live tunnel can have recovered; a stopped one
+            // is the user's (or the system's) business, and a new
+            // manual start cancels this task anyway.
+            guard self.status == .connected else { return }
+            if await self.probeExtensionCore() {
+                self.zombieNotice = nil
+            }
+        }
     }
 
     /// Waits up to 45 s for the tunnel to reach .connected after
@@ -686,6 +779,8 @@ final class TunnelManager: ObservableObject {
         try? await prepare()
         zombieProbeTask?.cancel()
         zombieProbeTask = nil
+        zombieRecoveryTask?.cancel()
+        zombieRecoveryTask = nil
         zombieNotice = nil
         userInitiatedStop = true
         unexpectedDisconnect = false

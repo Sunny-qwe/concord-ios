@@ -367,8 +367,8 @@ struct DashboardView: View {
     /// to ident.me/json (8 s) and then api.ipify.org?format=json
     /// (8 s, IP only): first success wins and clears ipFetchFailed;
     /// only an all-sources failure sets it. The fallbacks carry
-    /// only the IP (ident.me also fills country / city / ASN when
-    /// present) — enough for the status card's fallbackQuery; the
+    /// only the IP (ident.me also fills country + code / city /
+    /// ASN when present) — enough for the status card's fallbackQuery; the
     /// geo/org enrichment stays ip-api.com-only. The lookup runs
     /// even while the VPN is off, but the status card does NOT show
     /// the result then: FlClash shows grey skeleton bars while the
@@ -426,10 +426,13 @@ struct DashboardView: View {
         }
     }
 
-    /// ident.me/json (fallback): {"ip","country","city","aso",
+    /// ident.me/json (fallback): {"ip","country","cc","city","aso",
     /// "asn","timezone",...} — the IP plus geo/ASN when present.
     /// Its "asn" is a string ("AS13335") or a number; ipAsn keeps
-    /// the bare "AS<n>" token like the ip-api.com path.
+    /// the bare "AS<n>" token like the ip-api.com path. Its country
+    /// code is the "cc" field ("HK") — "country" is the full name
+    /// ("Hong Kong"), so reading only "country" leaves the clover
+    /// badge on the globe while upstream/MuYu shows the code.
     private func fetchIPInfoFromIdentMe() async -> Bool {
         guard let url = URL(string: "https://ident.me/json") else { return false }
         do {
@@ -447,7 +450,7 @@ struct DashboardView: View {
             }
             ipInfo = IPQualityInfo(
                 status: "success", message: nil,
-                country: json["country"] as? String, countryCode: nil,
+                country: json["country"] as? String, countryCode: json["cc"] as? String,
                 city: json["city"] as? String, regionName: nil,
                 isp: json["aso"] as? String, org: json["aso"] as? String,
                 asn: identMeAsn(json["asn"]), timezone: json["timezone"] as? String,

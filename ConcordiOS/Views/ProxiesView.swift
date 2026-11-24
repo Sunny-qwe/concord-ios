@@ -760,6 +760,13 @@ struct ProxiesView: View {
                 // the files) dismisses the banner.
                 if let new { notice = new } else { notice = nil }
             }
+            .onChange(of: proxyStore.selectError) { _, new in
+                // A node switch the core refused twice (v0.2.97
+                // gap 4): the pick was rolled back — show why,
+                // like the delay-test failure above. A nil error
+                // (a later switch succeeded) dismisses the banner.
+                if let new { notice = new } else { notice = nil }
+            }
             .onChange(of: groupSearchFocus) { _, focused in
                 if focused == nil {
                     for name in groupSearchOpen where (groupSearchKeywords[name] ?? "").isEmpty {
@@ -773,11 +780,19 @@ struct ProxiesView: View {
                 // the nonce re-shows the banner for the repeat.
                 if let current = proxyStore.testError { notice = current }
             }
+            .onChange(of: proxyStore.selectErrorNonce) { _, _ in
+                // The same switch failure twice in a row does not
+                // change selectError, so the observer above never
+                // fires — the nonce re-shows the banner for the
+                // repeat (same reason as testErrorNonce).
+                if let current = proxyStore.selectError { notice = current }
+            }
             .onAppear {
                 // Returning to this page with a failure already
                 // recorded (e.g. the run finished while another tab
                 // was frontmost) must still show it.
                 if let current = proxyStore.testError { notice = current }
+                if let current = proxyStore.selectError { notice = current }
             }
         }
         .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)

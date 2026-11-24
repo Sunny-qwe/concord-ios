@@ -136,6 +136,18 @@ final class ProxyStore: ObservableObject {
     /// that case: tapping it re-seeds immediately, bypassing the
     /// 10-minute cool-down, instead of trapping the user (v0.2.35).
     @Published var testErrorIsGeoSeed = false
+    /// The reason the last node switch failed AND was rolled back,
+    /// if it failed (v0.2.97 gap 4). The Proxies page shows this in
+    /// its notice banner, like testError: the old lastError write
+    /// was invisible on this page, so a refused switch left the
+    /// blue checkmark disagreeing with the core's actual node in
+    /// silence. Set only when the proxy.select RPC AND its 3 s
+    /// retry both fail; cleared when a later switch succeeds.
+    @Published var selectError: String?
+    /// Bumps on every (re-)set of selectError, so the banner
+    /// re-appears even when the new failure text is identical to
+    /// the previous one (same reason as testErrorNonce).
+    @Published var selectErrorNonce = 0
     /// True while a banner retry re-seed is running (banner spinner).
     @Published var isRetryingGeoSeed = false
     /// True while the group list itself is loading (first load).
@@ -688,6 +700,52 @@ final class ProxyStore: ObservableObject {
         savePendingSelections(all)
     }
 
+    /// The pre-pick local values for a group whose optimistic pick
+    /// has not yet been confirmed by the core (v0.2.97 gap 4): what
+    /// the group showed before applySelect's applyLocalPick.
+    /// Restored — and dropped — when the RPC and its retry both
+    /// fail, so the list shows the node the core actually still
+    /// has. In-memory only: a restart loses it, but the pending is
+    /// still dropped then, so fetchCoreGroups shows the core's
+    /// actual pick instead of the refused one.
+    private struct PreviousPick {
+        let selectedNodeName: String?
+        let fixed: String?
+    }
+    /// Keyed [profileID.uuidString][group], mirroring the pending
+    /// selections. Cleared once the core confirms the new pick
+    /// (fetchCoreGroups), when the pending is dropped for any other
+    /// reason, or by the rollback itself.
+    private var previousPicks: [String: [String: PreviousPick]] = [:]
+
+    private func savePreviousPick(profileID: UUID, group: ProxyGroup) {
+        previousPicks[profileID.uuidString, default: [:]][group.name] = PreviousPick(selectedNodeName: group.selectedNodeName, fixed: group.fixed)
+    }
+
+    private func dropPreviousPick(profileID: UUID, group: String) {
+        previousPicks[profileID.uuidString]?.removeValue(forKey: group)
+        if previousPicks[profileID.uuidString]?.isEmpty == true {
+            previousPicks.removeValue(forKey: profileID.uuidString)
+        }
+    }
+
+    /// Restores the pre-pick local values for one group (the
+    /// inverse of applyLocalPick: both the displayed pick and the
+    /// pin, exactly as captured before the tap). No-op when nothing
+    /// was captured — the caller still drops the pending, so the
+    /// core's actual pick shows after the refresh.
+    private func restorePreviousPick(profileID: UUID, group: String) {
+        guard let previous = previousPicks[profileID.uuidString]?[group] else { return }
+        groups = groups.map { g in
+            guard g.name == group else { return g }
+            var g = g
+            g.selectedNodeName = previous.selectedNodeName
+            g.fixed = previous.fixed
+            return g
+        }
+        dropPreviousPick(profileID: profileID, group: group)
+    }
+
     let client: ConcordClient
     private var cancellables = Set<AnyCancellable>()
 
@@ -876,6 +934,9 @@ final class ProxyStore: ObservableObject {
                 }
                 if confirmed {
                     dropPendingSelection(profileID: profileID, group: g.name)
+                    // v0.2.97 gap 4: the core confirmed the new pick,
+                    // so the pre-pick snapshot is no longer needed.
+                    dropPreviousPick(profileID: profileID, group: g.name)
                 }
             }
             let displayedPick: String?
@@ -977,25 +1038,55 @@ final class ProxyStore: ObservableObject {
     /// snapshot caught up. A re-fetch follows when anything changed,
     /// so `now`/`fixed` show what the core actually picked (and the
     /// confirmation/drop in fetchCoreGroups runs there).
-    private func applyPendingSelections(profileID: UUID) async {
+    /// `rollbackGroups` (v0.2.97 gap 4): groups whose entry is the
+    /// retry of a live applySelect that already failed once — a
+    /// second failure there rolls the pick back (restore the
+    /// pre-pick values, drop the pending, surface a message)
+    /// instead of keeping an optimistic checkmark the core
+    /// disagrees with. Refresh()/on-connect callers leave it empty,
+    /// so their entries keep the old keep-for-next-attempt
+    /// behaviour.
+    private func applyPendingSelections(profileID: UUID, rollbackGroups: Set<String> = []) async {
         let pendings = loadPendingSelections()[profileID.uuidString] ?? [:]
         guard !pendings.isEmpty else { return }
         var changed = false
         for (groupName, proxy) in pendings {
             guard groups.contains(where: { $0.name == groupName }) else {
                 dropPendingSelection(profileID: profileID, group: groupName)
+                dropPreviousPick(profileID: profileID, group: groupName)
                 continue
             }
             do {
                 let result = try await client.proxySelect(group: groupName, proxy: proxy)
                 if result.changed { changed = true }
             } catch {
+                if rollbackGroups.contains(groupName) {
+                    rollbackFailedSelection(profileID: profileID, group: groupName, error: error)
+                    changed = true
+                }
                 continue
             }
         }
         if changed {
             try? await fetchCoreGroups(profileID: profileID)
         }
+    }
+
+    /// Rolls back a pending selection the core refused twice
+    /// (v0.2.97 gap 4): restores the pre-pick local values, drops
+    /// the pending so fetchCoreGroups stops preferring it over the
+    /// core's actual pick, and surfaces a visible message on the
+    /// Proxies page. The caller (applyPendingSelections) re-fetches
+    /// the core groups afterwards, so the display ends
+    /// core-confirmed even when no pre-pick was captured (e.g. the
+    /// app restarted after the tap) — dropping the pending alone
+    /// already lets the core's actual pick show.
+    private func rollbackFailedSelection(profileID: UUID, group: String, error: Error) {
+        restorePreviousPick(profileID: profileID, group: group)
+        dropPendingSelection(profileID: profileID, group: group)
+        lastError = error.localizedDescription
+        selectError = "「\(group)」切换失败，已恢复原来的节点"
+        selectErrorNonce += 1
     }
 
     /// Applies off-VPN selections now that the tunnel is up (audit
@@ -1116,6 +1207,9 @@ final class ProxyStore: ObservableObject {
         // snapshot confirms the new pick (fetchCoreGroups).
         if let profileID {
             savePendingSelection(profileID: profileID, group: group.name, proxy: proxy)
+            // v0.2.97 gap 4: remember what the group showed before
+            // this tap, so a double failure can put it back.
+            savePreviousPick(profileID: profileID, group: group)
         }
         applyLocalPick(group: group, proxy: proxy)
         do {
@@ -1128,8 +1222,21 @@ final class ProxyStore: ObservableObject {
                 // pending lookup entirely.
                 let active = profileStore?.activeProfile
                 await refresh(activeProfile: active?.id == profileID ? active : nil)
+                // v0.2.97 gap 3 (upstream FlClash
+                // providers/actions/proxies.dart changeProxy calls
+                // closeConnections/resetNetwork after a successful
+                // switch): reset the core's network so EXISTING
+                // connections move to the new node too — without
+                // this only new connections use it, and e.g.
+                // Telegram stays on the old node.
+                // closeConnections is NOT exposed in the core FFI,
+                // so only the resetNetwork half is possible.
+                // Best-effort: a reset failure must not fail the
+                // switch that already succeeded.
+                try? await client.networkReset()
             }
             lastError = nil
+            selectError = nil
             // v0.2.86 item 16: the selected outbound changed — the
             // service checks re-probe immediately through the new
             // outbound (no backoff, no throttle). Live path only:
@@ -1152,12 +1259,15 @@ final class ProxyStore: ObservableObject {
             // VPN on but the RPC failed (core not ready yet): keep
             // the optimistic pick and the pending selection, and
             // retry once after ~3 s via applyPendingSelections.
+            // v0.2.97 gap 4: the retry carries this group in
+            // rollbackGroups — if it fails too, the pick is rolled
+            // back to the pre-tap values and the user is told.
             lastError = error.localizedDescription
             if let profileID {
                 Task {
                     try? await Task.sleep(nanoseconds: 3_000_000_000)
                     guard !Task.isCancelled, isRunning else { return }
-                    await applyPendingSelections(profileID: profileID)
+                    await applyPendingSelections(profileID: profileID, rollbackGroups: [group.name])
                 }
             }
             return nil

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Network
 import NetworkExtension
@@ -34,16 +35,19 @@ import os
 //      config.apply {"profile": {"path": <abs config.yaml path>},
 //                    "overlay": {"mitm": <mitm.json contents, if any>}},
 //      engine.start.
-//   4. Open the Option B packet channel
-//      (concord_ios_packet_channel_open, patches/02-packet-channel.patch)
-//      and tun.start {"source": {"kind": "channel", "handle": H}, ...}.
-//      The socketpair / inherited-fd Option A (concord_ios_adopt_fd) is
-//      NOT used: the channel is the supported path.
-//   5. Configure the tunnel interface (NEPacketTunnelNetworkSettings)
-//      from tunnel.json / defaults, subscribe to the five live streams,
-//      start the packet pump.
+//   4. Configure the tunnel interface (NEPacketTunnelNetworkSettings)
+//      from tunnel.json / defaults FIRST (MuYu's order: the utun
+//      interface only exists once the settings are applied).
+//   5. Trial v0.2.93: recover the real utun fd (tunnelFileDescriptor,
+//      MuYu's fd scan), adopt it (concord_ios_adopt_fd) and tun.start
+//      {"source": {"kind": "inherited", "handle": H}, ...}. The core
+//      then does native TUN I/O on the fd; no Swift packet pump runs.
+//      Then subscribe to the live streams and start the stability
+//      guards.
 //
-// Packet pump (Option B, no fd involved):
+// Packet pump (Option B, no fd involved) — PRESERVED but UNINVOKED in
+// trial v0.2.93 (the old path lives in the backup tree
+// concord-ios-ui-0.2.92-backup-packet-channel):
 //   packetFlow.readPackets -> concord_ios_packet_write(handle, packet)
 //   (returns 1 queued / 0 ring full / -1 unknown handle); poll
 //   concord_ios_packet_read(handle, buf, cap) -> packetFlow.writePackets.
@@ -370,6 +374,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         case coreStartFailed
         case sessionFailed
         case channelFailed
+        case tunFdNotFound
+        case tunAdoptFailed
         case rpcFailed(String)
 
         var errorDescription: String? {
@@ -386,6 +392,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 return "Concord 核心会话打开失败（核心未运行）"
             case .channelFailed:
                 return "数据包通道打开失败（concord_ios_packet_channel_open 返回 0）"
+            case .tunFdNotFound:
+                return "无法确定隧道文件描述符"
+            case .tunAdoptFailed:
+                return "核心拒绝了隧道文件描述符（concord_ios_adopt_fd 返回 0）"
             case .rpcFailed(let message):
                 return "核心调用失败：\(message)"
             }
@@ -675,28 +685,25 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         }
 
-        // Option B packet channel (NOT the socketpair / inherited fd).
+        // Trial v0.2.93: real-utun-fd data plane (MuYu's path), NOT the
+        // packet channel (Option B). The packet-channel bridge (patch 02
+        // ChannelDevice + Swift pump) does not deliver packets to the
+        // tunnel core (empty core log, stale snapshot, DNS "no IP found"
+        // even after the 198.18.0.2 fix), so this trial recovers the
+        // real utun fd and hands it to the core's native Inherited TUN
+        // path. The channel helpers (startPump/handleInbound/
+        // drainOutbound) stay in place but uninvoked; the old path is
+        // preserved in the backup tree
+        // (concord-ios-ui-0.2.92-backup-packet-channel).
         // TUN must be enabled first: on iOS it is the only data plane,
         // and a disabled TUN fails the tunnel before any channel exists.
         let tun = readTunnelSettings(container: container)
         guard tun.enabled else {
             throw TunnelSetupError.tunDisabled
         }
-        let handle = concord_ios_packet_channel_open()
-        guard handle != 0 else {
-            throw TunnelSetupError.channelFailed
-        }
-        channelHandle = handle
-
-        let tunParams = tunStartParams(handle: handle, tun: tun)
-        recordStartup("tun-start")
-        _ = try await sendCoreRequest(method: "tun.start", params: tunParams, timeoutSeconds: 60)
-        // Config B1: the runner this tun.start created is the
-        // baseline — a later live apply/patch that moves the triple
-        // kills it, and the fingerprint tells the re-start check
-        // what "unchanged" looks like.
-        channelTunFingerprint = tunTripleFingerprint(overlay: overlay, patchParams: startupPatchParams)
-        clearTunRestartNeeded()
+        // MuYu's order: the utun interface only exists once the tunnel
+        // network settings are applied, so setTunnelNetworkSettings
+        // runs BEFORE the fd scan and tun.start below.
         // Tunnel interface: the system owns routing; the core must not
         // install routes (upstream: Os::Other -> NullBackend on iOS).
         // IPv6 is configured from tunnel.json when the user enabled it
@@ -765,12 +772,36 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // re-asserts these exact settings.
         lastAppliedNetworkSettings = settings
 
+        // The utun fd only exists once the settings above are applied.
+        guard let tunFd = tunnelFileDescriptor() else {
+            throw TunnelSetupError.tunFdNotFound
+        }
+        Self.log.info("tunnel fd: \(tunFd, privacy: .public)")
+        let handle = concord_ios_adopt_fd(tunFd)
+        guard handle != 0 else {
+            throw TunnelSetupError.tunAdoptFailed
+        }
+        let tunParams = tunStartParams(handle: handle, tun: tun)
+        recordStartup("tun-start")
+        // sendCoreRequest throws on a JSON-RPC error; capture the
+        // result so a tun.start success is explicit, not discarded
+        // with `_ =` (the old code's silent-continue hid failures).
+        let tunStartResult = try await sendCoreRequest(method: "tun.start", params: tunParams, timeoutSeconds: 60)
+        Self.log.info("tun.start ok: \(String(describing: tunStartResult), privacy: .public)")
+        // Config B1: the runner this tun.start created is the
+        // baseline — a later live apply/patch that moves the triple
+        // kills it, and the fingerprint tells the re-start check
+        // what "unchanged" looks like.
+        channelTunFingerprint = tunTripleFingerprint(overlay: overlay, patchParams: startupPatchParams)
+        clearTunRestartNeeded()
+
         try await subscribeToStreams()
-        startPump()
+        // No startPump in this trial: the core reads/writes the utun fd
+        // directly (Inherited path); the Swift packet pump is not used.
         startStabilityGuards()
         tunnelStartedAt = Date()
         writeVPNDiagnostics(stage: "running")
-        Self.log.info("tunnel up: channel \(handle), stack \(tun.stack, privacy: .public), mtu \(tun.mtu)")
+        Self.log.info("tunnel up: fd \(tunFd, privacy: .public), handle \(handle), stack \(tun.stack, privacy: .public), mtu \(tun.mtu)")
         // The core (and its TUN) is up, so the SSID watcher can switch
         // the mode to direct on a direct SSID and restore it on
         // leaving, without the main app running (fork
@@ -1421,6 +1452,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Packet pump (Option B channel)
 
+    /// Trial v0.2.93: UNINVOKED — the fd path (tun.start Inherited)
+    /// replaces the packet-channel pump. Kept in place (with
+    /// handleInbound/drainOutbound and the channel helpers) so the
+    /// channel path can be restored from the backup tree; bootCore
+    /// does not call startPump and channelHandle stays 0.
     private func startPump() {
         pumpRunning = true
         readNextPackets()
@@ -1679,7 +1715,48 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // startup, so IPv6 packets still cannot enter the tunnel until
     // the VPN itself restarts; IPv4 is restored immediately.
 
-    /// The tun.start params for one channel handle, factored out of
+    /// Recovers the real utun file descriptor for this tunnel, ported
+    /// from MuYu (PacketTunnelNetworkConfiguration.tunnelFileDescriptor).
+    /// iOS hands the extension only packetFlow, not the fd — but the
+    /// utun socket IS in this process's fd table once the tunnel
+    /// network settings are applied, so scan fds 0...1024 for the one
+    /// whose peer is the `com.apple.net.utun_control` control socket.
+    /// Returns nil when no such fd exists (settings not applied yet,
+    /// or the tunnel is not up). Trial v0.2.93: this is the data-plane
+    /// entry point; the packet channel is not used.
+    private func tunnelFileDescriptor() -> Int32? {
+        var controlInfo = ctl_info()
+        withUnsafeMutablePointer(to: &controlInfo.ctl_name) {
+            $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: $0.pointee)) {
+                _ = strcpy($0, "com.apple.net.utun_control")
+            }
+        }
+        for fileDescriptor: Int32 in 0...1024 {
+            var address = sockaddr_ctl()
+            var result: Int32 = -1
+            var length = socklen_t(MemoryLayout.size(ofValue: address))
+            withUnsafeMutablePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    result = getpeername(fileDescriptor, $0, &length)
+                }
+            }
+            if result != 0 || address.sc_family != AF_SYSTEM {
+                continue
+            }
+            if controlInfo.ctl_id == 0 {
+                result = ioctl(fileDescriptor, CTLIOCGINFO, &controlInfo)
+                if result != 0 {
+                    continue
+                }
+            }
+            if address.sc_id == controlInfo.ctl_id {
+                return fileDescriptor
+            }
+        }
+        return nil
+    }
+
+    /// The tun.start params for one tun handle, factored out of
     /// bootCore so a re-start builds exactly the same params from
     /// the current tunnel.json (FlClash: the tun address is
     /// 198.18.0.1/30; the core sorts each CIDR prefix into its
@@ -1690,7 +1767,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             addresses.append(tun.ipv6Address)
         }
         var params: [String: Any] = [
-            "source": ["kind": "channel", "handle": handle],
+            "source": ["kind": "inherited", "handle": handle],
             "stack": tun.stack,
             "mtu": tun.mtu,
             "address": addresses,

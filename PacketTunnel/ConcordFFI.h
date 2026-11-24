@@ -23,6 +23,12 @@
  * -1 unknown handle; read is a non-blocking poll returning the byte
  * count, 0 when no packet is waiting, -1 on error.
  *
+ * The Inherited path (trial v0.2.93, MuYu's approach) uses
+ * `concord_ios_adopt_fd` instead: it adopts the real utun fd (recovered
+ * by scanning the extension's fds) into the core and returns the handle
+ * that `tun.start` names as {"kind": "inherited", "handle": ...}. The
+ * core then does native TUN I/O on the fd and no Swift packet pump runs.
+ *
  * Header path (registered in project.pbxproj as the PacketTunnel
  * target's SWIFT_OBJC_BRIDGING_HEADER):
  *   PacketTunnel/ConcordFFI.h
@@ -63,6 +69,14 @@ int32_t concord_ios_send(uint64_t session, const uint8_t *data, size_t len);
 
 /* Ends a session. Closing twice is harmless. */
 void concord_ios_close_session(uint64_t session);
+
+/* Adopts a host file descriptor (the real utun fd, recovered by scanning
+ * the extension's fds for the utun control socket) into the core and
+ * returns its handle (never 0), or 0 when the core is not up or the fd is
+ * invalid. The handle is what `tun.start` names as
+ * {"kind": "inherited", "handle": ...} (MuYu's path; the core then does
+ * native TUN I/O on the fd). */
+uint64_t concord_ios_adopt_fd(int32_t fd);
 
 /* Creates a packet channel (Option B, patched tree only) and returns its
  * handle (never 0), or 0 when the core is not up. */

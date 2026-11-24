@@ -116,6 +116,21 @@ pub extern "C" fn concord_ios_close_session(session: u64) {
     unsafe { concord_close(session) }
 }
 
+/// Adopts a host file descriptor (the real utun fd, recovered by scanning
+/// the extension's fds for the utun control socket) into the core and
+/// returns its handle (never 0), or 0 when the core is not up or the fd is
+/// invalid. The handle is what `tun.start` names as
+/// `{"kind": "inherited", "handle": …}` — MuYu's path: the core then does
+/// native TUN I/O on the fd, no Swift packet pump.
+///
+/// # Safety
+/// `fd` must be a valid open file descriptor owned by this process.
+#[no_mangle]
+pub unsafe extern "C" fn concord_ios_adopt_fd(fd: c_int) -> u64 {
+    // SAFETY: forwarded from this function's contract.
+    unsafe { concord_adopt_fd(fd) }
+}
+
 /// Creates a packet channel (Option B, patched tree only) and returns its
 /// handle (never 0), or 0 when the core is not up. The handle is what
 /// `tun.start` names as `{"kind": "channel", "handle": …}`.

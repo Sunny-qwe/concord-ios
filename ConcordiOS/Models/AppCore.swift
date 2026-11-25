@@ -182,6 +182,22 @@ final class AppCore {
     private var logSub: Int?
     private var logBuffer: [ConcordLogEntry] = []
 
+    /// dns.watch subscription + buffer (v0.2.102, MuYu parity):
+    /// the same subscribe-once + accumulate pattern as log.watch.
+    /// The in-app core's DNS engine logs every query it resolves
+    /// (service probes, delay tests, provider updates, outbound
+    /// dials) — with the tunnel off that is the only live DNS
+    /// source, so DnsStore reads this buffer instead of the
+    /// (stale) extension snapshot. dns.watch has NO initial
+    /// snapshot (Subscription::new(None, events)) — entries only
+    /// arrive as events, so the buffer starts empty at each
+    /// subscribe and fills while the core runs. Bounded to the
+    /// newest 500 entries, like logBuffer and the extension's
+    /// trimBuffer. Survives teardown like logBuffer (a failed
+    /// boot's queries stay visible instead of an empty list).
+    private var dnsSub: Int?
+    private var dnsBuffer: [ConcordDnsEntry] = []
+
     /// Subscription to the "统一延迟测试" toggle (v0.2.65): every
     /// change re-patches unified_delay into the running in-app
     /// core, so the toggle takes effect without re-booting.
@@ -401,7 +417,7 @@ final class AppCore {
     /// their existing shape. `configRefreshNote` (FIX 2) is passed
     /// on every call, so a heal that precedes a failed boot is
     /// still visible.
-    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String, providerSeed: ProviderCacheSeed.Report? = nil, appliedProfileName: String? = nil, configSize: Int? = nil, configMtime: Date? = nil, loadedGroupCount: Int? = nil, loadedNodeCount: Int? = nil, configRefreshNote: String? = nil, logSubscribeNote: String? = nil) {
+    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String, providerSeed: ProviderCacheSeed.Report? = nil, appliedProfileName: String? = nil, configSize: Int? = nil, configMtime: Date? = nil, loadedGroupCount: Int? = nil, loadedNodeCount: Int? = nil, configRefreshNote: String? = nil, logSubscribeNote: String? = nil, dnsSubscribeNote: String? = nil) {
         let stamp = Self.bootReportTimestamp(Date())
         var lines = ["[\(stamp)] 应用内核心启动"]
         for spec in GeoSeed.files {
@@ -451,6 +467,9 @@ final class AppCore {
         }
         if let logSubscribeNote {
             lines.append("日志流：\(logSubscribeNote)")
+        }
+        if let dnsSubscribeNote {
+            lines.append("DNS 流：\(dnsSubscribeNote)")
         }
         lines.append("启动结果：\(outcome)")
         try? lines.joined(separator: "\n").write(
@@ -748,6 +767,9 @@ final class AppCore {
         // report). Set after core.init below; a second attempt
         // runs after engine.start on the success path.
         var logSubscribeNote: String?
+        // v0.2.102: same as the log stream — the DNS stream's
+        // subscribe outcome is recorded in the boot report too.
+        var dnsSubscribeNote: String?
         let context = Unmanaged.passRetained(self).toOpaque()
         do {
             if !Self.coreStarted {
@@ -795,6 +817,11 @@ final class AppCore {
             // report instead of swallowed, so the next export
             // says whether the log stream is live.
             logSubscribeNote = await trySubscribeLogWatch()
+            // v0.2.102: subscribe the DNS stream at the same two
+            // points as the log stream (here + after engine.start)
+            // so the DNS page has live entries with the VPN off
+            // even when the boot fails later on config.apply.
+            dnsSubscribeNote = await trySubscribeDnsWatch()
             // The profile gives proxies / proxy-groups / rules; the
             // overlay carries everything else — here the listener
             // ports, so this instance can never clash with the
@@ -877,15 +904,17 @@ final class AppCore {
             // pre-apply one above worked): the stream's snapshot
             // is empty — entries only arrive as events.
             logSubscribeNote = await trySubscribeLogWatch()
+            // v0.2.102: second DNS subscribe attempt, same as above.
+            dnsSubscribeNote = await trySubscribeDnsWatch()
             let configInfo = configFileInfo(for: configURL)
             recordBootReport(home: home, seed: appSeed, outcome: "成功", providerSeed: providerSeed,
                              appliedProfileName: Self.profileStore?.activeProfile?.name,
                              configSize: configInfo?.size, configMtime: configInfo?.mtime,
                              loadedGroupCount: loadedGroupCount, loadedNodeCount: loadedNodeCount,
-                             configRefreshNote: configRefreshNote, logSubscribeNote: logSubscribeNote)
+                             configRefreshNote: configRefreshNote, logSubscribeNote: logSubscribeNote, dnsSubscribeNote: dnsSubscribeNote)
             loadedConfigSignature = signature
         } catch {
-            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)", providerSeed: providerSeed, configRefreshNote: configRefreshNote, logSubscribeNote: logSubscribeNote)
+            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)", providerSeed: providerSeed, configRefreshNote: configRefreshNote, logSubscribeNote: logSubscribeNote, dnsSubscribeNote: dnsSubscribeNote)
             // Balance the passRetained above exactly once: if the
             // session was opened, tearDown() closes it and the
             // releaseCallback balances the retain (sync or async);
@@ -930,6 +959,10 @@ final class AppCore {
             delayRun = nil
             delayRunStash.removeAll()
             logSub = nil
+            // v0.2.102: same as logSub — the DNS subscription dies
+            // with the session, but the captured entries survive
+            // (see the logBuffer comment above).
+            dnsSub = nil
             // v0.2.49: the captured log entries SURVIVE the
             // teardown (the old code wiped them here): a boot
             // that failed on config.apply still logged the
@@ -1204,6 +1237,51 @@ final class AppCore {
         }
     }
 
+    /// Subscribes to the app core's dns.watch stream (once per
+    /// session; best-effort — a failure just leaves the DNS page
+    /// without live entries with the VPN off, it never fails the
+    /// boot). Mirrors subscribeLogWatch exactly: same credit (8),
+    /// same synchronous registration + stash replay on coreQueue.
+    /// Called from ensureStarted next to the log.watch subscribes.
+    func subscribeDnsWatch() async throws {
+        guard session != 0 else { return }
+        if dnsSub != nil { return }
+        let start = try await sendRequest(method: "dns.watch", params: ["credit": 8], resultType: StreamSubscribeResult.self, timeoutSeconds: 60)
+        coreQueue.sync {
+            guard self.dnsSub == nil else { return }
+            self.dnsSub = start.sub
+            let stashed = self.delayRunStash.filter { $0.sub == start.sub }
+            self.delayRunStash.removeAll { $0.sub == start.sub }
+            for batch in stashed {
+                self.accumulateDnsItems(batch.items)
+            }
+        }
+    }
+
+    /// Best-effort dns.watch subscribe that reports its outcome
+    /// instead of swallowing it (same shape as
+    /// trySubscribeLogWatch): "已订阅" when a sub already exists,
+    /// too (subscribeDnsWatch is a no-op then).
+    private func trySubscribeDnsWatch() async -> String {
+        do {
+            try await subscribeDnsWatch()
+            return "已订阅"
+        } catch {
+            return "订阅失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// The accumulated app-core DNS entries (empty when the session
+    /// is down or the stream was never subscribed). Reads the
+    /// buffer on coreQueue (it is written there).
+    func dnsEntries() async -> [ConcordDnsEntry] {
+        await withCheckedContinuation { continuation in
+            coreQueue.async {
+                continuation.resume(returning: self.dnsBuffer)
+            }
+        }
+    }
+
     /// core.lastWarnings on the app-side core (same shape as the
     /// client's: {warnings: [ConcordWarning]}).
     func lastWarnings() async throws -> [ConcordWarning] {
@@ -1343,9 +1421,10 @@ final class AppCore {
     //
     // dns.query / dns.clearCache / dns.flushFakeIp via the in-app
     // core, so the DNS tools work with the VPN off. The core must
-    // already be started (ensureStarted). The query history
-    // (refresh/dns.watch) still comes from the extension snapshot
-    // only — it has no AppCore equivalent.
+    // already be started (ensureStarted). Since v0.2.102 the query
+    // history (refresh/dns.watch) has an AppCore equivalent too —
+    // subscribeDnsWatch + dnsEntries() — so DnsStore reads it with
+    // the VPN off instead of the (stale) extension snapshot.
 
     func dnsQuery(name: String, qtype: String? = nil) async throws -> ConcordDnsQueryResult {
         var params: [String: Any] = ["name": name]
@@ -1661,6 +1740,10 @@ final class AppCore {
             accumulateLogItems(items)
             return
         }
+        if dnsSub == sub {
+            accumulateDnsItems(items)
+            return
+        }
         // No run registered for this sub yet — the delay.run reply
         // has not reached delayRunStart's registration (see
         // delayRunStash). Stash the batch instead of dropping it;
@@ -1710,6 +1793,27 @@ final class AppCore {
             logBuffer.removeFirst(logBuffer.count - 500)
         }
         if let sub = logSub {
+            sendNotification(method: "$/credit", params: ["sub": sub, "n": 1])
+        }
+    }
+
+    /// Applies one batch of dns.watch events (DnsEntry {domain,
+    /// type, initiator, upstream, cached, answers, rcode, error,
+    /// delay, time}) to the buffer. Runs on coreQueue. Refills one
+    /// unit of credit per batch consumed, like the extension;
+    /// without it the server pump stops after the initial credit
+    /// (WatchOptions.credit = 8). Mirrors accumulateLogItems.
+    private func accumulateDnsItems(_ items: [Any]) {
+        for item in items {
+            guard let dict = item as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: dict),
+                  let entry = try? JSONDecoder().decode(ConcordDnsEntry.self, from: data) else { continue }
+            dnsBuffer.append(entry)
+        }
+        if dnsBuffer.count > 500 {
+            dnsBuffer.removeFirst(dnsBuffer.count - 500)
+        }
+        if let sub = dnsSub {
             sendNotification(method: "$/credit", params: ["sub": sub, "n": 1])
         }
     }

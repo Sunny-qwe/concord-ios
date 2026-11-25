@@ -76,7 +76,28 @@ final class DnsStore: ObservableObject {
     @MainActor
     func refresh() async {
         do {
-            let fresh = try await client.dnsEntries()
+            // v0.2.102 (MuYu parity): the query history no longer
+            // comes from the extension snapshot only. Tunnel up →
+            // the extension snapshot, as before. Tunnel down → the
+            // in-app core's accumulated dns.watch buffer (runDns
+            // boots it on demand; the Dashboard / ContentView
+            // lifecycle keeps it running while the app is in the
+            // foreground, like MuYu's startCore at launch), so the
+            // Dashboard DNS count and the sheet show records with
+            // the VPN off instead of 0. The merge below is
+            // identical for both sources.
+            let fresh = try await runDns(
+                tunnel: { try await self.client.dnsEntries() },
+                appCore: {
+                    // Lazily (re-)subscribe if the boot-time
+                    // subscribe failed or the session restarted
+                    // since — same as LogStore.refresh; a no-op
+                    // when a sub already exists.
+                    if AppCore.shared.isRunning {
+                        try? await AppCore.shared.subscribeDnsWatch()
+                    }
+                    return await AppCore.shared.dnsEntries()
+                })
             // v0.2.102: a refresh that was already in flight when
             // the DNS sheet opened must not publish mid-presentation
             // (see publishSuspended) — drop it; the next refresh
@@ -173,9 +194,10 @@ final class DnsStore: ObservableObject {
     /// True when the DNS tools can reach the tunnel core: the tunnel
     /// is running, or the client is in sample mode. With the VPN off
     /// in live mode the in-app core (AppCore, booted on demand by
-    /// runDns) is the fallback (audit B16). The query history
-    /// (refresh/dns.watch) still comes from the extension snapshot
-    /// only: it has no AppCore equivalent.
+    /// runDns) is the fallback (audit B16) — and since v0.2.102
+    /// the query history (refresh/dns.watch) uses that fallback
+    /// too, via AppCore's accumulated dns.watch buffer, so DNS
+    /// records exist with the VPN off like MuYu.
     private var hasCore: Bool {
         client.mode == .sample || TunnelManager.shared.isRunning
     }

@@ -169,6 +169,17 @@ final class TunnelManager: ObservableObject {
     /// is only stopped once it has held for one more 30 s poll.
     private var appCoreIdleCandidateSince: Date?
 
+    /// Whether the app is in the foreground (v0.2.102, MuYu
+    /// parity): set from ContentView's scenePhase handler. The
+    /// in-app core serves the visible Dashboard while the app is
+    /// in the foreground — its DNS stream feeds the Dashboard DNS
+    /// count and the DNS sheet with the VPN off — so the idle
+    /// shutdown below must not stop it then. Backgrounded, the
+    /// 5-minute idle rule applies as before. Defaults true: the
+    /// app starts in the foreground, and the first .background
+    /// scenePhase change corrects it if that is wrong.
+    var isAppForeground = true
+
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
 
@@ -1286,14 +1297,17 @@ final class TunnelManager: ObservableObject {
     ///    status observer normally does this on .connected; this
     ///    is the backstop for a connect the observer missed);
     ///  * tunnel down + core down: nothing to do, reset timers;
-    ///  * tunnel down + core up: stop it once it has been idle
-    ///    for 5 minutes, where "idle" is the last observed core
-    ///    start or the last finished delay test (report mtime),
-    ///    whichever is later — plus one quiet 30 s grace poll, and
-    ///    never while a batch delay run is in flight
-    ///    (delayRunPoll non-nil with done == false; a finished run
-    ///    keeps a done == true snapshot until the core stops, so
-    ///    done == true is NOT "in flight").
+    ///  * tunnel down + core up + app in foreground: never stop
+    ///    (v0.2.102 — the core serves the visible Dashboard's DNS
+    ///    with the VPN off, like MuYu); reset timers;
+    ///  * tunnel down + core up + app backgrounded: stop it once
+    ///    it has been idle for 5 minutes, where "idle" is the last
+    ///    observed core start or the last finished delay test
+    ///    (report mtime), whichever is later — plus one quiet 30 s
+    ///    grace poll, and never while a batch delay run is in
+    ///    flight (delayRunPoll non-nil with done == false; a
+    ///    finished run keeps a done == true snapshot until the
+    ///    core stops, so done == true is NOT "in flight").
     /// A stopped core is re-booted on demand by the next use
     /// (every caller goes through AppCore.ensureStarted), so a
     /// shutdown only ever costs one re-boot, never a failure.
@@ -1313,6 +1327,19 @@ final class TunnelManager: ObservableObject {
             return
         }
         guard AppCore.shared.isRunning else {
+            appCoreRunningSince = nil
+            appCoreIdleCandidateSince = nil
+            return
+        }
+        // v0.2.102 (MuYu parity): while the app is in the
+        // foreground the in-app core serves the visible Dashboard
+        // — its dns.watch stream feeds the DNS count and the DNS
+        // sheet with the VPN off — so the idle shutdown must not
+        // stop it then. The 5-minute rule below applies only once
+        // the app is backgrounded (nobody reads the Dashboard
+        // then). Timers reset here so a return to the foreground
+        // restarts the idle window from scratch.
+        if isAppForeground {
             appCoreRunningSince = nil
             appCoreIdleCandidateSince = nil
             return

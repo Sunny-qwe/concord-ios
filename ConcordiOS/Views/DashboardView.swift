@@ -2665,6 +2665,16 @@ private struct DashboardTrafficEffects: View {
                 Task {
                     await trafficStore.refreshEngineStatus()
                     await connectionStore.refresh()
+                    // v0.2.102 (MuYu parity): the DNS row flips
+                    // source with the tunnel too — extension
+                    // snapshot while it is up, the in-app core's
+                    // dns.watch buffer while it is down. Refreshing
+                    // here also (re)starts the in-app core on a
+                    // disconnect through DnsStore.refresh()'s
+                    // routing, so DNS keeps accumulating after the
+                    // tunnel goes down without waiting for the next
+                    // appear / pull-to-refresh.
+                    await dnsStore.refresh()
                     if running {
                         await trafficStore.probe()
                         if let proxy = proxyStore.selectedOutbound,

@@ -231,9 +231,28 @@ struct ContentView: View {
         // refresh / probe / memory read.
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: trafficStore.start()
+            case .active:
+                trafficStore.start()
+                // v0.2.102 (MuYu parity): the app runs its own core
+                // from launch while the tunnel is off, so the
+                // Dashboard DNS count and the DNS sheet have live
+                // records with the VPN off (MuYu's startCore at
+                // bootstrap). Best-effort and never blocking: the
+                // call is a no-op when the core is already running
+                // the same config, and it throws (swallowed) when
+                // the tunnel is up, when there is no config, or
+                // when the boot fails — every caller reboots on
+                // demand through ensureStarted anyway. Also fires
+                // on every foreground return, which restarts the
+                // core after a backgrounded idle shutdown.
+                TunnelManager.shared.isAppForeground = true
+                Task { try? await AppCore.shared.ensureStarted() }
             case .background:
                 trafficStore.stop()
+                // v0.2.102: the app is backgrounded — the in-app
+                // core's 5-minute idle shutdown (TunnelManager
+                // poller) applies again from here.
+                TunnelManager.shared.isAppForeground = false
                 // v0.2.86 item 4: upstream only shows a script
                 // notification while resumed — a banner showing
                 // when the app backgrounds is discarded, not kept

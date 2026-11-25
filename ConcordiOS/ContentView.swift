@@ -380,7 +380,11 @@ struct ContentView: View {
     /// animation) on the adjacent page so no intermediate page
     /// flashes past, then slides to the target — the async hop lets
     /// the parked frame paint before the slide starts. A fade needs
-    /// no parking: pages cross-fade in place.
+    /// no parking: pages cross-fade in place. v0.2.107: the async
+    /// hop is guarded — it only completes the slide while the
+    /// selection is still the parked page, so a second tap before
+    /// it fires cannot be overwritten by the stale block (that
+    /// landed the user on the wrong page).
     private func selectTab(_ tab: AppTab) {
         guard tab != selectedTab else { return }
         if tabAnimationFade {
@@ -399,6 +403,14 @@ struct ContentView: View {
             transaction.disablesAnimations = true
             withTransaction(transaction) { selectedTab = adjacent }
             DispatchQueue.main.async {
+                // v0.2.107: only complete the parked slide while
+                // the selection is still the parked page. If the
+                // user tapped another tab before this block fired,
+                // that tap already moved selectedTab elsewhere and
+                // this stale block must do nothing — unguarded it
+                // overwrote the newer selection and landed the user
+                // on the wrong page.
+                guard self.selectedTab == adjacent else { return }
                 withAnimation(.easeOut(duration: 0.3)) {
                     self.selectedTab = tab
                 }
@@ -492,9 +504,12 @@ struct ContentView: View {
             }
         }
         .padding(6)
-        // No container background or shadow (v0.2.106): the bar
-        // stays transparent so it blends with the page like the
-        // MuYu reference. A white surface was tried in v0.2.105
-        // and rejected by the user.
+        // White floating container, no shadow (v0.2.107): the bar
+        // background is white like the MuYu reference; the
+        // light-gray layer behind it is removed — no shadow, no
+        // blur, no extra background. The page shows around the
+        // container. (A fully transparent bar was tried in
+        // v0.2.106 and rejected by the user.)
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 30))
     }
 }

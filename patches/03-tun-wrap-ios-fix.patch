@@ -1,6 +1,6 @@
-From 25102ca9cf2f12cb7e2225b728a21f8550cff9bf Mon Sep 17 00:00:00 2001
+From 3b8e7c9b9d2a7bc3d3fff92db0e57d649b08b5b0 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Sun, 22 Nov 2026 06:19:28 +0000
+Date: Wed, 25 Nov 2026 07:29:10 +0000
 Subject: [PATCH 3/8] ios: cfg-gate TunDevice::wrap name/index lookup off iOS
 
 ---
@@ -8,10 +8,10 @@ Subject: [PATCH 3/8] ios: cfg-gate TunDevice::wrap name/index lookup off iOS
  1 file changed, 9 insertions(+), 2 deletions(-)
 
 diff --git a/crates/tun/src/device/mod.rs b/crates/tun/src/device/mod.rs
-index 5b2877d..8ab4158 100644
+index a83cc78..777ce05 100644
 --- a/crates/tun/src/device/mod.rs
 +++ b/crates/tun/src/device/mod.rs
-@@ -315,9 +315,16 @@ impl TunDevice {
+@@ -327,9 +327,16 @@ impl TunDevice {
      }
  
      fn wrap(inner: tun_rs::AsyncDevice) -> Self {

@@ -6,16 +6,16 @@ never copied into this repo: the GitHub workflow checks out
 build time. A local inspection copy lives at `../upstream/` (gitignored,
 never uploaded).
 
-- **Pinned upstream commit:** `fdea08a92b5da4c93171161715e48e7f72fcb9a5`
-  (`feat(bench): add udp-multi and udp-crr workloads`, 2026-11-24)
-- **Produced from:** the rebase tree at `/home/hatch/workspace/scratch/v0.2.90/rebase` (fresh clone at
-  `fdea08a`, the 8 patches below applied in order), rebased
-  2026-11-24 from the previous pin `b3fab9e0fb81330c65bf62dea47caef845468747`.
-  Verified: the 8 patches apply to a fresh clone at `fdea08a`
-  with zero rejects (see the "Rebase to fdea08a" section). The local inspection copy at `../upstream/` (branch `ios-port`)
+- **Pinned upstream commit:** `33904fff812041498a5a647930138f5ad4f26013`
+  (`fix(group): speak HTTP/1.1 without ALPN on downloads and URL tests, as mihomo`, 2026-11-25)
+- **Produced from:** the rebase tree at `/home/hatch/workspace/scratch/v0.2.109/rebase` (fresh clone at
+  `33904fff`, the 8 patches below applied in order), rebased
+  2026-11-25 from the previous pin `fdea08a92b5da4c93171161715e48e7f72fcb9a5`.
+  Verified: the 8 patches apply to a fresh clone at `33904fff`
+  with zero rejects (see the "Rebase to 33904fff" section). The local inspection copy at `../upstream/` (branch `ios-port`)
   still points at the old pin until it is refreshed; the patches in this
   directory are the authority for the new pin.
-- **Apply order:** `01`, then `02`, then `03`, then `04`, then `05`, then `06`, then `07`, then `08`, then `09` (filenames sort in order).
+- **Apply order:** `01`, then `02`, then `03`, then `04`, then `05`, then `06`, then `07`, then `08` (filenames sort in order). Patch `09` was removed in this rebase: its content (`2e2cc02`) is now in the core.
 
 ## The patches
 
@@ -29,7 +29,7 @@ never uploaded).
 | `06-tun-devicebuilder-ios-fix.patch` | `crates/tun/src/device/mod.rs` | Gates `TunDevice::create` / `build` off iOS and adds an iOS `create` stub returning `Unsupported`, mirroring the Android stub. Root cause: tun-rs 2.8.16 compiles its `builder` module only for windows/linux/macos/freebsd/openbsd/netbsd/illumos (`vendor/tun-rs/src/lib.rs`), so `tun_rs::DeviceBuilder::new()` in `build` fails for `aarch64-apple-ios` with E0433 (run #8 of `ios-core-check`, 2026-11-16 15:01). iOS never creates a device anyway: the NetworkExtension owns the interface and the core gets packets through the packet channel (patch 02) or an adopted descriptor (`AsyncDevice::from_fd`, which tun-rs DOES export on iOS via its generic unix `DeviceImpl`). No vendoring: this touches Concord's own code, not tun-rs. Verified locally: `cargo check -p concord-tun --target aarch64-apple-ios` passes, `cargo check -p concord-tun --target x86_64-apple-darwin` passes (no macOS regression), and patches 01–06 applied to a fresh clone at 5f1d090 produce a tree byte-identical to the rebase tree (see below). **Rebase note (01d7a13):** no changes — patch content identical to the 5f1d090 version. **Rebase note (73d6530):** upstream added a `TunDevice::OFFLOADS` const (3 lines) at the top of `impl TunDevice` in `crates/tun/src/device/mod.rs`, so only hunk line numbers/context shifted; the added/removed lines are identical to the 01d7a13 version. **Rebase note (4e3f9db):** no changes — only the hunk line number shifted (319 → 318). |
 | `07-sock-cloexec-ios-fix.patch` | `bins/ios/src/bridge.rs` | Drops `SOCK_CLOEXEC` from the `socketpair` call in `concord_ios_bridge_open` on Apple targets (`#[cfg(target_vendor = "apple")]` → plain `SOCK_DGRAM`). Root cause: `libc::SOCK_CLOEXEC` exists on Linux but is not defined in libc for Apple targets, so the `concord-ios` lib fails for `aarch64-apple-ios` with E0425 (`cannot find value 'SOCK_CLOEXEC' in crate 'libc'`, `bins/ios/src/bridge.rs:101`, run #9 of `ios-core-check` attempt 2, 2026-11-17 09:33). This is a bug in our own patch-01 bridge code, not upstream code. The fds stay in-process (one end is adopted by the core, the other is held by the extension), so nothing can leak them into a spawned process anyway. Verified locally: `rustfmt --check` passes; `cargo check -p concord-ios --target aarch64-apple-ios` still stops at `cc-rs` needing `xcrun`/iOS SDK (absent on Linux, present on the runner), so the runner build is the verification for this one. Patches 01–07 applied to a fresh clone at 5f1d090 produce a tree byte-identical to the rebase tree (see below). **Rebase note (01d7a13):** no changes — patch content identical to the 5f1d090 version. **Rebase note (73d6530):** no changes — patch content identical to the 01d7a13 version. **Rebase note (4e3f9db):** no changes — patch content identical to the 73d6530 version. |
 | `08-quic-ipv4-fallback.patch` | `crates/dns/src/{dialer,doq,doh3}.rs` | QUIC DNS upstreams (`quic://` DoQ, `h3://` DoH3) try every resolved address: `quic_socket` took only the first IP while `tcp()` iterates all, so a nameserver hostname resolving to IPv6 first never fell back to IPv4 on a network with no IPv6 route. A loop inside `quic_socket` alone would NOT fix it — binding a UDP socket never tests the route (`Sockets::bind_udp` only creates the socket in the peer's family and binds the wildcard), so the bind succeeds for every address and the first one would still be picked. The retry therefore spans the handshake, where the unreachable address actually fails: `quic_socket` becomes the per-address `quic_socket_for`, and `DoqClient::dial` / `Doh3Client::dial` try each resolved address with a full socket + handshake, keeping the last error, exactly like `Connector::tcp`. Verified: applies cleanly to the pristine pinned tree and on top of 01–07 (fresh clone at `4db36a4`, sequential `git apply --check` + apply for 01–08, `git diff --check` clean). **Scope note (v0.2.58):** `quic_socket` serves only the DNS upstreams — proxy QUIC nodes (hysteria2/tuic/shadowquic/xhttp) already fall back over all addresses via `dial_each` (`QuicLink::connect_any`, `crates/net/src/dial.rs`, happy-eyeballs with a 300 ms family head start, and EHOSTUNREACH is not in `no_retry` so it does not abort the dial); only hysteria v1 (`QuicLink::connect`) and MASQUE (`connect_endpoint`) still dial the first address only — deliberate mihomo alignment, not changed here. If the user's failing nodes are hysteria v1, that is a separate follow-up. **Item 7 (anchor-count log) DROPPED:** the only honest call site is `TrustCache::store` (`crates/engine/src/apply.rs:393`), but `TrustStore::len()` forces the `LazyLock` anchors, which synchronously reads the OS trust store on the config-apply path — upstream deliberately made that lazy (`with_system_roots`: "Never waits for the OS store", ~90 ms on macOS) — so a startup log line would change startup behaviour on every platform for a diagnostic aid; dropped, not shipped. **Rebase note (0c9788f): STILL NEEDED, carried forward unchanged** — upstream did NOT fix the `quic_socket` first-IP-only issue: at `0c9788f` it still takes only `first_ip(&ips)` (`crates/dns/src/dialer.rs:262`), and the DNS commits since the old pin (`92ac3c2` lists a client-handed query as the app's; `a20883f` documents the tunnel's single dial and its per-address attempts) do not touch `quic_socket`'s address selection. The patch applies cleanly at `0c9788f`, byte-identical to its `4db36a4` version. |
-| `09-driver-coop-budget.patch` | `crates/tun/src/{stack/driver.rs, device/apple.rs}`, `xtask/{tunables.txt, src/tunables/mod.rs}` | Backports upstream `2e2cc02` ("refactor(tun): end a busy driver pass on the cooperative budget instead of a round count", 2026-11-24) onto the pinned `fdea08a` — NOT a rebase, the pin is unchanged. At `fdea08a` the driver loop is `while busy && rounds < MAX_ROUNDS` (`MAX_ROUNDS = 8`) and the Apple device I/O draws zero Tokio cooperative budget (`poll_recv_batch` / `poll_send_batch` contain no `poll_proceed` call), so a busy poll does far more than Tokio's 128-unit fair share before yielding and self-wakes immediately — under sustained traffic the driver can hold a worker thread hot (the phone-heating lead in v0.2.101, Issue 3). The patch ends a pass on `tokio::task::coop::has_budget_remaining()` instead (deletes `MAX_ROUNDS`, `rounds == 1` becomes a `first` flag) and draws budget in `apple.rs` `poll_recv_batch` (`poll_proceed` + `budget.made_progress()` on a successful read), plus the matching test update. It also carries the two tunables hunks, without which the xtask tunables check fails the build: `2e2cc02`'s removal of the `MAX_ROUNDS` line from `xtask/tunables.txt`, and `a5e4e5c`'s ratchet `77 → 76` in `xtask/src/tunables/mod.rs`. Deliberately NOT carried: `2e2cc02`'s `.agents/architecture.md` / `.agents/reference-choices.md` prose hunks (docs-only, no build effect). Verified: `git apply --check` + `git apply` and `patch -p1 --dry-run` all clean against a pristine `fdea08a` tree, sequential `git apply` of 01–09 in order clean with `git diff --check` clean, and all four patched files byte-identical to upstream `a5e4e5c`; `tunables.txt` now has 76 entries against the 76 ceiling. |
+| ~~09-driver-coop-budget.patch~~ (REMOVED in the 33904fff rebase) | `crates/tun/src/{stack/driver.rs, device/apple.rs}`, `xtask/{tunables.txt, src/tunables/mod.rs}` | Backported upstream `2e2cc02` ("refactor(tun): end a busy driver pass on the cooperative budget instead of a round count", 2026-11-24) onto the pinned `fdea08a` (v0.2.101, phone-heating fix). REMOVED 2026-11-25: `2e2cc02` is now in the core at `33904fff` (driver ends a pass on `has_budget_remaining()`, Apple I/O draws budget in `poll_recv_batch`, `MAX_ROUNDS` gone, tunables ratchet 76) — leaving the patch would fail to apply. Verified in the rebase tree: `MAX_ROUNDS` count 0, `has_budget_remaining()` in `driver.rs`, `poll_proceed` + `made_progress()` in `apple.rs`, 76 tunables entries against the 76 ceiling. |
 
 ## How to apply (manual)
 
@@ -1094,3 +1094,117 @@ to the `b3fab9e` versions that passed host cargo checks, and the
 upstream changes in this batch touch no patched file; the macOS
 runner (which has `xcrun` and the iOS SDK) is the verification for
 the full staticlib build, as before.
+
+## Rebase to 33904fff (2026-11-25)
+
+All 8 patches apply cleanly to a fresh clone at `33904fff`, in order,
+with zero rejects and zero hand fixes — every patch is
+content-identical to its `fdea08a` version (only the `From` / `index`
+hashes and hunk line numbers shifted: patch `02`'s `live.rs` hunks
+410 → 415 and 422 → 427 and its `api.json` hunk 4608 → 4613, patch
+`03`'s `device/mod.rs` hunk 315 → 327, patch `06`'s `device/mod.rs`
+hunks +5/+5/+12 — all from upstream lines added above the patched
+regions). The two known manual merge points from the `646f8c9` batch
+did NOT materialize again: patch `02`'s `crates/engine/src/engine/tun.rs`
+doc line and patch `04`'s `vendor/PATCHES.md` context offset both
+applied cleanly, because this batch touches neither file. Patch `09`
+was REMOVED: its content (`2e2cc02`) is now in the core, so leaving
+it would fail to apply. Verified in
+`/home/hatch/workspace/scratch/v0.2.109/rebase` (fresh clone,
+`git checkout 33904fff812041498a5a647930138f5ad4f26013`, sequential
+`git apply` for `01`–`08`, all exit 0; `git diff --check` clean;
+`git status --porcelain` shows 24 changed files — 20 modified + 4
+new — and no `Cargo.lock` change). The patches were regenerated with
+`git format-patch 33904fff` from 8 commits on top of the pin; the
+regenerated patches applied to a fresh clone at `33904fff` produce a
+tree byte-identical to the rebase tree (0 diff lines).
+
+19 commits since `fdea08a` (2026-11-24 – 2026-11-25 12:11), in two
+batches. `a5e4e5c` (10 commits, 2026-11-24) is the TUN/driver batch:
+`2e2cc02` ends a busy driver pass on the cooperative budget instead
+of a round count (the v0.2.101 phone-heating fix, now upstream);
+`823b6b6` draws the cooperative budget for each Windows TUN read and
+write (Windows only); `9954810` / `01a92a6` / `5aa255b` / `564f71e`
+let macOS name the utun when the device name is not a utun unit
+(macOS only — iOS never names a device, the NetworkExtension owns
+it); `a5e4e5c` lowers the tunables ratchet to 76 (build-only);
+`708b55f` / `5aa255b` style, `ca48b70` / `9308b84` docs. `33904fff`
+(9 commits, 2026-11-25) is the downloads/URL-test + API batch:
+`33904ff` (see below), `ccdca6a` + `b5410bf` (downloads), `1392a8a`
+(traffic watch), `78ee46f` / `40631b2` (MITM hostname view),
+`09a46c1` / `be665be` (perf), `b55e9b7` (test-only).
+
+`schema/api.json` at the new HEAD still has **72 methods** — none
+added, removed, or renamed. Two additive changes, both optional:
+`TrafficWatchParams` gains `changesOnly` (`boolean`, default
+`false` — from `1392a8a`: send a sample only when it differs from
+the last one sent; the default stays one sample per interval), and
+`MitmHostItem` gains `reason` (`string | null` — from `78ee46f`:
+why a hostname item could not be read) with a reworded description.
+
+Worth adding (all ride along with this rebase, no separate work):
+
+- `33904ff`: group downloads and URL tests now speak HTTP/1.1
+  without ALPN, headers in canonical case, as mihomo does — before,
+  Concord offered h2 on downloads and wrote lowercase names over
+  HTTP/1.1, a request shape no client that passed the same firewall
+  rule had. This is the most valuable commit in the range: it
+  directly affects the delay test (URL test) and subscription /
+  rule-set downloads, the paths most exposed to firewall
+  fingerprinting. Verified present in the rebase tree: the
+  HTTP/2 path is gone from `crates/group/src/http.rs`
+  (`http1::Builder::new().title_case_headers(true)` only, no ALPN
+  offered).
+- `ccdca6a`: downloads add `Accept: */*` and `Accept-Encoding: gzip`
+  and unpack gzip when asked for — a provider behind a web-firewall
+  rule answered 403 to Concord alone (missing both headers flags a
+  bot); headers a provider names win, and the size limit holds the
+  unpacked body. Verified present: the `Accept` / `Accept-Encoding`
+  defaults in `crates/engine/src/resources/fetch.rs`.
+- `b5410bf`: a refused download (outside 2xx) now logs each hop's
+  status + host and the first 4 KiB of the body — a 403 can now be
+  told apart as a firewall refusal page vs the origin's, and a
+  redirect chain is visible. The error itself keeps mihomo's status
+  text, which the host reads.
+- `2e2cc02`: the driver cooperative budget (the v0.2.101
+  phone-heating fix) is now upstream — no longer a local patch.
+  Verified present in the rebase tree: `MAX_ROUNDS` count 0,
+  `has_budget_remaining()` in `crates/tun/src/stack/driver.rs`,
+  `poll_proceed` + `made_progress()` in
+  `crates/tun/src/device/apple.rs`, 76 tunables entries against the
+  76 ceiling.
+- `78ee46f` + `40631b2`: a MITM hostname line's view lists every
+  item in the order written, and an item that could not be read
+  carries its `reason` and takes no effect; whitespace in a host is
+  named by code point (U+0020 / U+00A0 / U+3000) instead of an
+  unreadable `' '`. Surfaces through `mitm.readModule` views the
+  app already displays.
+- `09a46c1` / `be665be`: perf-only (jq prelude parsed once; a
+  regex's syntax tree checked without translating where that cannot
+  fail).
+- `1392a8a`: `changesOnly` is available (opt-in) — the app does not
+  send it yet, so behaviour is unchanged; a future Dashboard
+  optimisation (fewer wakeups when the link is idle).
+
+Not necessary: `823b6b6` (Windows TUN only); `9954810` / `01a92a6` /
+`564f71e` (macOS utun naming only); `708b55f` / `5aa255b` (style);
+`ca48b70` / `9308b84` (docs); `b55e9b7` (test-only); `a5e4e5c`
+(xtask ratchet, build-only).
+
+**No Swift changes needed for this rebase.** `api.json` is unchanged
+(72 methods, no signature changes), so no new methods to wire and no
+decoder changes. `changesOnly` is opt-in with default `false` and
+the app does not send it; `MitmHostItem.reason` is optional and
+ignored by Swift's synthesized `Codable` (surfacing it in the MITM
+hostname view is a future UI touch, not required). The worth-adding
+items are core-side behaviour on paths the existing Swift client
+already uses.
+
+Local verification approach (Linux): fresh clone + `git apply`, as
+above, plus the byte-identical check against the rebase tree. No
+`cargo check` re-run — the patches are content-identical to the
+`fdea08a` versions that passed host cargo checks, and the upstream
+changes in this batch touch no patched file's logic (only line
+numbers above the hunks); the macOS runner (which has `xcrun` and
+the iOS SDK) is the verification for the full staticlib build, as
+before.

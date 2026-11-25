@@ -1,6 +1,6 @@
-From f2d1f3809b39170d05e62055b4e43628da4bb391 Mon Sep 17 00:00:00 2001
+From 9271bab47cd9a1f8c8862e27b1cb47c8b5488a25 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Sun, 22 Nov 2026 06:19:28 +0000
+Date: Wed, 25 Nov 2026 07:29:10 +0000
 Subject: [PATCH 6/8] ios: gate TunDevice::create off iOS with Unsupported stub
 
 ---
@@ -8,10 +8,10 @@ Subject: [PATCH 6/8] ios: gate TunDevice::create off iOS with Unsupported stub
  1 file changed, 19 insertions(+), 2 deletions(-)
 
 diff --git a/crates/tun/src/device/mod.rs b/crates/tun/src/device/mod.rs
-index 8ab4158..7487fc9 100644
+index 777ce05..81c6b50 100644
 --- a/crates/tun/src/device/mod.rs
 +++ b/crates/tun/src/device/mod.rs
-@@ -222,7 +222,13 @@ impl TunDevice {
+@@ -227,7 +227,13 @@ impl TunDevice {
  
      /// Creates the interface with the first address of each family; further addresses are
      /// not configured.
@@ -26,7 +26,7 @@ index 8ab4158..7487fc9 100644
      pub fn create(options: &TunOptions) -> io::Result<Self> {
          #[cfg(target_os = "linux")]
          match Self::build(options, true) {
-@@ -234,7 +240,7 @@ impl TunDevice {
+@@ -239,7 +245,7 @@ impl TunDevice {
          Self::build(options, false)
      }
  
@@ -35,7 +35,7 @@ index 8ab4158..7487fc9 100644
      #[cfg_attr(
          not(target_os = "linux"),
          allow(unused_variables, reason = "offload is Linux-only")
-@@ -302,6 +308,17 @@ impl TunDevice {
+@@ -314,6 +320,17 @@ impl TunDevice {
          ))
      }
  

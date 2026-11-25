@@ -1,6 +1,6 @@
-From 44661a7788312e1df9ad41a086b8b1f4463e8593 Mon Sep 17 00:00:00 2001
+From bca72c781f05aaffe63545fab52fe67bb735a29c Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Sun, 22 Nov 2026 06:19:28 +0000
+Date: Wed, 25 Nov 2026 07:29:10 +0000
 Subject: [PATCH 4/8] ios: vendor nix 0.31.3 with macOS-only utun gating
 
 ---

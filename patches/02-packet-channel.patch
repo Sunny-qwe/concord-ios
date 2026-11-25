@@ -1,6 +1,6 @@
-From ef4f9e51782cfbb1860418280b054b314746360a Mon Sep 17 00:00:00 2001
+From 5001c12ed50c93a855a9335f1dbbb08feacb7aee Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Sun, 22 Nov 2026 06:19:28 +0000
+Date: Wed, 25 Nov 2026 07:29:10 +0000
 Subject: [PATCH 2/8] ios: promote FakeDevice to a production packet-channel
 
 ---
@@ -384,10 +384,10 @@ index fdaabde..4c87a42 100644
  pub use callback::{Deliver, Release};
  pub use hub::{Hub, Receiver, hub, install, set_notice};
 diff --git a/crates/proto/src/types/live.rs b/crates/proto/src/types/live.rs
-index b21b1a2..9fb06a1 100644
+index 7efa09b..ddf3c71 100644
 --- a/crates/proto/src/types/live.rs
 +++ b/crates/proto/src/types/live.rs
-@@ -410,8 +410,8 @@ pub enum EngineState {
+@@ -415,8 +415,8 @@ pub enum EngineState {
      Failed,
  }
  
@@ -398,7 +398,7 @@ index b21b1a2..9fb06a1 100644
  #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
  #[serde(tag = "kind", rename_all = "snake_case")]
  pub enum TunSource {
-@@ -422,6 +422,14 @@ pub enum TunSource {
+@@ -427,6 +427,14 @@ pub enum TunSource {
      Inherited {
          handle: u64,
      },
@@ -727,10 +727,10 @@ index 4a701e1..0874cda 100644
      let Some(handler) = deps.dns.clone() else {
          return Ok(None);
 diff --git a/schema/api.json b/schema/api.json
-index b2ddd03..81047fb 100644
+index e7d566a..2305174 100644
 --- a/schema/api.json
 +++ b/schema/api.json
-@@ -4608,9 +4608,28 @@
+@@ -4613,9 +4613,28 @@
              "kind",
              "handle"
            ]

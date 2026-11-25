@@ -497,7 +497,7 @@ struct ContentView: View {
                 Button { tapTab(tab) } label: {
                     VStack(spacing: 2) {
                         Image(systemName: tab.icon)
-                            .font(.system(size: 28, weight: .semibold))
+                            .font(.system(size: 22, weight: .semibold))
                         Text(tab.title)
                             .font(.system(size: 10, weight: .semibold))
                     }
@@ -516,9 +516,17 @@ struct ContentView: View {
             }
         }
         // Upstream NavigationDock: pill 62pt (_barHeight), inner
-        // padding 4 (_barPadding); icon 28, label 10, gap 2. The
-        // frame pins the pill to exactly 62 regardless of font
-        // metrics; the content centers inside it.
+        // padding 4 (_barPadding); label 10, gap 2. The icon font
+        // is 22, NOT upstream's _iconSize 28: Flutter's GlyphIcon
+        // at size 28 renders the visible glyph at only ~22pt (the
+        // glyph path has internal padding inside its 28pt box),
+        // while an SF Symbol at font size 28 renders at ~28.6pt
+        // visual — so matching the number made ours ~7pt bigger
+        // than MuYu's (~21.8pt measured). 22pt font renders at
+        // ~22.4pt visual (20pt font measured ~20.4pt), matching
+        // MuYu's visual size. The frame pins the pill to exactly
+        // 62 regardless of font metrics; the content centers
+        // inside it.
         .padding(4)
         .frame(height: 62)
         // White floating container, no shadow (v0.2.107): the bar

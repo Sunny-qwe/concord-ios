@@ -126,13 +126,13 @@ struct DashboardView: View {
     /// the probe-service targets.
     @State private var showServiceManageSheet = false
     /// Stat-cell destination sheet (D-M6): live / recent
-    /// connections, or the DNS queries page. v0.2.111: owned by
-    /// ContentView, not here — the DNS destination renders as a
-    /// custom overlay at the ContentView root (the system .sheet
-    /// presentation path is a freeze suspect), so the state has to
-    /// live above the tab bar. This binding is passed in from
-    /// ContentView; the system .sheet below only ever sees
-    /// .live / .recent (see connectionsSheetDestination).
+    /// connections, or the DNS queries page. v0.2.111 / v0.2.113:
+    /// owned by ContentView, not here — all three destinations
+    /// render as custom overlays at the ContentView root (the
+    /// system .sheet presentation path is a freeze suspect), so
+    /// the state has to live above the tab bar. This binding is
+    /// passed in from ContentView; there is no system .sheet for
+    /// these destinations in this view anymore.
     @Binding var statsDestination: StatsDestination?
     /// Traffic statistics detail sheet (D-M8, v0.2.56 MuYu
     /// TrafficStatisticsView).
@@ -642,7 +642,6 @@ struct DashboardView: View {
         .sheet(isPresented: $showServiceSheet) { serviceStatusSheet }
         .sheet(isPresented: $showProvidersSheet) { providersSheetContent }
         .sheet(isPresented: $showGroupsSheet) { groupsSheetContent }
-        .sheet(item: connectionsSheetDestination) { statsSheetContent(for: $0) }
         .sheet(isPresented: $showServiceManageSheet) { serviceManageSheet }
         // The dashboard's consent prompt (fork 0a55a31): the same
         // prompt the modules page uses, asked over the dashboard
@@ -791,63 +790,20 @@ struct DashboardView: View {
             .presentationCornerRadius(28)
     }
 
-    /// v0.2.111: the DNS destination no longer uses the system
-    /// .sheet — it renders as a custom overlay at the ContentView
-    /// root (the system presentation path is a freeze suspect on
-    /// iOS 17.6.1). This binding hides .dns from the sheet, so
-    /// only .live / .recent present here; setting it writes
-    /// through to the ContentView-owned state. The Connections
-    /// sheets are untouched — they never froze.
-    private var connectionsSheetDestination: Binding<StatsDestination?> {
-        Binding(
-            get: {
-                guard let destination = statsDestination, destination != .dns else { return nil }
-                return destination
-            },
-            set: { statsDestination = $0 }
-        )
-    }
-
+    /// v0.2.113: the .live / .recent stats sheets no longer use
+    /// the system .sheet either — like .dns since v0.2.111, they
+    /// render as custom overlays at the ContentView root
+    /// (ConnectionsSheetOverlay). The content is unchanged:
+    /// ConnectionsView sheetChrome on the tapped feed, with the
+    /// same 0.5625 / 0.9 detents, 28pt corners and dim. The old
+    /// connectionsSheetDestination binding and statsSheetContent
+    /// builder were removed with the system sheet.
     /// D-M6: a stat cell opens its source page — live/recent
     /// connections, or the DNS queries page for the DNS cell.
     /// v0.2.68: MuYu sheet chrome — no NavigationStack, no
     /// system nav bar; each content view renders its own
     /// MuYu header (handle + ✕ + title + actions) and a
     /// bottom floating search bar.
-    /// v0.2.84: upstream FlClash openDashboardFeed passes the
-    /// feed straight to the sheet builder (showSnapSheet +
-    /// NestedPagedSheet) — one item, no separate Bool. The
-    /// v0.2.83 two-state pattern (statsDestination + a
-    /// showStatsSheet Bool, content behind `if let`) presented
-    /// a blank sheet: the content read a nil destination and
-    /// rendered nothing, and a blank sheet with a hidden drag
-    /// indicator and no ✕ cannot be dismissed, so the app
-    /// looked frozen. .sheet(item:) hands the destination to
-    /// the content directly, so it cannot be nil. Detents
-    /// match upstream snapSheetDetents [9/16, 0.9]: opens at
-    /// the short detent, drags to 90%.
-    /// v0.2.111: .dns is gone from this switch — it is presented
-    /// by the ContentView overlay, never by this sheet.
-    private func statsSheetContent(for destination: StatsDestination) -> some View {
-        Group {
-            switch destination {
-            case .live:
-                ConnectionsView(initialFeed: .live, sheetChrome: true)
-            case .recent:
-                ConnectionsView(initialFeed: .recent, sheetChrome: true)
-            case .dns:
-                // v0.2.111: .dns is presented by the ContentView
-                // overlay, never by this sheet (the binding maps
-                // it to nil) — unreachable, but the switch must
-                // be exhaustive.
-                EmptyView()
-            }
-        }
-        .presentationDetents([.fraction(0.5625), .fraction(0.9)])
-        .presentationDragIndicator(.hidden)
-        .presentationBackground(ConcordTheme.pageBackground)
-        .presentationCornerRadius(28)
-    }
 
     /// D-M3: manage the probe-service targets (order + enabled).
     private var serviceManageSheet: some View {

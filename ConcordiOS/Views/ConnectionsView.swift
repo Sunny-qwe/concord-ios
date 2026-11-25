@@ -29,11 +29,19 @@ struct ConnectionsView: View {
     /// toolbar or top .searchable. False = the pushed Tools page.
     private let sheetChrome: Bool
 
+    /// Dismiss action for sheet mode (v0.2.113): the Connections
+    /// sheet is a custom overlay at the ContentView root, not a
+    /// system sheet, so @Environment(\.dismiss) does nothing
+    /// there — the overlay passes its own close action. Nil
+    /// (default) keeps the old dismiss() behaviour.
+    let onClose: (() -> Void)?
+
     /// Opens the page on one feed (the dashboard's stat cells open
     /// it directly on live / recent); nil keeps the persisted feed.
-    init(initialFeed: ConnectionFeed? = nil, applyTabBarClearance: Bool = false, sheetChrome: Bool = false) {
+    init(initialFeed: ConnectionFeed? = nil, applyTabBarClearance: Bool = false, sheetChrome: Bool = false, onClose: (() -> Void)? = nil) {
         self.applyTabBarClearance = applyTabBarClearance
         self.sheetChrome = sheetChrome
+        self.onClose = onClose
         if let initialFeed {
             _feed = State(initialValue: initialFeed)
         }
@@ -86,7 +94,10 @@ struct ConnectionsView: View {
                     }
                 }
                 HStack {
-                    Button { dismiss() } label: {
+                    // v0.2.113: in the ContentView overlay there is
+                    // no system presentation to dismiss, so the
+                    // overlay's onClose runs instead of dismiss().
+                    Button { if let onClose { onClose() } else { dismiss() } } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Color(.label))

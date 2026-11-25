@@ -381,24 +381,32 @@ struct ContentView: View {
         .overlay(alignment: .top) {
             ScriptNotificationBannerHost()
         }
-        // v0.2.111 (DNS freeze): the DNS stats destination as a
-        // custom overlay bottom sheet at the root — attached after
-        // the tab bar in Z-order, so it renders ABOVE the floating
-        // tab bar exactly like the system sheet did. Same content
-        // (DnsQueriesView mode .sheet), same 28pt corners, same
-        // detents (0.5625 / 0.9), same dim, drag-down-to-dismiss,
-        // tap-dim-to-dismiss, ✕ dismiss. Connections (.live /
-        // .recent) keep their working system .sheet in
-        // DashboardView. UNTESTED HYPOTHESIS: the system .sheet
-        // presentation path is a freeze suspect on iOS 17.6.1 —
-        // this bypasses it; it is not proven to fix the freeze
-        // until it holds on-device.
+        // v0.2.111 (DNS freeze) / v0.2.113 (Connections freeze):
+        // the stats destinations as custom overlay bottom sheets
+        // at the root — attached after the tab bar in Z-order, so
+        // they render ABOVE the floating tab bar exactly like the
+        // system sheets did. Same content (DnsQueriesView mode
+        // .sheet / ConnectionsView sheetChrome), same 28pt corners,
+        // same detents (0.5625 / 0.9), same dim, drag-down-to-
+        // dismiss, tap-dim-to-dismiss, ✕ dismiss. UNTESTED
+        // HYPOTHESIS: the system .sheet presentation path is a
+        // freeze suspect on iOS 17.6.1 — this bypasses it. DNS is
+        // CONFIRMED fixed on-device (user 2026-11-25: "DNS查询现在
+        // 不卡死了"); .live / .recent are not proven until they
+        // hold on-device.
         .overlay {
             if statsDestination == .dns {
                 DnsSheetOverlay(onDismiss: { statsDestination = nil })
+            } else if let destination = statsDestination,
+                      destination == .live || destination == .recent {
+                ConnectionsSheetOverlay(
+                    feed: destination == .live ? .live : .recent,
+                    onDismiss: { statsDestination = nil }
+                )
+                .id(destination)
             }
         }
-        .animation(.easeOut(duration: 0.3), value: statsDestination == .dns)
+        .animation(.easeOut(duration: 0.3), value: statsDestination != nil)
     }
 
     /// The four tabs (shared by the floating and docked bar styles).
@@ -670,6 +678,143 @@ private struct DnsSheetOverlay: View {
                     .transition(.opacity)
                 VStack(spacing: 0) {
                     DnsQueriesView(mode: .sheet, onClose: onDismiss)
+                    // Bottom strip: the home-indicator safe area
+                    // normally, the keyboard height while the
+                    // search field is focused — the sheet's
+                    // background extends to the screen bottom in
+                    // both cases, like the system sheet.
+                    Color.clear
+                        .frame(height: keyboardHeight > 0 ? keyboardHeight : geo.safeAreaInsets.bottom)
+                }
+                .frame(width: geo.size.width, height: geo.size.height * heightFraction)
+                .background(ConcordTheme.pageBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 28))
+                .offset(y: dragOffset)
+                .gesture(sheetDrag(screenHeight: geo.size.height))
+                .transition(.move(edge: .bottom))
+            }
+            .ignoresSafeArea()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+            let height = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.height ?? 0
+            guard height > 0 else { return }
+            withAnimation(.easeOut(duration: 0.25)) {
+                keyboardHeight = height
+                if heightFraction < maxFraction {
+                    keyboardExpandedSheet = true
+                    heightFraction = maxFraction
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeOut(duration: 0.25)) {
+                keyboardHeight = 0
+                if keyboardExpandedSheet {
+                    keyboardExpandedSheet = false
+                    heightFraction = minFraction
+                }
+            }
+        }
+    }
+
+    private func sheetDrag(screenHeight: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                if !dragging {
+                    dragging = true
+                    dragStartFraction = heightFraction
+                }
+                let translation = value.translation.height
+                if translation < 0 {
+                    // Drag up: grow toward the 0.9 detent.
+                    dragOffset = 0
+                    heightFraction = min(maxFraction, max(minFraction, dragStartFraction - translation / screenHeight))
+                } else {
+                    // Drag down: follow the finger; the detent
+                    // only changes on release.
+                    dragOffset = translation
+                }
+            }
+            .onEnded { value in
+                dragging = false
+                let translation = value.translation.height
+                if translation > 140 {
+                    // Dragged far down: dismiss (the overlay
+                    // removal transition continues the slide).
+                    onDismiss()
+                } else if heightFraction >= maxFraction - 0.01, translation > 40 {
+                    // At the tall detent, a short drag down steps
+                    // back to the short detent, not a dismiss.
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        heightFraction = minFraction
+                        dragOffset = 0
+                    }
+                } else {
+                    // Snap to the nearest detent.
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        heightFraction = heightFraction > (minFraction + maxFraction) / 2 ? maxFraction : minFraction
+                        dragOffset = 0
+                    }
+                }
+            }
+    }
+}
+
+/// v0.2.113 (Connections freeze): sibling of DnsSheetOverlay for
+/// the .live / .recent stats destinations — same mechanics, same
+/// look (28pt corners, detents 0.5625 / 0.9, dim, drag-down-to-
+/// dismiss, tap-dim-to-dismiss, ✕ dismiss, keyboard handling for
+/// the floating search bar's TextField). DnsSheetOverlay is left
+/// untouched (it is confirmed working on-device). The nested
+/// .sheet(item: $detail) inside ConnectionsView (connection
+/// detail) stays a system sheet, like the DNS entry detail.
+///
+/// Drag behaviour mirrors DnsSheetOverlay: the gesture is
+/// attached to the sheet container. Drags starting on the header
+/// / search bar drive the sheet (they are outside the list's
+/// ScrollView); drags starting on the list scroll the list, as
+/// the ScrollView's own gesture wins there. Drag up grows toward
+/// 0.9, drag down follows the finger; on release a far drag
+/// (>140pt) dismisses, a short drag down from the tall detent
+/// steps back to 0.5625, otherwise it snaps to the nearest
+/// detent.
+///
+/// Keyboard: the sheet's floating search bar opens the keyboard,
+/// which would cover it (the system sheet moved out of the way
+/// for free). The bottom strip under the content grows to the
+/// keyboard height while it is up, and the sheet auto-expands to
+/// the 0.9 detent (restored when the keyboard hides), so the
+/// search bar stays visible above the keyboard.
+private struct ConnectionsSheetOverlay: View {
+    let feed: ConnectionsView.ConnectionFeed
+    let onDismiss: () -> Void
+
+    /// Current detent, as a fraction of screen height.
+    @State private var heightFraction: CGFloat = 0.5625
+    /// Live drag offset (downward drags slide the sheet down).
+    @State private var dragOffset: CGFloat = 0
+    /// Detent the drag started from; captured on the first
+    /// onChanged so upward drags grow from the right base.
+    @State private var dragStartFraction: CGFloat = 0.5625
+    @State private var dragging = false
+    /// Keyboard height while the search field is focused, 0 else.
+    @State private var keyboardHeight: CGFloat = 0
+    /// Whether the keyboard auto-expanded the sheet (restored on
+    /// hide); false when the user expanded it themselves.
+    @State private var keyboardExpandedSheet = false
+
+    private let minFraction: CGFloat = 0.5625
+    private let maxFraction: CGFloat = 0.9
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .bottom) {
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+                    .onTapGesture(perform: onDismiss)
+                    .transition(.opacity)
+                VStack(spacing: 0) {
+                    ConnectionsView(initialFeed: feed, sheetChrome: true, onClose: onDismiss)
                     // Bottom strip: the home-indicator safe area
                     // normally, the keyboard height while the
                     // search field is focused — the sheet's

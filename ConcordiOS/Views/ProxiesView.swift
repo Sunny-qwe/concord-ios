@@ -2733,11 +2733,19 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                // Left cluster taps to toggle. The expanded
-                // action pill is NOT inside a tap-to-toggle area:
+                // The whole header toggles when collapsed — the
+                // Spacer() between the left cluster and the
+                // trailing had no tap handler, so tapping the
+                // middle of a card did nothing (IMG_1296).
+                // The toggle lives ONLY here, not on the left
+                // cluster / collapsed trailing as well: nested
+                // tap gestures both fire, so a tap on the left
+                // cluster would toggle twice and look dead.
+                // In expanded state the header holds Buttons
+                // (scope / bolt / magnifier + the triangle), and
                 // a Button inside .onTapGesture would fire both,
-                // so the toggle tap lives only on the left cluster
-                // and on the collapsed trailing.
+                // so the header tap is gated to collapsed only
+                // and the triangle Button collapses.
                 HStack(spacing: 10) {
                     groupIconView(icon: icon, name: name, iconStyle: iconStyle)
                     VStack(alignment: .leading, spacing: 2) {
@@ -2756,8 +2764,6 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
                             .frame(minHeight: 13, alignment: .leading)
                     }
                 }
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onToggleExpand)
                 Spacer()
                 if expanded {
                     expandedHeaderActions
@@ -2775,14 +2781,16 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
                             .frame(width: 36, height: 36)
                             .background(Color(.systemGray4), in: Circle())
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: onToggleExpand)
                 }
             }
             // MuYu card padding is 6pt all round (v0.2.81; was
             // 12 horizontal / 10 vertical). Row stays 60pt:
             // 48pt icon + 2×6pt padding.
             .padding(6)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if !expanded { onToggleExpand() }
+            }
             if expanded {
                 expandedContent()
             }

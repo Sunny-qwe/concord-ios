@@ -141,7 +141,7 @@ final class AppCore {
     private static let appController = "127.0.0.1:19090"
     private static let appDNSListen = "127.0.0.1:18053"
 
-    private let coreQueue = DispatchQueue(label: "com.concord.ios.appcore")
+    private let coreQueue = DispatchQueue(label: "com.lumen.ios.appcore")
     private static var coreStarted = false
 
     private var session: UInt64 = 0

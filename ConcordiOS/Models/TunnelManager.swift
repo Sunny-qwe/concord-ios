@@ -31,7 +31,7 @@ import NetworkExtension
 final class TunnelManager: ObservableObject {
     static let shared = TunnelManager()
 
-    static let providerBundleID = "com.concord.ios.PacketTunnel"
+    static let providerBundleID = "com.lumen.ios.PacketTunnel"
     static let serverAddress = "Concord"
 
     @Published private(set) var status: NEVPNStatus = .invalid

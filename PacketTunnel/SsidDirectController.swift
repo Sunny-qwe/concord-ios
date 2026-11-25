@@ -63,9 +63,9 @@ final class SsidDirectController {
     private let setMode: (String, @escaping (Bool) -> Void) -> Void
 
     private let logger = Logger(
-        subsystem: "com.concord.ios", category: "SsidDirect")
+        subsystem: "com.lumen.ios", category: "SsidDirect")
 
-    private let queue = DispatchQueue(label: "com.concord.ios.ssid-direct")
+    private let queue = DispatchQueue(label: "com.lumen.ios.ssid-direct")
     private var monitor: NWPathMonitor?
     private var running = false
 

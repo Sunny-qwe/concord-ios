@@ -450,22 +450,20 @@ struct ContentView: View {
         .overlay(Divider(), alignment: .top)
     }
 
-    /// Floating bar (reference bottom bar): a near-white rounded
-    /// container + soft shadow, like MuYu's NavigationDock
-    /// (prism_ui navigation_dock.dart: _DockSurface is a distinct
-    /// floating surface with dockShadows, NOT the page colour).
-    /// v0.2.105 restores the container v0.2.103 removed: that
-    /// removal misread IMG_1281 — pixel sampling shows MuYu's dock
-    /// is #fcf8f9 against a #efedf0 page, and our transparent bar
-    /// (IMG_1286, #f2f2f6) is what looks "completely different".
-    /// cardBackground is pure white under default blue and a ~5%
-    /// theme tint otherwise (v0.2.100), matching MuYu's pink-theme
-    /// dock #FBF8F9. The selected tab gets a LIGHT tint of the
-    /// accent with a solid-accent icon + label in EVERY theme,
-    /// including the default blue (MuYu IMG_1281 is a blue-theme
-    /// screenshot whose selected tab pill is still light with a
-    /// blue icon — the v0.2.82 inference that default blue kept a
-    /// solid capsule + white icon was wrong; see
+    /// Floating bar (reference bottom bar): intentionally
+    /// transparent — no container background, no shadow — so the
+    /// page background shows through and the bar blends with the
+    /// page like the MuYu reference (IMG_1281: bar #FCF8F9 vs
+    /// page #F9F5F6, ~3/255 apart, looks transparent to the eye).
+    /// A pure-white container was tried in v0.2.105 and rejected
+    /// by the user (IMG_1288: pure-white bar #FFFFFF vs page
+    /// #EBEAF0, ~20/255 apart, a clearly visible white box).
+    /// The selected tab gets a LIGHT tint of the accent with a
+    /// solid-accent icon + label in EVERY theme, including the
+    /// default blue (MuYu IMG_1281 is a blue-theme screenshot
+    /// whose selected tab pill is still light with a blue icon —
+    /// the v0.2.82 inference that default blue kept a solid
+    /// capsule + white icon was wrong; see
     /// ConcordTheme.tabSelectedFill / tabSelectedForeground).
     /// The sliding matchedGeometryEffect pill and the page
     /// slide/fade switching are untouched.
@@ -494,13 +492,9 @@ struct ContentView: View {
             }
         }
         .padding(6)
-        // Floating surface (v0.2.105, restored): white like the
-        // reference — secondarySystemBackground reads grey against
-        // the grouped page background and makes the bar look like
-        // it runs into the screen edge. MuYu's NavigationDock is a
-        // distinct floating surface (#fcf8f9) with a soft shadow,
-        // not the page colour (see the doc comment above).
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 30))
-        .shadow(color: .black.opacity(0.10), radius: 16, x: 0, y: 6)
+        // No container background or shadow (v0.2.106): the bar
+        // stays transparent so it blends with the page like the
+        // MuYu reference. A white surface was tried in v0.2.105
+        // and rejected by the user.
     }
 }

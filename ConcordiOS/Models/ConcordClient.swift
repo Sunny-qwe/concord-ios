@@ -815,10 +815,46 @@ struct ConcordOutboundIp: Codable {
     /// The routing decisions this probe recorded (upstream
     /// crates/engine/src/probe/hits.rs). route.check re-validates
     /// them later; nil on cores that do not report hits.
-    /// `var`, not `let`: a defaulted `let` is never decoded on
-    /// Swift 6.2, so these stayed nil even when the core sent them.
     var hits: [ConcordRouteHit]? = nil
     var nodeHits: [ConcordRouteHit]? = nil
+
+    /// Wire keys (v0.2.120): the core's OutboundIpResult renames
+    /// the stamp to "core-epoch" / "route-version" and the node
+    /// hits to "node-hits" (crates/engine/src/probe/outbound_ip.rs).
+    /// The struct used to spell them "epoch" / "version" /
+    /// "nodeHits" with no CodingKeys, so every live probe result
+    /// threw keyNotFound before probe() could read `error` — the
+    /// 119 log's 8x NSCocoaErrorDomain 4865 "data is missing" on a
+    /// tunnel-off in-app core whose fetches all succeeded.
+    /// convertFromSnakeCase does NOT translate the hyphens.
+    enum CodingKeys: String, CodingKey {
+        case url, body, delay, chains, error, hits
+        case epoch = "core-epoch"
+        case version = "route-version"
+        case nodeHits = "node-hits"
+    }
+}
+
+extension ConcordOutboundIp {
+    /// Lenient decode (v0.2.120): no missing or mistyped field may
+    /// throw — a probe whose result cannot be read must still reach
+    /// probe() with `error` intact, so the status card shows the
+    /// core's real reason instead of a generic decode failure.
+    /// The memberwise init stays (the sample transport builds this
+    /// struct directly); this init only replaces the synthesized
+    /// decoder, which threw keyNotFound on the renamed keys above.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        url = (try? c.decode(String.self, forKey: .url)) ?? ""
+        body = (try? c.decode(String.self, forKey: .body)) ?? ""
+        delay = (try? c.decode(Int64.self, forKey: .delay)) ?? 0
+        chains = (try? c.decode([String].self, forKey: .chains)) ?? []
+        error = try? c.decode(String.self, forKey: .error)
+        epoch = (try? c.decode(UInt64.self, forKey: .epoch)) ?? 0
+        version = (try? c.decode(UInt64.self, forKey: .version)) ?? 0
+        hits = try? c.decode([ConcordRouteHit].self, forKey: .hits)
+        nodeHits = try? c.decode([ConcordRouteHit].self, forKey: .nodeHits)
+    }
 }
 
 enum ConcordTunSource: Codable {
@@ -1360,6 +1396,29 @@ struct ConcordRouteHit: Codable {
     let host: String
     var proxy: String = ""
     let exit: String
+
+    /// Wire keys are plain (host / proxy / exit); the leniency is
+    /// the point (v0.2.120): the core SKIPS "proxy" when it is
+    /// empty (skip_serializing_if, hits.rs / common.rs), so the
+    /// synthesized decoder threw keyNotFound on every hit of a
+    /// probe that was not pinned to a proxy — i.e. every dashboard
+    /// probe, whose hits all carry proxy "". A missing field now
+    /// reads as "" instead of failing the whole probe result.
+    enum CodingKeys: String, CodingKey {
+        case host, proxy, exit
+    }
+}
+
+extension ConcordRouteHit {
+    /// Lenient decode (v0.2.120): see ConcordOutboundIp — no
+    /// missing field may throw. Memberwise init stays (the sample
+    /// transport builds hits directly, e.g. without proxy).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        host = (try? c.decode(String.self, forKey: .host)) ?? ""
+        proxy = (try? c.decode(String.self, forKey: .proxy)) ?? ""
+        exit = (try? c.decode(String.self, forKey: .exit)) ?? ""
+    }
 }
 
 /// The answer to route.check (upstream crates/proto RouteCheckResult).
@@ -1388,6 +1447,39 @@ struct ConcordServiceItem: Codable, Identifiable {
     /// answer names it carry one. A `var` so it actually decodes
     /// (see the note on ConcordConnection.rematchName).
     var ip: String? = nil
+
+    /// Wire keys (v0.2.120): the same kebab-case renames as the
+    /// outbound-IP result — "checked-at", "core-epoch",
+    /// "route-version" (crates/engine/src/probe/services.rs). The
+    /// struct used to spell them checkedAt / epoch / version with
+    /// no CodingKeys, so probe.services threw keyNotFound on every
+    /// live result, exactly like probe.outboundIp.
+    enum CodingKeys: String, CodingKey {
+        case name, status, region, delay, chains, hits, ip
+        case checkedAt = "checked-at"
+        case epoch = "core-epoch"
+        case version = "route-version"
+    }
+}
+
+extension ConcordServiceItem {
+    /// Lenient decode (v0.2.120): same rule as ConcordOutboundIp —
+    /// a missing or mistyped field reads as its default instead of
+    /// failing the whole service list. Memberwise init stays for
+    /// the sample transport.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        status = (try? c.decode(String.self, forKey: .status)) ?? ""
+        region = try? c.decode(String.self, forKey: .region)
+        delay = try? c.decode(Int64.self, forKey: .delay)
+        chains = try? c.decode([String].self, forKey: .chains)
+        checkedAt = (try? c.decode(Int64.self, forKey: .checkedAt)) ?? 0
+        epoch = (try? c.decode(UInt64.self, forKey: .epoch)) ?? 0
+        version = (try? c.decode(UInt64.self, forKey: .version)) ?? 0
+        hits = try? c.decode([ConcordRouteHit].self, forKey: .hits)
+        ip = try? c.decode(String.self, forKey: .ip)
+    }
 }
 
 struct ConcordServiceList: Codable {

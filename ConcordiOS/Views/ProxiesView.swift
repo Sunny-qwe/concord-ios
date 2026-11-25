@@ -1726,11 +1726,9 @@ struct ProxiesView: View {
                                     case .pair(let first, let second):
                                         HStack(spacing: 8) {
                                             iconGroupCard(first, groupsByName: groupsByName)
-                                                .equatable()
                                                 .id(groupHeaderID(first.name))
                                             if let second {
                                                 iconGroupCard(second, groupsByName: groupsByName)
-                                                    .equatable()
                                                     .id(groupHeaderID(second.name))
                                             } else {
                                                 Color.clear
@@ -1740,7 +1738,6 @@ struct ProxiesView: View {
                                     case .expanded(let group):
                                         VStack(spacing: 8) {
                                             iconGroupCard(group, groupsByName: groupsByName)
-                                                .equatable()
                                                 .id(groupHeaderID(group.name))
                                             if displayNodes(for: group).isEmpty {
                                                 emptyNodesRow(for: group)
@@ -1861,15 +1858,17 @@ struct ProxiesView: View {
     }
 
     /// Builds one card-style group card (MuYu icon_card.dart
-    /// GroupIconCard) as an Equatable IconGroupCard: every value
-    /// the card renders is precomputed here into plain values, so
-    /// a delay-test result landing on another group leaves this
-    /// card's == true and SwiftUI skips its body (same pattern as
-    /// nodeCard / ProxyNodeCard). The per-group search state, the
+    /// GroupIconCard): every value the card renders is precomputed
+    /// here into plain values. The per-group search state, the
     /// latency pill action and the tap action are passed as
     /// closures the parent owns; the struct only calls them.
-    /// Call sites add .equatable() — without it SwiftUI does not
-    /// consult the ==.
+    /// v0.2.120: the card is deliberately NOT Equatable and call
+    /// sites do NOT add .equatable() — that wrapper froze the card
+    /// in its launch-time disabled state (see IconGroupCard), so
+    /// no tap ever reached it on 117–119. Plain values keep the
+    /// re-render cheap; the delay-test churn the old == skipped
+    /// is 3–4 group cards, not the 40+ node cards (those keep
+    /// .equatable(), their tap sits outside the wrapper).
     private func iconGroupCard(_ group: ProxyGroup, groupsByName: [String: ProxyGroup]) -> IconGroupCard {
         let total = groupsByName[group.name]?.nodes.count ?? group.nodes.count
         return IconGroupCard(
@@ -1915,9 +1914,8 @@ struct ProxiesView: View {
                     return
                 }
                 // Expansion goes through the store (v0.2.118): the
-                // card is Equatable and this closure is excluded
-                // from ==, so it must not close over the view's
-                // @State — the store reference can never go stale.
+                // store reference can never go stale, so the action
+                // must not close over the view's @State.
                 let wasExpanded = proxyStore.expandedGroups.contains(group.name)
                 proxyStore.toggleExpanded(group.name)
                 if !wasExpanded {
@@ -1997,28 +1995,15 @@ struct ProxiesView: View {
     /// view once its rows are laid out (FlClash _handleChange,
     /// list.dart:45-60). The node grid is the same LazyVGrid the
     /// old section row drew, now inside the card.
-    /// Built as an Equatable ListGroupCard (same pattern as
-    /// iconGroupCard / IconGroupCard): the header's values are
-    /// plain inputs, and the expanded grid arrives as a @ViewBuilder
-    /// closure whose rendered data is shadowed by nodeFingerprints
-    /// — see ListGroupNodeFingerprint. Collapsed cards pass []
-    /// fingerprints (no grid rendered, no per-node lookups).
+    /// Built as a plain ListGroupCard (v0.2.120: NOT Equatable,
+    /// no .equatable() — see the struct; the old wrapper froze
+    /// the card in its launch-time disabled state and no tap ever
+    /// reached it on 117–119). The header's values are plain
+    /// inputs, and the expanded grid arrives as a @ViewBuilder
+    /// closure. Collapsed cards render no grid.
     private func listGroupCard(_ group: ProxyGroup, width: CGFloat, groupsByName: [String: ProxyGroup]) -> some View {
         let expanded = proxyStore.expandedGroups.contains(group.name)
         let nodes = displayNodes(for: group)
-        let fingerprints: [ListGroupNodeFingerprint] = expanded ? nodes.map { node in
-            ListGroupNodeFingerprint(
-                name: node.name,
-                typeDisplay: Self.nodeTypeDisplayName(node.type),
-                description: nodeDescription(node, groupsByName: groupsByName),
-                latencyMs: node.latencyMs,
-                testing: proxyStore.testingNodes.contains(node.name),
-                pinned: group.fixed == node.name,
-                selected: group.selectedNodeName == node.name,
-                memberIcon: memberIcon(for: node, groupsByName: groupsByName),
-                addable: isAddable(node)
-            )
-        } : []
         return ListGroupCard(
             name: group.name,
             icon: group.icon,
@@ -2030,12 +2015,10 @@ struct ProxiesView: View {
             cardType: styleStore.cardType,
             cardHeight: cardHeight,
             groupType: group.type,
-            nodeFingerprints: fingerprints,
             onToggleExpand: {
                 // Expansion goes through the store (v0.2.118): the
-                // card is Equatable and this closure is excluded
-                // from ==, so it must not close over the view's
-                // @State — the store reference can never go stale.
+                // store reference can never go stale, so the action
+                // must not close over the view's @State.
                 let wasExpanded = proxyStore.expandedGroups.contains(group.name)
                 proxyStore.toggleExpanded(group.name)
                 if !wasExpanded {
@@ -2070,7 +2053,6 @@ struct ProxiesView: View {
                 .padding(.bottom, 12)
             }
         }
-        .equatable()
     }
 
     private func groupHeaderID(_ groupName: String) -> String {
@@ -2351,20 +2333,18 @@ private struct GroupBrandIconView: View {
     }
 }
 
-/// One card-style group card (MuYu icon_card.dart GroupIconCard)
-/// as its own Equatable view, fed only by plain values (same
-/// pattern as ProxyNodeCard). The old iconCard(_:) was a function
-/// on ProxiesView, so every @Published change in ProxyStore — each
-/// delay-test result landing, each testing-flag flip — rebuilt
-/// every visible card's body. As an Equatable struct with narrow
-/// inputs, SwiftUI skips a card whose own values did not change,
-/// so a latency landing on one group no longer re-renders the
-/// other visible cards. Closures and the search FocusState binding
-/// are ignored by == (actions only fire on tap; focus is not
-/// rendered state). The metrics are derived from cardType with the
-/// same switch as ProxiesView.iconCardMetrics; the collapsed
-/// height is precomputed by the caller.
-private struct IconGroupCard: View, Equatable {
+/// One card-style group card (MuYu icon_card.dart GroupIconCard),
+/// fed only by plain values. v0.2.120: deliberately NOT Equatable,
+/// and never wrapped in .equatable() again — the wrapper froze the
+/// card in the disabled state it mounted in (ContentView disables
+/// every off-screen tab; all four pages mount at launch, so the
+/// cards are born disabled, and while collapsed every == field was
+/// static, so the frozen subtree never re-rendered enabled). That
+/// is why no tap — gesture in 117, Button in 119 — ever reached
+/// the card. As a plain view the parent rebuilds it with the live
+/// environment on every render. Same trade as ListGroupCard: the
+/// 40+ node cards keep their Equatable optimization.
+private struct IconGroupCard: View {
     let name: String
     let type: String
     let icon: String
@@ -2445,27 +2425,6 @@ private struct IconGroupCard: View, Equatable {
         self.onTap = onTap
     }
 
-    // Closures and the FocusState binding are not Equatable:
-    // compare everything else, and treat the actions as always
-    // equal (they only fire on tap, like ProxyNodeCard.onTest).
-    static func == (lhs: IconGroupCard, rhs: IconGroupCard) -> Bool {
-        lhs.name == rhs.name
-            && lhs.type == rhs.type
-            && lhs.icon == rhs.icon
-            && lhs.subtitle == rhs.subtitle
-            && lhs.selectedName == rhs.selectedName
-            && lhs.selectedIcon == rhs.selectedIcon
-            && lhs.latencyMs == rhs.latencyMs
-            && lhs.testing == rhs.testing
-            && lhs.expanded == rhs.expanded
-            && lhs.cardType == rhs.cardType
-            && lhs.iconStyle == rhs.iconStyle
-            && lhs.collapsedHeight == rhs.collapsedHeight
-            && lhs.running == rhs.running
-            && lhs.searchKeyword == rhs.searchKeyword
-            && lhs.searchOpen == rhs.searchOpen
-    }
-
     /// The card metrics tuple, named so cardContent / nameRow can
     /// take it without repeating the tuple type.
     private typealias CardMetrics = (inset: CGFloat, nameIconGap: CGFloat, metaGap: CGFloat, bottomGap: CGFloat, brandSize: CGFloat)
@@ -2486,10 +2445,13 @@ private struct IconGroupCard: View, Equatable {
         let m = Self.metrics(for: cardType)
         // The collapsed card is a real Button (v0.2.119 FIX 2,
         // same pattern as ListGroupCard in v0.2.118): the old
-        // .onTapGesture on this Equatable card never fired
-        // on-device (v0.2.117 — every group card untappable in
-        // card style), and a Button's action is dispatched at tap
-        // time through the responder chain. The collapsed card
+        // .onTapGesture on this card never fired on-device
+        // (v0.2.117 — every group card untappable in card style).
+        // The gesture and the 119 Button both died the same way:
+        // the card was wrapped in .equatable(), which froze it in
+        // the disabled state it mounted in (see the struct
+        // comment) — v0.2.120 removes the wrapper, so this Button
+        // is rebuilt live on every render. The collapsed card
         // DOES hold one inner Button — the latency pill, shown
         // whenever a node is selected — and SwiftUI gives the
         // innermost Button the tap, so tapping the pill still
@@ -2708,41 +2670,24 @@ private struct IconGroupCard: View, Equatable {
     }
 }
 
-/// One rendered row of an expanded list-style group card, as plain
-/// values: everything nodeCard reads to build one node card, so a
-/// change in any of it flips the parent card's == and the grid is
-/// rebuilt. The grid itself is NOT stored here — it arrives as a
-/// @ViewBuilder closure from the caller, which reuses the existing
-/// nodeCard wiring verbatim; the fingerprints are the ==-visible
-/// shadow of that closure's data. INVARIANT: keep this struct in
-/// sync with what the closure renders (nodeCard's inputs +
-/// nodeMenu's inputs + the grid columns). A field rendered by the
-/// grid but missing here would go stale when == says equal.
-private struct ListGroupNodeFingerprint: Equatable {
-    let name: String
-    let typeDisplay: String
-    let description: String
-    let latencyMs: Int32?
-    let testing: Bool
-    let pinned: Bool
-    let selected: Bool
-    let memberIcon: String?
-    /// nodeMenu's "添加到本地节点" row (FlClash _isAddableToLocal).
-    let addable: Bool
-}
-
 /// One list-style group card (v0.2.68, video f_040) as its own
-/// Equatable view, fed only by plain values plus the expanded node
-/// grid as a @ViewBuilder closure (same scoping idea as
-/// ProxyNodeCard: a latency landing on a node in another group
-/// leaves this card's == true, so SwiftUI skips the whole card,
-/// header and grid alike). The closure is ignored by ==; its data
-/// is covered by nodeFingerprints (+ groupType, columnCount,
-/// cardType, cardHeight — everything nodeCard / nodeMenu read).
-/// Collapsed cards pass [] fingerprints: they render no grid, so
-/// there is nothing to shadow, and the per-node lookups are
-/// skipped entirely.
-private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
+/// view, fed only by plain values plus the expanded node grid as
+/// a @ViewBuilder closure (same scoping idea as ProxyNodeCard).
+/// v0.2.120: deliberately NOT Equatable, and never wrapped in
+/// .equatable() again — the wrapper froze the card in the
+/// disabled state it mounted in (ContentView disables every
+/// off-screen tab; all four pages mount at launch, so the cards
+/// are born disabled, and while collapsed every == field was
+/// static, so the frozen subtree never re-rendered enabled).
+/// That is why no tap — gesture in 117, Button in 118/119 —
+/// ever reached the card. As a plain view the parent rebuilds
+/// it with the live environment on every render, so the header
+/// Button is enabled whenever the tab is selected. The cost is
+/// re-rendering 3–4 group cards on store changes; the 40+ node
+/// cards keep their Equatable optimization (their tap sits
+/// outside the wrapper, and they mount after the tab is
+/// selected, so they never mount disabled).
+private struct ListGroupCard<ExpandedContent: View>: View {
     let name: String
     let icon: String
     /// Capitalized type display name (Selector / URLTest / ...).
@@ -2756,14 +2701,12 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
     /// Raw group type: nodeMenu branches on it ("select" → 选择,
     /// url-test/fallback/smart → 首选）.
     let groupType: String
-    let nodeFingerprints: [ListGroupNodeFingerprint]
     let expandedContent: () -> ExpandedContent
     /// Header tap: toggle expand/collapse (+ scroll into view).
     let onToggleExpand: () -> Void
     /// Expanded-header actions (MuYu list.dart, v0.2.88):
     /// scroll to the selected node, test this group, open the
-    /// page search. Closures, so excluded from == like
-    /// onToggleExpand.
+    /// page search.
     let onScrollToSelected: () -> Void
     let onTestAll: () -> Void
     let onSearch: () -> Void
@@ -2779,7 +2722,6 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
         cardType: ProxyStyleStore.CardType,
         cardHeight: CGFloat,
         groupType: String,
-        nodeFingerprints: [ListGroupNodeFingerprint],
         onToggleExpand: @escaping () -> Void,
         onScrollToSelected: @escaping () -> Void,
         onTestAll: @escaping () -> Void,
@@ -2796,7 +2738,6 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
         self.cardType = cardType
         self.cardHeight = cardHeight
         self.groupType = groupType
-        self.nodeFingerprints = nodeFingerprints
         self.onToggleExpand = onToggleExpand
         self.onScrollToSelected = onScrollToSelected
         self.onTestAll = onTestAll
@@ -2804,33 +2745,16 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
         self.expandedContent = expandedContent
     }
 
-    // The expanded-content closure is not Equatable: compare
-    // everything else — the closure's rendered data is covered by
-    // nodeFingerprints + groupType + columnCount + cardType +
-    // cardHeight, so == false whenever the grid would look
-    // different. The toggle action only fires on tap.
-    static func == (lhs: ListGroupCard, rhs: ListGroupCard) -> Bool {
-        lhs.name == rhs.name
-            && lhs.icon == rhs.icon
-            && lhs.typeDisplay == rhs.typeDisplay
-            && lhs.selectedName == rhs.selectedName
-            && lhs.expanded == rhs.expanded
-            && lhs.iconStyle == rhs.iconStyle
-            && lhs.columnCount == rhs.columnCount
-            && lhs.cardType == rhs.cardType
-            && lhs.cardHeight == rhs.cardHeight
-            && lhs.groupType == rhs.groupType
-            && lhs.nodeFingerprints == rhs.nodeFingerprints
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // The collapsed header is a real Button (v0.2.118):
             // the old .onTapGesture on the header stopped firing
-            // on-device (v0.2.117 — every group card untappable),
-            // and a Button's action is dispatched at tap time
-            // through the responder chain instead of a gesture
-            // closure the Equatable card may have kept stale.
+            // on-device (v0.2.117 — every group card untappable).
+            // The gesture and the 118/119 Button both died the
+            // same way: the card was wrapped in .equatable(), which
+            // froze it in the disabled state it mounted in (see the
+            // struct comment) — v0.2.120 removes the wrapper, so
+            // this Button is rebuilt live on every render.
             // In expanded state the header holds Buttons (scope /
             // bolt / magnifier + the triangle), so the header tap
             // stays gated to collapsed only and the triangle

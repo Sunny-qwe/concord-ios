@@ -2492,6 +2492,11 @@ private struct IconGroupCard: View {
             if expanded {
                 Button(action: { tapAction() }) {
                     nameRow(m: m)
+                        // v0.2.121: same hit-area fix as the list
+                        // card — the name row is an HStack with a
+                        // Spacer, so without a contentShape only its
+                        // glyphs collapse the card.
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             } else {
@@ -2767,6 +2772,18 @@ private struct ListGroupCard<ExpandedContent: View>: View {
                 Button(action: { tapAction() }) {
                     headerContent
                         .padding(6)
+                        // v0.2.121: the label is an HStack with a
+                        // Spacer — without a contentShape only the
+                        // rendered glyphs are tappable and the wide
+                        // empty middle of the card is dead (the tap
+                        // never fired on 117/118/119/120 despite the
+                        // Button + de-equatable fixes). The shape
+                        // goes on the LABEL, not the Button — the
+                        // v0.2.18 ToolRow precedent: contentShape on
+                        // the Button itself did not extend the hit
+                        // area, while the shape on the label HStack
+                        // makes the whole row rect tappable.
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }

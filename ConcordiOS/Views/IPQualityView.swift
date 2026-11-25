@@ -32,7 +32,13 @@ import SwiftUI
 // 刷新 button always goes to the network.
 
 struct IPQualityInfo: Codable {
-    let status: String
+    /// v0.2.121: optional — the phone received an HTTP 200 body
+    /// with no `status` key (not a genuine ip-api.com answer), and
+    /// the single required field made the whole decode throw, so
+    /// the enrichment failed and the chips/org skeletoned forever.
+    /// With every field optional-or-defaulted, any body decodes
+    /// and the status guard below decides success/failure.
+    let status: String?
     let message: String?
     let country: String?
     let countryCode: String?

@@ -190,6 +190,14 @@ struct DashboardView: View {
     /// background at appear. Only ever the user's own last egress;
     /// a fresh probe overwrites it within seconds of launch.
     @State private var ipInfo: IPQualityInfo? = DashboardView.cachedIpInfo()
+    /// Enrichment-failure flag (v0.2.121): the ip-api.com lookup
+    /// failed (decode / non-success status / HTTP error). Without
+    /// it the chips/org showed pulsing skeletons forever when the
+    /// enrichment failed deterministically; with it they settle on
+    /// the fallback chips / "—". Reset at the start of every
+    /// fetchIPInfo() attempt; the probed IP itself is unaffected
+    /// (it comes from the core probe, not the enrichment).
+    @State private var ipEnrichmentFailed = false
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
     /// In-flight guard for the egress-IP geo enrichment (v0.2.101
@@ -468,6 +476,10 @@ struct DashboardView: View {
         // v0.2.115: the IP comes from the core probe only — no
         // probed IP yet means nothing to enrich.
         guard let ip = trafficStore.outboundIp, !ip.isEmpty else { return }
+        // v0.2.121: a fresh attempt clears the failure flag; the
+        // lookup below sets it again if it fails, so the chips/org
+        // settle instead of skeletoning forever.
+        ipEnrichmentFailed = false
         // v0.2.101 issue 1b: in-flight guard — .task and
         // onChange(isRunning) can fire at the same moment (appear
         // while the tunnel is connecting), and a manual re-fetch
@@ -509,10 +521,19 @@ struct DashboardView: View {
         do {
             decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
         } catch {
-            IPLookupDiagnostics.record("ip-api.com: decode failed: \(error.localizedDescription)")
+            // v0.2.121: record the full DecodingError (it names the
+            // missing key) and a snippet of the raw body — the phone
+            // got an HTTP 200 body with no `status` key (not a
+            // genuine ip-api.com answer), and localizedDescription
+            // alone erases both. Also mark the enrichment as failed
+            // so the chips/org settle instead of skeletoning forever.
+            ipEnrichmentFailed = true
+            let bodySnippet = String(data: data.prefix(200), encoding: .utf8) ?? "<non-utf8 \(data.count)B>"
+            IPLookupDiagnostics.record("ip-api.com: decode failed: \(error) | body: \(bodySnippet)")
             return false
         }
         guard decoded.status == "success" else {
+            ipEnrichmentFailed = true
             IPLookupDiagnostics.record("ip-api.com: status \(decoded.status ?? "?")")
             return false
         }
@@ -533,11 +554,13 @@ struct DashboardView: View {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                ipEnrichmentFailed = true
                 IPLookupDiagnostics.record("ip-api.com: HTTP \(status)")
                 return false
             }
             return applyIpApiResponse(data)
         } catch {
+            ipEnrichmentFailed = true
             IPLookupDiagnostics.recordError(source: "ip-api.com", error: error)
             return false
         }
@@ -1098,6 +1121,15 @@ struct DashboardView: View {
                 Text("点击图标重试")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            } else if ipEnrichmentFailed {
+                // v0.2.121: the enrichment failed (e.g. a foreign
+                // body from ip-api.com) — settle on the fallback
+                // chips instead of pulsing skeletons forever (the
+                // same fallback the ipInfo branch uses above).
+                HStack(spacing: 8) {
+                    PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
+                    PillBadge(text: "类型未知", tint: .gray)
+                }
             } else {
                 HStack(spacing: 6) {
                     SkeletonBar(width: 48, height: 28, animated: true)
@@ -1122,7 +1154,7 @@ struct DashboardView: View {
                     .font(.system(size: 14))
                     .fontWeight(.semibold)
                     .lineLimit(1)
-            } else if ipInfo == nil && !trafficStore.outboundIpProbeFailed {
+            } else if ipInfo == nil && !trafficStore.outboundIpProbeFailed && !ipEnrichmentFailed {
                 SkeletonBar(width: 96, height: 14, animated: true)
             } else {
                 Text("—")
@@ -1827,7 +1859,13 @@ struct DashboardView: View {
             // destination sheets.
             HStack(spacing: 0) {
                 statCell(value: dashboardCount(connectionStore.connections.count), label: "实时连接", destination: .live)
-                statCell(value: dashboardCount(eventStore.totalEventCount), label: "最近请求", destination: .recent)
+                // v0.2.121: this counted eventStore.totalEventCount
+                // (cumulative core EVENTS since launch, not requests)
+                // while the sheet lists finished connections — the
+                // two numbers could never agree (Dashboard 97 vs
+                // sheet 2). Count the same collection the sheet
+                // renders: connectionStore.recentConnections.
+                statCell(value: dashboardCount(connectionStore.recentConnections.count), label: "最近请求", destination: .recent)
                 statCell(value: dashboardCount(dnsStore.entries.count), label: "DNS查询", destination: .dns)
             }
         }
@@ -2609,6 +2647,25 @@ private struct DashboardTrafficEffects: View {
                 if trafficStore.services.isEmpty,
                    let proxy = proxyStore.selectedOutbound {
                     await trafficStore.serviceProbeStore.probeAll(proxy: proxy)
+                }
+            }
+            // v0.2.121: keep the 最近请求 stat live — ConnectionStore
+            // .refresh() used to run only on appear / pull-to-refresh
+            // / while the Requests sheet was open, so the Dashboard
+            // number froze at its appear-time count while connections
+            // kept finishing (and the sheet's appear-refresh backfill
+            // then showed more rows than the stat). Poll every second
+            // like ConnectionsView's own poll, so the stat and the
+            // sheet read the same up-to-date collection. Gated like
+            // that poll: skip while neither the tunnel nor the in-app
+            // core is running (refresh() would boot the core, but
+            // there is nothing to snapshot yet).
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard !Task.isCancelled else { break }
+                    guard TunnelManager.shared.isRunning || AppCore.shared.isRunning else { continue }
+                    await connectionStore.refresh()
                 }
             }
             .onChange(of: proxyStore.isRunning) { _, running in

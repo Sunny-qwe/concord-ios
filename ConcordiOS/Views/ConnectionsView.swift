@@ -362,9 +362,19 @@ struct ConnectionsView: View {
                 // (upstream has it bare too).
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 16) {
-                        Text("\(connectionStore.connections.count) 个连接")
-                        Text("上行 \(ConcordFormat.bytes(connectionStore.totalUpload))")
-                        Text("下行 \(ConcordFormat.bytes(connectionStore.totalDownload))")
+                        // v0.2.121: the header used to show live
+                        // totals on both feeds, so on the recent
+                        // feed it described data that isn't shown.
+                        // Recent feed: the recent count + its totals.
+                        if feed == .recent {
+                            Text("\(connectionStore.recentConnections.count) 个最近请求")
+                            Text("上行 \(ConcordFormat.bytes(connectionStore.recentTotalUpload))")
+                            Text("下行 \(ConcordFormat.bytes(connectionStore.recentTotalDownload))")
+                        } else {
+                            Text("\(connectionStore.connections.count) 个连接")
+                            Text("上行 \(ConcordFormat.bytes(connectionStore.totalUpload))")
+                            Text("下行 \(ConcordFormat.bytes(connectionStore.totalDownload))")
+                        }
                         Spacer()
                     }
                     .font(.caption2)
@@ -624,7 +634,7 @@ struct ConnectionsView: View {
     private func statusSegmentButton(_ status: ConnectionStatusFilter) -> some View {
         let selected = connectionStore.statusFilter == status
         return Button { connectionStore.statusFilter = status } label: {
-            Text("\(status.rawValue) \(Self.groupedCount(connectionStore.statusCount(for: status)))")
+            Text("\(status.rawValue) \(Self.groupedCount(connectionStore.statusCount(for: status, inRecentFeed: feed == .recent)))")
                 .font(.caption.weight(selected ? .semibold : .regular))
                 .foregroundStyle(selected ? ConcordTheme.accent : Color(.label))
                 .padding(.horizontal, 10)

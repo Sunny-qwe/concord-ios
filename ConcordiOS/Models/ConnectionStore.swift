@@ -318,23 +318,21 @@ final class ConnectionStore: ObservableObject {
         sorted(recentConnections.filter { matchesSearch($0) && matchesFacets($0) && matchesStatus($0, isLive: false) })
     }
 
-    /// Unfiltered held totals for the status segments (upstream
-    /// ConnectionRows.counts / offerCounts: the counts shown are
-    /// the held totals, not affected by search/facets). All = live
-    /// + recent held; active = live (still open — the recent feed
-    /// holds only closed rows); failed = failureKind set in either
-    /// table.
-    var statusCountAll: Int { connections.count + recentConnections.count }
-    var statusCountActive: Int { connections.count }
-    var statusCountFailed: Int {
-        (connections + recentConnections).filter { $0.failureKind != nil }.count
-    }
-
-    func statusCount(for status: ConnectionStatusFilter) -> Int {
+    /// Feed-scoped status counts (v0.2.121): the pills used to count
+    /// live + recent held rows regardless of the feed being viewed,
+    /// so on the recent feed 全部 included live rows that aren't
+    /// listed. Pass the viewed feed: on recent, 全部 = recent held,
+    /// 活动 = 0 (recent holds only closed rows), 失败 = failed
+    /// recent; on live, 全部/活动 = live, 失败 = failed live.
+    /// (Upstream ConnectionRows.counts / offerCounts: the counts
+    /// shown are the held totals, not affected by search/facets.)
+    func statusCount(for status: ConnectionStatusFilter, inRecentFeed: Bool) -> Int {
         switch status {
-        case .all: return statusCountAll
-        case .active: return statusCountActive
-        case .failed: return statusCountFailed
+        case .all: return inRecentFeed ? recentConnections.count : connections.count
+        case .active: return inRecentFeed ? 0 : connections.count
+        case .failed:
+            let rows = inRecentFeed ? recentConnections : connections
+            return rows.filter { $0.failureKind != nil }.count
         }
     }
 
@@ -421,6 +419,11 @@ final class ConnectionStore: ObservableObject {
 
     var totalUpload: Int64 { connections.reduce(0) { $0 + $1.upload } }
     var totalDownload: Int64 { connections.reduce(0) { $0 + $1.download } }
+
+    /// Recent-feed byte totals for the sheet header (v0.2.121): the
+    /// header used to show the live totals on the recent feed too.
+    var recentTotalUpload: Int64 { recentConnections.reduce(0) { $0 + $1.upload } }
+    var recentTotalDownload: Int64 { recentConnections.reduce(0) { $0 + $1.download } }
 
     @MainActor
     func refresh() async {

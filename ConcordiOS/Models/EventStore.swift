@@ -63,10 +63,6 @@ struct ScriptNotificationItem: Identifiable, Equatable {
 
 final class EventStore: ObservableObject {
     @Published var entries: [StampedCoreEvent] = []
-    /// Cumulative count of events ever seen (v0.2.68): unlike
-    /// `entries.count` this is NOT capped at 500 — the Dashboard
-    /// 最近请求 number (video: 1,465) needs the uncapped total.
-    @Published var totalEventCount: Int = 0
     @Published var searchText = ""
     @Published var typeFilter = "全部"
     @Published var lastError: String?
@@ -89,8 +85,8 @@ final class EventStore: ObservableObject {
     private var eventsBaselineLoaded = false
     /// refresh() is now called from the 1 s tick AND from
     /// Dashboard / LogsView — guard against overlapping runs (the
-    /// merge is idempotent, but totalEventCount would
-    /// double-count a fresh event seen by two concurrent runs).
+    /// merge is idempotent, but a fresh event seen by two concurrent
+    /// runs would banner twice).
     private var refreshInFlight = false
 
     let client: ConcordClient
@@ -192,9 +188,6 @@ final class EventStore: ObservableObject {
                 let key = Self.key(for: event)
                 if byKey[key] == nil {
                     byKey[key] = StampedCoreEvent(key: key, event: event, receivedAt: now)
-                    // Count every fresh event ever seen, even past
-                    // the 500-entry cap (v0.2.68: totalEventCount).
-                    totalEventCount += 1
                     if event.type == "scriptNotification" {
                         newNotices.append(event)
                     }

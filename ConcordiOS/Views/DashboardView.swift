@@ -149,7 +149,11 @@ struct DashboardView: View {
     @State private var showGroupsSheet = false
     @State private var tunnelStartedAt: Date?
     @State private var subscription: ConcordSubscriptionInfo?
-    @State private var ipInfo: IPQualityInfo?
+    /// Last-known IP lookup, restored on launch so the status card
+    /// is never empty (v0.2.115, MuYu parity) and refreshed in the
+    /// background at appear. Only ever the user's own last egress;
+    /// a fresh probe overwrites it within seconds of launch.
+    @State private var ipInfo: IPQualityInfo? = DashboardView.cachedIpInfo()
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
     @State private var ipFetchFailed = false
@@ -172,7 +176,8 @@ struct DashboardView: View {
     /// the bare "AS<n>" token for the org fallback (FlClash
     /// current_outbound.dart: organization ?? "AS{asn}").
     /// IPQualityInfo maps no `as` key, so it is decoded separately.
-    @State private var ipAsn: String?
+    /// Restored from the same last-known cache as ipInfo (above).
+    @State private var ipAsn: String? = DashboardView.cachedIpAsn()
     /// Profile sync spinner (FlClash profiles.dart _SyncButton shows
     /// an activity indicator while the profile is updating).
     @State private var isSyncingProfile = false
@@ -380,6 +385,33 @@ struct DashboardView: View {
         }
     }
 
+    /// Last-known IP lookup cache (v0.2.115): the status card
+    /// restores these on launch so it is never empty, then the
+    /// appear probe refreshes them in the background.
+    private static let cachedIpInfoKey = "ConcordiOS.dashboard.ipInfo.v1"
+    private static let cachedIpAsnKey = "ConcordiOS.dashboard.ipAsn.v1"
+    private static func cachedIpInfo() -> IPQualityInfo? {
+        guard let data = UserDefaults.standard.data(forKey: cachedIpInfoKey) else { return nil }
+        return try? JSONDecoder().decode(IPQualityInfo.self, from: data)
+    }
+    private static func cachedIpAsn() -> String? {
+        UserDefaults.standard.string(forKey: cachedIpAsnKey)
+    }
+
+    /// Stores a fresh IP lookup and persists it (see above). Every
+    /// source funnels through here so the cache is always the
+    /// newest answer.
+    private func setIpInfo(_ info: IPQualityInfo?, asn: String?) {
+        ipInfo = info
+        ipAsn = asn
+        if let info, let data = try? JSONEncoder().encode(info) {
+            UserDefaults.standard.set(data, forKey: Self.cachedIpInfoKey)
+        }
+        if let asn {
+            UserDefaults.standard.set(asn, forKey: Self.cachedIpAsnKey)
+        }
+    }
+
     /// Public-IP lookup. ip-api.com first (full geo/org/ASN answer,
     /// 10 s) — but on-device 0.2.93 the ip-api.com request died
     /// before TCP (the core never saw it: most likely the app's DNS
@@ -396,13 +428,14 @@ struct DashboardView: View {
     /// settling. The fallbacks carry
     /// only the IP (ident.me also fills country + code / city /
     /// ASN when present) — enough for the status card's fallbackQuery; the
-    /// geo/org enrichment stays ip-api.com-only. The lookup runs
-    /// even while the VPN is off, but the status card does NOT show
-    /// the result then: FlClash shows grey skeleton bars while the
-    /// core is not running, the real IP only once it is running.
-    /// When the VPN is on, URLSession follows the tunnel, so the
-    /// answer is the proxy egress IP; when it is off, it is the
-    /// phone's direct IP.
+    /// geo/org enrichment stays ip-api.com-only. v0.2.115: the
+    /// lookup prefers the core-probed egress IP (see the branch
+    /// below) and the status card shows the result with the VPN off
+    /// too — MuYu shows the full card with the tunnel down. When
+    /// the VPN is on, URLSession follows the tunnel, so the
+    /// no-arg answer is the proxy egress IP; when it is off, it is
+    /// the phone's direct IP (only used when the core probe has no
+    /// answer yet).
     private func fetchIPInfo() async {
         // v0.2.101 issue 1b: in-flight guard — .task and
         // onChange(isRunning) can fire at the same moment (appear
@@ -428,6 +461,15 @@ struct DashboardView: View {
         }
         ipChecking = true
         defer { ipChecking = false }
+        // v0.2.115: prefer the core-probed egress IP — the core
+        // routes the probe through the selected outbound, so its IP
+        // is the proxy egress even with the tunnel down. Query
+        // ip-api for THAT IP's geo (it answers geo for any IP), so
+        // the card shows the egress's country/org instead of the
+        // phone's direct IP.
+        if let coreIp = trafficStore.outboundIp?.trimmingCharacters(in: .whitespacesAndNewlines), !coreIp.isEmpty {
+            if await fetchIPInfoFromIpApi(for: coreIp) { return }
+        }
         // Interface B3 (DashboardView part): a stalled ip-api.com
         // used to hang this lookup forever (URLSession.shared
         // defaults: 60 s request / 7 days resource). 10 s, then
@@ -470,6 +512,27 @@ struct DashboardView: View {
         }
     }
 
+    /// Applies one ip-api.com response (shared by the caller-IP and
+    /// known-IP lookups): decodes IPQualityInfo + the `as` token,
+    /// stores + persists them, clears the failure flag. False when
+    /// the answer does not decode or reports a non-success status.
+    private func applyIpApiResponse(_ data: Data) -> Bool {
+        let decoded: IPQualityInfo
+        do {
+            decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
+        } catch {
+            IPLookupDiagnostics.record("ip-api.com: decode failed: \(error.localizedDescription)")
+            return false
+        }
+        guard decoded.status == "success" else {
+            IPLookupDiagnostics.record("ip-api.com: status \(decoded.status ?? "?")")
+            return false
+        }
+        setIpInfo(decoded, asn: (try? JSONDecoder().decode(IPApiAsField.self, from: data))?.asNumber)
+        ipFetchFailed = false
+        return true
+    }
+
     /// ip-api.com (primary): the only source returning the full
     /// geo/org/ASN answer in one shape. True when it answered.
     private func fetchIPInfoFromIpApi() async -> Bool {
@@ -482,21 +545,30 @@ struct DashboardView: View {
                 IPLookupDiagnostics.record("ip-api.com: HTTP \(status)")
                 return false
             }
-            let decoded: IPQualityInfo
-            do {
-                decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
-            } catch {
-                IPLookupDiagnostics.record("ip-api.com: decode failed: \(error.localizedDescription)")
+            return applyIpApiResponse(data)
+        } catch {
+            IPLookupDiagnostics.recordError(source: "ip-api.com", error: error)
+            return false
+        }
+    }
+
+    /// ip-api.com for a KNOWN IP (v0.2.115): queries the geo of the
+    /// core-probed egress IP. ip-api answers geo for any IP, not
+    /// just the caller's — so with the VPN off the card shows the
+    /// proxy egress's country/org instead of the phone's direct IP
+    /// (the no-arg lookup answers the caller's IP, which is the
+    /// direct IP when the tunnel is down).
+    private func fetchIPInfoFromIpApi(for ip: String) async -> Bool {
+        guard let url = URL(string: "http://ip-api.com/json/\(ip)?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting") else { return false }
+        do {
+            let request = URLRequest(url: url, timeoutInterval: 10)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                IPLookupDiagnostics.record("ip-api.com: HTTP \(status)")
                 return false
             }
-            guard decoded.status == "success" else {
-                IPLookupDiagnostics.record("ip-api.com: status \(decoded.status ?? "?")")
-                return false
-            }
-            ipInfo = decoded
-            ipAsn = (try? JSONDecoder().decode(IPApiAsField.self, from: data))?.asNumber
-            ipFetchFailed = false
-            return true
+            return applyIpApiResponse(data)
         } catch {
             IPLookupDiagnostics.recordError(source: "ip-api.com", error: error)
             return false
@@ -525,14 +597,13 @@ struct DashboardView: View {
                 IPLookupDiagnostics.record("ident.me: decode failed")
                 return false
             }
-            ipInfo = IPQualityInfo(
+            setIpInfo(IPQualityInfo(
                 status: "success", message: nil,
                 country: json["country"] as? String, countryCode: json["cc"] as? String,
                 city: json["city"] as? String, regionName: nil,
                 isp: json["aso"] as? String, org: json["aso"] as? String,
                 asn: identMeAsn(json["asn"]), timezone: json["timezone"] as? String,
-                query: ip, lat: nil, lon: nil)
-            ipAsn = identMeAsn(json["asn"])
+                query: ip, lat: nil, lon: nil), asn: identMeAsn(json["asn"]))
             ipFetchFailed = false
             return true
         } catch {
@@ -559,11 +630,10 @@ struct DashboardView: View {
                 IPLookupDiagnostics.record("api.ipify.org: decode failed")
                 return false
             }
-            ipInfo = IPQualityInfo(
+            setIpInfo(IPQualityInfo(
                 status: "success", message: nil, country: nil, countryCode: nil,
                 city: nil, regionName: nil, isp: nil, org: nil, asn: nil,
-                timezone: nil, query: ip, lat: nil, lon: nil)
-            ipAsn = nil
+                timezone: nil, query: ip, lat: nil, lon: nil), asn: nil)
             ipFetchFailed = false
             return true
         } catch {
@@ -617,6 +687,11 @@ struct DashboardView: View {
         await eventStore.refresh()
         await dnsStore.refresh()
         await refreshSubscription()
+        // v0.2.115: probe the egress IP first — fetchIPInfo prefers
+        // the core-probed IP for the geo query (see the branch in
+        // fetchIPInfo), so the card refreshes to the egress's
+        // country/org, not the phone's direct IP.
+        await trafficActions.probe()
         await fetchIPInfo()
     }
 
@@ -1081,18 +1156,17 @@ struct DashboardView: View {
     // _StatusWavePainter, painted behind the content and clipped to
     // the card's rounded rect (34pt, the FlClash mobile card radius).
 
-    /// Chips slot (FlClash _IpChips): two static grey bars while
-    /// not running, two pulsing pills while running and loading,
-    /// the real network-type + quality pills once probed, a retry
-    /// hint if the probe failed.
+    /// Chips slot (FlClash _IpChips): two pulsing pills while the
+    /// lookup is loading, the real network-type + quality pills
+    /// once probed, a retry hint if the probe failed. v0.2.115:
+    /// the pills show whenever ipInfo is present — the old
+    /// `!isRunning` branch showed static grey bars with the VPN
+    /// off, but MuYu shows the real chips with the tunnel down
+    /// (the values come from the in-app core's probe at launch);
+    /// the skeleton is only the transient pre-probe state now.
     private var chipsSlot: some View {
         Group {
-            if !proxyStore.isRunning {
-                HStack(spacing: 6) {
-                    SkeletonBar(width: 48, height: 28)
-                    SkeletonBar(width: 72, height: 28)
-                }
-            } else if ipInfo != nil {
+            if ipInfo != nil {
                 HStack(spacing: 8) {
                     // v0.2.68: the first chip is the EXIT IP's type
                     // (机房/住宅/… from the assessed lookup) when
@@ -1128,17 +1202,16 @@ struct DashboardView: View {
         .frame(height: 28, alignment: .leading)
     }
 
-    /// Org cell (FlClash _Cells): a static grey bar (full-opacity
-    /// #ECE9EB) while not running, a pulsing skeleton while running
-    /// and loading, the real org once probed (falling back to the
-    /// "AS<n>" token, FlClash: organization ?? "AS{asn}"), "—" if
-    /// the probe answered without an org or failed.
+    /// Org cell (FlClash _Cells): a pulsing skeleton while the
+    /// lookup is loading, the real org once probed (falling back to
+    /// the "AS<n>" token, FlClash: organization ?? "AS{asn}"), "—"
+    /// if the probe answered without an org or failed. v0.2.115:
+    /// shows whenever ipInfo is present, tunnel up or down (MuYu
+    /// shows the org with the VPN off); the skeleton is only the
+    /// transient pre-probe state now.
     private var orgValue: some View {
         Group {
-            if !proxyStore.isRunning {
-                SkeletonBar(width: 96, height: 12)
-                    .padding(.top, 2)
-            } else if let org = ipInfo?.org ?? ipInfo?.isp ?? ipAsn {
+            if let org = ipInfo?.org ?? ipInfo?.isp ?? ipAsn {
                 Text(org)
                     .font(.system(size: 14))
                     .fontWeight(.semibold)
@@ -1169,7 +1242,7 @@ struct DashboardView: View {
                     Spacer().frame(height: 12)
                     HStack(spacing: 12) {
                         CloverBadge(
-                            countryCode: proxyStore.isRunning ? ipInfo?.countryCode : nil,
+                            countryCode: ipInfo?.countryCode,
                             checking: ipChecking,
                             // D-D9: the clover refresh re-probes the
                             // egress IP through the core as well as
@@ -1566,22 +1639,29 @@ struct DashboardView: View {
             }
             Spacer()
             Toggle("", isOn: Binding(
-                get: { proxyStore.isRunning },
-                set: { _ in Task { await proxyStore.toggle() } }
+                get: { proxyStore.vpnEnabled },
+                set: { newValue in Task { await proxyStore.setVpnEnabled(newValue) } }
             ))
             .labelsHidden()
             // MuYu video: the switch follows the theme accent
             // (magenta under the magenta theme, blue under the
-            // default blue theme). Same start/stop path as the
-            // play button (proxyStore.toggle()); start errors
-            // land in proxyStore.startError.
+            // default blue theme). v0.2.115: the switch binds to
+            // the PERSISTENT vpnEnabled flag (upstream
+            // network_takeover.dart `tun.enable`), NOT to the live
+            // tunnel state — it stays on across tunnel stops and
+            // app restarts, and the status card's play button is
+            // the start/stop control. Flipping it still starts /
+            // stops the tunnel (setVpnEnabled), so it turns the VPN
+            // on/off the first time; start errors land in
+            // proxyStore.startError.
             .tint(ConcordTheme.accent)
         }
         .concordCard(padding: 12)
         // The Toggle keeps its own tap (the inner control wins the
-        // gesture), so tapping the switch toggles once.
+        // gesture), so tapping the switch toggles once. Tapping the
+        // card elsewhere flips the same enable flag.
         .contentShape(Rectangle())
-        .onTapGesture { Task { await proxyStore.toggle() } }
+        .onTapGesture { Task { await proxyStore.setVpnEnabled(!proxyStore.vpnEnabled) } }
     }
 
     // MARK: - Service status card
@@ -2465,9 +2545,12 @@ private struct DashboardWarningsPill: View {
 /// the egress through the selected proxy — ip-api.com only as
 /// fallback for the geo/org enrichment. TrafficStore.probe()
 /// runs when the tunnel connects (see DashboardTrafficEffects).
-private func dashboardDisplayIp(isRunning: Bool, coreIp: String?, fallbackQuery: String?) -> String? {
-    if isRunning,
-       let coreIp = coreIp?.trimmingCharacters(in: .whitespacesAndNewlines),
+/// v0.2.115: the core IP is used whenever present, tunnel up or
+/// down — with the VPN off the in-app core still probes the
+/// egress through the selected outbound, so it IS the outbound
+/// IP then too (MuYu shows it with the tunnel down).
+private func dashboardDisplayIp(coreIp: String?, fallbackQuery: String?) -> String? {
+    if let coreIp = coreIp?.trimmingCharacters(in: .whitespacesAndNewlines),
        !coreIp.isEmpty {
         return coreIp
     }
@@ -2545,38 +2628,53 @@ private struct DashboardTrafficEffects: View {
                     await trafficStore.noteTunnelStarted(at: started)
                 }
                 tunnelManager.checkTunRestartNeeded()
-                await fetchIPInfo()
+                // v0.2.115: the stats row (实时连接/最近请求/DNS查询）
+                // refreshes CONCURRENTLY with the IP lookup, in its
+                // own Task — it used to run after fetchIPInfo (up to
+                // 26 s), so the three numbers sat at 0 on launch.
+                // The refreshes now read the in-app core's live
+                // feeds when the tunnel is down (ConnectionStore /
+                // EventStore fall back to AppCore like DnsStore), so
+                // the row fills as soon as the core is up, like
+                // MuYu's startCore + _openFeeds at launch. The core
+                // boot is driven by the first store refresh (runX
+                // calls ensureStarted when the core is not running
+                // yet). Unstructured on purpose: nothing later in
+                // this sequence depends on the stats, and the
+                // stores serialize on the MainActor anyway.
+                // v0.2.89: the row refreshes on entry, like
+                // pull-to-refresh — it used to show the previous
+                // session's values (or zeros) until the user
+                // pulled. With the VPN on (or just stopped) the
+                // fresh snapshots fill the row at once.
+                Task {
+                    await connectionStore.refresh()
+                    await eventStore.refresh()
+                    // v0.2.101 issue 2 / v0.2.111: skip the DNS
+                    // refresh while a stats sheet is open — a
+                    // publish landing mid-presentation is a freeze
+                    // suspect. This gate is only an optimisation
+                    // now; the authoritative guard is DnsStore's
+                    // publish suspension (setPublishSuspended,
+                    // checked at publish time inside refresh()).
+                    if statsDestination == nil {
+                        await dnsStore.refresh()
+                    }
+                    // v0.2.115 (status card): probe the egress IP
+                    // through the in-app core (TrafficStore.probe
+                    // falls back to AppCore with the tunnel down)
+                    // and fetch its geo — the status card fills on
+                    // launch like MuYu, instead of waiting on the
+                    // slow direct lookup. fetchIPInfo prefers the
+                    // core-probed IP for the geo query, so it runs
+                    // AFTER the probe here; the main sequence no
+                    // longer calls it (the in-flight guard would
+                    // dedup a concurrent call anyway).
+                    await trafficActions.probe()
+                    await fetchIPInfo()
+                }
                 await trafficStore.refreshEngineStatus()
                 await refreshSubscription()
-                // v0.2.89: the stats row (实时连接/最近请求/DNS查询）
-                // refreshes on entry, like pull-to-refresh — it used
-                // to show the previous session's values (or zeros)
-                // until the user pulled. The refreshes throw while
-                // the tunnel is down (stale snapshots) and the stores
-                // keep their values then; with the VPN on (or just
-                // stopped) the fresh snapshots fill the row at once.
-                await connectionStore.refresh()
-                await eventStore.refresh()
-                // v0.2.101 issue 2: this refresh lands last in the
-                // appear sequence — after fetchIPInfo (up to 26 s)
-                // and the engine / subscription refreshes — so a
-                // user tapping a stats cell mid-sequence can have
-                // the sheet still presenting when the fresh DNS
-                // entries publish, which fires DnsQueriesView's
-                // .onChange scrollTo mid-presentation and freezes
-                // the main thread. Skip it while a stats sheet is
-                // open; the row refreshes on the next
-                // pull-to-refresh / appear instead.
-                // v0.2.111: this gate is only an optimisation now.
-                // The authoritative guard is DnsStore's publish
-                // suspension (setPublishSuspended, checked at
-                // publish time inside refresh()), which also covers
-                // the ungated onChange(isRunning) refresh below —
-                // a refresh already in flight at tap time defers
-                // instead of publishing mid-presentation.
-                if statsDestination == nil {
-                    await dnsStore.refresh()
-                }
                 // v0.2.89: probe on entry even with the VPN off, like
                 // MuYu — the old `client.mode == .sample ||
                 // tunnelManager.isRunning` gate skipped the probe in
@@ -2673,24 +2771,24 @@ private struct DashboardTrafficEffects: View {
     }
 }
 
-/// IP slot (FlClash _ExitRow): a static grey bar while the core
-/// is not running, a pulsing skeleton while running and the
-/// probe has not answered, the real IP once it has, "服务失败"
-/// (red) if the probe failed. The only TrafficStore read is
-/// outboundIp, so this slot — not the status card — re-renders
-/// when the probe lands.
+/// IP slot (FlClash _ExitRow): a pulsing skeleton while the probe
+/// has not answered, the real IP once it has, "服务失败" (red) if
+/// the probe failed. The only TrafficStore read is outboundIp, so
+/// this slot — not the status card — re-renders when the probe
+/// lands. v0.2.115: shows the IP whenever it is known, tunnel up
+/// or down — the old `!isRunning` branch forced a static grey bar
+/// with the VPN off, but MuYu shows the egress IP with the tunnel
+/// down (the in-app core probes it at launch). The skeleton is
+/// only the transient pre-probe state now.
 private struct StatusIpSlotView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
-    @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var settingsStore: SettingsStore
     let ipInfo: IPQualityInfo?
     let ipFetchFailed: Bool
 
     var body: some View {
         Group {
-            if !proxyStore.isRunning {
-                SkeletonBar(width: 140, height: 18)
-            } else if let ip = dashboardDisplayIp(isRunning: proxyStore.isRunning, coreIp: trafficStore.outboundIp, fallbackQuery: ipInfo?.query) {
+            if let ip = dashboardDisplayIp(coreIp: trafficStore.outboundIp, fallbackQuery: ipInfo?.query) {
                 // FlClash _IpText: hideIp masks the IP as "*****
                 // (current_outbound.dart _ipMask).
                 // v0.2.68: 24pt bold, like the video (was 18pt semibold).
@@ -3337,7 +3435,7 @@ private struct OutboundIPSheetHost: View {
 
     var body: some View {
         OutboundIPSheet(
-            displayIp: dashboardDisplayIp(isRunning: proxyStore.isRunning, coreIp: trafficStore.outboundIp, fallbackQuery: ipInfo?.query),
+            displayIp: dashboardDisplayIp(coreIp: trafficStore.outboundIp, fallbackQuery: ipInfo?.query),
             hideIp: $hideIp,
             assessed: assessed,
             ipAsn: ipAsn,

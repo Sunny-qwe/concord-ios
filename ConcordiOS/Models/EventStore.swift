@@ -158,7 +158,30 @@ final class EventStore: ObservableObject {
         refreshInFlight = true
         defer { refreshInFlight = false }
         do {
-            let fresh = try await client.eventEntries()
+            // v0.2.115: the events no longer come from the extension
+            // snapshot only. Tunnel up → the extension snapshot, as
+            // before. Tunnel down → the in-app core's live
+            // events.watch buffer (AppCore boots it on demand; the
+            // Dashboard / Logs lifecycle keeps it running while the
+            // app is in the foreground, like MuYu's startCore at
+            // launch), so the Dashboard 最近请求 count and the
+            // Events page show rows with the VPN off instead of 0.
+            // The merge below is identical for both sources — and
+            // key-based, so an event seen from the in-app core is
+            // never double-counted when the same event later
+            // arrives in the extension snapshot.
+            let fresh = try await runEvents(
+                tunnel: { try await self.client.eventEntries() },
+                appCore: {
+                    // Lazily (re-)subscribe if the boot-time
+                    // subscribe failed or the session restarted
+                    // since — same as DnsStore.refresh; a no-op
+                    // when a sub already exists.
+                    if AppCore.shared.isRunning {
+                        try? await AppCore.shared.subscribeEventsWatch()
+                    }
+                    return await AppCore.shared.eventEntries()
+                })
             let now = Date()
             var byKey = Dictionary(uniqueKeysWithValues: entries.map { ($0.key, $0) })
             // New script notifications seen in this refresh (v0.2.86
@@ -220,5 +243,42 @@ final class EventStore: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// Runs one events query against the tunnel core when it is up,
+    /// or the in-app core (booted on demand) when the VPN is off —
+    /// same shape as DnsStore.runDns. The in-app core's live
+    /// events.watch buffer is the only live source with the VPN
+    /// off, so the Dashboard 最近请求 count and the Events page
+    /// show rows instead of 0. The ensureStarted call is skipped
+    /// when the core is already running: its early-return path
+    /// walks the whole provider cache (reads every file to compare
+    /// bytes) — pointless work on a hot path. If the tunnel starts
+    /// while AppCore is booting, AppCore refuses to run alongside
+    /// it (AppCoreError.tunnelRunning) — the tunnel core is used
+    /// instead, not reported as a failure.
+    private func runEvents<T>(tunnel: () async throws -> T, appCore: () async throws -> T) async throws -> T {
+        if hasCore {
+            return try await tunnel()
+        }
+        if !AppCore.shared.isRunning {
+            do {
+                try await AppCore.shared.ensureStarted()
+            } catch {
+                if case AppCoreError.tunnelRunning = error {
+                    return try await tunnel()
+                }
+                throw error
+            }
+        }
+        return try await appCore()
+    }
+
+    /// True when the events query can reach the tunnel core: the
+    /// tunnel is running, or the client is in sample mode. With
+    /// the VPN off in live mode the in-app core (AppCore, booted
+    /// on demand by runEvents) is the fallback.
+    private var hasCore: Bool {
+        client.mode == .sample || TunnelManager.shared.isRunning
     }
 }

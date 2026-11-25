@@ -1386,7 +1386,7 @@ final class TrafficStore: ObservableObject {
         defer { isProbingOutboundIp = false }
         lastOutboundIpProbeAt = Date()
         do {
-            let result = try await client.probeOutboundIp()
+            let result = try await probeOutboundIpThroughCore()
             outboundIp = result.body
             outboundChains = result.chains
             if outboundIp != nil {
@@ -1396,6 +1396,30 @@ final class TrafficStore: ObservableObject {
             lastError = error.localizedDescription
             IPLookupDiagnostics.recordError(source: "probe.outboundIp", error: error)
         }
+    }
+
+    /// Asks the tunnel core for the exit IP when it is up, or the
+    /// in-app core (booted on demand) when the VPN is off (v0.2.115
+    /// — MuYu probes the outbound IP at launch through the in-app
+    /// core, so the status card fills with the tunnel down; the
+    /// tunnel core is gone then, so the in-app core is the
+    /// fallback, like probeServicesThroughCore). If the tunnel
+    /// starts while AppCore is booting, AppCore refuses to run
+    /// alongside it (AppCoreError.tunnelRunning) — the tunnel core
+    /// is used instead, not reported as a failure.
+    private func probeOutboundIpThroughCore() async throws -> ConcordOutboundIp {
+        if client.mode == .sample || TunnelManager.shared.isRunning {
+            return try await client.probeOutboundIp()
+        }
+        do {
+            try await AppCore.shared.ensureStarted()
+        } catch {
+            if case AppCoreError.tunnelRunning = error {
+                return try await client.probeOutboundIp()
+            }
+            throw error
+        }
+        return try await AppCore.shared.probeOutboundIp()
     }
 
     /// Retries the egress-IP probe while the tunnel runs and the IP

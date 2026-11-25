@@ -426,7 +426,28 @@ final class ConnectionStore: ObservableObject {
     func refresh() async {
         defer { loaded = true }
         do {
-            let snapshot = try await client.connectionSnapshot()
+            // v0.2.115: the live table no longer comes from the
+            // extension snapshot only. Tunnel up → the extension
+            // snapshot, as before. Tunnel down → the in-app core's
+            // live connection.watch table (AppCore boots it on
+            // demand; the Dashboard / Connections lifecycle keeps
+            // it running while the app is in the foreground, like
+            // MuYu's startCore at launch), so the Dashboard 实时连接
+            // count and the sheet show rows with the VPN off
+            // instead of 0. The merge below is identical for both
+            // sources.
+            let snapshot = try await runConnections(
+                tunnel: { try await self.client.connectionSnapshot() },
+                appCore: {
+                    // Lazily (re-)subscribe if the boot-time
+                    // subscribe failed or the session restarted
+                    // since — same as DnsStore.refresh; a no-op
+                    // when a sub already exists.
+                    if AppCore.shared.isRunning {
+                        try? await AppCore.shared.subscribeConnectionsWatch()
+                    }
+                    return await AppCore.shared.connectionSnapshot()
+                })
             let now = Date()
             var next = snapshot.connections.map(LiveConnection.init)
             // Live per-connection speeds (upstream downloadSpeed /
@@ -599,5 +620,44 @@ final class ConnectionStore: ObservableObject {
             return server.contains(":") ? "[\(server)]:53" : "\(server):53"
         }
         return servers.isEmpty ? nil : servers
+    }
+
+    /// Runs one connections query against the tunnel core when it
+    /// is up, or the in-app core (booted on demand) when the VPN is
+    /// off — same shape as DnsStore.runDns. The in-app core's live
+    /// connection.watch table is the only live source with the VPN
+    /// off, so the Dashboard 实时连接 count and the Connections
+    /// sheet show rows instead of 0. The ensureStarted call is
+    /// skipped when the core is already running: its early-return
+    /// path walks the whole provider cache (reads every file to
+    /// compare bytes), and refresh() runs on the Connections page's
+    /// 1 s poll — re-walking the cache every second would be pure
+    /// disk I/O for nothing. If the tunnel starts while AppCore is
+    /// booting, AppCore refuses to run alongside it
+    /// (AppCoreError.tunnelRunning) — the tunnel core is used
+    /// instead, not reported as a failure.
+    private func runConnections<T>(tunnel: () async throws -> T, appCore: () async throws -> T) async throws -> T {
+        if hasCore {
+            return try await tunnel()
+        }
+        if !AppCore.shared.isRunning {
+            do {
+                try await AppCore.shared.ensureStarted()
+            } catch {
+                if case AppCoreError.tunnelRunning = error {
+                    return try await tunnel()
+                }
+                throw error
+            }
+        }
+        return try await appCore()
+    }
+
+    /// True when the connections query can reach the tunnel core:
+    /// the tunnel is running, or the client is in sample mode.
+    /// With the VPN off in live mode the in-app core (AppCore,
+    /// booted on demand by runConnections) is the fallback.
+    private var hasCore: Bool {
+        client.mode == .sample || TunnelManager.shared.isRunning
     }
 }

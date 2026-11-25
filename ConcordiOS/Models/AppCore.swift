@@ -198,6 +198,44 @@ final class AppCore {
     private var dnsSub: Int?
     private var dnsBuffer: [ConcordDnsEntry] = []
 
+    /// connection.watch subscription + live table (v0.2.115, MuYu
+    /// parity): the same subscribe-once + accumulate pattern as
+    /// log/dns.watch, mirroring the extension's live table
+    /// (PacketTunnelProvider.applyConnectionDelta). The subscribe
+    /// reply's snapshot (ConnectionSnapshot {connections}) seeds
+    /// the table; later batches are ConnectionDelta {opened,
+    /// counters, ended, closed} applied in upstream order (opened,
+    /// counters, ended, closed — the counters guard needs the row
+    /// still in the table). `ended` is optional on the wire (added
+    /// upstream 0c9788f; older cores omit it) and is ignored when
+    /// absent. The table is the Dashboard 实时连接 count and the
+    /// Connections sheet's live list with the VPN off, like MuYu's
+    /// connectionBook feed. Survives teardown like dnsBuffer; the
+    /// next subscribe replaces it with a fresh snapshot.
+    private var connectionSub: Int?
+    private var connectionTable: [UInt64: [String: Any]] = [:]
+    /// Recently ended connections, newest first, cap 200 (same as
+    /// the extension's endedBuffer): each record is the
+    /// connection's final ConnectionInfo nested under `connection`
+    /// plus `end_reason` / `ended_at` / `end_message` — the exact
+    /// shape ConcordEndedConnection decodes (via
+    /// convertFromSnakeCase), so the store's `ended` handling
+    /// works unchanged on either source.
+    private var connectionEndedBuffer: [[String: Any]] = []
+
+    /// events.watch subscription + buffer (v0.2.115, MuYu parity):
+    /// same pattern as log/dns.watch. events.watch has NO initial
+    /// snapshot — CoreEvent items only arrive as events, so the
+    /// buffer starts empty at each subscribe and fills while the
+    /// core runs. Subscribed with delays + state (both default
+    /// false in the schema — a bare {credit: 8} never delivers
+    /// `delay` or `stateChanged` events at all, same trap as the
+    /// extension's subscribe). Bounded to the newest 500, like the
+    /// extension's trimBuffer. The buffer is the Dashboard 最近请求
+    /// count and the Events page's live list with the VPN off.
+    private var eventsSub: Int?
+    private var eventsBuffer: [ConcordCoreEvent] = []
+
     /// Subscription to the "统一延迟测试" toggle (v0.2.65): every
     /// change re-patches unified_delay into the running in-app
     /// core, so the toggle takes effect without re-booting.
@@ -417,7 +455,7 @@ final class AppCore {
     /// their existing shape. `configRefreshNote` (FIX 2) is passed
     /// on every call, so a heal that precedes a failed boot is
     /// still visible.
-    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String, providerSeed: ProviderCacheSeed.Report? = nil, appliedProfileName: String? = nil, configSize: Int? = nil, configMtime: Date? = nil, loadedGroupCount: Int? = nil, loadedNodeCount: Int? = nil, configRefreshNote: String? = nil, logSubscribeNote: String? = nil, dnsSubscribeNote: String? = nil) {
+    private func recordBootReport(home: URL, seed: GeoSeed.Report, outcome: String, providerSeed: ProviderCacheSeed.Report? = nil, appliedProfileName: String? = nil, configSize: Int? = nil, configMtime: Date? = nil, loadedGroupCount: Int? = nil, loadedNodeCount: Int? = nil, configRefreshNote: String? = nil, logSubscribeNote: String? = nil, dnsSubscribeNote: String? = nil, connectionSubscribeNote: String? = nil, eventsSubscribeNote: String? = nil) {
         let stamp = Self.bootReportTimestamp(Date())
         var lines = ["[\(stamp)] 应用内核心启动"]
         for spec in GeoSeed.files {
@@ -470,6 +508,12 @@ final class AppCore {
         }
         if let dnsSubscribeNote {
             lines.append("DNS 流：\(dnsSubscribeNote)")
+        }
+        if let connectionSubscribeNote {
+            lines.append("连接流：\(connectionSubscribeNote)")
+        }
+        if let eventsSubscribeNote {
+            lines.append("事件流：\(eventsSubscribeNote)")
         }
         lines.append("启动结果：\(outcome)")
         try? lines.joined(separator: "\n").write(
@@ -770,6 +814,11 @@ final class AppCore {
         // v0.2.102: same as the log stream — the DNS stream's
         // subscribe outcome is recorded in the boot report too.
         var dnsSubscribeNote: String?
+        // v0.2.115: same as the log/DNS streams — the connections
+        // and events streams' subscribe outcomes are recorded in
+        // the boot report too.
+        var connectionSubscribeNote: String?
+        var eventsSubscribeNote: String?
         let context = Unmanaged.passRetained(self).toOpaque()
         do {
             if !Self.coreStarted {
@@ -822,6 +871,13 @@ final class AppCore {
             // so the DNS page has live entries with the VPN off
             // even when the boot fails later on config.apply.
             dnsSubscribeNote = await trySubscribeDnsWatch()
+            // v0.2.115: subscribe the connections + events streams
+            // at the same two points, so the Dashboard stats and
+            // the Connections / Events pages have live entries with
+            // the VPN off even when the boot fails later on
+            // config.apply.
+            connectionSubscribeNote = await trySubscribeConnectionsWatch()
+            eventsSubscribeNote = await trySubscribeEventsWatch()
             // The profile gives proxies / proxy-groups / rules; the
             // overlay carries everything else — here the listener
             // ports, so this instance can never clash with the
@@ -906,15 +962,19 @@ final class AppCore {
             logSubscribeNote = await trySubscribeLogWatch()
             // v0.2.102: second DNS subscribe attempt, same as above.
             dnsSubscribeNote = await trySubscribeDnsWatch()
+            // v0.2.115: second connections + events subscribe
+            // attempts, same as above.
+            connectionSubscribeNote = await trySubscribeConnectionsWatch()
+            eventsSubscribeNote = await trySubscribeEventsWatch()
             let configInfo = configFileInfo(for: configURL)
             recordBootReport(home: home, seed: appSeed, outcome: "成功", providerSeed: providerSeed,
                              appliedProfileName: Self.profileStore?.activeProfile?.name,
                              configSize: configInfo?.size, configMtime: configInfo?.mtime,
                              loadedGroupCount: loadedGroupCount, loadedNodeCount: loadedNodeCount,
-                             configRefreshNote: configRefreshNote, logSubscribeNote: logSubscribeNote, dnsSubscribeNote: dnsSubscribeNote)
+                             configRefreshNote: configRefreshNote, logSubscribeNote: logSubscribeNote, dnsSubscribeNote: dnsSubscribeNote, connectionSubscribeNote: connectionSubscribeNote, eventsSubscribeNote: eventsSubscribeNote)
             loadedConfigSignature = signature
         } catch {
-            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)", providerSeed: providerSeed, configRefreshNote: configRefreshNote, logSubscribeNote: logSubscribeNote, dnsSubscribeNote: dnsSubscribeNote)
+            recordBootReport(home: home, seed: appSeed, outcome: "失败：\(error.localizedDescription)", providerSeed: providerSeed, configRefreshNote: configRefreshNote, logSubscribeNote: logSubscribeNote, dnsSubscribeNote: dnsSubscribeNote, connectionSubscribeNote: connectionSubscribeNote, eventsSubscribeNote: eventsSubscribeNote)
             // Balance the passRetained above exactly once: if the
             // session was opened, tearDown() closes it and the
             // releaseCallback balances the retain (sync or async);
@@ -963,6 +1023,13 @@ final class AppCore {
             // with the session, but the captured entries survive
             // (see the logBuffer comment above).
             dnsSub = nil
+            // v0.2.115: same as logSub/dnsSub — the connections +
+            // events subscriptions die with the session, but the
+            // captured table / entries survive (the next subscribe
+            // replaces the table with a fresh snapshot; the events
+            // buffer keeps filling from the new sub).
+            connectionSub = nil
+            eventsSub = nil
             // v0.2.49: the captured log entries SURVIVE the
             // teardown (the old code wiped them here): a boot
             // that failed on config.apply still logged the
@@ -1280,6 +1347,190 @@ final class AppCore {
                 continuation.resume(returning: self.dnsBuffer)
             }
         }
+    }
+
+    /// The connection.watch subscribe reply ({sub, snapshot}).
+    /// The snapshot is a ConnectionSnapshot {connections} (upstream
+    /// crates/proto/src/types/live.rs — no `ended` field; the
+    /// extension's applyStreamSnapshot likewise ignores it and
+    /// clears the ended history on resync). Decoded leniently, one
+    /// entry at a time (same Lossy pattern as ConcordClient's
+    /// TolerantConnectionSnapshot, which is private there): one
+    /// malformed entry must not drop the whole table.
+    private struct ConnectionWatchStart: Decodable {
+        let sub: Int
+        let snapshot: Snapshot?
+        struct Snapshot: Decodable {
+            let connections: [ConcordConnection]
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                let entries = try container.decode([LossyConnection].self, forKey: .connections)
+                connections = entries.compactMap(\.connection)
+            }
+            enum CodingKeys: String, CodingKey { case connections }
+            private struct LossyConnection: Decodable {
+                let connection: ConcordConnection?
+                init(from decoder: Decoder) throws {
+                    let container = try decoder.singleValueContainer()
+                    connection = try? container.decode(ConcordConnection.self)
+                }
+            }
+        }
+    }
+
+    /// Subscribes to the app core's connection.watch stream (once
+    /// per session; best-effort — a failure just leaves the
+    /// Dashboard / Connections page without live entries with the
+    /// VPN off, it never fails the boot). Mirrors
+    /// subscribeDnsWatch exactly: same credit (8), same synchronous
+    /// registration + stash replay on coreQueue — plus the reply's
+    /// snapshot, which seeds the live table (connections already
+    /// open before subscribing never emit an `opened` event, so
+    /// without the snapshot they would never appear). Called from
+    /// ensureStarted next to the log/dns subscribes, and lazily
+    /// from ConnectionStore.refresh when the session is up but no
+    /// sub exists.
+    func subscribeConnectionsWatch() async throws {
+        guard session != 0 else { return }
+        if connectionSub != nil { return }
+        let start = try await sendRequest(method: "connection.watch", params: ["counters": true, "credit": 8], resultType: ConnectionWatchStart.self, timeoutSeconds: 60)
+        coreQueue.sync {
+            guard self.connectionSub == nil else { return }
+            self.connectionSub = start.sub
+            // A fresh snapshot replaces the table (same as the
+            // extension's applyStreamSnapshot); the ended history
+            // from before the resync belongs to the old table.
+            self.connectionTable.removeAll()
+            self.connectionEndedBuffer.removeAll()
+            if let snapshot = start.snapshot {
+                // Re-encode through the WIRE form (snake_case keys,
+                // `id` for the connection id): the table holds raw
+                // wire dicts, exactly like the extension's, so the
+                // delta path's key updates (counters) and the
+                // snapshot decode (convertFromSnakeCase) both work
+                // on the same shape. A plain encoder would write
+                // camelCase keys and leave the table mixed.
+                let encoder = JSONEncoder()
+                encoder.keyEncodingStrategy = .convertToSnakeCase
+                for connection in snapshot.connections {
+                    if let data = try? encoder.encode(connection),
+                       let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        connectionTable[connection.connectionId] = dict
+                    }
+                }
+            }
+            let stashed = self.delayRunStash.filter { $0.sub == start.sub }
+            self.delayRunStash.removeAll { $0.sub == start.sub }
+            for batch in stashed {
+                self.accumulateConnectionItems(batch.items)
+            }
+        }
+    }
+
+    /// Best-effort connection.watch subscribe that reports its
+    /// outcome instead of swallowing it (same shape as
+    /// trySubscribeLogWatch): "已订阅" when a sub already exists,
+    /// too (subscribeConnectionsWatch is a no-op then).
+    private func trySubscribeConnectionsWatch() async -> String {
+        do {
+            try await subscribeConnectionsWatch()
+            return "已订阅"
+        } catch {
+            return "订阅失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// The app core's live connections (empty when the session is
+    /// down or the stream was never subscribed). Each table entry
+    /// is decoded on its own with the snake_case decoder (the
+    /// wire keys are snake_case; ConcordConnection's CodingKeys
+    /// are camelCase + convertFromSnakeCase) and a malformed one
+    /// is skipped, so one bad entry cannot fail the whole
+    /// snapshot. Reads the table on coreQueue (it is written
+    /// there). Sorted newest-first, like the extension's snapshot
+    /// flush.
+    func connectionSnapshot() async -> ConcordConnectionSnapshot {
+        await withCheckedContinuation { continuation in
+            coreQueue.async {
+                let decoder = JSONDecoder()
+                decoder.keyDecodingStrategy = .convertFromSnakeCase
+                let connections: [ConcordConnection] = self.connectionTable.values.compactMap { dict in
+                    guard let data = try? JSONSerialization.data(withJSONObject: dict) else { return nil }
+                    return try? decoder.decode(ConcordConnection.self, from: data)
+                }.sorted { $0.start > $1.start }
+                let ended: [ConcordEndedConnection] = self.connectionEndedBuffer.compactMap { dict in
+                    guard let data = try? JSONSerialization.data(withJSONObject: dict) else { return nil }
+                    return try? decoder.decode(ConcordEndedConnection.self, from: data)
+                }
+                continuation.resume(returning: ConcordConnectionSnapshot(connections: connections, ended: ended))
+            }
+        }
+    }
+
+    /// Subscribes to the app core's events.watch stream (once per
+    /// session; best-effort — a failure just leaves the Dashboard /
+    /// Events page without live events with the VPN off, it never
+    /// fails the boot). Mirrors subscribeDnsWatch: same credit (8),
+    /// same synchronous registration + stash replay on coreQueue.
+    /// events.watch has NO snapshot, so there is nothing to seed —
+    /// entries only arrive as events. The `delays` + `state`
+    /// params are required (both default false in the schema; a
+    /// bare {credit: 8} never delivers `delay` or `stateChanged`
+    /// events — the same trap the extension's subscribe documents).
+    /// Called from ensureStarted next to the log/dns subscribes,
+    /// and lazily from EventStore.refresh when the session is up
+    /// but no sub exists.
+    func subscribeEventsWatch() async throws {
+        guard session != 0 else { return }
+        if eventsSub != nil { return }
+        let start = try await sendRequest(method: "events.watch", params: ["delays": true, "state": true, "credit": 8], resultType: StreamSubscribeResult.self, timeoutSeconds: 60)
+        coreQueue.sync {
+            guard self.eventsSub == nil else { return }
+            self.eventsSub = start.sub
+            let stashed = self.delayRunStash.filter { $0.sub == start.sub }
+            self.delayRunStash.removeAll { $0.sub == start.sub }
+            for batch in stashed {
+                self.accumulateEventItems(batch.items)
+            }
+        }
+    }
+
+    /// Best-effort events.watch subscribe that reports its outcome
+    /// instead of swallowing it (same shape as
+    /// trySubscribeLogWatch): "已订阅" when a sub already exists,
+    /// too (subscribeEventsWatch is a no-op then).
+    private func trySubscribeEventsWatch() async -> String {
+        do {
+            try await subscribeEventsWatch()
+            return "已订阅"
+        } catch {
+            return "订阅失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// The accumulated app-core core events (empty when the session
+    /// is down or the stream was never subscribed). Reads the
+    /// buffer on coreQueue (it is written there).
+    func eventEntries() async -> [ConcordCoreEvent] {
+        await withCheckedContinuation { continuation in
+            coreQueue.async {
+                continuation.resume(returning: self.eventsBuffer)
+            }
+        }
+    }
+
+    /// Asks the app-side core for the exit IP through one proxy
+    /// (probe.outboundIp) — the same call ConcordClient makes
+    /// against the tunnel core, but against this core's session, so
+    /// it works with the VPN off (v0.2.115: the Dashboard status
+    /// card's egress IP at launch, like MuYu's OutboundIpProbe
+    /// watching routedOutbound from initState). `proxy` "" means
+    /// unpinned: the core routes the probe like normal traffic, so
+    /// the answer is the selected outbound's egress. `urls` races
+    /// FlClash's ip-info sources; `timeout` defaults to FlClash's
+    /// 6 s (outboundIpTimeoutDuration).
+    func probeOutboundIp(proxy: String = "", urls: [String]? = nil, timeout: UInt64 = 6000) async throws -> ConcordOutboundIp {
+        return try await sendRequest(method: "probe.outboundIp", params: ["proxy": proxy, "urls": urls ?? concordOutboundIpUrls, "timeout": timeout], resultType: ConcordOutboundIp.self)
     }
 
     /// core.lastWarnings on the app-side core (same shape as the
@@ -1744,6 +1995,14 @@ final class AppCore {
             accumulateDnsItems(items)
             return
         }
+        if connectionSub == sub {
+            accumulateConnectionItems(items)
+            return
+        }
+        if eventsSub == sub {
+            accumulateEventItems(items)
+            return
+        }
         // No run registered for this sub yet — the delay.run reply
         // has not reached delayRunStart's registration (see
         // delayRunStash). Stash the batch instead of dropping it;
@@ -1814,6 +2073,94 @@ final class AppCore {
             dnsBuffer.removeFirst(dnsBuffer.count - 500)
         }
         if let sub = dnsSub {
+            sendNotification(method: "$/credit", params: ["sub": sub, "n": 1])
+        }
+    }
+
+    /// Applies one batch of connection.watch events (ConnectionDelta
+    /// {opened, counters, ended, closed}) to the live table. Runs on
+    /// coreQueue. Ports PacketTunnelProvider.applyConnectionDelta
+    /// exactly, in upstream order (opened, counters, ended, closed):
+    /// the counters guard needs the row still in the table, and
+    /// `ended` carries why each closed connection ended plus its
+    /// final totals. Refills one unit of credit per batch consumed,
+    /// like the extension; without it the server pump stops after
+    /// the initial credit.
+    private func accumulateConnectionItems(_ items: [Any]) {
+        for item in items {
+            guard let delta = item as? [String: Any] else { continue }
+            if let opened = delta["opened"] as? [[String: Any]] {
+                for connection in opened {
+                    if let id = (connection["id"] as? NSNumber)?.uint64Value {
+                        connectionTable[id] = connection
+                    }
+                }
+            }
+            if let counters = delta["counters"] as? [[String: Any]] {
+                for counter in counters {
+                    guard let id = (counter["id"] as? NSNumber)?.uint64Value,
+                          var connection = connectionTable[id] else { continue }
+                    if let upload = counter["upload"] { connection["upload"] = upload }
+                    if let download = counter["download"] { connection["download"] = download }
+                    connectionTable[id] = connection
+                }
+            }
+            if let ended = delta["ended"] as? [[String: Any]] {
+                for entry in ended {
+                    guard let id = (entry["id"] as? NSNumber)?.uint64Value else { continue }
+                    // The connection may already be gone from the
+                    // table (a repeat delta, or a failed dial whose
+                    // row a previous batch removed) — without its
+                    // ConnectionInfo there is nothing to show, so
+                    // skip it.
+                    guard let connection = connectionTable[id] else { continue }
+                    var record: [String: Any] = ["connection": connection]
+                    record["end_reason"] = entry["reason"] ?? "finished"
+                    record["ended_at"] = entry["ended_at"] ?? 0
+                    if let message = entry["message"] { record["end_message"] = message }
+                    // A repeat delta re-reports the same close: keep
+                    // one record per id, the newest.
+                    connectionEndedBuffer.removeAll {
+                        guard let prior = $0["connection"] as? [String: Any],
+                              let priorId = (prior["id"] as? NSNumber)?.uint64Value else { return false }
+                        return priorId == id
+                    }
+                    connectionEndedBuffer.insert(record, at: 0)
+                }
+                if connectionEndedBuffer.count > 200 {
+                    connectionEndedBuffer.removeLast(connectionEndedBuffer.count - 200)
+                }
+            }
+            if let closed = delta["closed"] as? [NSNumber] {
+                for id in closed {
+                    connectionTable.removeValue(forKey: id.uint64Value)
+                }
+            }
+        }
+        if let sub = connectionSub {
+            sendNotification(method: "$/credit", params: ["sub": sub, "n": 1])
+        }
+    }
+
+    /// Applies one batch of events.watch events (CoreEvent) to the
+    /// buffer. Runs on coreQueue. Mirrors accumulateDnsItems: each
+    /// dict decodes as a ConcordCoreEvent (all single-word keys, so
+    /// a plain decoder works) and a malformed one is skipped.
+    /// Bounded to the newest 500, like the extension's trimBuffer.
+    /// Refills one unit of credit per batch consumed, like the
+    /// extension; without it the server pump stops after the
+    /// initial credit.
+    private func accumulateEventItems(_ items: [Any]) {
+        for item in items {
+            guard let dict = item as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: dict),
+                  let entry = try? JSONDecoder().decode(ConcordCoreEvent.self, from: data) else { continue }
+            eventsBuffer.append(entry)
+        }
+        if eventsBuffer.count > 500 {
+            eventsBuffer.removeFirst(eventsBuffer.count - 500)
+        }
+        if let sub = eventsSub {
             sendNotification(method: "$/credit", params: ["sub": sub, "n": 1])
         }
     }

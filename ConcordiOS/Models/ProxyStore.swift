@@ -58,6 +58,18 @@ struct LatencyKey: Hashable {
 
 final class ProxyStore: ObservableObject {
     @Published var isRunning = false
+    /// Persistent "VPN enabled" switch (v0.2.115, upstream
+    /// network_takeover.dart: the TUN row binds to the persisted
+    /// `tun.enable` config flag, NOT to the live tunnel state).
+    /// Once the user turns it on it stays on — across tunnel stops
+    /// and app restarts — and the status card's play button is the
+    /// start/stop control. Defaults true: a fresh install reads
+    /// enabled, matching MuYu's out-of-the-box state (toggle on,
+    /// tunnel stopped). Persisted in UserDefaults, same pattern as
+    /// ConcordClient.mode (didSet writes through).
+    @Published var vpnEnabled: Bool = UserDefaults.standard.object(forKey: "ConcordiOS.vpn.enabled.v1") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(vpnEnabled, forKey: "ConcordiOS.vpn.enabled.v1") }
+    }
     /// ALL fetched groups, hidden included (v0.2.53). The hidden
     /// filter used to live at fetch (`!$0.hidden`); it moved to
     /// display time so the mode filter (below) can apply — rule
@@ -2474,6 +2486,21 @@ final class ProxyStore: ObservableObject {
     private var isToggling = false
 
     @MainActor
+    /// Sets the persistent VPN-enabled flag (v0.2.115). Turning it
+    /// ON starts the tunnel when it is down; turning it OFF stops
+    /// the tunnel when it is up — so the switch still turns the VPN
+    /// on/off the first time, but the flag itself never follows the
+    /// tunnel state afterwards. The play button (toggle()) starts
+    /// and stops the tunnel without touching the flag.
+    func setVpnEnabled(_ enabled: Bool) async {
+        vpnEnabled = enabled
+        if enabled {
+            if !isRunning { await toggle() }
+        } else {
+            if isRunning { await toggle() }
+        }
+    }
+
     func toggle() async {
         guard !isToggling else { return }
         isToggling = true

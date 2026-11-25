@@ -610,7 +610,21 @@ final class ProfileStore: ObservableObject {
         }
         let before = profiles.count
         profiles = profiles.filter { keepIDs.contains($0.id) }
-        if profiles.count != before { save() }
+        // v0.2.107: if no profile is active after the cleanup,
+        // activate the newest one. The v0.2.105 migration left
+        // every reconstructed profile inactive when there was
+        // more than one, so Proxies stayed empty ("暂无代理组")
+        // even though Config listed the profiles. Activating the
+        // newest makes Proxies populate immediately; the user can
+        // switch to another subscription on the Config page with
+        // one tap. Never overrides an already-active profile.
+        var activated = false
+        if !profiles.contains(where: { $0.isActive }),
+           let newestIndex = profiles.indices.max(by: { (profiles[$0].updatedAt ?? .distantPast) < (profiles[$1].updatedAt ?? .distantPast) }) {
+            profiles[newestIndex].isActive = true
+            activated = true
+        }
+        if profiles.count != before || activated { save() }
     }
 
     /// Derive a display name for a reconstructed profile from its

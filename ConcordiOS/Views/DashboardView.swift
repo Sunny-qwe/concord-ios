@@ -637,14 +637,6 @@ struct DashboardView: View {
         .sheet(isPresented: $showProvidersSheet) { providersSheetContent }
         .sheet(isPresented: $showGroupsSheet) { groupsSheetContent }
         .sheet(item: $statsDestination) { statsSheetContent(for: $0) }
-        .onChange(of: statsDestination) { _, newValue in
-            // v0.2.102: the stats sheet closed — DNS publishing is
-            // safe again (covers dismiss before the sheet's 0.6s
-            // unsuspend).
-            if newValue == nil {
-                dnsStore.setPublishSuspended(false)
-            }
-        }
         .sheet(isPresented: $showServiceManageSheet) { serviceManageSheet }
         // The dashboard's consent prompt (fork 0a55a31): the same
         // prompt the modules page uses, asked over the dashboard
@@ -1899,12 +1891,12 @@ struct DashboardView: View {
     /// tappable, not just the number/label glyphs.
     private func statCell(value: String, label: String, destination: StatsDestination) -> some View {
         Button {
-            // v0.2.102: suspend DNS publishing while the sheet
-            // presents (see DnsStore.publishSuspended) and note
-            // the action for the main-thread watchdog.
-            if destination == .dns {
-                dnsStore.setPublishSuspended(true)
-            }
+            // v0.2.103: no DNS publish suspension on tap — the
+            // DNS sheet is now structurally identical to the
+            // Connections sheet (no ScrollViewReader / .task /
+            // .onChange / .onAppear timer), so a mid-presentation
+            // publish is a normal state update, not a freeze
+            // trigger. Note the action for the watchdog.
             MainThreadWatchdog.noteAction("statsDestination set to .\(destination.rawValue)")
             statsDestination = destination
         } label: {

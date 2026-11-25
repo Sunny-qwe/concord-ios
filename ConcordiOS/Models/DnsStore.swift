@@ -38,28 +38,6 @@ final class DnsStore: ObservableObject {
     /// still appear.
     private var clearedBeforeTime: Int64 = 0
 
-    /// Publishing suspended while the DNS stats sheet is
-    /// presenting (v0.2.102): the Dashboard appear task checks
-    /// statsDestination before starting a refresh, but a refresh
-    /// already in flight when the user taps still publishes
-    /// mid-presentation — and a publish landing during the sheet
-    /// presentation is what wedged the List. Dropping that one
-    /// publish is safe: the next refresh picks the entries up.
-    /// Set on the stats-cell tap, cleared when the sheet finishes
-    /// presenting (DnsQueriesView.onAppear, 0.6s) or when the
-    /// sheet dismisses (DashboardView.onChange). Main-thread only:
-    /// refresh() runs on the main actor and the tap / onAppear /
-    /// onChange all run on the main thread, so the guard in
-    /// refresh() is correctly ordered against the tap. Deliberately
-    /// NOT @MainActor (the onAppear unsuspend runs from a plain
-    /// DispatchQueue.main.asyncAfter closure, which cannot call a
-    /// main-actor method).
-    private var publishSuspended = false
-
-    func setPublishSuspended(_ suspended: Bool) {
-        publishSuspended = suspended
-    }
-
     /// Clear the displayed record list (the broom in the DNS sheet
     /// header, MuYu cleaning_services). Entries at or before now
     /// are dropped and filtered out of later refreshes; new queries
@@ -98,11 +76,6 @@ final class DnsStore: ObservableObject {
                     }
                     return await AppCore.shared.dnsEntries()
                 })
-            // v0.2.102: a refresh that was already in flight when
-            // the DNS sheet opened must not publish mid-presentation
-            // (see publishSuspended) — drop it; the next refresh
-            // picks the entries up.
-            guard !publishSuspended else { return }
             let cutoff = clearedBeforeTime
             let visible = cutoff > 0 ? fresh.filter { $0.time > cutoff } : fresh
             // v0.2.101 (Issue 2): build the merge dictionary with
@@ -118,9 +91,6 @@ final class DnsStore: ObservableObject {
             entries = merged.values.sorted { $0.time > $1.time }
             lastError = nil
         } catch {
-            // v0.2.102: same as above — do not publish an error
-            // into the sheet mid-presentation either.
-            guard !publishSuspended else { return }
             lastError = error.localizedDescription
         }
     }

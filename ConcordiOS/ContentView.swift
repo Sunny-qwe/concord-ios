@@ -2,8 +2,9 @@ import SwiftUI
 import Combine
 
 // MARK: - Main navigation (reference screenshots IMG_1082 / IMG_1083)
-// Four tabs — 仪表盘 / 代理 / 配置 / 工具 — in a floating white
-// capsule bar. The native tab bar is hidden; the bar below is the
+// Four tabs — 仪表盘 / 代理 / 配置 / 工具 — in a floating
+// transparent bar (v0.2.103: no container background or shadow —
+// MuYu IMG_1281). The native tab bar is hidden; the bar below is the
 // only tab UI. Rules / Logs / IP quality / Shortcuts live under
 // the 工具 → 常规 page (see ToolsView.swift / SettingsView.swift).
 
@@ -449,12 +450,17 @@ struct ContentView: View {
         .overlay(Divider(), alignment: .top)
     }
 
-    /// Floating white capsule bar (reference bottom bar): the selected
-    /// tab gets a LIGHT tint of the accent with a solid-accent icon
-    /// + label (v0.2.82 — the video's selected tab is a light pink
-    /// capsule, NOT the solid magenta capsule + white icon the
-    /// v0.2.68 comment claimed). The default blue theme keeps the
-    /// solid accent capsule + white icon.
+    /// Floating transparent bar (reference bottom bar, v0.2.103):
+    /// NO container background and NO shadow — the page background
+    /// shows straight through, like MuYu IMG_1281 (the old white
+    /// rounded container + shadow are removed). The selected tab
+    /// gets a LIGHT tint of the accent with a solid-accent icon +
+    /// label in EVERY theme, including the default blue: MuYu
+    /// IMG_1281 is a blue-theme screenshot (blue play button, blue
+    /// 规则 pill) whose selected tab pill is still light with a
+    /// blue icon — the v0.2.82 inference that default blue kept a
+    /// solid capsule + white icon was wrong (see
+    /// ConcordTheme.tabSelectedFill / tabSelectedForeground).
     private var floatingTabBar: some View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.self) { tab in
@@ -480,10 +486,8 @@ struct ContentView: View {
             }
         }
         .padding(6)
-        // White like the reference (secondarySystemBackground reads
-        // grey against the grouped page background and makes the
-        // bar look like it runs into the screen edge).
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 30))
-        .shadow(color: .black.opacity(0.10), radius: 16, x: 0, y: 6)
+        // v0.2.103: fully transparent — no container background,
+        // no shadow (MuYu IMG_1281). The page background shows
+        // through; the selected-tab pill is the only fill.
     }
 }

@@ -59,13 +59,12 @@ struct DnsQueriesView: View {
 
     init(mode: Mode = .page) {
         self.mode = mode
-        // v0.2.101 (Issue 2): in sheet mode follow starts OFF —
-        // the sheet opens already at the newest row, and sheet
-        // mode has no follow toggle, so following on open serves
-        // nothing and is what wedges the List during presentation.
-        // It is switched on once presentation has finished and
-        // the newest row is visible (see .onAppear below).
-        self._followEnd = State(initialValue: mode == .sheet ? false : true)
+        // v0.2.103: follow starts ON in both modes. Sheet mode
+        // no longer scrolls at all (no .onChange / ScrollViewReader
+        // in the sheet branch — Connections parity), so there is
+        // nothing to gate; page mode follows from the start, as
+        // before.
+        self._followEnd = State(initialValue: true)
     }
 
     @EnvironmentObject private var dnsStore: DnsStore
@@ -90,27 +89,19 @@ struct DnsQueriesView: View {
     /// record scrolls the list back to the newest row. Our list is
     /// newest-first, so "end" here is the top. Turn it off before
     /// scrolling down to read older rows.
-    /// v0.2.101 (Issue 2): in sheet mode this starts false (set
-    /// in init) and is only switched on after presentation has
-    /// finished — see sheetPresented below.
+    /// Page mode only (v0.2.103): the sheet branch never scrolls.
     @State private var followEnd: Bool
 
-    /// Presentation gate (v0.2.101, Issue 2): false until the
-    /// sheet/push presentation animation has finished. Set in
-    /// .onAppear via asyncAfter(0.6s) — the animation runs
-    /// ~0.35-0.5s, and the v0.2.82 next-runloop defer was still
-    /// inside it, so a scrollTo fired from onChange during
-    /// presentation could wedge the List's layout and freeze the
-    /// app. No scrollTo runs while this is false.
-    @State private var sheetPresented = false
-
-    /// Sheet-mode "at the top" (v0.2.101, Issue 2): true while
-    /// the newest row is visible. Tracked by the first row's
-    /// onAppear/onDisappear in sheetList (best-effort — List row
-    /// visibility is the only scroll signal a List offers).
-    /// Following only scrolls while this is true, so reading
-    /// older rows is never yanked back to the top.
-    @State private var sheetAtTop = true
+    /// v0.2.103: the v0.2.101 sheet-presentation machinery is
+    /// gone — sheetPresented (0.6s .onAppear gate), sheetAtTop
+    /// (row .onAppear/.onDisappear tracking) and the follow
+    /// switch-on after presentation were all suspects in the
+    /// presentation-time layout/state feedback loop that froze
+    /// the app on the DNS tap (v0.2.102 watchdog proof). The
+    /// sheet branch now has no ScrollViewReader, no .task, no
+    /// .onChange and no .onAppear timer — structurally identical
+    /// to the Connections sheet, which never froze — and sheet
+    /// mode never scrolls. followEnd is page-mode only now.
 
     /// Search text first (DnsStore.filtered), then the group filter,
     /// then the record-type / initiator / rcode facets.
@@ -160,6 +151,8 @@ struct DnsQueriesView: View {
     /// Scrolls to the newest row (the top: the list is
     /// newest-first). Called when follow mode is on and a new
     /// record arrives, or when follow mode is just turned on.
+    /// Page mode only — the sheet branch has no ScrollViewReader
+    /// and never scrolls (v0.2.103, Connections parity).
     /// v0.2.82 (DNS freeze): the scroll must never run
     /// synchronously inside onChange/layout — on iOS 17 an animated
     /// scrollTo fired from onChange while the sheet is presenting
@@ -167,12 +160,7 @@ struct DnsQueriesView: View {
     /// DNS查询 on the Dashboard, VPN off). Deferring to the next
     /// runloop lets the current update/layout pass finish first.
     private func scrollToNewest(_ proxy: ScrollViewProxy) {
-        // v0.2.101 (Issue 2): never scroll while the sheet is
-        // still presenting — second line of defence behind the
-        // .onChange gate (a scrollTo here wedges the List on
-        // iOS 17). Page mode has no sheet presentation, so it
-        // is unaffected.
-        guard mode == .page || sheetPresented else { return }
+        guard mode == .page else { return }
         if let id = foldedEntries.first?.id {
             DispatchQueue.main.async {
                 withAnimation { proxy.scrollTo(id, anchor: .top) }
@@ -282,10 +270,11 @@ struct DnsQueriesView: View {
                         if let error = dnsStore.lastError, dnsStore.filtered.isEmpty {
                             Text(error).font(.caption2).foregroundStyle(.red)
                         } else if dnsStore.filtered.isEmpty, client.mode == .live, !TunnelManager.shared.isRunning {
-                            // v0.2.82: the appear refresh is skipped with the
-                            // VPN off (see .task above), so lastError is never
-                            // set — show the same reason statically instead
-                            // of a bare "暂无记录".
+                            // v0.2.103: the sheet does no appear
+                            // refresh at all (no .task in sheet
+                            // mode), so lastError is never set here
+                            // — show the same reason statically
+                            // instead of a bare "暂无记录".
                             Text("VPN 隧道未运行：请先在仪表盘启动 VPN，再查看实时数据")
                                 .font(.caption2).foregroundStyle(.red)
                         }
@@ -300,27 +289,6 @@ struct DnsQueriesView: View {
                             .padding(12)
                             .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
                             .id(folded.id)
-                            // v0.2.101 (Issue 2): track whether the
-                            // newest row is on screen — following only
-                            // scrolls while it is (see sheetAtTop).
-                            .onAppear {
-                                if folded.id == foldedEntries.first?.id {
-                                    sheetAtTop = true
-                                    // v0.2.101 (Issue 2): scrolling back
-                                    // to the top re-enables following
-                                    // (once presentation has finished) —
-                                    // otherwise a user who scrolled down
-                                    // in the first 0.6s would never get
-                                    // follow-back in this sheet session,
-                                    // as sheet mode has no follow toggle.
-                                    if sheetPresented { followEnd = true }
-                                }
-                            }
-                            .onDisappear {
-                                if folded.id == foldedEntries.first?.id {
-                                    sheetAtTop = false
-                                }
-                            }
                     }
                 }
             }
@@ -416,18 +384,40 @@ struct DnsQueriesView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            Group {
-                if mode == .sheet {
-                    ZStack(alignment: .bottom) {
-                        VStack(spacing: 0) {
-                            sheetHeader
-                            sheetList
-                        }
-                        .background(ConcordTheme.pageBackground)
-                        DnsFloatingSearchBar(text: $dnsStore.searchText, prompt: "搜索域名或上游")
+        // v0.2.103: the sheet and page branches have SEPARATE
+        // modifier stacks. The sheet branch is structurally
+        // identical to the Connections sheet (ZStack + floating
+        // search + nested .sheet(item:) + .refreshable, detents
+        // [9/16, 0.9] set by the Dashboard) — NO ScrollViewReader,
+        // NO .task refresh, NO .onChange, NO .onAppear timer.
+        // Those were the suspects in the presentation-time
+        // layout/state feedback loop that froze the app on the
+        // DNS tap (v0.2.102 watchdog proof: main-thread stall
+        // starting at the tap). The sheet just displays whatever
+        // dnsStore.entries holds (the Dashboard refreshes it);
+        // pull-to-refresh still loads. Page mode (Tools → DNS)
+        // never froze and keeps everything exactly as-is.
+        Group {
+            if mode == .sheet {
+                ZStack(alignment: .bottom) {
+                    VStack(spacing: 0) {
+                        sheetHeader
+                        sheetList
                     }
-                } else {
+                    .background(ConcordTheme.pageBackground)
+                    DnsFloatingSearchBar(text: $dnsStore.searchText, prompt: "搜索域名或上游")
+                }
+                .refreshable { await dnsStore.refresh() }
+                .sheet(item: $selectedEntry) { entry in
+                    DnsEntryDetailView(entry: entry)
+                        // Upstream _showDnsQueryDetail → showSheet, snap
+                        // detents [9/16, 0.9], drag handle, scrim dismiss
+                        // (dns_queries.dart:233; MuYu: showNestedSheet).
+                        .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                        .presentationDragIndicator(.visible)
+                }
+            } else {
+                ScrollViewReader { proxy in
                     pageList(proxy: proxy)
                         .background(ConcordTheme.pageBackground)
                         .listStyle(.insetGrouped)
@@ -447,61 +437,38 @@ struct DnsQueriesView: View {
                                 }
                             }
                         }
+                        .refreshable { await dnsStore.refresh() }
+                        .task {
+                            // v0.2.82 (DNS freeze): with the VPN off in live mode
+                            // the refresh can never succeed (dns.watch reads the
+                            // extension snapshot only) — so skip it on appear and
+                            // let the sheet open with zero store work. Pull-to-
+                            // refresh and the toolbar button still load when the
+                            // tunnel is up. Sample mode always refreshes
+                            // (built-in sample data, no tunnel needed).
+                            if dnsStore.entries.isEmpty
+                                && (TunnelManager.shared.isRunning || client.mode == .sample) {
+                                await dnsStore.refresh()
+                            }
+                        }
+                        .onChange(of: foldedEntries.first?.id) { old, _ in
+                            // v0.2.82 (DNS freeze): skip the initial population
+                            // (nil -> first id) — the list is already at the top;
+                            // only follow when a genuinely newer record arrives
+                            // while viewing (old id non-nil -> new id).
+                            if old != nil, followEnd {
+                                scrollToNewest(proxy)
+                            }
+                        }
+                        .sheet(item: $selectedEntry) { entry in
+                            DnsEntryDetailView(entry: entry)
+                                // Upstream _showDnsQueryDetail → showSheet, snap
+                                // detents [9/16, 0.9], drag handle, scrim dismiss
+                                // (dns_queries.dart:233; MuYu: showNestedSheet).
+                                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                                .presentationDragIndicator(.visible)
+                        }
                 }
-            }
-            .refreshable { await dnsStore.refresh() }
-            .task {
-                // v0.2.82 (DNS freeze): with the VPN off in live mode
-                // the refresh can never succeed (dns.watch reads the
-                // extension snapshot only) — so skip it on appear and
-                // let the sheet open with zero store work. Pull-to-
-                // refresh and the toolbar button still load when the
-                // tunnel is up. Sample mode always refreshes
-                // (built-in sample data, no tunnel needed).
-                if dnsStore.entries.isEmpty
-                    && (TunnelManager.shared.isRunning || client.mode == .sample) {
-                    await dnsStore.refresh()
-                }
-            }
-            .onAppear {
-                // v0.2.101 (Issue 2): the presentation animation
-                // runs ~0.35-0.5s; only after it (0.6s) is the
-                // List safe to scroll, and only then is following
-                // switched on in sheet mode — and only if the
-                // newest row is actually visible (the user may
-                // already have scrolled down in the first 0.6s).
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    sheetPresented = true
-                    if mode == .sheet, sheetAtTop {
-                        followEnd = true
-                    }
-                    // v0.2.102: presentation finished — DNS
-                    // publishing is safe again (see
-                    // DnsStore.publishSuspended).
-                    dnsStore.setPublishSuspended(false)
-                }
-            }
-            .onChange(of: foldedEntries.first?.id) { old, _ in
-                // v0.2.82 (DNS freeze): skip the initial population
-                // (nil -> first id) — the list is already at the top;
-                // only follow when a genuinely newer record arrives
-                // while viewing (old id non-nil -> new id).
-                // v0.2.101 (Issue 2): additionally gated on the
-                // presentation having finished AND (sheet mode) the
-                // newest row still being visible — a refresh landing
-                // during presentation, or while the user is reading
-                // older rows, must never scroll.
-                if old != nil, followEnd, sheetPresented, (mode == .page || sheetAtTop) {
-                    scrollToNewest(proxy)
-                }
-            }
-            .sheet(item: $selectedEntry) { entry in
-                DnsEntryDetailView(entry: entry)
-                    // Upstream _showDnsQueryDetail → showSheet, snap
-                    // detents [9/16, 0.9], drag handle, scrim dismiss
-                    // (dns_queries.dart:233; MuYu: showNestedSheet).
-                    .presentationDetents([.fraction(0.5625), .fraction(0.9)])
-                    .presentationDragIndicator(.visible)
             }
         }
     }

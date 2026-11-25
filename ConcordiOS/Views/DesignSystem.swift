@@ -114,29 +114,33 @@ enum ConcordTheme {
     }
     /// v0.2.82: true when the theme is the DEFAULT blue (the blue
     /// the user starts on) with no custom accent hex. The MuYu
-    /// light-tint designs (tab-bar capsule, upload curve) apply to
-    /// every OTHER accent colour; the default blue keeps its
-    /// current look exactly.
+    /// light-tint designs (upload curve) apply to every OTHER
+    /// accent colour; the default blue keeps its current look
+    /// exactly. (The tab-bar capsule used to be in this list too,
+    /// but v0.2.103 makes it light-tint in every theme — MuYu
+    /// IMG_1281 shows a light pill with a blue icon even in the
+    /// blue theme — so it no longer depends on this flag.)
     static var isDefaultBlueTheme: Bool {
         ThemeStore.shared.accent == .blue && ThemeStore.shared.customAccentHex == nil
     }
-    /// Selected-tab capsule fill in the floating bar (v0.2.82):
-    /// the video's selected tab is a LIGHT tint of the accent
-    /// (#FED5EC under magenta), NOT the solid magenta capsule the
-    /// v0.2.68 comment claimed (that was a misread). Applies to
-    /// every accent EXCEPT the default blue theme, which keeps the
-    /// solid accent capsule. The tint is accent at 25% opacity, so
-    /// it composites over the bar background in both light and
-    /// dark mode.
+    /// Selected-tab capsule fill in the floating bar (v0.2.103):
+    /// ALWAYS a light tint of the accent — accent at 25% opacity,
+    /// compositing over the bar background in both light and dark
+    /// mode — in EVERY theme including the default blue. MuYu
+    /// IMG_1281 is a blue-theme screenshot (blue play button, blue
+    /// 规则 pill) whose selected tab pill is light with a blue
+    /// icon, so the v0.2.82 special case that kept a solid accent
+    /// capsule for the default blue theme was wrong and is removed.
     static var tabSelectedFill: Color {
-        isDefaultBlueTheme ? accent : accent.opacity(0.25)
+        accent.opacity(0.25)
     }
     /// Selected-tab icon/label colour in the floating bar
-    /// (v0.2.82): solid accent on the light-tint capsule (every
-    /// accent except the default blue); white on the solid capsule
-    /// for the default blue theme.
+    /// (v0.2.103): ALWAYS the solid accent on the light-tint
+    /// capsule, in every theme including the default blue — same
+    /// MuYu IMG_1281 evidence as tabSelectedFill (the v0.2.82
+    /// white-on-solid-capsule case for default blue is removed).
     static var tabSelectedForeground: Color {
-        isDefaultBlueTheme ? .white : accent
+        accent
     }
     /// Unselected tab icon/label grey.
     static let tabUnselected = Color(red: 0.25, green: 0.25, blue: 0.28)

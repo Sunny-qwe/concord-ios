@@ -1853,7 +1853,7 @@ final class ExtensionConcordTransport: ConcordTransport {
 
     func send<Result: Decodable>(method: String, paramsData: Data, resultType: Result.Type) async throws -> Result {
         if let snapshot = Self.streamSnapshots[method] {
-            return try readSnapshot(file: snapshot.file, maxAgeSeconds: snapshot.maxAgeSeconds, resultType: resultType)
+            return try await readSnapshot(file: snapshot.file, maxAgeSeconds: snapshot.maxAgeSeconds, resultType: resultType)
         }
         let id = takeNextID()
         // Assemble the envelope by hand so paramsData (already JSON) is
@@ -1876,19 +1876,35 @@ final class ExtensionConcordTransport: ConcordTransport {
         return result
     }
 
-    private func readSnapshot<Result: Decodable>(file: String, maxAgeSeconds: TimeInterval?, resultType: Result.Type) throws -> Result {
-        guard let url = ConfigStore.snapshotURL(name: file),
-              let data = try? Data(contentsOf: url) else {
-            throw TunnelError.notRunning
-        }
-        let snapshot = try Self.liveDecoder.decode(SnapshotFile<Result>.self, from: data)
-        if let maxAgeSeconds {
-            let age = Date().timeIntervalSince1970 * 1000 - Double(snapshot.updatedAt)
-            if age > maxAgeSeconds * 1000 {
-                throw ConcordClientError.transport("实时快照已过期（\(file)，\(Int(age / 1000))s 前）：隧道可能已断开")
+    // v0.2.103: async with a background hop — the file read +
+    // JSON decode used to run synchronously on the caller's
+    // executor (the main actor, via the stores' refresh), so a
+    // large snapshot (dns/connections/logs) stalled the main
+    // thread. The read + decode now run in a detached task on
+    // the cooperative pool; the max-age staleness rule and the
+    // error behaviour are unchanged.
+    private func readSnapshot<Result: Decodable>(file: String, maxAgeSeconds: TimeInterval?, resultType: Result.Type) async throws -> Result {
+        return try await Task.detached(priority: .userInitiated) {
+            guard let url = ConfigStore.snapshotURL(name: file),
+                  let data = try? Data(contentsOf: url) else {
+                throw TunnelError.notRunning
             }
-        }
-        return snapshot.data
+            // Fresh decoder per call: Self.liveDecoder is shared,
+            // and JSONDecoder is not thread-safe, so the background
+            // decode must not use it while send()'s RPC path
+            // decodes on another thread. Same strategy as
+            // liveDecoder (.convertFromSnakeCase).
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            let snapshot = try decoder.decode(SnapshotFile<Result>.self, from: data)
+            if let maxAgeSeconds {
+                let age = Date().timeIntervalSince1970 * 1000 - Double(snapshot.updatedAt)
+                if age > maxAgeSeconds * 1000 {
+                    throw ConcordClientError.transport("实时快照已过期（\(file)，\(Int(age / 1000))s 前）：隧道可能已断开")
+                }
+            }
+            return snapshot.data
+        }.value
     }
 }
 

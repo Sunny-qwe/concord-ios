@@ -31,6 +31,14 @@ import Foundation
 ///     so the core defaults apply.
 enum MinimalConfig {
 
+    /// FlClash's defaultGeoXUrl (clash_config.dart:32-39) — the
+    /// three MetaCubeX download URLs. Single source of truth: the
+    /// YAML below interpolates them, and SettingsStore's geo-URL
+    /// resolver falls back to them, so the strings exist once.
+    static let defaultGeoURLMMDB = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
+    static let defaultGeoURLASN = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb"
+    static let defaultGeoURLGeosite = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat"
+
     /// The minimal config as YAML text, one key per line.
     static var yaml: String {
         """
@@ -62,9 +70,9 @@ enum MinimalConfig {
         geo-auto-update: true
         geo-update-interval: 24
         geox-url:
-          mmdb: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb
-          asn: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb
-          geosite: https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat
+          mmdb: \(defaultGeoURLMMDB)
+          asn: \(defaultGeoURLASN)
+          geosite: \(defaultGeoURLGeosite)
         profile:
           store-selected: false
         hosts: {}

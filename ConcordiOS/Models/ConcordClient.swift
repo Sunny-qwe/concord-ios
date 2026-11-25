@@ -182,6 +182,14 @@ enum JSONValue: Codable, Equatable {
         return nil
     }
 
+    /// Decodes this value as `T` via a JSON round-trip (encode then
+    /// decode). Used for the core's `views`, which arrive as JSONValue
+    /// but whose hostname entries are worth typing (core 78ee46f).
+    func decoded<T: Decodable>(as type: T.Type) -> T? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
     /// Human-readable one-line summary for status text.
     var displayString: String {
         switch self {
@@ -293,6 +301,16 @@ struct ConcordConfigPatchParams: Encodable {
     /// External-controller listen address, "" = closed (core
     /// ConfigPatchParams `externalController`).
     var externalController: String?
+    /// Custom Geo database download URLs, keyed `mmdb` / `asn` /
+    /// `geosite` (core ConfigPatchParams `geox_url`,
+    /// BTreeMap<String, String>; upstream config.patch `geoxUrl`,
+    /// sent only when non-empty). The .convertToSnakeCase
+    /// requestEncoder wires this as `geox_url` — no camelCase
+    /// repair like unifiedDelay (the core has no camelCase
+    /// geoxUrl). Empty strings are ignored by the core's patch
+    /// path, so the caller must resolve empty/invalid to the
+    /// FlClash defaults first (SettingsStore.resolvedGeoURLs).
+    var geoxUrl: [String: String]?
 }
 
 struct ConcordGeneralState: Codable {
@@ -1049,6 +1067,20 @@ struct ConcordMitmModuleOff: Codable {
 struct ConcordMitmLineEntry: Codable {
     let index: UInt32
     let view: JSONValue
+}
+
+/// One hostname in a module's `hostname` list (upstream MitmHostEntry,
+/// core 78ee46f): the host as written, minus a leading '-' when it was
+/// excluded, its port, whether it was excluded, and — only for an item
+/// the core could not read — why (`reason`, e.g. "unsupported character
+/// U+0020"). Good items get reason: nil. The core serializes `port`,
+/// `exclude` and `reason` only when set, so all three are `var` with
+/// defaults: a defaulted `let` is never decoded on Swift 6.2.
+struct ConcordMitmHostEntry: Codable {
+    let host: String
+    var port: UInt16? = nil
+    var exclude: Bool = false
+    var reason: String? = nil
 }
 
 struct ConcordMitmModuleView: Codable {
@@ -2038,7 +2070,7 @@ final class ConcordClient: ObservableObject {
             mode: mode, logLevel: nil, mixedPort: nil, allowLan: nil,
             ipv6: nil, tcpConcurrent: nil, unifiedDelay: nil,
             findProcessMode: nil, secret: nil, authentication: nil,
-            externalController: nil))
+            externalController: nil, geoxUrl: nil))
     }
 
     func engineStart() async throws {

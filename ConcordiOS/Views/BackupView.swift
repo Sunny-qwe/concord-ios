@@ -2,11 +2,16 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 // MARK: - Backup / restore (Tools / Settings -> 备份与恢复)
-// Export: BackupStore builds ONE zip (all App Group files + the
-// UserDefaults blobs) in tmp; ShareLink shares it (隔空投送、存到
-// 「文件」、发给自己都行). Import: fileImporter picks a .zip, the
-// store validates it and restores all-or-nothing. A corrupt file
-// reports a clear error and changes nothing — the message says so.
+// Export: FlClash format (config.json + database.sqlite + the
+// profile / script / provider / MITM files), built by
+// FlClashExport and shared via ShareLink (隔空投送、存到「文件」、
+// 发给自己都行); a real FlClash can restore it directly. Import:
+// the restore-option dialog (all / onlyProfiles) comes BEFORE
+// the file picker (upstream order); the file is auto-detected —
+// config.json present means FlClash format, a manifest.json with
+// format concord-ios-backup means the old format, which still
+// restores through BackupStore.restore. A corrupt file reports a
+// clear error and changes nothing — the message says so.
 //
 // After a successful restore the stores are reloaded here (profiles
 // / settings / MITM modules / theme) and the active profile is
@@ -30,15 +35,15 @@ struct BackupView: View {
 
     @State private var backupURL: URL?
     @State private var showImporter = false
-    @State private var showRestoreConfirm = false
     @State private var showScopeDialog = false
     /// What happens after the restore-options dialog is dismissed:
-    /// pick a local file, or confirm restoring a file just
-    /// downloaded from WebDAV (FlClash: 备份与恢复 -> 恢复选项 is
-    /// chosen before the file is picked).
+    /// pick a local file, or restore a file just downloaded from
+    /// WebDAV. Upstream (backup_and_restore.dart:94) asks the
+    /// restore option BEFORE the file is picked, and there is no
+    /// second confirm afterwards — the dialog IS the choice.
     private enum PendingAfterScope {
         case pickFile
-        case confirmDownload
+        case restoreDownload
     }
     @State private var pendingAfterScope: PendingAfterScope?
     @State private var pickedURL: URL?
@@ -51,14 +56,14 @@ struct BackupView: View {
     @AppStorage("ConcordiOS.webdav.url") private var webdavURL = ""
     @AppStorage("ConcordiOS.webdav.username") private var webdavUsername = ""
     @AppStorage("ConcordiOS.webdav.password") private var webdavPassword = ""
-    @AppStorage("ConcordiOS.webdav.fileName") private var webdavFileName = "concord-ios-backup.zip"
+    @AppStorage("ConcordiOS.webdav.fileName") private var webdavFileName = "backup.zip"
     @State private var webdavStatus: String?
     @State private var webdavConnected: Bool?
 
     var body: some View {
         List {
             Section("导出备份") {
-                Text("备份包含：全部订阅配置、设置（通用 / TUN / DNS / MITM）、MITM 模块、主题和核心模式。实时快照（流量、连接、日志）不备份，下次打开 App 时会自动重新生成。")
+                Text("备份为 FlClash 格式（config.json + database.sqlite + 配置文件），文件名 FlClash_backup_YYYY-MM-DD.zip，可在 FlClash 里直接恢复。实时快照（流量、连接、日志）和地理数据库不备份，下次打开 App 时会自动重新生成。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Button {
@@ -68,7 +73,7 @@ struct BackupView: View {
                 }
                 .disabled(backupStore.isWorking)
                 if let backupURL {
-                    ShareLink(item: backupURL, preview: SharePreview("Concord 备份", image: Image(systemName: "archivebox"))) {
+                    ShareLink(item: backupURL, preview: SharePreview("FlClash 备份", image: Image(systemName: "archivebox"))) {
                         Label("分享备份文件", systemImage: "square.and.arrow.up")
                     }
                     Text("备份文件：\(backupURL.lastPathComponent)")
@@ -78,20 +83,12 @@ struct BackupView: View {
             }
 
             Section("导入备份") {
-                Text(backupStore.restoreStrategy == .compatible
-                     ? "导入会把备份里的内容合并到当前数据：备份里没有的订阅、设置和 MITM 模块保留原样。恢复前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。"
-                     : "导入会按备份内容完全替换恢复范围里的数据。恢复前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。")
+                Text("支持 FlClash 格式和本站旧格式备份，自动识别，无需选择。导入前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Picker("恢复选项", selection: $restoreScope) {
-                    ForEach(BackupStore.RestoreScope.allCases) { scope in
-                        Text(scope.rawValue).tag(scope)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text(restoreScope == .all
-                     ? "恢复全部数据：所有文件与设置都在恢复范围内。"
-                     : "仅恢复配置：只恢复订阅与配置，设置、主题、MITM 模块保持不变。")
+                Text(backupStore.restoreStrategy == .compatible
+                     ? "兼容模式：备份里没有的订阅、设置和 MITM 模块保留原样。"
+                     : "覆盖模式：按备份内容完全替换恢复范围里的数据。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Picker("恢复策略", selection: $backupStore.restoreStrategy) {
@@ -193,7 +190,9 @@ struct BackupView: View {
             case .success(let urls):
                 if let url = urls.first {
                     pickedURL = url
-                    showRestoreConfirm = true
+                    // The scope was already chosen in the dialog
+                    // before the picker opened; restore directly.
+                    Task { await restoreBackup() }
                 }
             case .failure(let error):
                 errorMessage = "选择文件失败：\(error.localizedDescription)"
@@ -201,37 +200,23 @@ struct BackupView: View {
         }
         // Upstream _pickRestoreOption →
         // dialogs.showCommonDialog<RestoreOption>
-        // (RestoreOptionsDialog) (backup_and_restore.dart:94): a
-        // centered dialog, BEFORE the file is picked. The scope and
-        // the restore strategy are in-page settings above (the
-        // dialog only confirms them) — the strategy is not picked
-        // in the dialog.
+        // (RestoreOptionsDialog) (backup_and_restore.dart:94): the
+        // all / onlyProfiles choice, BEFORE the file is picked.
+        // "仅恢复配置" is upstream's trap in plain words: it still
+        // restores all the data (profiles, rules, scripts, MITM
+        // modules) and only keeps the current settings.
         .alert("恢复备份", isPresented: $showScopeDialog) {
             Button("取消", role: .cancel) { pendingAfterScope = nil }
-            Button("继续") {
-                let pending = pendingAfterScope
-                pendingAfterScope = nil
-                // Run after the dialog dismisses, so the file
-                // picker / confirm alert is not presented while
-                // the dialog is still up.
-                DispatchQueue.main.async {
-                    switch pending {
-                    case .pickFile:
-                        showImporter = true
-                    case .confirmDownload:
-                        showRestoreConfirm = true
-                    case .none:
-                        break
-                    }
-                }
+            Button("恢复全部数据") {
+                restoreScope = .all
+                proceedAfterScope()
+            }
+            Button("仅恢复配置") {
+                restoreScope = .profilesOnly
+                proceedAfterScope()
             }
         } message: {
-            Text((restoreScope == .all
-                  ? "恢复全部数据：所有文件与设置都在恢复范围内。"
-                  : "仅恢复配置：只恢复订阅与配置，设置、主题、MITM 模块保持不变。")
-                 + (backupStore.restoreStrategy == .compatible
-                    ? "备份里没有的数据保留原样。"
-                    : "恢复范围里的数据会被备份完全替换。"))
+            Text("恢复全部数据：备份里的配置与设置全部恢复。仅恢复配置：备份里的数据全部恢复，但保持当前设置不变。")
         }
         .task {
             // Live WebDAV indicator (FlClash shows the account state
@@ -241,18 +226,22 @@ struct BackupView: View {
                 await testWebDAV()
             }
         }
-        .alert("确定要恢复这个备份吗？", isPresented: $showRestoreConfirm) {
-            Button("恢复", role: .destructive) {
+    }
+
+    /// Runs after the scope dialog dismisses, so the file picker
+    /// is not presented while the dialog is still up.
+    private func proceedAfterScope() {
+        let pending = pendingAfterScope
+        pendingAfterScope = nil
+        DispatchQueue.main.async {
+            switch pending {
+            case .pickFile:
+                showImporter = true
+            case .restoreDownload:
                 Task { await restoreBackup() }
+            case .none:
+                break
             }
-            Button("取消", role: .cancel) { pickedURL = nil }
-        } message: {
-            Text((restoreScope == .all
-                  ? "当前全部订阅、设置和 MITM 模块都在恢复范围内。"
-                  : "只恢复备份里的订阅与配置，设置、主题、MITM 模块保持不变。")
-                 + (backupStore.restoreStrategy == .compatible
-                    ? "备份里没有的数据保留原样。"
-                    : "恢复范围里的数据会被备份完全替换。"))
         }
     }
 
@@ -277,7 +266,11 @@ struct BackupView: View {
         backupStore.isWorking = true
         defer { backupStore.isWorking = false }
         do {
-            let url = try await backupStore.createBackup()
+            guard let context = flClashExportContext() else {
+                throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "App Group 容器不可用"])
+            }
+            let url = try await backupStore.createFlClashBackup(context: context)
             backupURL = url
             let data = try Data(contentsOf: url)
             try await WebDAVClient(account: webdavAccount).upload(data)
@@ -294,13 +287,13 @@ struct BackupView: View {
         do {
             let data = try await WebDAVClient(account: webdavAccount).download()
             let tempURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(webdavFileName.isEmpty ? "concord-ios-backup.zip" : webdavFileName)
+                .appendingPathComponent(webdavFileName.isEmpty ? "backup.zip" : webdavFileName)
             try data.write(to: tempURL, options: .atomic)
             pickedURL = tempURL
             webdavStatus = "已下载备份，请选择恢复选项"
             // Same order as a local file: the restore dialog first,
-            // then the confirm alert (via the dialog's 继续 button).
-            pendingAfterScope = .confirmDownload
+            // then the restore itself (via the dialog's choice).
+            pendingAfterScope = .restoreDownload
             showScopeDialog = true
         } catch {
             webdavStatus = "下载失败：\(error.localizedDescription)"
@@ -312,12 +305,70 @@ struct BackupView: View {
         message = nil
         errorMessage = nil
         do {
-            backupURL = try await backupStore.createBackup()
-            message = "备份已生成，点「分享备份文件」保存或发送。"
+            guard let context = flClashExportContext() else {
+                throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "App Group 容器不可用"])
+            }
+            backupURL = try await backupStore.createFlClashBackup(context: context)
+            message = "备份已生成（FlClash 格式），点「分享备份文件」保存或发送。"
         } catch {
             errorMessage = "生成备份失败：\(error.localizedDescription)"
         }
         backupStore.isWorking = false
+    }
+
+    /// Snapshot everything the FlClash export needs. The file-backed
+    /// stores that are not environment objects (MITM scripts,
+    /// custom proxies, added rules, extend settings, overrides)
+    /// are read through fresh instances, which load from disk on
+    /// init; the live stores re-read from disk when their page
+    /// next opens, so the snapshot cannot go stale.
+    private func flClashExportContext() -> FlClashExportContext? {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID) else {
+            return nil
+        }
+        var yamls: [UUID: String] = [:]
+        for profile in profileStore.profiles {
+            let url = container.appendingPathComponent("profiles/\(profile.id.uuidString).yaml")
+            if let text = try? String(contentsOf: url, encoding: .utf8) {
+                yamls[profile.id] = text
+            }
+        }
+        let scriptStore = MitmScriptStore()
+        var scriptContents: [String: String] = [:]
+        for script in scriptStore.scripts {
+            if let content = scriptStore.content(of: script) {
+                scriptContents[script.id] = content
+            }
+        }
+        var moduleTexts: [String: String] = [:]
+        for module in mitmModuleStore.modules {
+            if let text = mitmModuleStore.text(of: module) {
+                moduleTexts[module.id] = text
+            }
+        }
+        let proxyStore = CustomProxyStore()
+        let addedStore = AddedRulesStore()
+        let extendStore = ExtendConfigStore()
+        let overrideStore = OverrideStore.shared
+        return FlClashExportContext(
+            profiles: profileStore.profiles, profileYAMLs: yamls,
+            settings: settingsStore, theme: themeStore,
+            proxyStyle: proxyStyleStore, webdav: webdavAccount,
+            restoreStrategy: backupStore.restoreStrategy,
+            mitmModules: mitmModuleStore.modules,
+            mitmModuleTexts: moduleTexts,
+            mitmScripts: scriptStore.scripts,
+            mitmScriptContents: scriptContents,
+            customProxies: proxyStore.proxies,
+            rawProxies: proxyStore.rawProxies,
+            addedRules: addedStore.rules,
+            disabledAddedRules: addedStore.disabledRules,
+            extendSettings: extendStore.settingsByProfile,
+            overrideGlobal: overrideStore.global,
+            overrideProfiles: overrideStore.profiles,
+            container: container)
     }
 
     private func restoreBackup() async {
@@ -330,7 +381,11 @@ struct BackupView: View {
             self.pickedURL = nil
         }
         do {
-            let summary = try await backupStore.restore(from: pickedURL, scope: restoreScope, strategy: backupStore.restoreStrategy)
+            let summary = try await backupStore.restoreAutoDetect(
+                from: pickedURL, scope: restoreScope,
+                strategy: backupStore.restoreStrategy,
+                settings: settingsStore, theme: themeStore,
+                proxyStyle: proxyStyleStore)
             // Reload every store that keeps its state on disk, so the
             // pages show the restored data without restarting the app
             // (audit B8): the UserDefaults-backed ones re-read their

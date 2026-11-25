@@ -1539,16 +1539,20 @@ struct MitmModuleDetailView: View {
     }
 
     /// Per-line issue flags for one list (upstream _linesItem
-    /// `issues`, keyed by line text): the core's issues for this
-    /// list, matched to lines by the raw module line they name
-    /// (an issue's `index` is the module line), plus the Swift
-    /// parser's skipped lines in this section, by line text. A
-    /// rendered line that differs from its raw line (a map-local
-    /// line whose file resolved to a content-hash name, a script
-    /// line whose path resolved) matches neither — the flag then
-    /// stays on the core note / validate output instead.
-    private func lineIssues(for key: String?, section: String, lines: [String], content: MitmModuleContent) -> [String: String] {
-        var out: [String: String] = [:]
+    /// `issues`, keyed by line text, each value the issue lines in
+    /// display order): the core's issues for this list, matched to
+    /// lines by the raw module line they name (an issue's `index`
+    /// is the module line), plus the Swift parser's skipped lines
+    /// in this section, by line text, plus — for the `hostname`
+    /// list — one "<host>: <reason>" line per item the core could
+    /// not read (core 78ee46f, additive: the aggregated line
+    /// message stays first when it matches at all). A rendered
+    /// line that differs from its raw line (a map-local line whose
+    /// file resolved to a content-hash name, a script line whose
+    /// path resolved) matches neither — the flag then stays on the
+    /// core note / validate output instead.
+    private func lineIssues(for key: String?, section: String, lines: [String], content: MitmModuleContent) -> [String: [String]] {
+        var out: [String: [String]] = [:]
         if let key,
            let rawText = module.flatMap({ moduleStore.text(of: $0) }),
            let issues = content.coreIssuesByList[key] {
@@ -1557,7 +1561,7 @@ struct MitmModuleDetailView: View {
                 guard rawLines.indices.contains(issue.index) else { continue }
                 let raw = rawLines[issue.index].trimmingCharacters(in: .whitespaces)
                 for line in lines where line.trimmingCharacters(in: .whitespaces) == raw {
-                    out[line] = issue.message
+                    out[line, default: []].append(issue.message)
                 }
             }
         }
@@ -1565,7 +1569,40 @@ struct MitmModuleDetailView: View {
             for skip in content.skipped where skip.section.lowercased() == section.lowercased() {
                 let raw = skip.line.trimmingCharacters(in: .whitespaces)
                 for line in lines where line.trimmingCharacters(in: .whitespaces) == raw {
-                    out[line] = "\(skip.section) · \(skip.reason.label)"
+                    out[line, default: []].append("\(skip.section) · \(skip.reason.label)")
+                }
+            }
+        }
+        for (line, reasons) in lineHostReasons(for: key, lines: lines, content: content) {
+            out[line, default: []].append(contentsOf: reasons)
+        }
+        return out
+    }
+
+    /// Per-item hostname reasons (core 78ee46f): "<host>: <reason>"
+    /// for each hostname the core could not read, matched to the
+    /// displayed hostname line. The displayed lines are the Swift
+    /// parser's individual entries (a `hostname = …` line is split
+    /// on commas), while the core's `host` is the item as written
+    /// minus a leading '-', with the port split out — so an entry
+    /// matches its displayed line as `host`, `-host`, `host:port`
+    /// or `-host:port`. Note this is also the first visible signal
+    /// for a bad hostname in this list: the aggregated line message
+    /// above never matches here, because the raw line is
+    /// `hostname = …` while the displayed line is one entry.
+    private func lineHostReasons(for key: String?, lines: [String], content: MitmModuleContent) -> [String: [String]] {
+        guard key == "hostname" else { return [:] }
+        var out: [String: [String]] = [:]
+        for entries in content.coreHostnameEntriesByLine.values {
+            for entry in entries {
+                guard let reason = entry.reason, !reason.isEmpty else { continue }
+                var candidates = [entry.host, "-\(entry.host)"]
+                if let port = entry.port {
+                    candidates.append("\(entry.host):\(port)")
+                    candidates.append("-\(entry.host):\(port)")
+                }
+                for line in lines where candidates.contains(line.trimmingCharacters(in: .whitespaces)) {
+                    out[line, default: []].append("\(entry.host): \(reason)")
                 }
             }
         }
@@ -1742,12 +1779,14 @@ private struct MitmModuleArgumentsSection: View {
 /// One MITM list's lines, each with why the core or the parser
 /// flags it, and a run button on script lines (upstream
 /// _MitmModuleLinesView + _linesItem: `issues` keyed by line text,
+/// each value the issue lines in display order (the aggregated line
+/// message first, then per-item hostname reasons),
 /// `MitmTaskRunning` spinner on the line being run).
 struct MitmModuleLinesView: View {
     let title: String
     let lines: [String]
-    /// line text → issue.
-    let issues: [String: String]
+    /// line text → issue lines, in display order.
+    let issues: [String: [String]]
     /// Script lists only: runs one line (the module must be
     /// enabled and MITM on — `canRun`); `runningScript` is the
     /// name of the line currently running, if any.
@@ -1779,10 +1818,12 @@ struct MitmModuleLinesView: View {
                             .disabled(runningScript != nil)
                         }
                     }
-                    if let issue = issues[line] {
-                        Text(issue)
-                            .font(.caption2)
-                            .foregroundStyle(.red)
+                    if let issueLines = issues[line] {
+                        ForEach(issueLines, id: \.self) { issue in
+                            Text(issue)
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                        }
                     }
                 }
             }

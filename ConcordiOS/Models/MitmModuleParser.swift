@@ -236,6 +236,15 @@ struct MitmModuleContent {
     /// map-local, script, rules). An issue's `index` is the module
     /// line; the detail page's line lists match it to the raw text.
     var coreIssuesByList: [String: [ConcordMitmIssue]] = [:]
+    /// The core's parsed `hostname` list, by module line (core
+    /// 78ee46f): each entry is one hostname as written, minus a
+    /// leading '-', with the reason the core could not read it when
+    /// it could not (`reason` is nil for good items). Only the
+    /// `hostname` list is typed — the other views stay JSON. The
+    /// detail page matches rejected entries to the displayed
+    /// hostname lines by host string, since the Swift parser splits
+    /// hostname lines into individual entries.
+    var coreHostnameEntriesByLine: [Int: [ConcordMitmHostEntry]] = [:]
 
     var isEmpty: Bool {
         hostname.isEmpty && insertedHostname.isEmpty && hostnameDisabled.isEmpty
@@ -4259,6 +4268,16 @@ enum MitmModuleParser {
         content.coreAsksConsent = view.asksConsent
         content.coreIssueCount = view.issues.values.reduce(0) { $0 + $1.count }
         content.coreIssuesByList = view.issues
+        // The core's parsed hostname list, by module line (core
+        // 78ee46f). Only the `hostname` list is typed — the other
+        // views stay JSON.
+        if let hostnameViews = view.views["hostname"] {
+            for entry in hostnameViews {
+                if let hosts = entry.view.decoded(as: [ConcordMitmHostEntry].self) {
+                    content.coreHostnameEntriesByLine[Int(entry.index)] = hosts
+                }
+            }
+        }
         content.coreExtendedMatchingCount = view.rules.filter(\.extendedMatching).count
         content.coreIgnored = view.ignored.map { ignored in
             var line = "第 \(ignored.line) 行（\(coreIgnoreLabel(ignored.reason))）"

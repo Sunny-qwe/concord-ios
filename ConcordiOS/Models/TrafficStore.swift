@@ -1376,9 +1376,26 @@ final class TrafficStore: ObservableObject {
                     totalDown: traffic.totalDown
                 )
             }
-            current = traffic
-            history.append(TrafficPoint(date: Date(), up: traffic.up, down: traffic.down))
-            if history.count > maxHistory { history.removeFirst(history.count - maxHistory) }
+            // changesOnly (v0.2.119): the extension only forwards a
+            // traffic event when the sample changed, and this 1 s
+            // snapshot read returns the same value while idle —
+            // publishing it every tick re-rendered the Dashboard
+            // every second for nothing. Skip the publish + history
+            // point when all four fields equal `current`. The timer
+            // itself, refreshEngineStatus / probe / node-speed ticks
+            // and the daily-history maintenance below still run
+            // every tick (maintenance is delta-based, so an unchanged
+            // sample adds nothing, but its seeding and day-rollover
+            // paths must not be skipped while idle). Any change —
+            // including a fall back to zero, which the core emits
+            // once because the totals moved — still publishes
+            // immediately.
+            if traffic.up != current.up || traffic.down != current.down
+                || traffic.totalUp != current.totalUp || traffic.totalDown != current.totalDown {
+                current = traffic
+                history.append(TrafficPoint(date: Date(), up: traffic.up, down: traffic.down))
+                if history.count > maxHistory { history.removeFirst(history.count - maxHistory) }
+            }
             maintainDailyHistory()
             consecutiveRefreshFailures = 0
             lastError = nil

@@ -250,7 +250,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let maxBufferedEntries = 500
 
     /// Snapshot write coalescing (v0.2.101, Issue 3): the core
-    /// pushes traffic.watch at 1 s, but EVERY connection.watch
+    /// pushes traffic.watch on change (changesOnly, v0.2.119;
+    /// before that every 1 s), but EVERY connection.watch
     /// delta (open/close/counter) used to trigger a full sort of
     /// the connection table + a whole-file connections.json rewrite,
     /// and every log/dns/event batch an append + trim + whole-file
@@ -310,17 +311,30 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // inside the extension and only fire when something is actually
     // wrong — nothing here restarts a healthy tunnel.
     //
-    // Watchdog: traffic.watch pushes a full Traffic value every
-    // second while the core is alive (upstream crates/api/src/watch.rs:
-    // a ticker emits unconditionally), so "no core message at all"
-    // is the liveness signal. No extra RPC is sent: engine.state is
-    // a subscribe, not a unary call (re-subscribing every tick would
-    // leak subscriptions), and a second core.hello handshake is not
-    // defined as idempotent. Network loss alone cannot trip it (the
-    // traffic ticker is core-internal, not network-dependent).
+    // Watchdog: with traffic.watch changesOnly (v0.2.119) a healthy
+    // idle tunnel emits no stream events at all, so "no core message
+    // at all" is no longer the liveness signal — silence alone must
+    // never kill an idle tunnel. A tick after 75 s of silence instead
+    // fires one cheap unary core.stats probe (side-effect-free read;
+    // a reply proves the core's JSON-RPC session and event loop are
+    // alive, a timeout / error proves it is hung). Two consecutive
+    // probe failures cancel the tunnel, exactly as two silent ticks
+    // did before. Packet counters cannot be the signal either: the
+    // pump is uninvoked since v0.2.93 (native TUN fd), so
+    // packetsIn / packetsOut stay 0. No extra RPC is sent while the
+    // core is chatty: engine.state is a subscribe, not a unary call
+    // (re-subscribing every tick would leak subscriptions), and a
+    // second core.hello handshake is not defined as idempotent.
+    // Network loss alone cannot trip it (the probe is core-internal,
+    // not network-dependent).
     private var watchdogTimer: DispatchSourceTimer?
     private var lastCoreMessageAt: Date?
     private var watchdogFailures = 0
+    /// True while a watchdog core.stats probe is awaiting its reply.
+    /// Set / cleared on coreQueue (the timer handler runs there, and
+    /// the probe Task hops back there to clear it), so a second
+    /// probe is never launched before the first one resolves.
+    private var watchdogProbeInFlight = false
     // Memory pressure: the extension lives under the NetworkExtension
     // memory limit (historically ~15 MB, reported ~50 MB more
     // recently); Jetsam kills the tunnel when it is exceeded.
@@ -1225,8 +1239,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// `$/event` notifications to the stream handlers.
     private func handleCoreMessage(_ data: Data) {
         // Watchdog heartbeat (Batch F): every reply and every stream
-        // event passes through here; traffic.watch alone ticks once
-        // a second while the core is alive.
+        // event passes through here. (traffic.watch no longer ticks
+        // once a second while idle — changesOnly, v0.2.119 — so a
+        // quiet core is probed by the watchdog instead; see
+        // startWatchdog.)
         lastCoreMessageAt = Date()
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             Self.log.error("dropping unparsable core message (\(data.count) bytes)")
@@ -1256,7 +1272,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // snapshot (Subscription::new(None, ...)) — their entries only
         // arrive as events, so the extension accumulates them.
         let traffic = try await sendCoreRequest(method: "traffic.watch", params: [
-            "interval_ms": 1000, "credit": 8,
+            "intervalMs": 1000, "changesOnly": true, "credit": 8,
         ], timeoutSeconds: 60)
         registerStream(result: traffic, kind: .traffic)
         let connection = try await sendCoreRequest(method: "connection.watch", params: [
@@ -1323,7 +1339,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             do {
                 let params: [String: Any]
                 switch kind {
-                case .traffic: params = ["interval_ms": 1000, "credit": 8]
+                case .traffic: params = ["intervalMs": 1000, "changesOnly": true, "credit": 8]
                 case .connection: params = ["counters": true, "credit": 8]
                 case .log: params = ["credit": 8]
                 case .dns: params = ["credit": 8]
@@ -1770,9 +1786,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// lets the system restart the tunnel when On-Demand is enabled
     /// (the default); with On-Demand off, the tunnel stays down and
     /// the app shows the unexpected-disconnect banner instead.
+    ///
+    /// Liveness basis (changesOnly, v0.2.119): traffic.watch with
+    /// changesOnly no longer ticks every second while the tunnel is
+    /// idle — a healthy idle tunnel emits no stream events at all,
+    /// so silence alone is NOT proof the core is dead. A silent
+    /// tick therefore fires one cheap unary `core.stats` probe
+    /// (side-effect-free read, 10 s timeout, well inside the 30 s
+    /// tick): a reply proves the core's JSON-RPC session and event
+    /// loop are alive (the reply itself refreshes
+    /// lastCoreMessageAt via handleCoreMessage), a timeout / error
+    /// counts as one failure. Two consecutive probe failures still
+    /// cancel the tunnel, exactly as two silent ticks did before.
+    /// Only one probe is ever in flight, and a probe is only sent
+    /// after 75 s of silence, so an idle tunnel costs ~one tiny
+    /// RPC every ~2 minutes. While the core is chatty no probe is
+    /// ever sent.
     private func startWatchdog() {
         lastCoreMessageAt = Date()
         watchdogFailures = 0
+        watchdogProbeInFlight = false
         let timer = DispatchSource.makeTimerSource(queue: coreQueue)
         timer.schedule(deadline: .now() + .seconds(30), repeating: .seconds(30))
         timer.setEventHandler { [weak self] in
@@ -1784,17 +1817,44 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             // packet counters stay current for the app's
             // Diagnostics page even when the tunnel is healthy.
             self.writeVPNDiagnostics(stage: "running")
-            if silent > 75 {
-                self.watchdogFailures += 1
-                Self.log.error("watchdog: no core message for \(Int(silent))s (failure \(self.watchdogFailures)/2)")
-                if self.watchdogFailures >= 2 {
-                    self.watchdogTimer?.cancel()
-                    self.watchdogTimer = nil
-                    Self.log.error("watchdog: core unresponsive, cancelling tunnel so On-Demand restarts it")
-                    self.cancelTunnelWithError(TunnelSetupError.rpcFailed("核心无响应（看门狗：75 秒以上无核心消息，连续两次）"))
-                }
-            } else {
+            if silent <= 75 {
                 self.watchdogFailures = 0
+                return
+            }
+            // Silent for over 75 s. With changesOnly this is
+            // expected for a healthy idle tunnel, so do NOT count
+            // a failure yet: probe the core once instead. While a
+            // probe is in flight, wait for its outcome.
+            guard !self.watchdogProbeInFlight else { return }
+            self.watchdogProbeInFlight = true
+            Self.log.info("watchdog: no core message for \(Int(silent))s; probing core.stats")
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    _ = try await self.sendCoreRequest(method: "core.stats", params: [:], timeoutSeconds: 10)
+                    self.coreQueue.async {
+                        // The probe reply already refreshed
+                        // lastCoreMessageAt via handleCoreMessage;
+                        // the core is alive, so clear the failure
+                        // count as a healthy tick would.
+                        self.watchdogProbeInFlight = false
+                        guard self.session != 0, !self.isStopping else { return }
+                        self.watchdogFailures = 0
+                    }
+                } catch {
+                    self.coreQueue.async {
+                        self.watchdogProbeInFlight = false
+                        guard self.session != 0, !self.isStopping else { return }
+                        self.watchdogFailures += 1
+                        Self.log.error("watchdog: core.stats probe failed after \(Int(silent))s silence (failure \(self.watchdogFailures)/2)")
+                        if self.watchdogFailures >= 2 {
+                            self.watchdogTimer?.cancel()
+                            self.watchdogTimer = nil
+                            Self.log.error("watchdog: core unresponsive, cancelling tunnel so On-Demand restarts it")
+                            self.cancelTunnelWithError(TunnelSetupError.rpcFailed("核心无响应（看门狗：75 秒以上无核心消息且 core.stats 探测连续两次失败）"))
+                        }
+                    }
+                }
             }
         }
         timer.resume()

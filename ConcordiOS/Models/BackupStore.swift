@@ -565,7 +565,8 @@ final class BackupStore: ObservableObject {
             path: Self.userDefaultsFileName,
             data: try JSONEncoder().encode(defaultsBackup)))
         let manifest = Manifest(
-            format: "concord-ios-backup", version: 1, appVersion: "0.2.25",
+            format: "concord-ios-backup", version: 1,
+            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?",
             createdAt: Date().timeIntervalSince1970, files: files)
         entries.append(ZipArchive.Entry(
             path: Self.manifestFileName,
@@ -582,6 +583,83 @@ final class BackupStore: ObservableObject {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd-HHmm"
         return formatter.string(from: Date())
+    }
+
+    // MARK: - FlClash-format backup (see FlClashBackup.swift)
+
+    /// Build a FlClash-format backup zip (config.json +
+    /// database.sqlite + the file entries) in tmp and return its
+    /// URL for ShareLink. The file name is upstream's
+    /// FlClash_backup_YYYY-MM-DD.zip.
+    func createFlClashBackup(context: FlClashExportContext) async throws -> URL {
+        let entries = try FlClashExport.buildEntries(context: context)
+        let zipData = try ZipArchive.create(entries: entries)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(FlClashExport.fileName())
+        try zipData.write(to: url, options: .atomic)
+        return url
+    }
+
+    /// Restore a FlClash-format backup picked with fileImporter.
+    /// Auto-detects the format: a zip containing config.json takes
+    /// the FlClash path (upstream errors verbatim); anything else
+    /// falls through to the old concord-ios restore, which keeps
+    /// its existing file-level behaviour. No format-picker UI.
+    func restoreAutoDetect(
+        from pickedURL: URL, scope: RestoreScope = .all,
+        strategy: RestoreStrategy = .compatible,
+        settings: SettingsStore, theme: ThemeStore,
+        proxyStyle: ProxyStyleStore) async throws -> String {
+        let accessing = pickedURL.startAccessingSecurityScopedResource()
+        defer { if accessing { pickedURL.stopAccessingSecurityScopedResource() } }
+        let zipData: Data
+        do {
+            zipData = try Data(contentsOf: pickedURL)
+        } catch {
+            throw NSError(domain: "ConcordiOS", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "读取备份文件失败：\(error.localizedDescription)"])
+        }
+        let isFlClash = (try? ZipArchive.extract(zipData))?
+            .contains(where: { $0.path == "config.json" }) ?? false
+        if isFlClash {
+            return try await restoreFlClashBackup(
+                from: pickedURL, scope: scope, strategy: strategy,
+                settings: settings, theme: theme, proxyStyle: proxyStyle)
+        }
+        return try await restore(from: pickedURL, scope: scope, strategy: strategy)
+    }
+
+    /// Restore a FlClash-format backup: validate (config.json +
+    /// DB header version gate), stage files, copy them before the
+    /// row writes with putBack rollback, apply the Config unless
+    /// the scope is profiles-only. Throws FlClashBackupError with
+    /// upstream's exact messages ("无效备份文件" /
+    /// "该备份来自更高版本的应用，请先更新应用再恢复").
+    func restoreFlClashBackup(
+        from pickedURL: URL, scope: RestoreScope = .all,
+        strategy: RestoreStrategy = .compatible,
+        settings: SettingsStore, theme: ThemeStore,
+        proxyStyle: ProxyStyleStore) async throws -> String {
+        let accessing = pickedURL.startAccessingSecurityScopedResource()
+        defer { if accessing { pickedURL.stopAccessingSecurityScopedResource() } }
+        let zipData: Data
+        do {
+            zipData = try Data(contentsOf: pickedURL)
+        } catch {
+            throw NSError(domain: "ConcordiOS", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "读取备份文件失败：\(error.localizedDescription)"])
+        }
+        let data = try FlClashArchiveReader.read(zipData: zipData)
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID) else {
+            throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "App Group 容器不可用"])
+        }
+        let (_, summary) = try await FlClashRestore.apply(
+            data, scope: scope, strategy: strategy, container: container,
+            settings: settings, theme: theme, proxyStyle: proxyStyle,
+            backupStore: self)
+        return summary
     }
 
     /// Restore a backup picked with fileImporter. All-or-nothing:

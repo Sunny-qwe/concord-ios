@@ -341,11 +341,15 @@ final class SettingsStore: ObservableObject {
     /// Subscription for the live tunnel patch (see
     /// startUnifiedDelayTunnelObservation).
     private var unifiedDelayTunnelCancellable: AnyCancellable?
+    /// Subscription for the live tunnel geo-URL patch (see
+    /// startGeoURLTunnelObservation).
+    private var geoURLTunnelCancellable: AnyCancellable?
 
     init(client: ConcordClient = ConcordClient()) {
         self.client = client
         load()
         startUnifiedDelayTunnelObservation()
+        startGeoURLTunnelObservation()
         // Autosave: every toggle / field change persists to UserDefaults
         // and rewrites the shared files the extension reads. Before this
         // only a handful of controls saved on change — most settings
@@ -789,6 +793,10 @@ final class SettingsStore: ObservableObject {
             dict["geo-update-interval"] = Int(defaults.object(forKey: "ConcordiOS.geoAutoUpdateHours") as? Double ?? 24.0)
             changed = true
         }
+        if dict["geox-url"] == nil {
+            dict["geox-url"] = Self.resolvedGeoURLs()
+            changed = true
+        }
         guard changed, let out = try? JSONSerialization.data(withJSONObject: dict) else { return }
         try? out.write(to: url, options: .atomic)
     }
@@ -1049,6 +1057,13 @@ final class SettingsStore: ObservableObject {
         // via object(forKey:).
         overlay["geo-auto-update"] = defaults.object(forKey: "ConcordiOS.geoAutoUpdate") as? Bool ?? true
         overlay["geo-update-interval"] = Int(defaults.object(forKey: "ConcordiOS.geoAutoUpdateHours") as? Double ?? 24.0)
+        // Custom Geo download URLs (FlClash `geox-url` map): the
+        // resolver guarantees never-empty, so the core never stores
+        // an explicit "" at apply time (which would stick) and the
+        // patch path never has to ignore one. The extension merges
+        // this file into config.apply's overlay at tunnel start AND
+        // on every live re-apply, like the geo keys above.
+        overlay["geox-url"] = Self.resolvedGeoURLs()
         let ua = globalUa.trimmingCharacters(in: .whitespaces)
         if !ua.isEmpty {
             overlay["global-ua"] = ua
@@ -1076,6 +1091,33 @@ final class SettingsStore: ObservableObject {
         let pass = authPassword.trimmingCharacters(in: .whitespaces)
         guard !user.isEmpty else { return [] }
         return ["\(user):\(pass)"]
+    }
+
+    /// The custom Geo download URLs, resolved to what the core must
+    /// receive (FlClash `geox-url` map, keys lowercase `mmdb` /
+    /// `asn` / `geosite` — the core uppercases them). Reads the
+    /// three `ConcordiOS.geoURL.*` UserDefaults keys written by
+    /// SettingsView's GeoURLRow fields; trims whitespace, and any
+    /// empty or invalid value (not http(s), or no host) falls back
+    /// to the FlClash defaults (MinimalConfig). This is the single
+    /// place guaranteeing "never send empty": at apply time an
+    /// explicitly empty string is stored as-is (no empty→default
+    /// fallback), while the patch path ignores empty strings — so
+    /// both channels must receive resolved values, never "".
+    static func resolvedGeoURLs() -> [String: String] {
+        let defaults = UserDefaults.standard
+        func resolved(_ key: String, fallback: String) -> String {
+            let raw = (defaults.string(forKey: key) ?? "").trimmingCharacters(in: .whitespaces)
+            guard let url = URL(string: raw),
+                  let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+                  let host = url.host, !host.isEmpty else { return fallback }
+            return raw
+        }
+        return [
+            "mmdb": resolved("ConcordiOS.geoURL.MMDB", fallback: MinimalConfig.defaultGeoURLMMDB),
+            "asn": resolved("ConcordiOS.geoURL.ASN", fallback: MinimalConfig.defaultGeoURLASN),
+            "geosite": resolved("ConcordiOS.geoURL.GEOSITE", fallback: MinimalConfig.defaultGeoURLGeosite),
+        ]
     }
 
     /// The external-controller listen address for config.patch:
@@ -1268,7 +1310,7 @@ final class SettingsStore: ObservableObject {
                 mode: nil, logLevel: nil, mixedPort: nil, allowLan: nil,
                 ipv6: nil, tcpConcurrent: nil, unifiedDelay: value,
                 findProcessMode: nil, secret: nil, authentication: nil,
-                externalController: nil))
+                externalController: nil, geoxUrl: nil))
         } catch {
             // Best-effort: the toggle keeps its old value in the tunnel
             // core for this run. Never surfaces an error.
@@ -1287,6 +1329,61 @@ final class SettingsStore: ObservableObject {
     @MainActor
     func applyUnifiedDelayToTunnel() async {
         await patchUnifiedDelayToTunnel(unifiedDelay)
+    }
+
+    /// Starts observing the three custom Geo URL keys (once): every
+    /// edit re-saves the shared files (general-overlay.json carries
+    /// the resolved geox-url) and, while the tunnel is running,
+    /// re-patches geox_url into the live core. Mirrors
+    /// startUnifiedDelayTunnelObservation — except the URLs live in
+    /// UserDefaults (@AppStorage in SettingsView), not in a
+    /// @Published property, so there is no $ publisher to observe:
+    /// UserDefaults.didChangeNotification is the signal instead.
+    /// That notification fires on ANY defaults write, so the stream
+    /// is debounced (TextField edits write per keystroke) and
+    /// deduplicated on the resolved map — only a real URL change
+    /// acts, and the settings-blob writes from save() are ignored.
+    /// No-ops while the tunnel is down (applyGeoURLsToTunnel
+    /// guards); the next VPN start reads the overlay. Best-effort
+    /// and never thrown. Idempotent: a second call is a no-op once
+    /// the subscription exists.
+    func startGeoURLTunnelObservation() {
+        guard geoURLTunnelCancellable == nil else { return }
+        geoURLTunnelCancellable = NotificationCenter.default
+            .publisher(for: UserDefaults.didChangeNotification)
+            .debounce(for: .seconds(0.5), scheduler: RunLoop.main)
+            .map { _ in Self.resolvedGeoURLs() }
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.applyGeoURLsToTunnel()
+                }
+            }
+    }
+
+    /// Re-saves the shared files (general-overlay.json carries the
+    /// resolved geox-url, so saved and live state stay in sync even
+    /// while the tunnel is stopped) and, when the tunnel is running,
+    /// patches geox_url into the live core (config.patch with just
+    /// that field — nil means "leave alone" for the rest). Guards:
+    /// the live transport must be up and the tunnel running,
+    /// otherwise the patch has nowhere to go. Best-effort and never
+    /// thrown: a failed patch only costs the URLs' effect for this
+    /// run; the next edit or a manual "应用通用设置到核心" retries.
+    @MainActor
+    private func applyGeoURLsToTunnel() async {
+        saveSharedFiles()
+        guard client.mode == .live, TunnelManager.shared.isRunning else { return }
+        do {
+            try await client.configPatch(ConcordConfigPatchParams(
+                mode: nil, logLevel: nil, mixedPort: nil, allowLan: nil,
+                ipv6: nil, tcpConcurrent: nil, unifiedDelay: nil,
+                findProcessMode: nil, secret: nil, authentication: nil,
+                externalController: nil, geoxUrl: Self.resolvedGeoURLs()))
+        } catch {
+            // Best-effort: the URLs stay as last applied in the tunnel
+            // core for this run. Never surfaces an error.
+        }
     }
 
     /// Push the general settings to the core (config.patch). Only the
@@ -1314,7 +1411,8 @@ final class SettingsStore: ObservableObject {
                 findProcessMode: findProcessModeSetting,
                 secret: externalControllerSecret,
                 authentication: authPatchLines,
-                externalController: externalControllerAddress))
+                externalController: externalControllerAddress,
+                geoxUrl: Self.resolvedGeoURLs()))
             // The patch cannot carry the RawConfig keys that live in
             // general-overlay.json / mitm.json / dns.json (extra
             // ports, h2, listen-routing-mark — ConfigPatchParams has

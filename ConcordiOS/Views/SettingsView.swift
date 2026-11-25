@@ -1095,7 +1095,7 @@ struct ResourcesView: View {
                 Text("concord 的 geo.update 只支持 MMDB、ASN、GEOSITE 三种，没有 GEOIP。更新在后台进行，完成后文件会出现在容器里。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Text("自定义下载地址：核心 geo.update 目前不接受自定义地址参数，下面填的地址会先保存在本机，待核心 / 扩展的下载路径支持自定义地址后使用；留空为默认地址。")
+                Text("自定义下载地址：下面填的地址会作为 geox-url 发给核心（VPN 运行时立即生效，下次启动 VPN 时也生效）；留空或填错为默认地址。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 GeoURLRow(title: "GeoIP（MMDB）", url: $geoURLMMDB)

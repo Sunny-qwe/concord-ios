@@ -29,7 +29,7 @@ struct AppIconPickerView: View {
     @Environment(\.dismiss) private var dismiss
 
     private static let options: [AppIconOption] = [
-        AppIconOption(iconName: nil, title: "经典原版", subtitle: "蓝紫渐变 · 当前主图标", previewResource: "AppIconPreview-Default"),
+        AppIconOption(iconName: nil, title: "经典原版", subtitle: "紫粉渐变 · 当前主图标", previewResource: "AppIconPreview-Default"),
         AppIconOption(iconName: "Dark", title: "黑曜暗金", subtitle: "近黑底 · 金 C", previewResource: "AppIconPreview-Dark"),
         AppIconOption(iconName: "Neon", title: "赛博霓虹", subtitle: "深蓝底 · 青品渐变 C", previewResource: "AppIconPreview-Neon"),
         AppIconOption(iconName: "Sunset", title: "落日晚霞", subtitle: "蜜桃底 · 橙红渐变 C", previewResource: "AppIconPreview-Sunset"),

@@ -3,7 +3,7 @@ import Network
 import UIKit
 
 /// Builds and opens the .mobileconfig profile that installs the
-/// Concord MITM CA into the iOS system trust store.
+/// FlClash MITM CA into the iOS system trust store.
 ///
 /// The app CANNOT install a trusted CA itself — there is no API for
 /// it. The flow is: generate a standard configuration profile
@@ -80,14 +80,14 @@ enum MobileConfigInstaller {
     /// the CA DER as Data (plist encodes it as <data> base64). Both PayloadUUIDs are fresh on
     /// every generation, so reinstalling after a CA regeneration
     /// never collides with the old profile.
-    static func profileData(caDER: Data, displayName: String = "Concord CA") throws -> Data {
+    static func profileData(caDER: Data, displayName: String = "FlClash CA") throws -> Data {
         let certPayload: [String: Any] = [
             "PayloadType": "com.apple.security.root",
             "PayloadIdentifier": "com.concord.ios.ca",
             "PayloadUUID": UUID().uuidString,
             "PayloadVersion": 1,
             "PayloadDisplayName": displayName,
-            "PayloadDescription": "Concord MITM 根证书，用于解密 HTTPS 流量。安装后还需在「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任。",
+            "PayloadDescription": "FlClash MITM 根证书，用于解密 HTTPS 流量。安装后还需在「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任。",
             // com.apple.security.root 的 PayloadContent 必须是 Data
             // 类型（plist 里写成 <data>，即 base64）；写成 String
             // 会被描述文件安装器拒绝。PropertyListSerialization
@@ -100,7 +100,7 @@ enum MobileConfigInstaller {
             "PayloadUUID": UUID().uuidString,
             "PayloadVersion": 1,
             "PayloadDisplayName": displayName,
-            "PayloadDescription": "安装 Concord MITM 根证书（CA）。安装后还需在「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任，MITM 才能解密 HTTPS。",
+            "PayloadDescription": "安装 FlClash MITM 根证书（CA）。安装后还需在「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任，MITM 才能解密 HTTPS。",
             "PayloadContent": [certPayload],
         ]
         do {

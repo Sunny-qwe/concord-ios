@@ -10,7 +10,7 @@ import Security
 //
 // Trust check (FlClash: lib/common/mitm_trust.dart
 // IOSMitmTrustStore.check): the core signs a leaf for
-// mitm-check.concord.invalid and the leaf is evaluated against the
+// mitm-check.flclash.invalid and the leaf is evaluated against the
 // system trust store with SecTrust. It only runs locally and never
 // leaves the device: a pass means the CA is installed AND fully
 // trusted; a fail means it is missing or its "fully trust" switch
@@ -42,13 +42,13 @@ struct MitmCertificateView: View {
     var body: some View {
         List {
             Section {
-                Text("安装分两步：① 点下面的「安装描述文件」，系统会打开安装页面，按提示装好描述文件（装完后在「设置 → 通用 → VPN 与设备管理」里能看到它）；② 去「设置 → 通用 → 关于本机 → 证书信任设置」里打开 Concord CA 的完全信任。应用本身装不了系统证书，这两步都要手动完成。")
+                Text("安装分两步：① 点下面的「安装描述文件」，系统会打开安装页面，按提示装好描述文件（装完后在「设置 → 通用 → VPN 与设备管理」里能看到它）；② 去「设置 → 通用 → 关于本机 → 证书信任设置」里打开 FlClash CA 的完全信任。应用本身装不了系统证书，这两步都要手动完成。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             caCertificateSection
             Section("信任检测") {
-                Text("检测会请核心签发一张 mitm-check.concord.invalid 的叶证书，再用系统信任库验证它（只在本地验证，不联网）。通过 = CA 已安装且已完全信任；不通过 = CA 还没装，或装了但没在「证书信任设置」里打开完全信任——本应用无法区分这两种情况。")
+                Text("检测会请核心签发一张 mitm-check.flclash.invalid 的叶证书，再用系统信任库验证它（只在本地验证，不联网）。通过 = CA 已安装且已完全信任；不通过 = CA 还没装，或装了但没在「证书信任设置」里打开完全信任——本应用无法区分这两种情况。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 if let trustResult {
@@ -339,7 +339,7 @@ struct MitmCertificateView: View {
             case .success:
                 installHint = nil
                 installFailed = false
-                installMessage = "已交给系统打开安装页面：按提示装好描述文件，然后去「设置 → 通用 → 关于本机 → 证书信任设置」里打开 Concord CA 的完全信任，再回来点「检测信任状态」确认。"
+                installMessage = "已交给系统打开安装页面：按提示装好描述文件，然后去「设置 → 通用 → 关于本机 → 证书信任设置」里打开 FlClash CA 的完全信任，再回来点「检测信任状态」确认。"
             case .failure(let error):
                 installFailed = true
                 installMessage = "打不开安装页面：\(error.localizedDescription)。可以改用下面的「导出 CA 证书（PEM）」把证书发到电脑上安装。"
@@ -352,11 +352,11 @@ struct MitmCertificateView: View {
     /// Documents is visible in the Files app.
     private func exportCA(pem: String) {
         let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Concord-CA.pem")
+            .appendingPathComponent("FlClash CA.crt")
         guard let url else { return }
         do {
             try pem.write(to: url, atomically: true, encoding: .utf8)
-            caExportMessage = "CA 证书已保存到「文件」：Concord-CA.pem"
+            caExportMessage = "CA 证书已保存到「文件」：FlClash CA.crt"
             showCAExportAlert = true
         } catch {
             installFailed = true
@@ -510,8 +510,8 @@ struct MitmCertificateView: View {
 /// the explanation in the message).
 private struct MitmTrustResult {
     /// The leaf the core signs for the trust store to verify
-    /// (FlClash mitmCheckHost, renamed for this app).
-    static let checkHost = "mitm-check.concord.invalid"
+    /// (FlClash mitmCheckHost).
+    static let checkHost = "mitm-check.flclash.invalid"
 
     var isReady: Bool
     var message: String
@@ -848,7 +848,7 @@ private struct HostnameRowView: View {
 // MARK: - MITM options (MuYu 选项 page, v0.2.68)
 // An independent page reached from 进阶配置 → MITM → 选项:
 //   card 1: 抓包 status row (tap toggles) + 重启隧道 row
-//   card 2: CA card (Concord CA, trust status, regenerate)
+//   card 2: CA card (FlClash CA, trust status, regenerate)
 //   card 3: the four toggles in the video's order
 // The video has no "解密 TLS" toggle and no trusted-fingerprint
 // input here — 解密 TLS stays on the certificate page, and the
@@ -925,7 +925,7 @@ struct MitmOptionsView: View {
                         .foregroundStyle(.green)
                         .frame(width: 36, height: 36)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Concord CA")
+                        Text("FlClash CA")
                             .font(.footnote.weight(.semibold))
                         Text(trustStatusText)
                             .font(.caption)

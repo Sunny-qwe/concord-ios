@@ -216,9 +216,7 @@ final class LogStore: ObservableObject {
     /// device: query/form values after token/secret/password/auth/
     /// api-key names, and the password part of user:password@ in
     /// URLs (subscription links). Everything else is left verbatim
-    /// — the point of the export is the real error text. Internal
-    /// (not private): DiagnosticsView reuses it for its redacted
-    /// recent-issues rows (upstream diagnostics.dart redactDiagnostic).
+    /// — the point of the export is the real error text.
     static func redactForExport(_ text: String) -> String {
         let patterns = [
             "([?&](token|secret|password|passwd|auth|api[-_]?key|access[-_]?key)[=:])[^&\\s]*",

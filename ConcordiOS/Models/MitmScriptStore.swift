@@ -85,7 +85,7 @@ final class MitmScriptStore: ObservableObject {
     }
 
     /// Re-read the script registry from disk (used after a backup
-    /// restore). Note: MitmScriptsView owns a private
+    /// restore). Note: ScriptsView owns a private
     /// MitmScriptStore instance, so BackupView cannot reach it —
     /// the page re-loads from disk the next time it opens.
     func reload() {

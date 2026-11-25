@@ -2470,7 +2470,7 @@ final class ConcordClient: ObservableObject {
     /// the probe like normal traffic (upstream crates/engine/src/
     /// probe/fetch.rs: only a non-empty proxy pins the dial) — that
     /// is FlClash's `routedOutbound` case, what the no-arg callers
-    /// (TrafficStore, DiagnosticsView) want. `urls` nil races
+    /// (TrafficStore) want. `urls` nil races
     /// FlClash's ip-info sources (concordOutboundIpUrls); `timeout`
     /// defaults to FlClash's 6 s (outboundIpTimeoutDuration).
     func probeOutboundIp(proxy: String = "", urls: [String]? = nil, timeout: UInt64? = 6000) async throws -> ConcordOutboundIp {

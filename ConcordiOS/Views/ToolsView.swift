@@ -10,7 +10,7 @@ import SwiftUI
 //                v0.2.40–v0.2.67 曾始终显示，因用户找不到日志入口——
 //                恢复开关后默认关闭会再次隐藏入口，见 ToolsView 日志行注释）
 //   设置         语言（值 "默认"）/ 主题 / 字体 / 应用图标 / 图标集 /
-//                备份与恢复 / 可靠性中心 / 进阶配置 / MITM模块 /
+//                备份与恢复 / 进阶配置 / MITM模块 /
 //                MITM证书设置 / 常规 / 本地网络设置 / 回环保护
 //   其他         免责声明 / 开发者模式（仅当开发者模式开启时显示）/ 关于
 // Rows are 56pt tall, section labels 13pt semibold grey, card
@@ -25,9 +25,9 @@ import SwiftUI
 // so no functionality is lost.
 
 /// Tools destinations, navigated programmatically (see below).
-/// Internal (not private): the Advanced hub and the Diagnostics
-/// hub live in their own files and append their sub-pages to the
-/// same path through one .navigationDestination.
+/// Internal (not private): the Advanced hub lives in its own
+/// file and appends its sub-pages to the same path through one
+/// .navigationDestination.
 enum ToolsDestination: Hashable {
     case requests
     case dns
@@ -39,14 +39,11 @@ enum ToolsDestination: Hashable {
     case appIcon
     case iconSets
     case backup
-    case diagnostics
-    case diagnosticsHealth
-    case diagnosticsAudit
-    case diagnosticsPreflight
     case config
     case advancedNetwork
     case advancedDns
     case advancedRules
+    case advancedScripts
     case advancedProxies
     case advancedProviders
     case advancedFilters
@@ -157,8 +154,6 @@ struct ToolsView: View {
                         Divider().padding(.leading, 54)
                         ToolRow(icon: "arrow.clockwise.icloud", title: "tools.backup".l10n) { navPath.append(.backup) }
                         Divider().padding(.leading, 54)
-                        ToolRow(icon: "heart.text.square", title: "tools.diagnostics".l10n) { navPath.append(.diagnostics) }
-                        Divider().padding(.leading, 54)
                         ToolRow(icon: "wrench", title: "tools.advanced".l10n) { navPath.append(.config) }
                         Divider().padding(.leading, 54)
                         ToolRow(icon: "puzzlepiece", title: "tools.mitmModules".l10n) { navPath.append(.mitmModules) }
@@ -214,14 +209,11 @@ struct ToolsView: View {
                 case .appIcon: AppIconPickerView()
                 case .iconSets: IconSetsView()
                 case .backup: BackupView()
-                case .diagnostics: DiagnosticsView(navigate: { navPath.append($0) })
-                case .diagnosticsHealth: NetworkHealthView()
-                case .diagnosticsAudit: ModuleAuditView(navigate: { navPath.append($0) })
-                case .diagnosticsPreflight: ConfigPreflightView(navigate: { navPath.append($0) })
                 case .config: AdvancedConfigView(navigate: { navPath.append($0) })
                 case .advancedNetwork: NetworkSettingsView()
                 case .advancedDns: DnsSettingsView()
                 case .advancedRules: AddedRulesView()
+                case .advancedScripts: ScriptsView()
                 case .advancedProxies: CustomProxiesView()
                 case .advancedProviders: ProvidersView()
                 case .advancedFilters: FiltersView()

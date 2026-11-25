@@ -199,10 +199,10 @@ struct ExtendConfigView: View {
                         setDraft { $0.scriptEnabled = true; $0.scriptText = content }
                     }
                     NavigationLink {
-                        MitmScriptsView().concordNavBarBackground()
+                        ScriptsView().concordNavBarBackground()
                     } label: {
                         HStack {
-                            Text("管理 MITM 脚本")
+                            Text("前往配置脚本")
                             Spacer()
                             Text("\(scriptStore.scripts.count) 个")
                                 .foregroundStyle(.secondary)

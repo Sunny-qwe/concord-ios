@@ -34,18 +34,6 @@ struct MitmModuleError: Error {
     let message: String
 }
 
-/// One module's parse report for the 可靠性中心 -> 模块审计 page
-/// (FlClash: DiagnosticsView ModuleAudit).
-struct ModuleAudit: Identifiable {
-    var id: String { module.id }
-    let module: MitmModule
-    let rules: Int
-    let scripts: Int
-    let hostnames: Int
-    let skipped: [String]
-    let missingResources: [String]
-}
-
 struct MitmModule: Codable, Equatable, Hashable, Identifiable {
     var id: String
     var name: String
@@ -398,26 +386,6 @@ final class MitmModuleStore: ObservableObject {
     func parsedContent(for module: MitmModule) -> MitmModuleContent? {
         guard let text = readText(module) else { return nil }
         return MitmModuleParser.parse(text: text, values: module.arguments, resources: module.resources)
-    }
-
-    /// A per-module parse report (FlClash: 可靠性中心 -> 模块审计）:
-    /// how many rules / scripts / hostnames the module contributes,
-    /// what the parser skipped, and which downloaded resources are
-    /// missing from disk. Nil when the module's text file is missing.
-    func audit(module: MitmModule) -> ModuleAudit? {
-        guard let content = parsedContent(for: module) else { return nil }
-        let missingResources = module.resources.filter { _, hash in
-            guard let dir = resourcesDirectoryURL else { return true }
-            return !FileManager.default.fileExists(atPath: dir.appendingPathComponent(hash).path)
-        }.map(\.key)
-        return ModuleAudit(
-            module: module,
-            rules: content.rules.count,
-            scripts: content.declaredScripts,
-            hostnames: content.hostname.count + content.insertedHostname.count,
-            skipped: content.skipped.map { "\($0.section)：\($0.line)（\($0.reason.label)）" },
-            missingResources: missingResources
-        )
     }
 
     /// Parses a module with the core (mitm.readModule, upstream
@@ -1602,7 +1570,7 @@ final class MitmModuleStore: ObservableObject {
 // Module / script downloads used to ignore the HTTP response, so a
 // dead link's 404 HTML error page was stored as a module or a .js
 // resource for the core to run. Every download in this file,
-// MitmScriptStore and MitmScriptsView goes through here: non-2xx
+// MitmScriptStore and ScriptsView goes through here: non-2xx
 // and HTML error pages fail with an honest error and are never
 // stored.
 

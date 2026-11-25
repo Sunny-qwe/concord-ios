@@ -10,9 +10,11 @@ import SwiftUI
 // 过滤器）. Icons follow the video's glyphs (see advancedRow
 // call sites).
 //
-// 脚本 is a real row that opens an honest alert: concord has no
-// script-loading API (only MITM scripts, which live under MITM
-// 模块）, so there is no scripts list to show — nothing is faked.
+// 脚本 is a real row that opens the Scripts page (FlClash:
+// views/config/scripts.dart) — the standalone script library
+// (list / import / edit / sync / delete), stored as registry
+// + `<id>.js` files. A script is a `main(config)` transform
+// used by profile 扩展脚本模式.
 //
 // 编辑配置 (YAML) is KEPT: the Advanced row edits the current
 // (merged) config text via ConfigEditorView(), and the only other
@@ -29,7 +31,6 @@ struct AdvancedConfigView: View {
 
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var moduleStore: MitmModuleStore
-    @State private var showScriptAlert = false
 
     private var moduleCountText: String { "\(moduleStore.modules.count) 项" }
 
@@ -47,23 +48,7 @@ struct AdvancedConfigView: View {
                 advancedRow(icon: "key", title: "网络", destination: .advancedNetwork)
                 advancedRow(icon: "server.rack", title: "DNS", destination: .advancedDns)
                 advancedRow(icon: "list.bullet.rectangle", title: "附加规则", destination: .advancedRules)
-                Button {
-                    showScriptAlert = true
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "chevron.left.forwardslash.chevron.right")
-                            .font(.system(size: 18, weight: .regular))
-                            .foregroundStyle(ConcordTheme.accent)
-                            .frame(width: 24)
-                        Text("脚本")
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
+                advancedRow(icon: "chevron.left.forwardslash.chevron.right", title: "脚本", destination: .advancedScripts)
             }
             Section("自定义") {
                 advancedRow(icon: "globe", title: "代理", destination: .advancedProxies)
@@ -104,11 +89,6 @@ struct AdvancedConfigView: View {
         .font(.footnote.weight(.semibold))
         .navigationTitle("进阶配置")
         .navigationBarTitleDisplayMode(.inline)
-        .alert("脚本", isPresented: $showScriptAlert) {
-            Button("common.ok".l10n, role: .cancel) {}
-        } message: {
-            Text("核心没有加载 Clash 脚本的接口，无法提供脚本列表。脚本只存在于 MITM 模块里（MITM 模块页）。")
-        }
     }
 
     private func advancedRow(icon: String, title: String, destination: ToolsDestination) -> some View {

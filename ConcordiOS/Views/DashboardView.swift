@@ -835,6 +835,12 @@ struct DashboardView: View {
                 ConnectionsView(initialFeed: .live, sheetChrome: true)
             case .recent:
                 ConnectionsView(initialFeed: .recent, sheetChrome: true)
+            case .dns:
+                // v0.2.111: .dns is presented by the ContentView
+                // overlay, never by this sheet (the binding maps
+                // it to nil) — unreachable, but the switch must
+                // be exhaustive.
+                EmptyView()
             }
         }
         .presentationDetents([.fraction(0.5625), .fraction(0.9)])

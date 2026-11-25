@@ -644,7 +644,11 @@ struct ContentView: View {
 /// block list scrolling. Drag up on the header grows toward 0.9,
 /// drag down follows the finger; on release a far drag (>140pt)
 /// dismisses, a short drag down from the tall detent steps back to
-/// 0.5625, otherwise it snaps to the nearest detent.
+/// 0.5625, a clear upward drag (or an upward fling) settles at
+/// 0.9 (v0.2.119), otherwise it snaps to the nearest detent.
+/// v0.2.119: dragging the LIST up at the top grows the sheet too,
+/// via the UIKit pan bridge (SheetListDragPan) — the v0.2.118
+/// simultaneous-gesture mechanism never delivered and is gone.
 ///
 /// Keyboard: the sheet's search field opens the keyboard, which
 /// would cover the floating search bar (the system sheet moved
@@ -687,7 +691,7 @@ private struct DnsSheetOverlay: View {
                     // never scrolled.
                     DnsQueriesView(mode: .sheet, onClose: onDismiss,
                                    onSheetDragChanged: { sheetDragChanged($0, screenHeight: geo.size.height) },
-                                   onSheetDragEnded: { sheetDragEnded($0) })
+                                   onSheetDragEnded: { sheetDragEnded($0, velocity: $1) })
                     // Bottom strip: the home-indicator safe area
                     // normally, the keyboard height while the
                     // search field is focused — the sheet's
@@ -728,11 +732,17 @@ private struct DnsSheetOverlay: View {
 
     /// Sheet-drag handlers (v0.2.114): driven by the drag gesture
     /// on DnsQueriesView's header (see the callbacks passed
-    /// above), NOT by a gesture on this container. Same rules as
-    /// before: drag up grows toward 0.9, drag down follows the
-    /// finger; on release a far drag (>140pt) dismisses, a short
-    /// drag down from the tall detent steps back to 0.5625,
-    /// otherwise it snaps to the nearest detent.
+    /// above) and, since v0.2.119, by the UIKit pan bridge on the
+    /// list (SheetListDragPan) — NOT by a gesture on this
+    /// container. Same rules as before: drag up grows toward 0.9,
+    /// drag down follows the finger; on release a far drag
+    /// (>140pt) dismisses, a short drag down from the tall detent
+    /// steps back to 0.5625, a clear upward drag (net translation
+    /// <= -20pt) or an upward fling (release velocity <= -200
+    /// pt/s) settles at 0.9 — the old nearest-detent snap sent any
+    /// upward drag under ~180pt back to the short detent, so
+    /// dragging the list up never expanded the sheet — otherwise
+    /// it snaps to the nearest detent.
     private func sheetDragChanged(_ translation: CGFloat, screenHeight: CGFloat) {
         if !dragging {
             dragging = true
@@ -749,7 +759,7 @@ private struct DnsSheetOverlay: View {
         }
     }
 
-    private func sheetDragEnded(_ translation: CGFloat) {
+    private func sheetDragEnded(_ translation: CGFloat, velocity: CGFloat = 0) {
         dragging = false
         if translation > 140 {
             // Dragged far down: dismiss (the overlay
@@ -760,6 +770,18 @@ private struct DnsSheetOverlay: View {
             // back to the short detent, not a dismiss.
             withAnimation(.easeOut(duration: 0.25)) {
                 heightFraction = minFraction
+                dragOffset = 0
+            }
+        } else if translation <= -20 || velocity <= -200 {
+            // v0.2.119: a clear upward drag — or an upward fling,
+            // even a short one — settles at the tall detent.
+            // velocity is pt/s, upward negative; the header
+            // passes 0 (DragGesture.Value exposes no public
+            // velocity) and relies on the translation branch,
+            // the UIKit list bridge passes the real release
+            // velocity.
+            withAnimation(.easeOut(duration: 0.25)) {
+                heightFraction = maxFraction
                 dragOffset = 0
             }
         } else {
@@ -787,8 +809,12 @@ private struct DnsSheetOverlay: View {
 /// unscrollable on v0.2.113. Drag up on the header grows toward
 /// 0.9, drag down follows the finger; on release a far drag
 /// (>140pt) dismisses, a short drag down from the tall detent
-/// steps back to 0.5625, otherwise it snaps to the nearest
-/// detent.
+/// steps back to 0.5625, a clear upward drag (or an upward fling)
+/// settles at 0.9 (v0.2.119), otherwise it snaps to the nearest
+/// detent. v0.2.119: dragging the LIST up at the top grows the
+/// sheet too, via the UIKit pan bridge (SheetListDragPan) — the
+/// v0.2.118 simultaneous-gesture mechanism never delivered and
+/// is gone.
 ///
 /// Keyboard: the sheet's floating search bar opens the keyboard,
 /// which would cover it (the system sheet moved out of the way
@@ -832,7 +858,7 @@ private struct ConnectionsSheetOverlay: View {
                     // and the list never scrolled.
                     ConnectionsView(initialFeed: feed, sheetChrome: true, onClose: onDismiss,
                                     onSheetDragChanged: { sheetDragChanged($0, screenHeight: geo.size.height) },
-                                    onSheetDragEnded: { sheetDragEnded($0) })
+                                    onSheetDragEnded: { sheetDragEnded($0, velocity: $1) })
                     // Bottom strip: the home-indicator safe area
                     // normally, the keyboard height while the
                     // search field is focused — the sheet's
@@ -873,11 +899,17 @@ private struct ConnectionsSheetOverlay: View {
 
     /// Sheet-drag handlers (v0.2.114): driven by the drag gesture
     /// on ConnectionsView's header (see the callbacks passed
-    /// above), NOT by a gesture on this container. Same rules as
-    /// before: drag up grows toward 0.9, drag down follows the
-    /// finger; on release a far drag (>140pt) dismisses, a short
-    /// drag down from the tall detent steps back to 0.5625,
-    /// otherwise it snaps to the nearest detent.
+    /// above) and, since v0.2.119, by the UIKit pan bridge on the
+    /// list (SheetListDragPan) — NOT by a gesture on this
+    /// container. Same rules as before: drag up grows toward 0.9,
+    /// drag down follows the finger; on release a far drag
+    /// (>140pt) dismisses, a short drag down from the tall detent
+    /// steps back to 0.5625, a clear upward drag (net translation
+    /// <= -20pt) or an upward fling (release velocity <= -200
+    /// pt/s) settles at 0.9 — the old nearest-detent snap sent any
+    /// upward drag under ~180pt back to the short detent, so
+    /// dragging the list up never expanded the sheet — otherwise
+    /// it snaps to the nearest detent.
     private func sheetDragChanged(_ translation: CGFloat, screenHeight: CGFloat) {
         if !dragging {
             dragging = true
@@ -894,7 +926,7 @@ private struct ConnectionsSheetOverlay: View {
         }
     }
 
-    private func sheetDragEnded(_ translation: CGFloat) {
+    private func sheetDragEnded(_ translation: CGFloat, velocity: CGFloat = 0) {
         dragging = false
         if translation > 140 {
             // Dragged far down: dismiss (the overlay
@@ -905,6 +937,18 @@ private struct ConnectionsSheetOverlay: View {
             // back to the short detent, not a dismiss.
             withAnimation(.easeOut(duration: 0.25)) {
                 heightFraction = minFraction
+                dragOffset = 0
+            }
+        } else if translation <= -20 || velocity <= -200 {
+            // v0.2.119: a clear upward drag — or an upward fling,
+            // even a short one — settles at the tall detent.
+            // velocity is pt/s, upward negative; the header
+            // passes 0 (DragGesture.Value exposes no public
+            // velocity) and relies on the translation branch,
+            // the UIKit list bridge passes the real release
+            // velocity.
+            withAnimation(.easeOut(duration: 0.25)) {
+                heightFraction = maxFraction
                 dragOffset = 0
             }
         } else {

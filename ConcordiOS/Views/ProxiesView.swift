@@ -467,6 +467,33 @@ struct ProxiesView: View {
         }
     }
 
+    /// Explicit empty state for an expanded group with no nodes
+    /// to show (v0.2.119 FIX 2): without it an expansion renders
+    /// an empty grid and reads as "no response" apart from the
+    /// chevron / triangle swap — in card style the only other
+    /// change is the magnifier appearing. A group CAN be empty
+    /// while having members: in the local YAML fallback a
+    /// `use:`-only group whose http provider has no cached file
+    /// resolves to zero members (ProfileStore
+    /// .resolveProviderNodes returns [] — the nodes stay unknown
+    /// until the tunnel runs), and a group filter matching
+    /// nothing does the same. The live path resolves `use:` in
+    /// the core, so this is mainly the VPN-off fallback; a
+    /// per-group search matching nothing says so instead of
+    /// "暂无节点".
+    private func emptyNodesRow(for group: ProxyGroup) -> some View {
+        let searching = !(groupSearchKeywords[group.name] ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+        return HStack(spacing: 6) {
+            Image(systemName: "tray")
+                .font(.system(size: 13))
+            Text(searching ? "无匹配节点" : "暂无节点")
+                .font(.callout)
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.vertical, 14)
+    }
+
     /// Raw groups keyed by name, built once per content pass and
     /// threaded to the per-row helpers below, so they stop
     /// re-scanning proxyStore.groups per row. First wins — the
@@ -1715,10 +1742,14 @@ struct ProxiesView: View {
                                             iconGroupCard(group, groupsByName: groupsByName)
                                                 .equatable()
                                                 .id(groupHeaderID(group.name))
-                                            LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
-                                                ForEach(displayNodes(for: group)) { node in
-                                                    nodeCard(node, in: group, groupsByName: groupsByName)
-                                                        .id(scrollID(nodeName: node.name, groupName: group.name))
+                                            if displayNodes(for: group).isEmpty {
+                                                emptyNodesRow(for: group)
+                                            } else {
+                                                LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
+                                                    ForEach(displayNodes(for: group)) { node in
+                                                        nodeCard(node, in: group, groupsByName: groupsByName)
+                                                            .id(scrollID(nodeName: node.name, groupName: group.name))
+                                                    }
                                                 }
                                             }
                                         }
@@ -2019,19 +2050,25 @@ struct ProxiesView: View {
             onTestAll: { Task { await proxyStore.testLatency(group: group) } },
             onSearch: { isSearching = true }
         ) {
-            LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
-                ForEach(nodes) { node in
-                    // v0.2.88: List-expanded nodes use the page
-                    // fill (grey in light mode) so they read as
-                    // rounded cards on the white group interior —
-                    // MuYu's node is one level above its scope.
-                    // Tab / Card / search keep the white default.
-                    nodeCard(node, in: group, groupsByName: groupsByName, fill: ConcordTheme.pageBackground)
-                        .id(scrollID(nodeName: node.name, groupName: group.name))
+            if nodes.isEmpty {
+                emptyNodesRow(for: group)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
+            } else {
+                LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
+                    ForEach(nodes) { node in
+                        // v0.2.88: List-expanded nodes use the page
+                        // fill (grey in light mode) so they read as
+                        // rounded cards on the white group interior —
+                        // MuYu's node is one level above its scope.
+                        // Tab / Card / search keep the white default.
+                        nodeCard(node, in: group, groupsByName: groupsByName, fill: ConcordTheme.pageBackground)
+                            .id(scrollID(nodeName: node.name, groupName: group.name))
+                    }
                 }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 12)
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
         }
         .equatable()
     }
@@ -2429,11 +2466,15 @@ private struct IconGroupCard: View, Equatable {
             && lhs.searchOpen == rhs.searchOpen
     }
 
+    /// The card metrics tuple, named so cardContent / nameRow can
+    /// take it without repeating the tuple type.
+    private typealias CardMetrics = (inset: CGFloat, nameIconGap: CGFloat, metaGap: CGFloat, bottomGap: CGFloat, brandSize: CGFloat)
+
     /// Card metrics (MuYu icon_card.dart _cardMetrics, lines 20–49):
     /// inset, name↔icon gap, meta gap, bottom gap, brand icon size.
     /// Same switch as ProxiesView.iconCardMetrics — the struct
     /// derives them from cardType instead of reading the store.
-    private static func metrics(for cardType: ProxyStyleStore.CardType) -> (inset: CGFloat, nameIconGap: CGFloat, metaGap: CGFloat, bottomGap: CGFloat, brandSize: CGFloat) {
+    private static func metrics(for cardType: ProxyStyleStore.CardType) -> CardMetrics {
         switch cardType {
         case .compact: return (8, 6, 4, 8, 40)
         case .standard: return (12, 8, 6, 8, 48)
@@ -2443,21 +2484,56 @@ private struct IconGroupCard: View, Equatable {
 
     var body: some View {
         let m = Self.metrics(for: cardType)
-        // A tap gesture, NOT a Button: the card holds the latency
-        // pill Button and the search TextField, and a Button label
-        // swallows their touches (tapping the field would collapse
-        // the card instead of focusing it). The pill Button and the
-        // field take priority over this gesture for their own taps.
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: m.nameIconGap) {
-                Text(name)
-                    .font(.callout)
-                    .fontWeight(.bold)
-                    .lineLimit(1)
-                Spacer()
-                if iconStyle != .hidden {
-                    GroupBrandIconView(icon: icon, name: name, size: m.brandSize, iconStyle: iconStyle)
+        // The collapsed card is a real Button (v0.2.119 FIX 2,
+        // same pattern as ListGroupCard in v0.2.118): the old
+        // .onTapGesture on this Equatable card never fired
+        // on-device (v0.2.117 — every group card untappable in
+        // card style), and a Button's action is dispatched at tap
+        // time through the responder chain. The collapsed card
+        // DOES hold one inner Button — the latency pill, shown
+        // whenever a node is selected — and SwiftUI gives the
+        // innermost Button the tap, so tapping the pill still
+        // tests the group instead of expanding it; taps anywhere
+        // else expand/collapse. Expanded, the card also holds the
+        // search TextField, and a Button wrapping a TextField
+        // swallows its focus (the reason for the old gesture),
+        // so the expanded card is NOT wrapped: only its name row
+        // is a Button, which collapses. The search control and
+        // the latency pill keep working untouched in both states.
+        if expanded {
+            cardContent(m: m)
+        } else {
+            Button(action: { tapAction() }) {
+                cardContent(m: m)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    /// The Button action, shared by the collapsed wrap and the
+    /// expanded name row: records the proof line, then runs the
+    /// parent's tap (pick in picker mode, else toggle expand in
+    /// the store — toggleExpanded records its own line, so one
+    /// tap must produce both lines in the log export).
+    private func tapAction() {
+        ProxyTapDiagnostics.record("IconGroupCard button fired: \(name) (expanded=\(expanded))")
+        onTap()
+    }
+
+    /// The card's rows (name / subtitle / selected node + pill),
+    /// without any tap handling: the caller wraps it in a Button
+    /// when collapsed, and the name row is itself a Button when
+    /// expanded (see body). Visuals unchanged from the old
+    /// .onTapGesture version.
+    private func cardContent(m: CardMetrics) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if expanded {
+                Button(action: { tapAction() }) {
+                    nameRow(m: m)
                 }
+                .buttonStyle(.plain)
+            } else {
+                nameRow(m: m)
             }
             Spacer().frame(height: m.metaGap)
             HStack(spacing: 8) {
@@ -2527,7 +2603,22 @@ private struct IconGroupCard: View, Equatable {
         .frame(height: expanded ? nil : collapsedHeight, alignment: .top)
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
         .contentShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-        .onTapGesture(perform: onTap)
+    }
+
+    /// The top row: group name + brand icon. A Button by itself
+    /// only when expanded (collapsed, the whole card is already
+    /// the Button — see body).
+    private func nameRow(m: CardMetrics) -> some View {
+        HStack(alignment: .top, spacing: m.nameIconGap) {
+            Text(name)
+                .font(.callout)
+                .fontWeight(.bold)
+                .lineLimit(1)
+            Spacer()
+            if iconStyle != .hidden {
+                GroupBrandIconView(icon: icon, name: name, size: m.brandSize, iconStyle: iconStyle)
+            }
+        }
     }
 
     /// Per-group search (MuYu GroupSearchControl, common.dart):
@@ -2749,7 +2840,7 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
                 headerContent
                     .padding(6)
             } else {
-                Button(action: onToggleExpand) {
+                Button(action: { tapAction() }) {
                     headerContent
                         .padding(6)
                 }
@@ -2760,6 +2851,17 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
             }
         }
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    /// The collapsed header's Button action (v0.2.119 FIX 2):
+    /// records the proof line, then toggles the store — the same
+    /// two-line proof as IconGroupCard, so one tap in either
+    /// style must produce both lines in the log export. (The
+    /// expanded triangle Button keeps calling onToggleExpand
+    /// directly; its proof is toggleExpanded's own line.)
+    private func tapAction() {
+        ProxyTapDiagnostics.record("ListGroupCard button fired: \(name) (expanded=\(expanded))")
+        onToggleExpand()
     }
 
     /// The header row: brand icon + name / selected node on the

@@ -1064,8 +1064,10 @@ final class TunnelManager: ObservableObject {
     /// to hang every live call forever). The deadline comes from the
     /// method, FlClash's values (lib/core/interface.dart,
     /// lib/common/constant.dart): delay calls 30 s
-    /// (delayTestGuardDuration), snapshots / probes and everything
-    /// else 10 s (_snapshotTimeout), slow config / profile / provider
+    /// (delayTestGuardDuration), probe.outboundIp 30 s too
+    /// (v0.2.119 Fix 1 — the core-side fetch runs up to 15 s),
+    /// snapshots / other probes and everything else 10 s
+    /// (_snapshotTimeout), slow config / profile / provider
     /// / geo loads 60 s (the extension's own boot timeout for
     /// config.apply). An explicit timeoutSeconds overrides the table.
     private struct QueuedMessage {
@@ -1258,9 +1260,17 @@ final class TunnelManager: ObservableObject {
     /// to 8 s queueing + 8 s probing twice over, so they get the
     /// 30 s guard; config / profile / provider / geo work may
     /// download, so it gets 60 s; everything else answers fast or
-    /// the extension is dead, so 10 s.
+    /// the extension is dead, so 10 s. probe.outboundIp is the
+    /// one exception to the 10 s default: the core-side fetch
+    /// runs up to 15 s after 5 consecutive failures
+    /// (TrafficStore probeOutboundIpThroughCore,
+    /// OutboundIpParams.timeout), so the app-side deadline must
+    /// be longer than that or the 15 s attempt is killed at
+    /// 10 s and its late reply dropped (v0.2.119 Fix 1) — 30 s,
+    /// like delay.*.
     private static func timeoutForMethod(_ method: String) -> TimeInterval {
         if method.hasPrefix("delay.") { return 30 }
+        if method == "probe.outboundIp" { return 30 }
         if method.hasPrefix("config.") || method.hasPrefix("profile.")
             || method.hasPrefix("provider.") || method == "geo.update"
             || method == "ruleSet.compile" || method == "convert.subscription" {

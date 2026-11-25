@@ -32,6 +32,16 @@ struct IPLookupDiagnostics {
         return text
     }
 
+    /// The last recorded line only (v0.2.119 Fix 1): the status
+    /// card shows one secondary line under "IP 查询失败" instead
+    /// of the whole 8-line history (the Diagnostics hub that
+    /// would have shown it was deleted in v0.2.118, so the
+    /// recorded reason was invisible in the UI).
+    static func lastDiagnosticLine() -> String? {
+        guard let text = lastDiagnosticText() else { return nil }
+        return text.split(separator: "\n").map(String.init).last
+    }
+
     /// "source: <localizedDescription> (<domain> code <code>)" —
     /// the (domain, code) is what tells a DNS failure
     /// (NSURLErrorCannotFindHost, -1003) apart from a timeout
@@ -2720,6 +2730,13 @@ private struct StatusIpSlotView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var settingsStore: SettingsStore
 
+    /// v0.2.119 (Fix 1): the failure state grows to fit the
+    /// one-line recorded reason under the red error; the
+    /// success / loading states keep the 30 pt slot.
+    private var isFailed: Bool {
+        trafficStore.outboundIp == nil && trafficStore.outboundIpProbeFailed
+    }
+
     var body: some View {
         Group {
             if let ip = dashboardDisplayIp(coreIp: trafficStore.outboundIp) {
@@ -2730,16 +2747,30 @@ private struct StatusIpSlotView: View {
                     .font(.system(size: 24, weight: .bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
-            } else if trafficStore.outboundIp == nil && trafficStore.outboundIpProbeFailed {
-                Text("IP 查询失败")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
+            } else if isFailed {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("IP 查询失败")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                    // v0.2.119 (Fix 1): the recorded reason was
+                    // invisible in the UI — one secondary line
+                    // under the error, the last diagnostics line
+                    // (e.g. the core's error or the RPC timeout),
+                    // so a failed probe ships its cause.
+                    if let reason = IPLookupDiagnostics.lastDiagnosticLine() {
+                        Text(reason)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
             } else {
                 SkeletonBar(width: 140, height: 18, animated: true)
             }
         }
-        .frame(height: 30, alignment: .leading)
+        .frame(height: isFailed ? 48 : 30, alignment: .leading)
     }
 }
 

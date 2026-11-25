@@ -56,6 +56,44 @@ struct LatencyKey: Hashable {
     let name: String
 }
 
+// MARK: - Proxy group tap diagnostics (v0.2.119 FIX 2)
+//
+// On-device v0.2.117 every Proxies group card was untappable,
+// and v0.2.118's ListGroupCard Button conversion left the card
+// style (IconGroupCard) on .onTapGesture. These lines are the
+// proof whether a tap fires at all: each group-card Button
+// action records "button fired", and toggleExpanded records
+// "toggled" — one tap + log export distinguishes "the Button
+// never fired" from "the store never toggled". Same
+// UserDefaults ring buffer as IPLookupDiagnostics (last 8
+// lines), surfaced in LogStore.fullExportText.
+struct ProxyTapDiagnostics {
+    private static let storageKey = "concord.proxyTapDiagnostics"
+    private static let maxLines = 8
+
+    static func record(_ line: String) {
+        var lines = UserDefaults.standard.string(forKey: storageKey)
+            .map { $0.split(separator: "\n").map(String.init) } ?? []
+        lines.append("[\(timestamp())] \(line)")
+        if lines.count > maxLines {
+            lines.removeFirst(lines.count - maxLines)
+        }
+        UserDefaults.standard.set(lines.joined(separator: "\n"), forKey: storageKey)
+    }
+
+    static func lastDiagnosticText() -> String? {
+        guard let text = UserDefaults.standard.string(forKey: storageKey),
+              !text.isEmpty else { return nil }
+        return text
+    }
+
+    private static func timestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: Date())
+    }
+}
+
 final class ProxyStore: ObservableObject {
     @Published var isRunning = false
     /// Persistent "VPN enabled" switch (v0.2.115, upstream
@@ -114,12 +152,13 @@ final class ProxyStore: ObservableObject {
     /// Groups the user expanded in list / card style. FlClash's
     /// unfoldSet (models/profile.dart:78) defaults to {} — groups
     /// start collapsed — so this set starts empty too. Hoisted
-    /// out of ProxiesView's @State (v0.2.118): the group cards are
-    /// Equatable and their tap closures are excluded from ==, so a
-    /// card SwiftUI kept could hold a closure over the view's
-    /// @State that no longer fired — on-device (v0.2.117) every
-    /// group card was untappable. A store method on the stable
-    /// store reference can never go stale.
+    /// out of ProxiesView's @State (v0.2.118) so the group cards'
+    /// tap actions call a method on the stable store reference.
+    /// (v0.2.119 correction: the v0.2.118 comment blamed a stale
+    /// @State closure — that cannot be the cause, a closure over
+    /// @State still writes the shared storage. On-device the tap
+    /// gesture itself never fired, which is why both card styles
+    /// are real Buttons now; see IconGroupCard / ListGroupCard.)
     @Published var expandedGroups: Set<String> = []
 
     func toggleExpanded(_ name: String) {
@@ -128,6 +167,12 @@ final class ProxyStore: ObservableObject {
         } else {
             expandedGroups.insert(name)
         }
+        // On-device proof (v0.2.119 FIX 2): the v0.2.118 Button
+        // conversion is only proven when a tap lands here. The
+        // card Button records its own line (IconGroupCard /
+        // ListGroupCard tapAction), so "button fired" without this
+        // line means the action ran but the store never saw it.
+        ProxyTapDiagnostics.record("toggleExpanded \(name) → \(expandedGroups.contains(name) ? "展开" : "收起")")
     }
     /// When each testing group started its current run (v0.2.49):
     /// a run that never returns leaves its flag set forever, so

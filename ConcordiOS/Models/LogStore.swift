@@ -92,6 +92,10 @@ final class LogStore: ObservableObject {
         // when the main thread stops responding, so a freeze ships
         // its time + last user action in the export. Always present.
         sections.append("== 主线程卡死诊断 ==\n" + (MainThreadWatchdog.lastDiagnosticText() ?? "暂无记录（尚未检测到主线程卡死）"))
+        // Proxy group tap diagnostics (v0.2.119 FIX 2): one tap's
+        // "button fired" + "toggled" lines, so an untappable group
+        // card ships its proof in the export. Always present.
+        sections.append("== 代理组点按诊断 ==\n" + (ProxyTapDiagnostics.lastDiagnosticText() ?? "暂无记录（尚未点按代理组卡片）"))
         sections.append("== 应用内核心启动诊断 ==\n" + (AppCore.lastBootReportText() ?? "暂无记录（尚未在应用内启动过核心）"))
         sections.append("== 最近一次测速诊断 ==\n" + (AppCore.lastDelayTestReportText() ?? "暂无记录（尚未测速，或本次测速未写入诊断）"))
         // Per-profile delay diagnostics (v0.2.58): the section

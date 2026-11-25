@@ -112,9 +112,15 @@ enum ThemeNavBarStyle: String, CaseIterable, Identifiable {
 }
 
 /// FlClash's tab-switch animation (theme.dart _TabAnimationItem,
-/// enum.dart:825): slide or fade. Upstream default is fade
-/// (config defaults). Stored here; the tab container that applies
-/// it lives in ContentView, which reads this value.
+/// enum.dart:825): slide or fade. Upstream's config default is
+/// fade, but OUR default is slide (v0.2.105): our fade path
+/// cross-fades two different pages in a ZStack, so mid-switch
+/// both are visible at once and ghost over each other (Dashboard
+/// → Proxies shows both titles, "乱跳" on the user's video).
+/// Slide offsets the page strip instead, so only one page shows.
+/// Fade stays available in the picker for anyone who wants it.
+/// Stored here; the tab container that applies it lives in
+/// ContentView, which reads this value.
 enum ThemeTabAnimation: String, CaseIterable, Identifiable {
     case slide = "slide"
     case fade = "fade"
@@ -154,6 +160,11 @@ enum ThemeLiquidGlassMode: String, CaseIterable, Identifiable {
 final class ThemeStore: ObservableObject {
     static let shared = ThemeStore()
     static let storageKey = "ConcordiOS.theme.v1"
+    /// One-time v0.2.105 migration flag: a saved tabAnimation of
+    /// "fade" (the pre-0.2.105 default) is migrated to slide once
+    /// (see load()). Kept separate from the theme blob so the
+    /// migration does not re-run after a backup restore.
+    static let tabAnimationMigrationKey = "ConcordiOS.theme.tabAnimationMigratedToSlide.v1"
 
     @Published var appearance: ThemeAppearance = .system
     @Published var accent: ThemeAccent = .blue
@@ -171,8 +182,9 @@ final class ThemeStore: ObservableObject {
     /// follow the system size; on = the slider's DynamicTypeSize.
     @Published var textScaleEnabled: Bool = false
     @Published var textScale: Double = 1.0
-    /// Tab-switch animation (FlClash: slide / fade, default fade).
-    @Published var tabAnimation: ThemeTabAnimation = .fade
+    /// Tab-switch animation (FlClash: slide / fade; our default
+    /// slide since v0.2.105 — see the enum comment above).
+    @Published var tabAnimation: ThemeTabAnimation = .slide
     /// Liquid-glass mode (FlClash: none / standard / ultra,
     /// default none).
     @Published var liquidGlass: ThemeLiquidGlassMode = .none
@@ -258,11 +270,11 @@ final class ThemeStore: ObservableObject {
             navBarStyle = try c.decodeIfPresent(String.self, forKey: .navBarStyle) ?? "floating"
             textScaleEnabled = try c.decodeIfPresent(Bool.self, forKey: .textScaleEnabled) ?? false
             textScale = try c.decodeIfPresent(Double.self, forKey: .textScale) ?? 1.0
-            tabAnimation = try c.decodeIfPresent(String.self, forKey: .tabAnimation) ?? "fade"
+            tabAnimation = try c.decodeIfPresent(String.self, forKey: .tabAnimation) ?? "slide"
             liquidGlass = try c.decodeIfPresent(String.self, forKey: .liquidGlass) ?? "none"
         }
 
-        init(appearance: String, accent: String, customAccentHex: String?, customColors: [String], pureBlack: Bool, colorStyle: String, navBarStyle: String, textScaleEnabled: Bool, textScale: Double, tabAnimation: String = "fade", liquidGlass: String = "none") {
+        init(appearance: String, accent: String, customAccentHex: String?, customColors: [String], pureBlack: Bool, colorStyle: String, navBarStyle: String, textScaleEnabled: Bool, textScale: Double, tabAnimation: String = "slide", liquidGlass: String = "none") {
             self.appearance = appearance
             self.accent = accent
             self.customAccentHex = customAccentHex
@@ -294,8 +306,24 @@ final class ThemeStore: ObservableObject {
         navBarStyle = ThemeNavBarStyle(rawValue: saved.navBarStyle) ?? .floating
         textScaleEnabled = saved.textScaleEnabled
         textScale = saved.textScale
-        tabAnimation = ThemeTabAnimation(rawValue: saved.tabAnimation) ?? .fade
+        tabAnimation = ThemeTabAnimation(rawValue: saved.tabAnimation) ?? .slide
         liquidGlass = ThemeLiquidGlassMode(rawValue: saved.liquidGlass) ?? .none
+        // v0.2.105 migration: fade was the old default, and the
+        // fade cross-fade ghosts two pages over each other
+        // mid-switch (the "乱跳" the user reported on video), so a
+        // saved "fade" from the old-default era is migrated to
+        // slide once and persisted. The flag keeps this one-time:
+        // after migration, a user who explicitly picks fade in the
+        // picker keeps fade (load() then reads the saved value
+        // as-is). Fresh installs never hit this — the default is
+        // already slide. (The save runs last, after every property
+        // is loaded, so it cannot clobber a later field.)
+        if saved.tabAnimation == "fade",
+           !UserDefaults.standard.bool(forKey: Self.tabAnimationMigrationKey) {
+            tabAnimation = .slide
+            UserDefaults.standard.set(true, forKey: Self.tabAnimationMigrationKey)
+            save()
+        }
     }
 
     func save() {

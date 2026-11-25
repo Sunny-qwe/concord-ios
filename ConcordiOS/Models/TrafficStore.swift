@@ -1559,6 +1559,28 @@ final class TrafficStore: ObservableObject {
             lastError = error.localizedDescription
             outboundIpProbeFailed = true
             IPLookupDiagnostics.recordError(source: "probe.outboundIp", error: error)
+            // v0.2.122 diagnostic (not a fix): the extension
+            // answered nothing to probe.outboundIp 5× in 12 s
+            // (00:11 VPN-on test) although it had started OK —
+            // and the extension's handleAppMessage always replies
+            // within 15 s when reached, so a fast nil reply means
+            // the message never reached it or the IPC channel is
+            // down. Distinguish the two with one cheap unary IPC
+            // control call (core.stats, same sendProviderMessage
+            // path, side-effect-free): if it also fails with
+            // noReply the IPC channel is broken for all unary
+            // calls; if it succeeds the failure is specific to
+            // probe.outboundIp. Once per failure streak, so the
+            // 3 s retry loop does not spam it.
+            if usedExtensionCore, consecutiveExtensionProbeFailures == 1,
+               case TunnelError.noReply = error {
+                do {
+                    _ = try await client.coreStats()
+                    IPLookupDiagnostics.record("probe.outboundIp: noReply, control core.stats: ok (IPC works, failure is probe-specific)")
+                } catch {
+                    IPLookupDiagnostics.record("probe.outboundIp: noReply, control core.stats: \(error.localizedDescription)")
+                }
+            }
         }
     }
 

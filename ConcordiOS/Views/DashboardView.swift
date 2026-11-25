@@ -2660,12 +2660,23 @@ private struct DashboardTrafficEffects: View {
             // that poll: skip while neither the tunnel nor the in-app
             // core is running (refresh() would boot the core, but
             // there is nothing to snapshot yet).
+            // v0.2.122: the DNS stat had the identical appear-time
+            // freeze — dnsStore.refresh() ran once on appear (before
+            // any resolution had accumulated in the fresh session's
+            // dns.watch buffer, so a fresh launch read 0) and
+            // nothing re-read it afterwards, so the Dashboard showed
+            // 0 and the sheet "暂无 DNS 查询记录" even as the core
+            // kept resolving (00:11 VPN-on test). Poll it here too.
+            // The v0.2.111 publish suspension still defers the
+            // publish while the DNS sheet is open, so the freeze
+            // guard is unaffected.
             .task {
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     guard !Task.isCancelled else { break }
                     guard TunnelManager.shared.isRunning || AppCore.shared.isRunning else { continue }
                     await connectionStore.refresh()
+                    await dnsStore.refresh()
                 }
             }
             .onChange(of: proxyStore.isRunning) { _, running in

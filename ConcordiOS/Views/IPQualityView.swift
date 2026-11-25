@@ -88,6 +88,42 @@ struct IPQualityInfo: Codable {
         case qualityType, isProxy, isVpn, isTor, isAbuser, typeInferred
     }
 
+    /// v0.2.122: explicit lenient decoding — the synthesized init
+    /// throws keyNotFound for the defaulted `var` flags (isProxy
+    /// et al.) when the body carries no such keys, so a genuine
+    /// ip-api.com success answer (which returns `proxy`/`hosting`,
+    /// never `isProxy`/`isVpn`/`isTor`/`isAbuser`) failed to
+    /// decode on-device (keyNotFound "isProxy", 00:06:51 +
+    /// 00:11:29). Every field is decodeIfPresent; the flags
+    /// default to false. This fixes every IPQualityInfo decode
+    /// site (Dashboard enrichment, the IPQuality page parser,
+    /// the cache) at once.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
+        country = try container.decodeIfPresent(String.self, forKey: .country)
+        countryCode = try container.decodeIfPresent(String.self, forKey: .countryCode)
+        city = try container.decodeIfPresent(String.self, forKey: .city)
+        regionName = try container.decodeIfPresent(String.self, forKey: .regionName)
+        isp = try container.decodeIfPresent(String.self, forKey: .isp)
+        org = try container.decodeIfPresent(String.self, forKey: .org)
+        asn = try container.decodeIfPresent(String.self, forKey: .asn)
+        timezone = try container.decodeIfPresent(String.self, forKey: .timezone)
+        query = try container.decodeIfPresent(String.self, forKey: .query)
+        lat = try container.decodeIfPresent(Double.self, forKey: .lat)
+        lon = try container.decodeIfPresent(Double.self, forKey: .lon)
+        mobile = try container.decodeIfPresent(Bool.self, forKey: .mobile)
+        proxyFlag = try container.decodeIfPresent(Bool.self, forKey: .proxyFlag)
+        hosting = try container.decodeIfPresent(Bool.self, forKey: .hosting)
+        qualityType = try container.decodeIfPresent(IpQualityType.self, forKey: .qualityType)
+        isProxy = try container.decodeIfPresent(Bool.self, forKey: .isProxy) ?? false
+        isVpn = try container.decodeIfPresent(Bool.self, forKey: .isVpn) ?? false
+        isTor = try container.decodeIfPresent(Bool.self, forKey: .isTor) ?? false
+        isAbuser = try container.decodeIfPresent(Bool.self, forKey: .isAbuser) ?? false
+        typeInferred = try container.decodeIfPresent(Bool.self, forKey: .typeInferred) ?? false
+    }
+
     /// v0.2.121: `status` is optional here too — the property is
     /// `String?` (a body with no `status` key must still decode),
     /// and `assessed(...)` passes the property straight through.

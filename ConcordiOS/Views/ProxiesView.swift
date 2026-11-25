@@ -100,7 +100,19 @@ private struct ProxiesNavBarAppearance: UIViewControllerRepresentable {
     var background: UIColor
 
     func makeUIViewController(context: Context) -> UIViewController {
-        UIViewController()
+        // v0.2.122: the view is only a nav-bar styling hook — it
+        // never needs touches. A bare UIViewController's view is
+        // interaction-enabled by default, and as a full-page
+        // .background on the NavigationStack it is the prime
+        // suspect for the dead Proxies taps (4 fixes failed, all
+        // below this layer; introduced v0.2.108, first complaint
+        // ~1 h later on v0.2.109): if its view lands above the
+        // nav controller's view it swallows every touch while
+        // staying invisible. Non-interactive here is both the
+        // diagnostic and, if the theory holds, the fix.
+        let vc = UIViewController()
+        vc.view.isUserInteractionEnabled = false
+        return vc
     }
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {

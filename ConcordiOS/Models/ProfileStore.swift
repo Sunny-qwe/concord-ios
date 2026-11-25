@@ -459,6 +459,9 @@ final class ProfileStore: ObservableObject {
     init(client: ConcordClient = ConcordClient()) {
         self.client = client
         load()
+        // v0.2.105: reconstruct profiles orphaned by the Bundle ID
+        // change (see migrateOrphanedAppGroupProfilesIfNeeded).
+        migrateOrphanedAppGroupProfilesIfNeeded()
         // The sample profile is sample-mode data: seed it only while
         // the client is in .sample mode, never in .live mode.
         seedSampleIfNeeded()
@@ -480,6 +483,122 @@ final class ProfileStore: ObservableObject {
             Profile(name: "示例订阅", kind: .url, urlString: "https://example.com/subscribe.yaml", updatedAt: Date().addingTimeInterval(-3600), isActive: true)
         ]
         save()
+    }
+
+    /// v0.2.105 rebrand migration (Bundle ID change data loss):
+    /// profile METADATA (names, subscription URLs, active flag)
+    /// lives in UserDefaults.standard, which is PER-BUNDLE-ID — so
+    /// after the Bundle ID changed (com.concord.ios →
+    /// com.lumen.ios) the new app loads an EMPTY profile list, even
+    /// though the actual YAML files survived in the shared App
+    /// Group (<AppGroup>/profiles/*.yaml). Without this, Config /
+    /// Proxies show "暂无配置" / "暂无代理组" although the user's
+    /// subscriptions are sitting on disk. Reconstructs one Profile
+    /// per orphan YAML file when the list is empty.
+    /// Idempotent: only runs when profiles.isEmpty, and it saves
+    /// immediately, so a second launch finds a non-empty list.
+    /// Never overwrites a non-empty list; never deletes or modifies
+    /// the YAML files. Runs before seedSampleIfNeeded so real
+    /// profiles take precedence over the sample seed.
+    /// LIMITATION: the subscription URL lived only in the lost
+    /// UserDefaults metadata and is NOT recoverable from YAML
+    /// alone, so reconstructed profiles are kind .file with
+    /// urlString nil — they cannot auto-update until the user
+    /// re-enters the URL in the edit page (the note says so).
+    /// Never fabricate a URL.
+    private func migrateOrphanedAppGroupProfilesIfNeeded() {
+        guard profiles.isEmpty else { return }
+        guard let dir = profilesDirectory else { return }
+        let fm = FileManager.default
+        guard let urls = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else { return }
+        let yamlURLs = urls
+            .filter { $0.pathExtension.lowercased() == "yaml" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard !yamlURLs.isEmpty else { return }
+        var reconstructed: [Profile] = []
+        for url in yamlURLs {
+            // Skip files that are not Clash documents at all
+            // (empty / truncated / wrong file) — they cannot
+            // populate Proxies anyway; the core re-validates at
+            // apply time.
+            guard let data = try? Data(contentsOf: url),
+                  Self.localSanityCheck(data) == nil,
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            let base = url.deletingPathExtension().lastPathComponent
+            let id = UUID(uuidString: base) ?? UUID()
+            // Defensive duplicate guard (the isEmpty guard above
+            // normally makes this unreachable).
+            guard !reconstructed.contains(where: { $0.id == id }) else { continue }
+            let name = Self.orphanProfileDisplayName(yamlText: text)
+            let mtime = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? Date()
+            reconstructed.append(Profile(
+                id: id,
+                name: name,
+                kind: .file,
+                fileName: name,
+                updatedAt: mtime,
+                isActive: false,
+                note: "从旧版恢复：订阅链接已丢失，无法自动更新，请在编辑页重新填写订阅链接"
+            ))
+        }
+        guard !reconstructed.isEmpty else { return }
+        // Mark the single reconstructed profile active so the
+        // Dashboard / Proxies populate immediately; with several,
+        // leave them all inactive — the previously-active one is
+        // unknowable from YAML alone and the user picks one on the
+        // Config page.
+        if reconstructed.count == 1 {
+            reconstructed[0].isActive = true
+        }
+        profiles = reconstructed
+        save()
+    }
+
+    /// Derive a display name for a reconstructed profile from its
+    /// YAML text: a top-level `name:` first, else the first
+    /// proxy-group name that is not a generic selector keyword,
+    /// else the first proxy-group name, else "导入的配置". Never
+    /// fabricates a subscription / provider name.
+    private static func orphanProfileDisplayName(yamlText text: String) -> String {
+        let lines = text.components(separatedBy: .newlines)
+        // Top-level `name:` (column 0). Some providers embed one.
+        // Indented `name:` lines (proxy / group entries) do not
+        // match hasPrefix("name:") and are skipped.
+        for line in lines {
+            guard line.hasPrefix("name:") else { continue }
+            let value = line.dropFirst("name:".count)
+                .trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                .trimmingCharacters(in: .whitespaces)
+            if !value.isEmpty { return value }
+        }
+        // First proxy-group name. Generic selector keywords are not
+        // human names ("PROXY" would be a confusing profile name),
+        // so they are skipped in favour of a later real name; if
+        // every group is generic, the first one is still used.
+        let generic: Set<String> = ["PROXY", "DIRECT", "REJECT", "GLOBAL", "节点选择", "自动选择", "故障转移", "负载均衡", "手动选择", "策略组"]
+        var inGroups = false
+        var firstGroupName: String?
+        for line in lines {
+            if line.hasPrefix("proxy-groups:") { inGroups = true; continue }
+            // A new top-level key ends the proxy-groups section.
+            if inGroups, !line.hasPrefix(" "), !line.hasPrefix("\t"),
+               !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                break
+            }
+            guard inGroups else { continue }
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("- name:") else { continue }
+            let value = trimmed.dropFirst("- name:".count)
+                .trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                .trimmingCharacters(in: .whitespaces)
+            guard !value.isEmpty else { continue }
+            if firstGroupName == nil { firstGroupName = value }
+            if !generic.contains(value) { return value }
+        }
+        if let firstGroupName { return firstGroupName }
+        return "导入的配置"
     }
 
     // MARK: Persistence (metadata only; YAML lives in the App Group)

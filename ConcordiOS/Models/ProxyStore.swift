@@ -111,6 +111,24 @@ final class ProxyStore: ObservableObject {
     /// select a group before switching tabs — the pills read
     /// selectedVisibleGroup, which reads this. nil = first group.
     @Published var selectedGroupName: String?
+    /// Groups the user expanded in list / card style. FlClash's
+    /// unfoldSet (models/profile.dart:78) defaults to {} — groups
+    /// start collapsed — so this set starts empty too. Hoisted
+    /// out of ProxiesView's @State (v0.2.118): the group cards are
+    /// Equatable and their tap closures are excluded from ==, so a
+    /// card SwiftUI kept could hold a closure over the view's
+    /// @State that no longer fired — on-device (v0.2.117) every
+    /// group card was untappable. A store method on the stable
+    /// store reference can never go stale.
+    @Published var expandedGroups: Set<String> = []
+
+    func toggleExpanded(_ name: String) {
+        if expandedGroups.contains(name) {
+            expandedGroups.remove(name)
+        } else {
+            expandedGroups.insert(name)
+        }
+    }
     /// When each testing group started its current run (v0.2.49):
     /// a run that never returns leaves its flag set forever, so
     /// every later tap is refused. A run older than

@@ -171,10 +171,6 @@ struct ProxiesView: View {
     @State private var searchText = ""
     @State private var isSearching = false
     @State private var showMoreMenu = false
-    /// Groups the user expanded in list style. FlClash's unfoldSet
-    /// (models/profile.dart:78) defaults to {} — groups start
-    /// collapsed — so this set starts empty too.
-    @State private var expandedGroups: Set<String> = []
     @State private var detailNode: ProxyNode?
     @State private var detailTestURL: String?
     @State private var notice: String?
@@ -394,7 +390,7 @@ struct ProxiesView: View {
         case .leafNodes: return []
         }
         let hidden = expandedMemberNames
-        return base.filter { !hidden.contains($0.name) || expandedGroups.contains($0.name) }
+        return base.filter { !hidden.contains($0.name) || proxyStore.expandedGroups.contains($0.name) }
     }
 
     /// Names of groups that are members of a currently-expanded
@@ -404,7 +400,7 @@ struct ProxiesView: View {
     /// depend on the filtered copy.
     private var expandedMemberNames: Set<String> {
         var out = Set<String>()
-        for name in expandedGroups {
+        for name in proxyStore.expandedGroups {
             if let parent = proxyStore.groups.first(where: { $0.name == name }) {
                 for node in parent.nodes { out.insert(node.name) }
             }
@@ -417,7 +413,7 @@ struct ProxiesView: View {
     /// inside its parent's card, not again as its own row below.
     private var listGroups: [ProxyGroup] {
         let hidden = expandedMemberNames
-        return visibleGroups.filter { !hidden.contains($0.name) || expandedGroups.contains($0.name) }
+        return visibleGroups.filter { !hidden.contains($0.name) || proxyStore.expandedGroups.contains($0.name) }
     }
 
     /// Flat leaf nodes (MuYu compute.dart flatLeafNodes): walk the
@@ -1816,13 +1812,13 @@ struct ProxiesView: View {
         var index = 0
         while index < folderGroups.count {
             let group = folderGroups[index]
-            if expandedGroups.contains(group.name) {
+            if proxyStore.expandedGroups.contains(group.name) {
                 out.append(.expanded(group))
                 index += 1
                 continue
             }
             let next = index + 1
-            if next < folderGroups.count, !expandedGroups.contains(folderGroups[next].name) {
+            if next < folderGroups.count, !proxyStore.expandedGroups.contains(folderGroups[next].name) {
                 out.append(.pair(group, folderGroups[next]))
                 index = next + 1
             } else {
@@ -1854,7 +1850,7 @@ struct ProxiesView: View {
             selectedIcon: selectedNodeIcon(for: group, groupsByName: groupsByName),
             latencyMs: selectedNodeLatency(for: group, groupsByName: groupsByName),
             testing: proxyStore.testingGroups.contains(group.name),
-            expanded: expandedGroups.contains(group.name),
+            expanded: proxyStore.expandedGroups.contains(group.name),
             cardType: styleStore.cardType,
             iconStyle: styleStore.iconStyle,
             collapsedHeight: iconCardCollapsedHeight(),
@@ -1887,10 +1883,13 @@ struct ProxiesView: View {
                     onPickGroup?(group.name)
                     return
                 }
-                if expandedGroups.contains(group.name) {
-                    expandedGroups.remove(group.name)
-                } else {
-                    expandedGroups.insert(group.name)
+                // Expansion goes through the store (v0.2.118): the
+                // card is Equatable and this closure is excluded
+                // from ==, so it must not close over the view's
+                // @State — the store reference can never go stale.
+                let wasExpanded = proxyStore.expandedGroups.contains(group.name)
+                proxyStore.toggleExpanded(group.name)
+                if !wasExpanded {
                     Task {
                         try? await Task.sleep(nanoseconds: 250_000_000)
                         scrollTargetName = groupHeaderID(group.name)
@@ -1974,7 +1973,7 @@ struct ProxiesView: View {
     /// — see ListGroupNodeFingerprint. Collapsed cards pass []
     /// fingerprints (no grid rendered, no per-node lookups).
     private func listGroupCard(_ group: ProxyGroup, width: CGFloat, groupsByName: [String: ProxyGroup]) -> some View {
-        let expanded = expandedGroups.contains(group.name)
+        let expanded = proxyStore.expandedGroups.contains(group.name)
         let nodes = displayNodes(for: group)
         let fingerprints: [ListGroupNodeFingerprint] = expanded ? nodes.map { node in
             ListGroupNodeFingerprint(
@@ -2002,10 +2001,13 @@ struct ProxiesView: View {
             groupType: group.type,
             nodeFingerprints: fingerprints,
             onToggleExpand: {
-                if expandedGroups.contains(group.name) {
-                    expandedGroups.remove(group.name)
-                } else {
-                    expandedGroups.insert(group.name)
+                // Expansion goes through the store (v0.2.118): the
+                // card is Equatable and this closure is excluded
+                // from ==, so it must not close over the view's
+                // @State — the store reference can never go stale.
+                let wasExpanded = proxyStore.expandedGroups.contains(group.name)
+                proxyStore.toggleExpanded(group.name)
+                if !wasExpanded {
                     Task {
                         try? await Task.sleep(nanoseconds: 250_000_000)
                         scrollTargetName = groupHeaderID(group.name)
@@ -2732,70 +2734,78 @@ private struct ListGroupCard<ExpandedContent: View>: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                // The whole header toggles when collapsed — the
-                // Spacer() between the left cluster and the
-                // trailing had no tap handler, so tapping the
-                // middle of a card did nothing (IMG_1296).
-                // The toggle lives ONLY here, not on the left
-                // cluster / collapsed trailing as well: nested
-                // tap gestures both fire, so a tap on the left
-                // cluster would toggle twice and look dead.
-                // In expanded state the header holds Buttons
-                // (scope / bolt / magnifier + the triangle), and
-                // a Button inside .onTapGesture would fire both,
-                // so the header tap is gated to collapsed only
-                // and the triangle Button collapses.
-                HStack(spacing: 10) {
-                    groupIconView(icon: icon, name: name, iconStyle: iconStyle)
-                    VStack(alignment: .leading, spacing: 2) {
-                        // MuYu ListHeader (v0.2.81): name = callout
-                        // 16pt emphasized, subtitle + type = caption1
-                        // 12pt emphasized grey. Was subheadline 15pt
-                        // + caption2 11pt — visibly smaller than MuYu.
-                        Text(name)
-                            .font(.callout)
-                            .fontWeight(.bold)
-                            .lineLimit(1)
-                        Text(selectedName ?? "")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .frame(minHeight: 13, alignment: .leading)
-                    }
+            // The collapsed header is a real Button (v0.2.118):
+            // the old .onTapGesture on the header stopped firing
+            // on-device (v0.2.117 — every group card untappable),
+            // and a Button's action is dispatched at tap time
+            // through the responder chain instead of a gesture
+            // closure the Equatable card may have kept stale.
+            // In expanded state the header holds Buttons (scope /
+            // bolt / magnifier + the triangle), so the header tap
+            // stays gated to collapsed only and the triangle
+            // Button collapses — a Button wrapping those would
+            // fire both.
+            if expanded {
+                headerContent
+                    .padding(6)
+            } else {
+                Button(action: onToggleExpand) {
+                    headerContent
+                        .padding(6)
                 }
-                Spacer()
-                if expanded {
-                    expandedHeaderActions
-                } else {
-                    HStack(spacing: 10) {
-                        Text(typeDisplay)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        // MuYu ExpandIcon in a tonal compact IconButton
-                        // (v0.2.81): the screenshot's light-grey circle is
-                        // ~36pt with a ~14pt chevron (was 30pt / 12pt).
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.black)
-                            .frame(width: 36, height: 36)
-                            .background(Color(.systemGray4), in: Circle())
-                    }
-                }
-            }
-            // MuYu card padding is 6pt all round (v0.2.81; was
-            // 12 horizontal / 10 vertical). Row stays 60pt:
-            // 48pt icon + 2×6pt padding.
-            .padding(6)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if !expanded { onToggleExpand() }
+                .buttonStyle(.plain)
             }
             if expanded {
                 expandedContent()
             }
         }
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+    }
+
+    /// The header row: brand icon + name / selected node on the
+    /// left, type + chevron (collapsed) or the action pill +
+    /// collapse triangle (expanded) on the right. MuYu card
+    /// padding is 6pt all round (v0.2.81; was 12 horizontal /
+    /// 10 vertical). Row stays 60pt: 48pt icon + 2×6pt padding.
+    private var headerContent: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 10) {
+                groupIconView(icon: icon, name: name, iconStyle: iconStyle)
+                VStack(alignment: .leading, spacing: 2) {
+                    // MuYu ListHeader (v0.2.81): name = callout
+                    // 16pt emphasized, subtitle + type = caption1
+                    // 12pt emphasized grey. Was subheadline 15pt
+                    // + caption2 11pt — visibly smaller than MuYu.
+                    Text(name)
+                        .font(.callout)
+                        .fontWeight(.bold)
+                        .lineLimit(1)
+                    Text(selectedName ?? "")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(minHeight: 13, alignment: .leading)
+                }
+            }
+            Spacer()
+            if expanded {
+                expandedHeaderActions
+            } else {
+                HStack(spacing: 10) {
+                    Text(typeDisplay)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    // MuYu ExpandIcon in a tonal compact IconButton
+                    // (v0.2.81): the screenshot's light-grey circle is
+                    // ~36pt with a ~14pt chevron (was 30pt / 12pt).
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.black)
+                        .frame(width: 36, height: 36)
+                        .background(Color(.systemGray4), in: Circle())
+                }
+            }
+        }
     }
 
     /// MuYu expanded header (list.dart, v0.2.88): a light pill

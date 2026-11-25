@@ -19,6 +19,87 @@ struct ConnectionsView: View {
     @State private var feed: ConnectionFeed = ConnectionFeed(
         rawValue: UserDefaults.standard.string(forKey: "ConcordiOS.connections.feed.v1") ?? "live") ?? .live
 
+    /// v0.2.118 (Job 4): sheet list-drag coordination (MuYu
+    /// parity) — same mechanism as DnsQueriesView: a zero-height
+    /// anchor row at the top of the List reports its minY in the
+    /// list's coordinate space (listAtTop), and a
+    /// .simultaneousGesture(DragGesture) on the List forwards the
+    /// drag to the overlay ONLY while scrolled to the top, latched
+    /// once it starts (the list also scrolls a little while the
+    /// sheet grows, so listAtTop flips false mid-drag). The
+    /// vertical-dominant gate at start keeps a horizontal
+    /// swipe-to-disconnect off the sheet; onEnded always fires
+    /// once forwarding latched, or the overlay would be left in a
+    /// stale dragging state. In page mode the callbacks are nil
+    /// and the gesture is a no-op. Known limitation: while the
+    /// sheet grows from a list drag the list also scrolls a little
+    /// in the same direction (no .scrollDisabled — that would
+    /// break pull-to-refresh, which is live on both sheets).
+    @State private var listAtTop = true
+    @State private var listDragState = SheetListDragState()
+
+    private struct SheetListTopKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+            value = nextValue()
+        }
+    }
+
+    private final class SheetListDragState {
+        var forwardOffset: CGFloat?
+        var forwarding = false
+    }
+
+    private var listDragGesture: some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                guard let onChanged = onSheetDragChanged else { return }
+                if !listDragState.forwarding {
+                    guard listAtTop else { return }
+                    guard abs(value.translation.height) >= abs(value.translation.width) else { return }
+                    listDragState.forwarding = true
+                    listDragState.forwardOffset = value.translation.height
+                }
+                onChanged(value.translation.height - (listDragState.forwardOffset ?? 0))
+            }
+            .onEnded { value in
+                let wasForwarding = listDragState.forwarding
+                let offset = listDragState.forwardOffset
+                listDragState.forwarding = false
+                listDragState.forwardOffset = nil
+                guard wasForwarding, let start = offset, let onEnded = onSheetDragEnded else { return }
+                onEnded(value.translation.height - start)
+            }
+    }
+
+    /// The zero-height top anchor row for the list-drag
+    /// coordination above (one per List branch — a List's rows
+    /// cannot share a single anchor view).
+    private var sheetListTopAnchor: some View {
+        Color.clear
+            .frame(height: 0)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets())
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(
+                        key: SheetListTopKey.self,
+                        value: geo.frame(in: .named("connectionsSheetList")).minY
+                    )
+                }
+            )
+    }
+
+    /// The list-drag coordination modifiers for a List branch
+    /// (coordinate space + at-top tracking + the simultaneous
+    /// drag gesture). Applied directly on each List below.
+    private func sheetListTopChanged(_ minY: CGFloat) {
+        // Only the true<->false flip writes state, so scrolling
+        // does not re-render the view every frame.
+        let atTop = minY >= -1
+        if atTop != listAtTop { listAtTop = atTop }
+    }
+
     /// v0.2.66: tab-bar clearance for pushed pages. True only when
     /// pushed from Tools; the Dashboard sheet keeps the default false.
     private let applyTabBarClearance: Bool
@@ -615,6 +696,7 @@ struct ConnectionsView: View {
             // The grouped branch below stays unchanged — minute
             // separators are not shown while grouped.
             List {
+                sheetListTopAnchor
                 ForEach(Array(connectionStore.minuteGroups(list).enumerated()), id: \.offset) { item in
                     ForEach(item.element.rows) { connection in
                         connectionRowButton(connection, isLive: isLive)
@@ -626,8 +708,12 @@ struct ConnectionsView: View {
             .scrollContentBackground(.hidden)
             // v0.2.66: tab-bar clearance for pushed pages.
             .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
+            .coordinateSpace(name: "connectionsSheetList")
+            .onPreferenceChange(SheetListTopKey.self) { sheetListTopChanged($0) }
+            .simultaneousGesture(listDragGesture)
         } else {
             List {
+                sheetListTopAnchor
                 ForEach(connectionStore.grouped(list, by: connectionStore.groupBy), id: \.key) { group in
                     Section("\(group.key)（\(group.rows.count)）") {
                         ForEach(group.rows) { connection in
@@ -640,6 +726,9 @@ struct ConnectionsView: View {
             .scrollContentBackground(.hidden)
             // v0.2.66: tab-bar clearance for pushed pages.
             .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
+            .coordinateSpace(name: "connectionsSheetList")
+            .onPreferenceChange(SheetListTopKey.self) { sheetListTopChanged($0) }
+            .simultaneousGesture(listDragGesture)
         }
     }
 

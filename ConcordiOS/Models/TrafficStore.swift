@@ -190,6 +190,20 @@ final class TrafficStore: ObservableObject {
     /// is ready, then it backs off to every 10 s. Reset to 0
     /// whenever probe() succeeds and sets outboundIp.
     private var outboundIpProbeAttempts = 0
+    /// v0.2.118 (Job 5): consecutive failures of the EXTENSION-
+    /// core probe only (error field set, unparseable body, or RPC
+    /// throw). After 5 in a row the extension probe retries with
+    /// a 15 s timeout instead of FlClash's 6 s — a first connect
+    /// through the proxy can be slower than 6 s, and every
+    /// attempt timing out looks exactly like the v0.2.117
+    /// on-device report (tunnel up, traffic flowing, IP never
+    /// appears). Reset on success and on route change
+    /// (clearOutboundIp). The in-app core is NOT a fallback here:
+    /// TunnelManager stops AppCore while the VPN is on (v0.2.101
+    /// heating fix) and ensureStarted refuses while the tunnel
+    /// runs, so there is no second core to ask while the tunnel
+    /// is up — the extension probe itself is hardened instead.
+    private var consecutiveExtensionProbeFailures = 0
     @Published var coreMemoryBytes: UInt64?
     @Published var services: [ConcordServiceItem] = []
     @Published var isProbingServices = false
@@ -1467,6 +1481,7 @@ final class TrafficStore: ObservableObject {
         outboundIp = nil
         outboundIpInfo = nil
         outboundIpProbeFailed = false
+        consecutiveExtensionProbeFailures = 0
     }
 
     @MainActor
@@ -1475,12 +1490,36 @@ final class TrafficStore: ObservableObject {
         isProbingOutboundIp = true
         defer { isProbingOutboundIp = false }
         lastOutboundIpProbeAt = Date()
+        // v0.2.118 (Job 5): which core this attempt asks — mirrors
+        // probeOutboundIpThroughCore's branch, so the consecutive-
+        // failure count only tracks the extension path (the longer
+        // timeout only applies there).
+        let usedExtensionCore = client.mode == .sample || TunnelManager.shared.isRunning
         do {
             let result = try await probeOutboundIpThroughCore()
+            // v0.2.118 (Job 5): the core's own error was decoded
+            // (ConcordOutboundIp.error) but never read — a probe
+            // whose fetch failed inside the core (all 8 sources
+            // failing through the engine) returned "successfully"
+            // with error set, and the only record was the generic
+            // "could not parse body". Surface the core's reason
+            // in the diagnostics and keep retrying.
+            if let coreError = result.error, !coreError.isEmpty {
+                if usedExtensionCore { consecutiveExtensionProbeFailures += 1 }
+                outboundIpProbeFailed = true
+                IPLookupDiagnostics.recordError(
+                    source: "probe.outboundIp",
+                    error: NSError(
+                        domain: "ConcordiOS", code: -1,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "probe.outboundIp: core error from \(result.url): \(coreError)"]))
+                return
+            }
             // v0.2.115: the core returns the RAW response body, so
             // parse it client-side per upstream parseOutboundIp
             // before anything reaches the status card.
             guard let parsed = parseOutboundIp(result) else {
+                if usedExtensionCore { consecutiveExtensionProbeFailures += 1 }
                 outboundIpProbeFailed = true
                 // Leave outboundIp / outboundIpInfo untouched (nil)
                 // so the retry loop keeps trying.
@@ -1492,12 +1531,14 @@ final class TrafficStore: ObservableObject {
                             "probe.outboundIp: could not parse body from \(result.url)"]))
                 return
             }
+            consecutiveExtensionProbeFailures = 0
             outboundIp = parsed.ip
             outboundIpInfo = parsed
             outboundIpProbeFailed = false
             outboundChains = result.chains
             outboundIpProbeAttempts = 0
         } catch {
+            if usedExtensionCore { consecutiveExtensionProbeFailures += 1 }
             lastError = error.localizedDescription
             outboundIpProbeFailed = true
             IPLookupDiagnostics.recordError(source: "probe.outboundIp", error: error)
@@ -1515,7 +1556,12 @@ final class TrafficStore: ObservableObject {
     /// is used instead, not reported as a failure.
     private func probeOutboundIpThroughCore() async throws -> ConcordOutboundIp {
         if client.mode == .sample || TunnelManager.shared.isRunning {
-            return try await client.probeOutboundIp()
+            // v0.2.118 (Job 5): after 5 consecutive extension-
+            // probe failures the probe retries with a 15 s timeout
+            // instead of FlClash's 6 s (see the counter's comment).
+            // The happy path keeps the 6 s default.
+            let timeout: UInt64 = consecutiveExtensionProbeFailures >= 5 ? 15000 : 6000
+            return try await client.probeOutboundIp(timeout: timeout)
         }
         do {
             try await AppCore.shared.ensureStarted()

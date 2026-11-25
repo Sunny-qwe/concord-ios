@@ -122,6 +122,70 @@ struct DnsQueriesView: View {
     /// Page mode only (v0.2.103): the sheet branch never scrolls.
     @State private var followEnd: Bool
 
+    /// v0.2.118 (Job 4): sheet list-drag coordination (MuYu
+    /// parity). MuYu's sheet grows when the list is dragged at
+    /// the top because the list's ScrollController IS the sheet's
+    /// controller (NestedPagedSheet). Ours keeps the list and the
+    /// sheet separate, so the sheet list forwards its drag to the
+    /// overlay ONLY while scrolled to the top: a zero-height
+    /// anchor row at the top of the LazyVStack reports its minY
+    /// in the list's coordinate space (listAtTop), and a
+    /// .simultaneousGesture(DragGesture) on the ScrollView passes
+    /// the drag to onSheetDragChanged/onSheetDragEnded. Forwarding
+    /// LATCHES once it starts (forwarding flag): the list also
+    /// scrolls a little while the sheet grows, so listAtTop flips
+    /// false mid-drag — checking it continuously would stop the
+    /// sheet after a few points. The offset at which forwarding
+    /// began is subtracted (a drag that starts mid-list and
+    /// reaches the top mid-drag must not pass its whole total as
+    /// a sheet drag). The holder is a reference type so the
+    /// gesture can mutate it without re-rendering the view every
+    /// frame. Known limitation: while the sheet grows from a list
+    /// drag the list also scrolls a little in the same direction
+    /// (no .scrollDisabled — that would break pull-to-refresh,
+    /// which is live on both sheets).
+    @State private var listAtTop = true
+    @State private var listDragState = SheetListDragState()
+
+    private struct SheetListTopKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+            value = nextValue()
+        }
+    }
+
+    private final class SheetListDragState {
+        var forwardOffset: CGFloat?
+        var forwarding = false
+    }
+
+    /// The drag the sheet list forwards to the overlay (see the
+    /// state comment above). Vertical-dominant only at start, so
+    /// a horizontal swipe never reaches the sheet; onEnded always
+    /// fires once forwarding latched, or the overlay would be
+    /// left in a stale dragging state.
+    private var listDragGesture: some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                guard let onChanged = onSheetDragChanged else { return }
+                if !listDragState.forwarding {
+                    guard listAtTop else { return }
+                    guard abs(value.translation.height) >= abs(value.translation.width) else { return }
+                    listDragState.forwarding = true
+                    listDragState.forwardOffset = value.translation.height
+                }
+                onChanged(value.translation.height - (listDragState.forwardOffset ?? 0))
+            }
+            .onEnded { value in
+                let wasForwarding = listDragState.forwarding
+                let offset = listDragState.forwardOffset
+                listDragState.forwarding = false
+                listDragState.forwardOffset = nil
+                guard wasForwarding, let start = offset, let onEnded = onSheetDragEnded else { return }
+                onEnded(value.translation.height - start)
+            }
+    }
+
     /// v0.2.103: the v0.2.101 sheet-presentation machinery is
     /// gone — sheetPresented (0.6s .onAppear gate), sheetAtTop
     /// (row .onAppear/.onDisappear tracking) and the follow
@@ -297,6 +361,23 @@ struct DnsQueriesView: View {
     private var sheetList: some View {
         ScrollView {
             LazyVStack(spacing: 12) {
+                // v0.2.118 (Job 4): zero-height top anchor for the
+                // list-drag coordination — its minY in the list's
+                // coordinate space tells the drag gesture whether
+                // the list is scrolled to the top. The 12pt
+                // LazyVStack spacing after this anchor replaces
+                // the .padding(.top, 12) below (now 0), so the
+                // first row sits exactly where it did before.
+                Color.clear
+                    .frame(height: 0)
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: SheetListTopKey.self,
+                                value: geo.frame(in: .named("dnsSheetList")).minY
+                            )
+                        }
+                    )
                 if client.mode == .sample {
                     HStack {
                         SampleDataBadge()
@@ -339,9 +420,17 @@ struct DnsQueriesView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 12)
+            .padding(.top, 0)
             .padding(.bottom, 76)
         }
+        .coordinateSpace(name: "dnsSheetList")
+        .onPreferenceChange(SheetListTopKey.self) { minY in
+            // Only the true<->false flip writes state, so
+            // scrolling does not re-render the view every frame.
+            let atTop = minY >= -1
+            if atTop != listAtTop { listAtTop = atTop }
+        }
+        .simultaneousGesture(listDragGesture)
     }
 
     /// One DNS row in the video's layout (v0.2.68): line 1 time +

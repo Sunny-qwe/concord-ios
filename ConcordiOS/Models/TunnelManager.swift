@@ -936,7 +936,21 @@ final class TunnelManager: ObservableObject {
     /// VPN is running, instead of restarting from zero. Nil when
     /// there is no fresh record (updated within 180 s) or the
     /// tunnel is stopped (startedAt is null then).
-    func readTunnelStartedAt() -> Date? {
+    /// - Parameter notBefore: v0.2.118 (Job 6): when the app
+    ///   observed a tunnel start at/after this time, only accept a
+    ///   record from that run. The extension writes startedAt when
+    ///   the tunnel comes up, a few seconds before the app observes
+    ///   .connected, so a record up to 30 s before the transition
+    ///   still belongs to this run — but the previous run's
+    ///   startedAt (minutes earlier, still inside the 180 s
+    ///   freshness window) does not, and reading it at the new
+    ///   run's start showed the old uptime instead of 0
+    ///   (v0.2.117 on-device). Nil keeps the old behaviour (D4:
+    ///   the tunnel was already up when the app launched, so any
+    ///   fresh record is this run's). Residual edge: a stop/start
+    ///   within 30 s can still pass the previous run's record —
+    ///   the diagnostics file carries no run id to match against.
+    func readTunnelStartedAt(notBefore: Date? = nil) -> Date? {
         guard let container = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
               let data = try? Data(contentsOf: container.appendingPathComponent("vpn-diagnostics.json")),
@@ -944,7 +958,9 @@ final class TunnelManager: ObservableObject {
               let startedMs = json["startedAt"] as? Int64,
               let updatedMs = json["updatedAt"] as? Int64,
               Date().timeIntervalSince1970 * 1000 - Double(updatedMs) < 180_000 else { return nil }
-        return Date(timeIntervalSince1970: TimeInterval(startedMs) / 1000)
+        let started = Date(timeIntervalSince1970: TimeInterval(startedMs) / 1000)
+        if let notBefore, started < notBefore.addingTimeInterval(-30) { return nil }
+        return started
     }
 
     /// Reads the extension's tun-restart-needed.json (config B1):

@@ -166,6 +166,14 @@ struct DashboardView: View {
     /// to the Proxies tab.
     @State private var showGroupsSheet = false
     @State private var tunnelStartedAt: Date?
+    /// v0.2.118 (Job 6): when the app observed the current tunnel
+    /// run start (the running=false→true transition in
+    /// DashboardTrafficEffects). Later diagnostics-file reads only
+    /// accept a record from this run (readTunnelStartedAt
+    /// notBefore:); nil means no transition was observed this
+    /// session (tunnel already up at launch) and the file is
+    /// accepted as before (D4).
+    @State private var tunnelStartObservedAt: Date?
     @State private var subscription: ConcordSubscriptionInfo?
     /// Last-known IP lookup, restored on launch so the status card
     /// is never empty (v0.2.115, MuYu parity) and refreshed in the
@@ -545,7 +553,10 @@ struct DashboardView: View {
         // when the tunnel is up (the local clock started when the
         // app observed .connected, which is later — and resets to
         // zero on every app restart while the VPN keeps running).
-        if proxyStore.isRunning, let extStarted = tunnelManager.readTunnelStartedAt() {
+        // v0.2.118 (Job 6): the read is gated to this run's record
+        // (notBefore:), so a pull-to-refresh after a (re)start
+        // cannot resurrect the previous run's startedAt.
+        if proxyStore.isRunning, let extStarted = tunnelManager.readTunnelStartedAt(notBefore: tunnelStartObservedAt) {
             tunnelStartedAt = extStarted
             // The traffic card's cumulative uptime counts this
             // session from the extension's start time.
@@ -661,6 +672,7 @@ struct DashboardView: View {
     private var dashboardTrafficEffects: some View {
         DashboardTrafficEffects(
             tunnelStartedAt: $tunnelStartedAt,
+            tunnelStartObservedAt: $tunnelStartObservedAt,
             morphProgress: $morphProgress,
             ipInfo: $ipInfo,
             ipAsn: $ipAsn,
@@ -2488,6 +2500,10 @@ private struct DashboardTrafficEffects: View {
     @EnvironmentObject private var client: ConcordClient
 
     @Binding var tunnelStartedAt: Date?
+    /// v0.2.118 (Job 6): when the app observed the current tunnel
+    /// run start — see the DashboardView state comment. Written on
+    /// the running=false→true transition, cleared on stop.
+    @Binding var tunnelStartObservedAt: Date?
     @Binding var morphProgress: CGFloat
     @Binding var ipInfo: IPQualityInfo?
     @Binding var ipAsn: String?
@@ -2513,7 +2529,10 @@ private struct DashboardTrafficEffects: View {
             .task {
                 morphProgress = proxyStore.isRunning ? 1 : 0
                 if proxyStore.isRunning && tunnelStartedAt == nil {
-                    tunnelStartedAt = tunnelManager.readTunnelStartedAt() ?? Date()
+                    // v0.2.118 (Job 6): gated to this run's record
+                    // (notBefore:) — an ungated read here could pick
+                    // up the previous run's startedAt.
+                    tunnelStartedAt = tunnelManager.readTunnelStartedAt(notBefore: tunnelStartObservedAt) ?? Date()
                 }
                 // v0.2.56: the traffic card's cumulative uptime counts
                 // the live session from its start (the extension's
@@ -2583,12 +2602,28 @@ private struct DashboardTrafficEffects: View {
                 }
             }
             .onChange(of: proxyStore.isRunning) { _, running in
-                // D4: prefer the extension's own start time
-                // (vpn-diagnostics.json) so the uptime survives an app
-                // restart while the VPN is running; the local clock is
-                // only the fallback when the extension has not written
-                // the file yet.
-                tunnelStartedAt = running ? (tunnelStartedAt ?? tunnelManager.readTunnelStartedAt() ?? Date()) : nil
+                // v0.2.118 (Job 6): on a (re)start, reset the uptime
+                // to now IMMEDIATELY and do not read the diagnostics
+                // file here at all — it can still hold the previous
+                // run's startedAt (fresh within its 180 s window),
+                // which is what showed the old ~2 min uptime instead
+                // of 0 on v0.2.117 (the old `tunnelStartedAt ?? ...`
+                // also kept any value picked up earlier). The
+                // transition time is recorded so later reads
+                // (refreshAll, appear) only accept a file record
+                // from THIS run (readTunnelStartedAt notBefore:);
+                // the extension's own start time then corrects the
+                // ~1 s observation lag. D4 is kept for the
+                // no-transition case (tunnel already up at launch):
+                // tunnelStartObservedAt stays nil and the file is
+                // accepted as before.
+                if running {
+                    tunnelStartObservedAt = Date()
+                    tunnelStartedAt = Date()
+                } else {
+                    tunnelStartObservedAt = nil
+                    tunnelStartedAt = nil
+                }
                 // v0.2.56: the traffic card's cumulative uptime counts
                 // finished sessions; settle the session that just
                 // ended (or start the one that just began).

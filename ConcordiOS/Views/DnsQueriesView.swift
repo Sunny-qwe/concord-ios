@@ -39,8 +39,14 @@ private enum DnsRecordFilter: String, CaseIterable {
 
 /// One displayed DNS row after folding (C10): the newest entry of
 /// a run of identical consecutive rows, plus how many it stands for.
+/// v0.2.111: the identity is "\(entry.id)-\(entry.seq)" — entry.id
+/// alone ("\(time)-\(domain)-\(type)") is NOT unique (same-ms
+/// same-domain+type queries share it) and ForEach with duplicate
+/// ids is undefined behaviour in SwiftUI. seq is assigned once at
+/// first sight by DnsStore and preserved across merges, so the
+/// identity is unique and stable for the same logical entry.
 private struct FoldedDnsEntry: Identifiable {
-    var id: String { entry.id }
+    var id: String { "\(entry.id)-\(entry.seq)" }
     let entry: ConcordDnsEntry
     let count: Int
 }
@@ -57,8 +63,16 @@ struct DnsQueriesView: View {
 
     let mode: Mode
 
-    init(mode: Mode = .page) {
+    /// Dismiss action for sheet mode (v0.2.111): the DNS sheet is
+    /// a custom overlay at the ContentView root, not a system
+    /// sheet, so @Environment(\.dismiss) does nothing there — the
+    /// overlay passes its own close action. Nil (default) keeps
+    /// the old dismiss() behaviour.
+    let onClose: (() -> Void)?
+
+    init(mode: Mode = .page, onClose: (() -> Void)? = nil) {
         self.mode = mode
+        self.onClose = onClose
         // v0.2.103: follow starts ON in both modes. Sheet mode
         // no longer scrolls at all (no .onChange / ScrollViewReader
         // in the sheet branch — Connections parity), so there is
@@ -183,7 +197,10 @@ struct DnsQueriesView: View {
                 Text("DNS查询")
                     .font(.headline)
                 HStack {
-                    Button { dismiss() } label: {
+                    // v0.2.111: in the ContentView overlay there is
+                    // no system presentation to dismiss, so the
+                    // overlay's onClose runs instead of dismiss().
+                    Button { if let onClose { onClose() } else { dismiss() } } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Color(.label))
@@ -407,7 +424,11 @@ struct DnsQueriesView: View {
                     .background(ConcordTheme.pageBackground)
                     DnsFloatingSearchBar(text: $dnsStore.searchText, prompt: "搜索域名或上游")
                 }
-                .refreshable { await dnsStore.refresh() }
+                // v0.2.111: pull-to-refresh inside the sheet is a
+                // user-initiated refresh — force: true publishes
+                // immediately instead of deferring to the publish
+                // suspension that is on while the sheet is open.
+                .refreshable { await dnsStore.refresh(force: true) }
                 .sheet(item: $selectedEntry) { entry in
                     DnsEntryDetailView(entry: entry)
                         // Upstream _showDnsQueryDetail → showSheet, snap

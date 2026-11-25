@@ -691,6 +691,17 @@ struct ConcordDnsEntry: Codable, Identifiable {
     let error: String?
     let delay: Int64
     let time: Int64
+    /// v0.2.111 (DNS freeze): a stable per-entry sequence number,
+    /// assigned once at first sight by DnsStore's merge and
+    /// preserved across merges. `id` is "\(time)-\(domain)-\(type)",
+    /// so two identical queries in the same millisecond share one
+    /// id and ForEach with duplicate ids is undefined behaviour in
+    /// SwiftUI — the sheet identifies rows by "\(id)-\(seq)"
+    /// (FoldedDnsEntry.id) instead. Local-only: NOT in CodingKeys,
+    /// so it is never decoded (it decodes as 0) and never encoded;
+    /// DnsStore assigns it post-decode. A `var` with a default,
+    /// like dnsId below.
+    var seq: UInt64 = 0
     /// Upstream 0c9788f (DnsEntry.id): counts up from 1 over the
     /// core process; a connection's `dnsQueries` names entries by
     /// it. 0 when the core omits it (older cores, sample data).

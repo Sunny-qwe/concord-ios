@@ -38,6 +38,46 @@ final class DnsStore: ObservableObject {
     /// still appear.
     private var clearedBeforeTime: Int64 = 0
 
+    // v0.2.111: cap on the displayed list. The union merge in
+    // refresh() never removed entries, so the array grew without
+    // bound (the other stores cap at 200/500); the newest 500
+    // match the extension / AppCore buffers.
+    private static let maxEntries = 500
+
+    /// Sequence counter for the sheet's ForEach identity
+    /// (v0.2.111): `ConcordDnsEntry.id` is "\(time)-\(domain)-
+    /// \(type)", so two identical queries in the same millisecond
+    /// share one id. Each logical entry gets a sequence number on
+    /// first sight, preserved across merges, and the sheet
+    /// identifies rows by "\(id)-\(seq)". The stored entry.id
+    /// itself is untouched — it stays the merge dictionary key,
+    /// so the dedup is unchanged.
+    private var nextSeq: UInt64 = 1
+
+    /// v0.2.111 (DNS freeze, TOCTOU): while the DNS sheet is open,
+    /// background refreshes fetch but do NOT publish — a publish
+    /// landing mid-presentation is a freeze suspect. The check
+    /// happens at publish time, not at call time, so a refresh
+    /// already in flight when the user taps still defers. The
+    /// newest result is held in pendingEntries and applied when
+    /// the sheet closes (setPublishSuspended(false)). A
+    /// user-initiated refresh inside the sheet passes force: true
+    /// and publishes immediately.
+    private var publishSuspended = false
+    private var pendingEntries: [ConcordDnsEntry]?
+
+    /// Sets the publish suspension (v0.2.111). Called by
+    /// ContentView when the DNS sheet opens / closes. Clearing
+    /// the suspension applies the newest deferred result, if any.
+    @MainActor
+    func setPublishSuspended(_ suspended: Bool) {
+        publishSuspended = suspended
+        if !suspended, let pending = pendingEntries {
+            pendingEntries = nil
+            entries = pending
+        }
+    }
+
     /// Clear the displayed record list (the broom in the DNS sheet
     /// header, MuYu cleaning_services). Entries at or before now
     /// are dropped and filtered out of later refreshes; new queries
@@ -47,12 +87,20 @@ final class DnsStore: ObservableObject {
     func clearEntries() {
         clearedBeforeTime = entries.map(\.time).max() ?? 0
         entries = []
+        // v0.2.111: a deferred result must not resurrect the
+        // cleared records when the sheet closes.
+        pendingEntries = nil
         lastActionMessage = "记录已清除"
         lastError = nil
     }
 
+    /// A user-initiated refresh (pull-to-refresh inside the DNS
+    /// sheet, or the page's toolbar button) bypasses the publish
+    /// suspension — it must still work while the sheet is open.
+    /// Background refreshes (the Dashboard appear / tunnel-flip
+    /// calls) use the default and defer while suspended.
     @MainActor
-    func refresh() async {
+    func refresh(force: Bool = false) async {
         do {
             // v0.2.102 (MuYu parity): the query history no longer
             // comes from the extension snapshot only. Tunnel up →
@@ -78,17 +126,33 @@ final class DnsStore: ObservableObject {
                 })
             let cutoff = clearedBeforeTime
             let visible = cutoff > 0 ? fresh.filter { $0.time > cutoff } : fresh
-            // v0.2.101 (Issue 2): build the merge dictionary with
-            // a loop, not Dictionary(uniqueKeysWithValues:) — that
-            // traps on a duplicate key, and `id` is only
-            // "\(time)-\(domain)-\(type)" (ConcordClient.swift:683),
-            // so two identical queries in the same millisecond
-            // share one id. Last write wins, fresh snapshot entries
-            // overwriting older ones, exactly as before.
+            // v0.2.111: same merge as before, but each logical
+            // entry keeps a stable sequence number — a fresh
+            // snapshot entry with an id already in the store
+            // inherits the stored entry's seq, a genuinely new
+            // entry gets the next one — so the sheet's
+            // "\(id)-\(seq)" ForEach identity is unique AND
+            // stable across refreshes.
             var merged: [String: ConcordDnsEntry] = [:]
             for entry in entries { merged[entry.id] = entry }
-            for entry in visible { merged[entry.id] = entry }
-            entries = merged.values.sorted { $0.time > $1.time }
+            for entry in visible {
+                var freshEntry = entry
+                if let old = merged[entry.id] {
+                    freshEntry.seq = old.seq
+                } else {
+                    freshEntry.seq = nextSeq
+                    nextSeq += 1
+                }
+                merged[entry.id] = freshEntry
+            }
+            // v0.2.111: cap at the newest 500 (see maxEntries).
+            let sorted = Array(merged.values.sorted { $0.time > $1.time }.prefix(Self.maxEntries))
+            if publishSuspended && !force {
+                pendingEntries = sorted
+            } else {
+                pendingEntries = nil
+                entries = sorted
+            }
             lastError = nil
         } catch {
             lastError = error.localizedDescription

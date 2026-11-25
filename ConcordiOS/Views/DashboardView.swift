@@ -126,8 +126,14 @@ struct DashboardView: View {
     /// the probe-service targets.
     @State private var showServiceManageSheet = false
     /// Stat-cell destination sheet (D-M6): live / recent
-    /// connections, or the DNS queries page.
-    @State private var statsDestination: StatsDestination?
+    /// connections, or the DNS queries page. v0.2.111: owned by
+    /// ContentView, not here — the DNS destination renders as a
+    /// custom overlay at the ContentView root (the system .sheet
+    /// presentation path is a freeze suspect), so the state has to
+    /// live above the tab bar. This binding is passed in from
+    /// ContentView; the system .sheet below only ever sees
+    /// .live / .recent (see connectionsSheetDestination).
+    @Binding var statsDestination: StatsDestination?
     /// Traffic statistics detail sheet (D-M8, v0.2.56 MuYu
     /// TrafficStatisticsView).
     @State private var showTrafficDetail = false
@@ -636,7 +642,7 @@ struct DashboardView: View {
         .sheet(isPresented: $showServiceSheet) { serviceStatusSheet }
         .sheet(isPresented: $showProvidersSheet) { providersSheetContent }
         .sheet(isPresented: $showGroupsSheet) { groupsSheetContent }
-        .sheet(item: $statsDestination) { statsSheetContent(for: $0) }
+        .sheet(item: connectionsSheetDestination) { statsSheetContent(for: $0) }
         .sheet(isPresented: $showServiceManageSheet) { serviceManageSheet }
         // The dashboard's consent prompt (fork 0a55a31): the same
         // prompt the modules page uses, asked over the dashboard
@@ -785,6 +791,23 @@ struct DashboardView: View {
             .presentationCornerRadius(28)
     }
 
+    /// v0.2.111: the DNS destination no longer uses the system
+    /// .sheet — it renders as a custom overlay at the ContentView
+    /// root (the system presentation path is a freeze suspect on
+    /// iOS 17.6.1). This binding hides .dns from the sheet, so
+    /// only .live / .recent present here; setting it writes
+    /// through to the ContentView-owned state. The Connections
+    /// sheets are untouched — they never froze.
+    private var connectionsSheetDestination: Binding<StatsDestination?> {
+        Binding(
+            get: {
+                guard let destination = statsDestination, destination != .dns else { return nil }
+                return destination
+            },
+            set: { statsDestination = $0 }
+        )
+    }
+
     /// D-M6: a stat cell opens its source page — live/recent
     /// connections, or the DNS queries page for the DNS cell.
     /// v0.2.68: MuYu sheet chrome — no NavigationStack, no
@@ -803,6 +826,8 @@ struct DashboardView: View {
     /// the content directly, so it cannot be nil. Detents
     /// match upstream snapSheetDetents [9/16, 0.9]: opens at
     /// the short detent, drags to 90%.
+    /// v0.2.111: .dns is gone from this switch — it is presented
+    /// by the ContentView overlay, never by this sheet.
     private func statsSheetContent(for destination: StatsDestination) -> some View {
         Group {
             switch destination {
@@ -810,8 +835,6 @@ struct DashboardView: View {
                 ConnectionsView(initialFeed: .live, sheetChrome: true)
             case .recent:
                 ConnectionsView(initialFeed: .recent, sheetChrome: true)
-            case .dns:
-                DnsQueriesView(mode: .sheet)
             }
         }
         .presentationDetents([.fraction(0.5625), .fraction(0.9)])
@@ -1891,12 +1914,12 @@ struct DashboardView: View {
     /// tappable, not just the number/label glyphs.
     private func statCell(value: String, label: String, destination: StatsDestination) -> some View {
         Button {
-            // v0.2.103: no DNS publish suspension on tap — the
-            // DNS sheet is now structurally identical to the
-            // Connections sheet (no ScrollViewReader / .task /
-            // .onChange / .onAppear timer), so a mid-presentation
-            // publish is a normal state update, not a freeze
-            // trigger. Note the action for the watchdog.
+            // v0.2.111: the DNS publish suspension is now real —
+            // ContentView sets it on DnsStore when this becomes
+            // .dns (setPublishSuspended), and refresh() defers the
+            // publish at publish time, so even a refresh already
+            // in flight when the user taps cannot land
+            // mid-presentation. Note the action for the watchdog.
             MainThreadWatchdog.noteAction("statsDestination set to .\(destination.rawValue)")
             statsDestination = destination
         } label: {
@@ -2015,7 +2038,9 @@ struct DashboardView: View {
 }
 
 /// A dashboard stat cell's destination sheet (D-M6).
-private enum StatsDestination: String, Identifiable {
+/// v0.2.111: internal, not private — ContentView owns the state
+/// and presents the .dns destination as a root overlay.
+enum StatsDestination: String, Identifiable {
     case live, recent, dns
 
     var id: String { rawValue }
@@ -2580,6 +2605,13 @@ private struct DashboardTrafficEffects: View {
                 // the main thread. Skip it while a stats sheet is
                 // open; the row refreshes on the next
                 // pull-to-refresh / appear instead.
+                // v0.2.111: this gate is only an optimisation now.
+                // The authoritative guard is DnsStore's publish
+                // suspension (setPublishSuspended, checked at
+                // publish time inside refresh()), which also covers
+                // the ungated onChange(isRunning) refresh below —
+                // a refresh already in flight at tap time defers
+                // instead of publishing mid-presentation.
                 if statsDestination == nil {
                     await dnsStore.refresh()
                 }

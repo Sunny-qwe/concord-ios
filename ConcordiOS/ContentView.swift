@@ -41,12 +41,20 @@ struct ContentView: View {
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var logStore: LogStore
     @EnvironmentObject private var eventStore: EventStore
+    @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var selectedTab: AppTab = .dashboard
+    /// The Dashboard stat-cell destination (v0.2.111): owned here,
+    /// not in DashboardView — the .dns destination renders as a
+    /// custom overlay at this root (above the floating tab bar),
+    /// so the state has to live above the tab bar. Passed down to
+    /// DashboardView as a binding; .live / .recent still use
+    /// DashboardView's system .sheet, .dns uses the overlay below.
+    @State private var statsDestination: StatsDestination?
     /// Drives the sliding grey pill behind the selected tab in the
     /// floating bar (matchedGeometryEffect): the pill glides to the
     /// tapped tab inside the same 0.3 s ease-out transaction that
@@ -115,17 +123,35 @@ struct ContentView: View {
                 // floated 72pt above the screen bottom instead of 34
                 // (IMG_1294 measured: bar 711–772pt on an 844pt
                 // screen) — and the bar top at 711 left the Tools
-                // last card 4pt behind the bar. The GeometryReader
-                // now ignores the bottom safe area so its frame
-                // reaches the screen bottom, and the bottom padding
-                // is exactly upstream's max(21, safeArea). The
-                // version watermark above the bar is gone (v0.2.109,
-                // user request): the version shows only in Tools →
-                // About. Pages carry tabBarClearance (95pt) bottom
-                // padding, so the last card clears the bar at max
-                // scroll with a 33pt gap.
+                // last card 4pt behind the bar. v0.2.109 "fixed"
+                // it by putting .ignoresSafeArea(edges: .bottom)
+                // on the GeometryReader — but that zeroes the
+                // safe-area insets the reader reports, so
+                // geo.safeAreaInsets.bottom became 0 and the
+                // padding came out max(21, 0) = 21, leaving the
+                // bar 13pt too low (v0.2.111 audit: bar bottom
+                // 823, top 761 on an 844pt screen). The reader
+                // now stays safe-area-aware, so it reports the
+                // real 34, and the bottom safe area is ignored
+                // on slidingTabView below instead, so the page
+                // container's frame still reaches the screen
+                // bottom and the padding is exactly upstream's
+                // max(21, safeArea) = 34. The version watermark
+                // above the bar is gone (v0.2.109, user request):
+                // the version shows only in Tools → About. Pages
+                // carry tabBarClearance (95pt) bottom padding, so
+                // the last card clears the bar at max scroll with
+                // a 33pt gap.
                 GeometryReader { geo in
                     slidingTabView
+                        // v0.2.111: the bottom safe area is ignored
+                        // HERE, on the page container — NOT on this
+                        // GeometryReader (see the comment above).
+                        // The container's frame still reaches the
+                        // screen bottom, so the overlay aligns to
+                        // the screen bottom and the padding below
+                        // is the whole margin.
+                        .ignoresSafeArea(edges: .bottom)
                         .toolbar(.hidden, for: .tabBar)
                         .tint(themeStore.accentColor)
                         .overlay(alignment: .bottom) {
@@ -133,14 +159,13 @@ struct ContentView: View {
                                 .padding(.horizontal, 21)
                                 // Upstream NavigationDock._bottomMarginOf:
                                 // max(_edgeMargin = 21, system bottom
-                                // padding). The GeometryReader ignores
-                                // the bottom safe area (below), so its
-                                // frame reaches the screen bottom and
-                                // this padding is the whole margin.
+                                // padding). The reader does not ignore
+                                // the safe area, so geo.safeAreaInsets
+                                // .bottom is the real 34 and this
+                                // padding is max(21, 34) = 34.
                                 .padding(.bottom, max(21, geo.safeAreaInsets.bottom))
                         }
                 }
-                .ignoresSafeArea(edges: .bottom)
             }
         }
         .preferredColorScheme(themeStore.colorScheme)
@@ -288,6 +313,15 @@ struct ContentView: View {
             // fires while the Dashboard tick runs).
             Task { await eventStore.refresh() }
         }
+        // v0.2.111 (DNS freeze, TOCTOU): while the DNS sheet is
+        // open, DnsStore defers background publishes — a publish
+        // landing mid-presentation is a freeze suspect. The flag
+        // is checked at publish time inside refresh(), so even a
+        // refresh already in flight when the user taps defers.
+        // Closing the sheet applies the newest deferred result.
+        .onChange(of: statsDestination) { _, destination in
+            dnsStore.setPublishSuspended(destination == .dns)
+        }
         // NOTE (audit A1): a node picked while the VPN was off is
         // applied on the tunnel-connected edge by ProxyStore's own
         // tunnel-status subscription (applyPendingSelectionsOnConnect,
@@ -325,6 +359,24 @@ struct ContentView: View {
         .overlay(alignment: .top) {
             ScriptNotificationBannerHost()
         }
+        // v0.2.111 (DNS freeze): the DNS stats destination as a
+        // custom overlay bottom sheet at the root — attached after
+        // the tab bar in Z-order, so it renders ABOVE the floating
+        // tab bar exactly like the system sheet did. Same content
+        // (DnsQueriesView mode .sheet), same 28pt corners, same
+        // detents (0.5625 / 0.9), same dim, drag-down-to-dismiss,
+        // tap-dim-to-dismiss, ✕ dismiss. Connections (.live /
+        // .recent) keep their working system .sheet in
+        // DashboardView. UNTESTED HYPOTHESIS: the system .sheet
+        // presentation path is a freeze suspect on iOS 17.6.1 —
+        // this bypasses it; it is not proven to fix the freeze
+        // until it holds on-device.
+        .overlay {
+            if statsDestination == .dns {
+                DnsSheetOverlay(onDismiss: { statsDestination = nil })
+            }
+        }
+        .animation(.easeOut(duration: 0.3), value: statsDestination == .dns)
     }
 
     /// The four tabs (shared by the floating and docked bar styles).
@@ -332,7 +384,7 @@ struct ContentView: View {
     private func pageView(for tab: AppTab) -> some View {
         switch tab {
         case .dashboard:
-            DashboardView(onSelectTab: { selectTab($0) })
+            DashboardView(onSelectTab: { selectTab($0) }, statsDestination: $statsDestination)
         case .proxies:
             ProxiesView()
         case .profiles:
@@ -536,5 +588,144 @@ struct ContentView: View {
         // container. (A fully transparent bar was tried in
         // v0.2.106 and rejected by the user.)
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 30))
+    }
+}
+
+/// Custom bottom-sheet overlay for the Dashboard DNS destination
+/// (v0.2.111, DNS freeze): the system .sheet presentation path is
+/// a freeze suspect on iOS 17.6.1, so the DNS destination no longer
+/// uses .sheet at all — it renders as a plain overlay at the
+/// ContentView root, above the floating tab bar (like the system
+/// sheet was). Same content (DnsQueriesView mode .sheet — same
+/// header, drag handle, ✕ button, search bar, rows), same 28pt
+/// corners, same detents (0.5625 / 0.9 of screen height), same dim,
+/// drag-down-to-dismiss, tap-dim-to-dismiss, ✕ dismiss. The nested
+/// .sheet(item: $selectedEntry) inside DnsQueriesView (entry
+/// detail) stays a system sheet. UNTESTED HYPOTHESIS — not proven
+/// to fix the freeze until it holds on-device.
+///
+/// Drag behaviour: the gesture is attached to the sheet container.
+/// Drags starting on the header / search bar drive the sheet (they
+/// are outside the list's ScrollView); drags starting on the list
+/// scroll the list, as the ScrollView's own gesture wins there.
+/// Drag up grows toward 0.9, drag down follows the finger; on
+/// release a far drag (>140pt) dismisses, a short drag down from
+/// the tall detent steps back to 0.5625, otherwise it snaps to the
+/// nearest detent.
+///
+/// Keyboard: the sheet's search field opens the keyboard, which
+/// would cover the floating search bar (the system sheet moved
+/// out of the way for free). The bottom strip under the content
+/// grows to the keyboard height while it is up, and the sheet
+/// auto-expands to the 0.9 detent (restored when the keyboard
+/// hides), so the search bar stays visible above the keyboard.
+private struct DnsSheetOverlay: View {
+    let onDismiss: () -> Void
+
+    /// Current detent, as a fraction of screen height.
+    @State private var heightFraction: CGFloat = 0.5625
+    /// Live drag offset (downward drags slide the sheet down).
+    @State private var dragOffset: CGFloat = 0
+    /// Detent the drag started from; captured on the first
+    /// onChanged so upward drags grow from the right base.
+    @State private var dragStartFraction: CGFloat = 0.5625
+    @State private var dragging = false
+    /// Keyboard height while the search field is focused, 0 else.
+    @State private var keyboardHeight: CGFloat = 0
+    /// Whether the keyboard auto-expanded the sheet (restored on
+    /// hide); false when the user expanded it themselves.
+    @State private var keyboardExpandedSheet = false
+
+    private let minFraction: CGFloat = 0.5625
+    private let maxFraction: CGFloat = 0.9
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .bottom) {
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+                    .onTapGesture(perform: onDismiss)
+                    .transition(.opacity)
+                VStack(spacing: 0) {
+                    DnsQueriesView(mode: .sheet, onClose: onDismiss)
+                    // Bottom strip: the home-indicator safe area
+                    // normally, the keyboard height while the
+                    // search field is focused — the sheet's
+                    // background extends to the screen bottom in
+                    // both cases, like the system sheet.
+                    Color.clear
+                        .frame(height: keyboardHeight > 0 ? keyboardHeight : geo.safeAreaInsets.bottom)
+                }
+                .frame(width: geo.size.width, height: geo.size.height * heightFraction)
+                .background(ConcordTheme.pageBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 28))
+                .offset(y: dragOffset)
+                .gesture(sheetDrag(screenHeight: geo.size.height))
+                .transition(.move(edge: .bottom))
+            }
+            .ignoresSafeArea()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+            let height = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.height ?? 0
+            guard height > 0 else { return }
+            withAnimation(.easeOut(duration: 0.25)) {
+                keyboardHeight = height
+                if heightFraction < maxFraction {
+                    keyboardExpandedSheet = true
+                    heightFraction = maxFraction
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeOut(duration: 0.25)) {
+                keyboardHeight = 0
+                if keyboardExpandedSheet {
+                    keyboardExpandedSheet = false
+                    heightFraction = minFraction
+                }
+            }
+        }
+    }
+
+    private func sheetDrag(screenHeight: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                if !dragging {
+                    dragging = true
+                    dragStartFraction = heightFraction
+                }
+                let translation = value.translation.height
+                if translation < 0 {
+                    // Drag up: grow toward the 0.9 detent.
+                    dragOffset = 0
+                    heightFraction = min(maxFraction, max(minFraction, dragStartFraction - translation / screenHeight))
+                } else {
+                    // Drag down: follow the finger; the detent
+                    // only changes on release.
+                    dragOffset = translation
+                }
+            }
+            .onEnded { value in
+                dragging = false
+                let translation = value.translation.height
+                if translation > 140 {
+                    // Dragged far down: dismiss (the overlay
+                    // removal transition continues the slide).
+                    onDismiss()
+                } else if heightFraction >= maxFraction - 0.01, translation > 40 {
+                    // At the tall detent, a short drag down steps
+                    // back to the short detent, not a dismiss.
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        heightFraction = minFraction
+                        dragOffset = 0
+                    }
+                } else {
+                    // Snap to the nearest detent.
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        heightFraction = heightFraction > (minFraction + maxFraction) / 2 ? maxFraction : minFraction
+                        dragOffset = 0
+                    }
+                }
+            }
     }
 }

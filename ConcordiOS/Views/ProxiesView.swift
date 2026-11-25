@@ -83,6 +83,52 @@ private struct PillsWidthKey: PreferenceKey {
     }
 }
 
+// MARK: - Proxies nav bar appearance (v0.2.108)
+// Forces the Proxies navigation bar to a SOLID page background
+// (opaque, no translucent material, no hairline), matching
+// upstream FlClash's Scaffold bar, which sits on the page surface
+// (tone 94) with no separate bar background. Implemented as a
+// UIViewControllerRepresentable so it touches the LIVE bar
+// instance: the Proxies bar already exists when this page appears
+// (all four tabs are mounted at launch), so setting only the
+// UINavigationBar appearance proxy would not restyle it. The
+// representable also sets the proxy, so any bar created later
+// gets the same opaque look. iOS 13+ API throughout — the
+// toolbarBackgroundVisibility(.visible) this replaces is iOS 18+
+// and broke the v0.2.108 archive on the iOS 17.0 target.
+private struct ProxiesNavBarAppearance: UIViewControllerRepresentable {
+    var background: UIColor
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        UIViewController()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = background
+        appearance.shadowColor = .clear
+        // Any navigation bar created after this point.
+        UINavigationBar.appearance().standardAppearance = appearance
+        UINavigationBar.appearance().scrollEdgeAppearance = appearance
+        UINavigationBar.appearance().compactAppearance = appearance
+        // The live bar: walk the responder chain to the enclosing
+        // UINavigationController and set its bar directly. The
+        // representable's view controller is a child of the page's
+        // hosting controller, whose parent is the nav controller.
+        var responder: UIResponder? = uiViewController
+        while let current = responder {
+            if let nav = current as? UINavigationController {
+                nav.navigationBar.standardAppearance = appearance
+                nav.navigationBar.scrollEdgeAppearance = appearance
+                nav.navigationBar.compactAppearance = appearance
+                break
+            }
+            responder = current.next
+        }
+    }
+}
+
 struct ProxiesView: View {
     /// Picker mode (FlClash proxies.dart:14-18,157,165,174):
     /// as a dashboard sheet the page keeps only search + delay
@@ -116,6 +162,11 @@ struct ProxiesView: View {
     /// mode changes itself, so the view must observe the mode
     /// directly or the list would not refresh on a mode switch.
     @EnvironmentObject private var settingsStore: SettingsStore
+    /// Observed so the nav bar appearance follows the theme:
+    /// pageBackground is theme-dependent (magenta keeps a pink
+    /// tint, dark mode tints), so a theme change must re-run
+    /// ProxiesNavBarAppearance below with the new colour.
+    @EnvironmentObject private var themeStore: ThemeStore
     @StateObject private var customStore = CustomProxyStore()
     @State private var searchText = ""
     @State private var isSearching = false
@@ -796,17 +847,26 @@ struct ProxiesView: View {
             }
         }
         .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
-        // v0.2.108: force the bar background visible at all times.
-        // Upstream's Scaffold bar sits on the page surface (tone 94)
-        // with no separate bar background (scaffold.dart: the bar
-        // and body share backgroundColor; ProxiesView passes none,
-        // so both are the page surface). With the default .automatic
-        // visibility the bar shows the system translucent material
-        // at rest instead of the solid page colour, which rendered
-        // as a near-white strip (~#FBFBFD) across the top of this
-        // page while the page itself is #F2F2F7 (IMG_1290). The
-        // Dashboard has no NavigationStack and no such strip.
-        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
+        // v0.2.108: the bar must render the SOLID page colour at
+        // rest, not the system translucent material. Upstream's
+        // Scaffold bar sits on the page surface (tone 94) with no
+        // separate bar background (scaffold.dart: the bar and body
+        // share backgroundColor; ProxiesView passes none, so both
+        // are the page surface). With the default .automatic
+        // visibility the bar showed the translucent material at
+        // rest, which rendered as a near-white strip (~#FBFBFD)
+        // across the top of this page while the page itself is
+        // #F2F2F7 (IMG_1290). The Dashboard has no NavigationStack
+        // and no such strip.
+        // toolbarBackgroundVisibility(.visible) would force it, but
+        // that API is iOS 18+ and the deployment target is iOS 17
+        // (CI archive error: 'toolbarBackgroundVisibility is only
+        // available in iOS 18.0 or newer'). Instead
+        // ProxiesNavBarAppearance above applies an opaque
+        // UINavigationBarAppearance to the bar instance (plus the
+        // appearance proxy), which is iOS 13+ and works on
+        // iOS 17.6.1. It re-runs on theme change via themeStore.
+        .background(ProxiesNavBarAppearance(background: UIColor(ConcordTheme.pageBackground)))
         // ⋯ menu overlay (v0.2.72): a custom overlay, NOT a system
         // .popover — the popover's content never received taps
         // on-device (IMG_1212). The overlay is part of the normal

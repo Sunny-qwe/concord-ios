@@ -147,6 +147,21 @@ struct DashboardView: View {
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
     @State private var ipFetchFailed = false
+    /// In-flight guard for the egress-IP lookup (v0.2.101 issue
+    /// 1b): .task, onChange(isRunning), pull-to-refresh and the
+    /// manual re-fetch taps all funnel through fetchIPInfo(); with
+    /// no guard two of them can run the 3-source sequence
+    /// concurrently (TrafficStore.probe has isProbingOutboundIp;
+    /// this lookup had none).
+    @State private var ipFetchInFlight = false
+    /// Backoff retry loop for a failed lookup (v0.2.101 issue 1b):
+    /// at most one may exist. It sleeps 3 s / 5 s / 10 s (capped
+    /// at 10 s) and re-calls fetchIPInfo while the tunnel runs and
+    /// ipFetchFailed is set, mirroring
+    /// TrafficStore.maybeRetryOutboundIpProbe (3 s for the first
+    /// 20 attempts, then 10 s). A success, or the tunnel going
+    /// down, ends the loop at its next wake.
+    @State private var ipFetchRetryTask: Task<Void, Never>?
     /// The ip-api.com `as` field ("AS15169 Google LLC"), parsed to
     /// the bare "AS<n>" token for the org fallback (FlClash
     /// current_outbound.dart: organization ?? "AS{asn}").
@@ -366,7 +381,13 @@ struct DashboardView: View {
     /// status card red even though the VPN proxies fine. Fall back
     /// to ident.me/json (8 s) and then api.ipify.org?format=json
     /// (8 s, IP only): first success wins and clears ipFetchFailed;
-    /// only an all-sources failure sets it. The fallbacks carry
+    /// only an all-sources failure sets it. v0.2.101 issue 1b: an
+    /// all-sources failure now schedules a backoff retry (3 s /
+    /// 5 s / 10 s, capped) while the tunnel runs, and concurrent
+    /// callers are held off by an in-flight guard; the first query
+    /// after connect waits until 4 s after the tunnel started, so
+    /// it does not run while the app's DNS/routing is still
+    /// settling. The fallbacks carry
     /// only the IP (ident.me also fills country + code / city /
     /// ASN when present) — enough for the status card's fallbackQuery; the
     /// geo/org enrichment stays ip-api.com-only. The lookup runs
@@ -377,6 +398,28 @@ struct DashboardView: View {
     /// answer is the proxy egress IP; when it is off, it is the
     /// phone's direct IP.
     private func fetchIPInfo() async {
+        // v0.2.101 issue 1b: in-flight guard — .task and
+        // onChange(isRunning) can fire at the same moment (appear
+        // while the tunnel is connecting), and a manual re-fetch
+        // tap can land mid-sequence; the second caller returns
+        // instead of running a duplicate 3-source lookup.
+        guard !ipFetchInFlight else { return }
+        ipFetchInFlight = true
+        defer { ipFetchInFlight = false }
+        // v0.2.101 issue 1b: the first query after connect used to
+        // run in the instant the tunnel came up, when the app
+        // process's DNS/routing is not yet stable — all three
+        // sources fast-fail and the card stays red until a manual
+        // re-fetch. Wait until 4 s after the tunnel started
+        // before querying (no delay when the tunnel has been up
+        // for a while, or its start time is unknown).
+        if proxyStore.isRunning, let started = tunnelStartedAt {
+            let elapsed = Date().timeIntervalSince(started)
+            if elapsed < 4 {
+                try? await Task.sleep(nanoseconds: UInt64((4 - elapsed) * 1_000_000_000))
+                if Task.isCancelled { return }
+            }
+        }
         ipChecking = true
         defer { ipChecking = false }
         // Interface B3 (DashboardView part): a stalled ip-api.com
@@ -391,6 +434,34 @@ struct DashboardView: View {
         // bars while not running, instead of stale numbers.
         IPLookupDiagnostics.record("all IP sources failed")
         ipFetchFailed = true
+        // v0.2.101 issue 1b: no auto-retry used to leave the card
+        // red until the user tapped re-fetch (which just calls
+        // this same function later, when the tunnel DNS is
+        // stable). Schedule the backoff retry loop instead.
+        scheduleIPFetchRetry()
+    }
+
+    /// Backoff retry loop for a failed egress-IP lookup (v0.2.101
+    /// issue 1b): 3 s, then 5 s, then 10 s, capped at 10 s. The
+    /// loop re-checks before every attempt and stops as soon as
+    /// the tunnel is down or a fetch succeeds; scheduleIPFetchRetry
+    /// is a no-op while a loop already exists, so concurrent
+    /// failures never start a second one.
+    private func scheduleIPFetchRetry() {
+        guard ipFetchRetryTask == nil else { return }
+        ipFetchRetryTask = Task {
+            let delays: [TimeInterval] = [3, 5, 10]
+            var attempt = 0
+            while proxyStore.isRunning && ipFetchFailed {
+                let delay = delays[min(attempt, delays.count - 1)]
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard !Task.isCancelled else { break }
+                guard proxyStore.isRunning && ipFetchFailed else { break }
+                attempt += 1
+                await fetchIPInfo()
+            }
+            ipFetchRetryTask = nil
+        }
     }
 
     /// ip-api.com (primary): the only source returning the full
@@ -632,6 +703,7 @@ struct DashboardView: View {
             ipAsn: $ipAsn,
             ipFetchFailed: $ipFetchFailed,
             trafficActions: $trafficActions,
+            statsDestination: $statsDestination,
             fetchIPInfo: fetchIPInfo,
             refreshSubscription: refreshSubscription
         )
@@ -2447,6 +2519,10 @@ private struct DashboardTrafficEffects: View {
     @Binding var ipAsn: String?
     @Binding var ipFetchFailed: Bool
     @Binding var trafficActions: DashboardTrafficActions
+    /// v0.2.101 issue 2: whether a stats sheet is open — the
+    /// appear task skips its dnsStore.refresh() while one is, so
+    /// the fresh entries cannot land mid-presentation.
+    @Binding var statsDestination: StatsDestination?
     let fetchIPInfo: () async -> Void
     let refreshSubscription: () async -> Void
 
@@ -2485,7 +2561,19 @@ private struct DashboardTrafficEffects: View {
                 // stopped) the fresh snapshots fill the row at once.
                 await connectionStore.refresh()
                 await eventStore.refresh()
-                await dnsStore.refresh()
+                // v0.2.101 issue 2: this refresh lands last in the
+                // appear sequence — after fetchIPInfo (up to 26 s)
+                // and the engine / subscription refreshes — so a
+                // user tapping a stats cell mid-sequence can have
+                // the sheet still presenting when the fresh DNS
+                // entries publish, which fires DnsQueriesView's
+                // .onChange scrollTo mid-presentation and freezes
+                // the main thread. Skip it while a stats sheet is
+                // open; the row refreshes on the next
+                // pull-to-refresh / appear instead.
+                if statsDestination == nil {
+                    await dnsStore.refresh()
+                }
                 // v0.2.89: probe on entry even with the VPN off, like
                 // MuYu — the old `client.mode == .sample ||
                 // tunnelManager.isRunning` gate skipped the probe in

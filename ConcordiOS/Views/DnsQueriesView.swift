@@ -59,6 +59,13 @@ struct DnsQueriesView: View {
 
     init(mode: Mode = .page) {
         self.mode = mode
+        // v0.2.101 (Issue 2): in sheet mode follow starts OFF —
+        // the sheet opens already at the newest row, and sheet
+        // mode has no follow toggle, so following on open serves
+        // nothing and is what wedges the List during presentation.
+        // It is switched on once presentation has finished and
+        // the newest row is visible (see .onAppear below).
+        self._followEnd = State(initialValue: mode == .sheet ? false : true)
     }
 
     @EnvironmentObject private var dnsStore: DnsStore
@@ -83,7 +90,27 @@ struct DnsQueriesView: View {
     /// record scrolls the list back to the newest row. Our list is
     /// newest-first, so "end" here is the top. Turn it off before
     /// scrolling down to read older rows.
-    @State private var followEnd = true
+    /// v0.2.101 (Issue 2): in sheet mode this starts false (set
+    /// in init) and is only switched on after presentation has
+    /// finished — see sheetPresented below.
+    @State private var followEnd: Bool
+
+    /// Presentation gate (v0.2.101, Issue 2): false until the
+    /// sheet/push presentation animation has finished. Set in
+    /// .onAppear via asyncAfter(0.6s) — the animation runs
+    /// ~0.35-0.5s, and the v0.2.82 next-runloop defer was still
+    /// inside it, so a scrollTo fired from onChange during
+    /// presentation could wedge the List's layout and freeze the
+    /// app. No scrollTo runs while this is false.
+    @State private var sheetPresented = false
+
+    /// Sheet-mode "at the top" (v0.2.101, Issue 2): true while
+    /// the newest row is visible. Tracked by the first row's
+    /// onAppear/onDisappear in sheetList (best-effort — List row
+    /// visibility is the only scroll signal a List offers).
+    /// Following only scrolls while this is true, so reading
+    /// older rows is never yanked back to the top.
+    @State private var sheetAtTop = true
 
     /// Search text first (DnsStore.filtered), then the group filter,
     /// then the record-type / initiator / rcode facets.
@@ -140,6 +167,12 @@ struct DnsQueriesView: View {
     /// DNS查询 on the Dashboard, VPN off). Deferring to the next
     /// runloop lets the current update/layout pass finish first.
     private func scrollToNewest(_ proxy: ScrollViewProxy) {
+        // v0.2.101 (Issue 2): never scroll while the sheet is
+        // still presenting — second line of defence behind the
+        // .onChange gate (a scrollTo here wedges the List on
+        // iOS 17). Page mode has no sheet presentation, so it
+        // is unaffected.
+        guard mode == .page || sheetPresented else { return }
         if let id = foldedEntries.first?.id {
             DispatchQueue.main.async {
                 withAnimation { proxy.scrollTo(id, anchor: .top) }
@@ -240,6 +273,27 @@ struct DnsQueriesView: View {
             } else {
                 ForEach(foldedEntries) { folded in
                     dnsSheetRow(folded)
+                        // v0.2.101 (Issue 2): track whether the
+                        // newest row is on screen — following only
+                        // scrolls while it is (see sheetAtTop).
+                        .onAppear {
+                            if folded.id == foldedEntries.first?.id {
+                                sheetAtTop = true
+                                // v0.2.101 (Issue 2): scrolling back
+                                // to the top re-enables following
+                                // (once presentation has finished) —
+                                // otherwise a user who scrolled down
+                                // in the first 0.6s would never get
+                                // follow-back in this sheet session,
+                                // as sheet mode has no follow toggle.
+                                if sheetPresented { followEnd = true }
+                            }
+                        }
+                        .onDisappear {
+                            if folded.id == foldedEntries.first?.id {
+                                sheetAtTop = false
+                            }
+                        }
                 }
             }
         }
@@ -381,12 +435,33 @@ struct DnsQueriesView: View {
                     await dnsStore.refresh()
                 }
             }
+            .onAppear {
+                // v0.2.101 (Issue 2): the presentation animation
+                // runs ~0.35-0.5s; only after it (0.6s) is the
+                // List safe to scroll, and only then is following
+                // switched on in sheet mode — and only if the
+                // newest row is actually visible (the user may
+                // already have scrolled down in the first 0.6s).
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    sheetPresented = true
+                    if mode == .sheet, sheetAtTop {
+                        followEnd = true
+                    }
+                }
+            }
             .onChange(of: foldedEntries.first?.id) { old, _ in
                 // v0.2.82 (DNS freeze): skip the initial population
                 // (nil -> first id) — the list is already at the top;
                 // only follow when a genuinely newer record arrives
                 // while viewing (old id non-nil -> new id).
-                if old != nil, followEnd { scrollToNewest(proxy) }
+                // v0.2.101 (Issue 2): additionally gated on the
+                // presentation having finished AND (sheet mode) the
+                // newest row still being visible — a refresh landing
+                // during presentation, or while the user is reading
+                // older rows, must never scroll.
+                if old != nil, followEnd, sheetPresented, (mode == .page || sheetAtTop) {
+                    scrollToNewest(proxy)
+                }
             }
             .sheet(item: $selectedEntry) { entry in
                 DnsEntryDetailView(entry: entry)

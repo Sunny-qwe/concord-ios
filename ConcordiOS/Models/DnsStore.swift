@@ -57,7 +57,15 @@ final class DnsStore: ObservableObject {
             let fresh = try await client.dnsEntries()
             let cutoff = clearedBeforeTime
             let visible = cutoff > 0 ? fresh.filter { $0.time > cutoff } : fresh
-            var merged = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
+            // v0.2.101 (Issue 2): build the merge dictionary with
+            // a loop, not Dictionary(uniqueKeysWithValues:) — that
+            // traps on a duplicate key, and `id` is only
+            // "\(time)-\(domain)-\(type)" (ConcordClient.swift:683),
+            // so two identical queries in the same millisecond
+            // share one id. Last write wins, fresh snapshot entries
+            // overwriting older ones, exactly as before.
+            var merged: [String: ConcordDnsEntry] = [:]
+            for entry in entries { merged[entry.id] = entry }
             for entry in visible { merged[entry.id] = entry }
             entries = merged.values.sorted { $0.time > $1.time }
             lastError = nil

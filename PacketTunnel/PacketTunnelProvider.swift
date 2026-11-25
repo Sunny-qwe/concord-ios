@@ -83,7 +83,11 @@ import os
 //     Traffic values, connection events are ConnectionDelta
 //     {opened, closed, counters} applied to a table the extension
 //     keeps, log/dns events are single entries appended to a bounded
-//     buffer (500 entries). After each batch the extension refills one
+//     buffer (500 entries). Connection / log / dns / event snapshot
+//     files are rewritten at most once a second (v0.2.101, Issue 3):
+//     the tables stay live in memory and a 1 s timer flushes only the
+//     dirty files, so chatty apps opening many short connections no
+//     longer cost a whole-file JSON rewrite per event batch. After each batch the extension refills one
 //     unit of credit ($/credit {"sub": N, "n": 1}); without it the
 //     server pump stops after the initial credit (WatchOptions.credit,
 //     default 4). A `resync: true` event means events were dropped:
@@ -244,6 +248,32 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var dnsBuffer: [[String: Any]] = []
     private var eventBuffer: [[String: Any]] = []
     private let maxBufferedEntries = 500
+
+    /// Snapshot write coalescing (v0.2.101, Issue 3): the core
+    /// pushes traffic.watch at 1 s, but EVERY connection.watch
+    /// delta (open/close/counter) used to trigger a full sort of
+    /// the connection table + a whole-file connections.json rewrite,
+    /// and every log/dns/event batch an append + trim + whole-file
+    /// rewrite — repeated whole-file JSON serialisation + atomic
+    /// writes in the extension while chatty apps open many short
+    /// connections. The tables stay live in memory; only the file
+    /// write is deferred to at most once a second, per dirty file.
+    /// File formats and the 500-entry cap are unchanged.
+    /// `snapshotFlushEnabled` is lock-guarded because stopTunnel
+    /// clears it from the main thread while the timer fires on
+    /// coreQueue: a flush queued at stop time must not resurrect
+    /// the snapshots deleteStaleSnapshots just dropped (B8).
+    /// `pendingSnapshotFlushes` / `snapshotFlushTimer` live on
+    /// coreQueue (all stream handling does); the timer is also
+    /// cancelled from stopTunnel / resetRunState, like
+    /// watchdogTimer / drainTimer.
+    private var _snapshotFlushEnabled = false
+    private var snapshotFlushEnabled: Bool {
+        get { locked { _snapshotFlushEnabled } }
+        set { locked { _snapshotFlushEnabled = newValue } }
+    }
+    private var pendingSnapshotFlushes: Set<String> = []
+    private var snapshotFlushTimer: DispatchSourceTimer?
 
     // proxy.watch table: the latest ProxyGroups, kept as the group's
     // order plus the group / node arrays so ProxyDelta events (whole
@@ -614,6 +644,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // must not survive into it.
         channelTunFingerprint = nil
         clearTunRestartNeeded()
+        // Snapshot coalescing (v0.2.101, Issue 3): a timer from
+        // the previous run in this reused process must not fire
+        // into the new run's tables, and flushes are live again.
+        snapshotFlushTimer?.cancel()
+        snapshotFlushTimer = nil
+        pendingSnapshotFlushes.removeAll()
+        snapshotFlushEnabled = true
     }
 
     private func bootCore(context: UnsafeMutableRawPointer) async throws {
@@ -927,6 +964,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                                 userInfo: [NSLocalizedDescriptionKey: "系统停止原因：\(reason.rawValue)"])
         recordStartup("stopped", error: stopError)
         writeVPNDiagnostics(stage: "stopped")
+        // Snapshot coalescing (v0.2.101, Issue 3): stop flushes
+        // BEFORE the snapshots are dropped below — a flush queued
+        // at stop time must not resurrect logs/dns after B8 deleted
+        // them. The timer is cancelled like watchdogTimer; the
+        // flag covers a handler already queued on coreQueue.
+        snapshotFlushTimer?.cancel()
+        snapshotFlushTimer = nil
+        snapshotFlushEnabled = false
         // Interface B8 (stop-part): drop the stale snapshots now,
         // while the files still belong to this run — the app must
         // never read last-round logs / DNS / route / engine data as
@@ -1334,24 +1379,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 guard let delta = item as? [String: Any] else { continue }
                 applyConnectionDelta(delta)
             }
-            let connections = connectionTable.values.sorted {
-                (($0["start"] as? NSNumber)?.int64Value ?? 0) > (($1["start"] as? NSNumber)?.int64Value ?? 0)
-            }
-            writeSnapshot(name: "connections", data: ["connections": connections, "ended": endedBuffer])
+            // v0.2.101, Issue 3: no whole-file rewrite per batch —
+            // the table stays live in memory, the file flushes at
+            // most once a second (see markSnapshotDirty).
+            markSnapshotDirty("connections")
         case .log:
             for item in items {
                 guard let entry = item as? [String: Any] else { continue }
                 logBuffer.append(entry)
             }
             trimBuffer(&logBuffer)
-            writeSnapshot(name: "logs", data: ["entries": logBuffer])
+            markSnapshotDirty("logs")
         case .dns:
             for item in items {
                 guard let entry = item as? [String: Any] else { continue }
                 dnsBuffer.append(entry)
             }
             trimBuffer(&dnsBuffer)
-            writeSnapshot(name: "dns", data: ["entries": dnsBuffer])
+            markSnapshotDirty("dns")
         case .proxy:
             // Each event is a ProxyDelta {order?, groups, nodes, removed}.
             for item in items {
@@ -1370,7 +1415,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 eventBuffer.append(entry)
             }
             trimBuffer(&eventBuffer)
-            writeSnapshot(name: "events", data: ["entries": eventBuffer])
+            markSnapshotDirty("events")
         case .engine:
             // Each event is a full EngineStatus; keep the newest.
             if let last = items.last {
@@ -1555,6 +1600,53 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private func trimBuffer(_ buffer: inout [[String: Any]]) {
         if buffer.count > maxBufferedEntries {
             buffer.removeFirst(buffer.count - maxBufferedEntries)
+        }
+    }
+
+    /// Marks one snapshot file dirty and arms the 1 s coalescing
+    /// timer when none is pending. Runs on coreQueue (all stream
+    /// handling does). Under sustained load the timer fires once a
+    /// second and flushes everything pending, so each file is
+    /// rewritten at most ~1/s no matter how many event batches
+    /// arrive; idle files are never rewritten.
+    private func markSnapshotDirty(_ name: String) {
+        pendingSnapshotFlushes.insert(name)
+        guard snapshotFlushTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: coreQueue)
+        timer.schedule(deadline: .now() + .seconds(1))
+        timer.setEventHandler { [weak self] in self?.flushPendingSnapshots() }
+        timer.resume()
+        snapshotFlushTimer = timer
+    }
+
+    /// Writes every dirty snapshot file from the live in-memory
+    /// tables, then disarms the timer. Runs on coreQueue via the
+    /// coalescing timer. Drops the writes when the run is over
+    /// (stopTunnel cleared the flag before deleting the snapshots),
+    /// so a flush queued at stop time cannot resurrect them; the
+    /// pending set is cleared either way. The connections write
+    /// keeps the delta path's format (sorted table + endedBuffer),
+    /// exactly as the old per-batch write did.
+    private func flushPendingSnapshots() {
+        snapshotFlushTimer?.cancel()
+        snapshotFlushTimer = nil
+        let pending = pendingSnapshotFlushes
+        pendingSnapshotFlushes.removeAll()
+        guard snapshotFlushEnabled, !pending.isEmpty else { return }
+        if pending.contains("connections") {
+            let connections = connectionTable.values.sorted {
+                (($0["start"] as? NSNumber)?.int64Value ?? 0) > (($1["start"] as? NSNumber)?.int64Value ?? 0)
+            }
+            writeSnapshot(name: "connections", data: ["connections": connections, "ended": endedBuffer])
+        }
+        if pending.contains("logs") {
+            writeSnapshot(name: "logs", data: ["entries": logBuffer])
+        }
+        if pending.contains("dns") {
+            writeSnapshot(name: "dns", data: ["entries": dnsBuffer])
+        }
+        if pending.contains("events") {
+            writeSnapshot(name: "events", data: ["entries": eventBuffer])
         }
     }
 

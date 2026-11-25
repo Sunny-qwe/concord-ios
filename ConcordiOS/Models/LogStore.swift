@@ -83,6 +83,11 @@ final class LogStore: ObservableObject {
         // error domain + code, so a red "IP 查询失败" ships its
         // cause in the export. Always present, even with no record.
         sections.append("== IP 查询诊断 ==\n" + (IPLookupDiagnostics.lastDiagnosticText() ?? "暂无记录（尚未查询，或查询未失败）"))
+        // Zombie probe diagnostics (v0.2.101): every probe attempt's
+        // error text + queue depth + status + startupID match, so a
+        // "VPN 核心无响应" banner ships its cause in the export.
+        // Always present, even with no record.
+        sections.append("== 僵尸探测诊断 ==\n" + (ZombieProbeDiagnostics.lastDiagnosticText() ?? "暂无记录（尚未探测，或探测未失败）"))
         sections.append("== 应用内核心启动诊断 ==\n" + (AppCore.lastBootReportText() ?? "暂无记录（尚未在应用内启动过核心）"))
         sections.append("== 最近一次测速诊断 ==\n" + (AppCore.lastDelayTestReportText() ?? "暂无记录（尚未测速，或本次测速未写入诊断）"))
         // Per-profile delay diagnostics (v0.2.58): the section

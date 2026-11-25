@@ -1,0 +1,117 @@
+From 2e2cc0274406dfa9537bee933a37d9b9963f3251 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Wed, 25 Nov 2026 00:20:43 +0000
+Subject: [PATCH 9/9] tun: end a busy driver pass on the cooperative budget instead of a round count
+
+---
+ crates/tun/src/device/apple.rs |  6 +++++-
+ crates/tun/src/stack/driver.rs | 20 +++++++++-----------
+ xtask/src/tunables/mod.rs      |  2 +-
+ xtask/tunables.txt             |  1 -
+ 4 files changed, 15 insertions(+), 14 deletions(-)
+
+diff --git a/crates/tun/src/device/apple.rs b/crates/tun/src/device/apple.rs
+index fb9d442..98be66e 100644
+--- a/crates/tun/src/device/apple.rs
++++ b/crates/tun/src/device/apple.rs
+@@ -33,9 +33,13 @@ impl Device for TunDevice {
+             count += 1;
+         }
+         let batch = slots.get_mut(..count).unwrap_or_default();
++        let budget = std::task::ready!(tokio::task::coop::poll_proceed(cx));
+         match concord_platform::utun_recv_batch(self.inner.as_raw_fd(), batch, lens) {
+             Ok(0) => {}
+-            Ok(received) => return Poll::Ready(Ok(received)),
++            Ok(received) => {
++                budget.made_progress();
++                return Poll::Ready(Ok(received));
++            }
+             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
+             Err(err) => return Poll::Ready(Err(err)),
+         }
+diff --git a/crates/tun/src/stack/driver.rs b/crates/tun/src/stack/driver.rs
+index 264f87b..86afad0 100644
+--- a/crates/tun/src/stack/driver.rs
++++ b/crates/tun/src/stack/driver.rs
+@@ -32,7 +32,6 @@ use tx::PoolEgress;
+ 
+ const RX_BATCH: usize = 64;
+ const RX_BATCH_START: usize = 8;
+-const MAX_ROUNDS: usize = 8;
+ /// Bytes a round reads before the stack answers them, as sing-tun ends a read burst: an
+ /// upload's ACKs go out while the sender still has window, not after the device runs dry.
+ const ROUND_READ_BYTES: usize = 1 << 20;
+@@ -304,11 +303,12 @@ impl<D: Device> Driver<D> {
+             queues.register(*index, cx.waker());
+         }
+         let mut busy = true;
+-        let mut rounds = 0;
++        let mut first = true;
+         let mut deadline = None;
+         let mut replies_left = false;
+-        while busy && rounds < MAX_ROUNDS {
+-            rounds += 1;
++        // A pass ends when Tokio's cooperative budget does: every device read and write draws on
++        // it, as Tokio's own I/O does, and `drive` schedules the next pass while it is spent.
++        while busy && tokio::task::coop::has_budget_remaining() {
+             self.udp.set_now(self.tcp.now());
+             busy = false;
+             let sink = Arc::clone(&self.sink);
+@@ -322,7 +322,7 @@ impl<D: Device> Driver<D> {
+             }
+             // Once a poll, after the first TUN reads, as sing-tun dispatches socket events once a
+             // run loop (`stack_go_engine.go:283-298`).
+-            if rounds == 1 {
++            if std::mem::take(&mut first) {
+                 replies_left = self.replies.drain();
+             }
+             deadline = self
+@@ -550,7 +550,8 @@ mod owner_tests {
+     async fn reading_without_transmit_room_is_bounded_and_returns() {
+         struct Flood(std::sync::atomic::AtomicUsize);
+         impl Device for Flood {
+-            fn poll_recv(&self, _: &mut Context<'_>, _: &mut [u8]) -> Poll<io::Result<usize>> {
++            fn poll_recv(&self, cx: &mut Context<'_>, _: &mut [u8]) -> Poll<io::Result<usize>> {
++                std::task::ready!(tokio::task::coop::poll_proceed(cx)).made_progress();
+                 self.0.fetch_add(1, Ordering::Relaxed);
+                 Poll::Ready(Ok(1))
+             }
+@@ -569,11 +570,8 @@ mod owner_tests {
+         driver.pool.take_up_to(&mut held, usize::MAX);
+         let mut cx = Context::from_waker(std::task::Waker::noop());
+         assert!(driver.poll_run(&mut cx).is_pending());
+-        let reads = driver.dev.0.load(Ordering::Relaxed);
+-        assert!(
+-            (1..=RX_BATCH * MAX_ROUNDS).contains(&reads),
+-            "{reads} reads in one pass"
+-        );
++        assert!(driver.dev.0.load(Ordering::Relaxed) > 0);
++        assert!(!tokio::task::coop::has_budget_remaining());
+         driver.pool.give_back(&mut held, 0);
+     }
+ 
+diff --git a/xtask/src/tunables/mod.rs b/xtask/src/tunables/mod.rs
+index 626e9d2..e668d36 100644
+--- a/xtask/src/tunables/mod.rs
++++ b/xtask/src/tunables/mod.rs
+@@ -22,7 +22,7 @@ const WIRE: &str = "## Wire And Format Constants";
+ const TUNABLE_COLUMNS: &[&str] = &["Item", "Value", "Basis", "Citation or derivation"];
+ const WIRE_COLUMNS: &[&str] = &["Item or module", "Spec"];
+ /// Entries in `xtask/tunables.txt`. It only comes down: lower it with the file.
+-const RATCHET_CEILING: usize = 77;
++const RATCHET_CEILING: usize = 76;
+ 
+ pub(crate) fn check(root: &Path) -> Result<(), String> {
+     let items = scan(root)?;
+diff --git a/xtask/tunables.txt b/xtask/tunables.txt
+index e03e6e6..f4b4995 100644
+--- a/xtask/tunables.txt
++++ b/xtask/tunables.txt
+@@ -69,7 +69,6 @@ proxy::shadowquic::BRUTAL_MTU 1200  # Datagram size handed to the Brutal/BBR con
+ rpc::server::OUTBOX_DEPTH 16  # mihomo writes push frames inline with no queue (`hub/route/server.go:530-561`); depth one with backpressure changes how replies wait on each other. Needs a host-side measurement.
+ rules::runs::KEYWORD_AUTOMATON_FROM 16  # Either drop is possible (always automaton, as aho-corasick advises, or always linear, as mihomo and sing-box do); needs a rule-matching measurement.
+ tun::stack::driver::DNS_CONCURRENCY 256  # In-flight hijacked DNS queries. Concord's own value with no reference or measurement behind it; sing-tun has no DNS in-flight cap.
+-tun::stack::driver::MAX_ROUNDS 8  # Driver rounds per wake. Concord's own value with no reference or measurement behind it; sing-tun bounds a burst by goEngineBurstBytes 1 MiB (`stack_go_engine.go:642`).
+ tun::stack::driver::RX_BUFFER 65552  # sing-tun slot is virtioNetHdrLen(10) + gsoMaxSize + headroom (stack_go_io_linux.go:275); Concord 64 KiB + 16
+ tun::stack::driver::SEGMENTED_SLOTS 64  # TX slots that grow to a GSO frame. Concord's own value with no reference or measurement behind it.
+ tun::stack::driver::SWEEP_INTERVAL 15000000  # Driver sweep period, 15 s. Concord's own value with no reference or measurement behind it; sing-tun drives timers from a wheel.

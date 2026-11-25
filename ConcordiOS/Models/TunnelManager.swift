@@ -91,7 +91,7 @@ final class TunnelManager: ObservableObject {
     /// "VPN 反复掉线，已暂停自动重连" banner. Cleared on the next
     /// manual start.
     @Published private(set) var crashLoopActive = false
-    // MARK: Zombie detection (v0.2.96, patient probe v0.2.97)
+    // MARK: Zombie detection (v0.2.96, patient probe v0.2.97, false-positive fix v0.2.101)
     //
     // A "zombie" tunnel reports .connected but its extension core
     // never answers (core log 0 entries, delay.test unreturned,
@@ -105,8 +105,23 @@ final class TunnelManager: ObservableObject {
     // call failed FAST (~1 s, not the 10 s timeout) while the
     // extension was still booting / between runs, so a healthy
     // tunnel was declared a zombie and the auto-restart disrupted
-    // it. A final error also gets one delayed re-probe ~15 s later
-    // that clears the banner if the core has since answered.
+    // it. A final error also gets a recovery re-probe that clears
+    // the banner if the core has since answered.
+    // v0.2.101: the probe still FALSE-POSITIVED on-device
+    // (IMG_1276/1277: traffic flowing, IP showing, yet
+    // "VPN 核心无响应"): (a) probeExtensionCore raced the call
+    // against a 10 s sleep while the call's own deadline is 60 s,
+    // and a cancelled attempt stayed in the single-shot FIFO
+    // until its 15 s / 60 s deadline, so attempts 2 and 3 queued
+    // behind their own cancelled attempt 1; (b) the probe never
+    // looked at the data plane. Fixes: the probe now awaits the
+    // call itself with its own deadline; a cancelled message is
+    // dropped from the queue (cancellation handler in
+    // sendProviderMessage); handleZombieDetected checks the
+    // traffic / connections / engine snapshots before restarting
+    // or showing the final banner; the recovery re-probe repeats
+    // instead of firing once; every attempt is logged to
+    // ZombieProbeDiagnostics (see the bottom of this file).
     /// User-visible zombie state; nil = no zombie. Set when a
     /// zombie is detected, cleared on a successful probe, by the
     /// recovery re-probe, and on manual stop/start.
@@ -119,12 +134,40 @@ final class TunnelManager: ObservableObject {
     /// can cancel it and a stale probe can never restart a VPN the
     /// user already stopped.
     private var zombieProbeTask: Task<Void, Never>?
-    /// The one-off recovery re-probe (v0.2.97): scheduled when the
-    /// final zombie error is set, it fires once ~15 s later and
-    /// clears a stale banner if the core answers by then. It never
-    /// restarts anything and never re-schedules itself; cancelled
-    /// like the probe on manual stop / a new manual start.
+    /// The recovery re-probe (v0.2.97, repeating since v0.2.101):
+    /// scheduled when the final zombie error is set (or when a
+    /// zombie is detected but the data plane is alive), it
+    /// re-probes every ~15 s and clears a stale banner if the
+    /// core answers, or re-declares a zombie when the data plane
+    /// is dead too. It never restarts anything itself and stops
+    /// when the tunnel drops. Cancelled like the probe on manual
+    /// stop / a new manual start.
     private var zombieRecoveryTask: Task<Void, Never>?
+    /// Last traffic totals seen by the data-plane check
+    /// (v0.2.101): cumulative up/down, for the "totals growing"
+    /// signal in dataPlaneAlive().
+    private var lastTrafficTotals: (up: Int64, down: Int64)?
+
+    // MARK: In-app core idle shutdown (v0.2.101, Issue 3)
+    //
+    // The in-app core (AppCore, delay tests / DNS / services with
+    // the VPN off) used to run forever once started — a second
+    // full Tokio runtime alongside the extension core, i.e. heat.
+    // A 30 s poller watches it: the tunnel coming up stops it at
+    // once (see the status observer below), and with the tunnel
+    // down it is stopped after 5 minutes idle. "Idle" is the last
+    // observed core start or the last finished delay test
+    // (report mtime), whichever is later, plus one quiet 30 s
+    // grace poll and a check that no batch delay run is in
+    // flight — see checkAppCoreIdleShutdown().
+    private var appCoreIdleTask: Task<Void, Never>?
+    /// When the poller first observed the in-app core running
+    /// (a start always precedes a use: every caller boots via
+    // ensureStarted). Nil while the core is down.
+    private var appCoreRunningSince: Date?
+    /// When the idle condition first held continuously; the core
+    /// is only stopped once it has held for one more 30 s poll.
+    private var appCoreIdleCandidateSince: Date?
 
     private var manager: NETunnelProviderManager?
     private var statusObserver: NSObjectProtocol?
@@ -160,6 +203,23 @@ final class TunnelManager: ObservableObject {
                 // on every connect so the Dashboard banner shows
                 // without waiting for a pull-refresh.
                 self.checkTunRestartNeeded()
+                // v0.2.101 (Issue 3): the tunnel is up — the
+                // in-app core must not keep running alongside the
+                // extension core (two Tokio runtimes = heat).
+                // startTunnel() already stops it, but an On-Demand
+                // / system reconnect never passes through
+                // startTunnel, so stop it on every connect. A
+                // no-op when it is not running (AppCore.stop()
+                // returns early then).
+                Task { await AppCore.shared.stop() }
+                // v0.2.101 (Issue 1): re-run the zombie probe on
+                // every connect, not only after startTunnel() — an
+                // On-Demand reconnect boots a fresh extension core
+                // (possibly with a system-minted startupID) that
+                // the app never validated. launchZombieProbe
+                // cancels any probe already running, so the
+                // startTunnel() call just restarts this one.
+                Task { @MainActor [weak self] in self?.launchZombieProbe() }
                 return
             }
             if new == .disconnected,
@@ -191,6 +251,7 @@ final class TunnelManager: ObservableObject {
             }
         }
         Task { try? await self.prepare() }
+        startAppCoreIdleShutdownPoller()
     }
 
     /// Crash-loop bookkeeping, called on a connected -> disconnected
@@ -414,9 +475,10 @@ final class TunnelManager: ObservableObject {
     /// the only IPC-identity guard, and drainMessages waits up to
     /// 2 s for a still-.connecting tunnel to settle. A single fast
     /// failure must never decide this on its own. Success clears the notice; failure
-    /// of all three attempts goes to handleZombieDetected(). Only
-    /// ever launched from startTunnel() after confirmTunnelUp —
-    /// never from the status observer or On-Demand reconnects.
+    /// of all three attempts goes to handleZombieDetected(). Launched
+    /// from startTunnel() after confirmTunnelUp AND from the status
+    /// observer on every .connected (v0.2.101 — an On-Demand
+    /// reconnect boots a core startTunnel never sees).
     @MainActor
     private func launchZombieProbe() {
         zombieProbeTask?.cancel()
@@ -433,11 +495,16 @@ final class TunnelManager: ObservableObject {
             // Probing at 2 s caught it mid-boot.
             try? await Task.sleep(nanoseconds: 8_000_000_000)
             guard !Task.isCancelled else { return }
-            // Up to 3 attempts, 3 s apart: each attempt is itself
-            // bounded to ~10 s by probeExtensionCore, so the worst
-            // case here is 8 + 10 + 3 + 10 + 3 + 10 ≈ 44 s after
-            // connect before a zombie is declared — silent all the
-            // while, and the tunnel keeps proxying if it is healthy.
+            // Up to 3 attempts, 3 s apart. v0.2.101: each attempt
+            // is bounded by the call's OWN deadline — 60 s for
+            // config.* (timeoutForMethod), not the old 10 s sleep
+            // race — so the worst case here is 8 + 60 + 3 + 60 +
+            // 3 + 60 ≈ 194 s after connect before a zombie is
+            // declared. That patience is the point: a call that
+            // would answer at 11–60 s (queued behind a slow
+            // provider.get, or a slow extension boot) is no longer
+            // counted as a failure at 10 s. Silent all the while,
+            // and the tunnel keeps proxying if it is healthy.
             for attempt in 1...3 {
                 if await self.probeExtensionCore() {
                     self.zombieNotice = nil
@@ -457,50 +524,69 @@ final class TunnelManager: ObservableObject {
         }
     }
 
-    /// One config.general call against the extension core, raced
-    /// against a 10 s sleep so a hung call cannot block past ~10 s.
-    /// Returns true only when the core answers. A fresh
-    /// ConcordClient() is deliberate here, not a bug: the client
-    /// holds no session — init only reads the persisted mode, and
-    /// the live transport routes every call through
-    /// TunnelManager.shared.sendProviderMessage, which re-acquires
-    /// the system session per call — so a fresh instance is
-    /// identical to any shared one, and a fast failure is the
-    /// extension not being ready yet (see launchZombieProbe), not
-    /// the client. The patience lives in launchZombieProbe (grace
-    /// + retries), not here.
+    /// One config.general call against the extension core, awaited
+    /// directly — v0.2.101: NO 10 s sleep race any more. The call's
+    /// own deadline is 60 s for config.* (timeoutForMethod), and
+    /// the extension's sendRawJSONRPC default is 15 s; racing it
+    /// against a 10 s sleep counted a call that would have
+    /// answered at 11–60 s as a failure. The patience lives in
+    /// launchZombieProbe (grace + retries) AND here (the full
+    /// deadline). A fresh ConcordClient() is deliberate here, not
+    /// a bug: the client holds no session — init only reads the
+    /// persisted mode, and the live transport routes every call
+    /// through TunnelManager.shared.sendProviderMessage, which
+    /// re-acquires the system session per call — so a fresh
+    /// instance is identical to any shared one, and a fast
+    /// failure is the extension not being ready yet (see
+    /// launchZombieProbe), not the client. Every attempt is
+    /// logged to ZombieProbeDiagnostics (error text + queue depth
+    /// + status + startupID match) — the v0.2.99 false positive
+    /// was undiagnosable because this used to be
+    /// `catch { return false }`.
     @MainActor
     private func probeExtensionCore() async -> Bool {
         do {
-            let answered: ConcordGeneralState? = try await withThrowingTaskGroup(of: ConcordGeneralState?.self) { group in
-                group.addTask { try await ConcordClient().configGeneral() }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: 10_000_000_000)
-                    return nil
-                }
-                guard let first = try await group.next() else { return nil }
-                group.cancelAll()
-                return first
-            }
-            return answered != nil
+            let _: ConcordGeneralState = try await ConcordClient().configGeneral()
+            ZombieProbeDiagnostics.record("probe ok (queue \(messageQueue.count), status \(status), \(startupIDMatchText()))")
+            return true
         } catch {
+            ZombieProbeDiagnostics.recordFailure(error: error, queueDepth: messageQueue.count, status: status, startupIDMatch: startupIDMatchText())
             return false
         }
     }
 
-    /// A zombie was detected (all three probes failed). Set the
-    /// visible notice and, if the one auto-restart for this manual
-    /// start is still unused, spend it: stop, then restart via the
-    /// internal path (which preserves zombieRestartAttempted and
-    /// launches a fresh probe). If the restart's probe also fails,
-    /// this runs again with the flag already set and only sets the
-    /// final error — never a second restart. After the final error,
-    /// a one-off recovery re-probe ~15 s later clears the banner
-    /// if the core has since answered (v0.2.97: the v0.2.96 banner
-    /// went stale — traffic flowing and the IP showing while
-    /// "VPN 核心无响应" stayed on screen).
+    /// A zombie was detected (all three probes failed). v0.2.101:
+    /// BEFORE restarting or showing the final banner, look at the
+    /// data plane — a fresh snapshot showing flowing traffic, live
+    /// connections or a running engine means the core is alive and
+    /// proxying, and the IPC probe failed for its own reasons
+    /// (queue contention, startupID mismatch, session race). In
+    /// that case do NOT restart and do NOT show the final banner
+    /// (showing "核心无响应" while traffic flows, IMG_1276/1277,
+    /// is the false positive this fix removes) — just keep
+    /// re-probing via the recovery loop, which re-declares a
+    /// zombie only when the data plane is dead too. Otherwise
+    /// set the visible notice and, if the one auto-restart for
+    /// this manual start is still unused, spend it: stop, then
+    /// restart via the internal path (which preserves
+    /// zombieRestartAttempted and launches a fresh probe). If the
+    /// restart's probe also fails, this runs again with the flag
+    /// already set and only sets the final error — never a second
+    /// restart. After the final error, the repeating recovery
+    /// re-probe clears the banner if the core has since answered
+    /// (v0.2.97: the v0.2.96 banner went stale — traffic flowing
+    /// and the IP showing while "VPN 核心无响应" stayed on
+    /// screen).
     @MainActor
     private func handleZombieDetected() async {
+        let plane = dataPlaneAlive()
+        if plane.alive {
+            ZombieProbeDiagnostics.record("probe failed ×3 but data plane alive (\(plane.detail)) — NOT restarting, keep re-probing")
+            zombieNotice = nil
+            scheduleZombieRecoveryReprobe()
+            return
+        }
+        ZombieProbeDiagnostics.record("zombie confirmed: probe failed ×3, data plane dead")
         guard !zombieRestartAttempted else {
             setFinalZombieError()
             return
@@ -524,7 +610,7 @@ final class TunnelManager: ObservableObject {
         // error above.
     }
 
-    /// The final zombie error text, plus the one-off recovery
+    /// The final zombie error text, plus the (repeating) recovery
     /// re-probe that can clear it. Shared by both final-error
     /// paths (restart budget already spent, restart itself failed).
     /// lastError keeps the message as a record even if the banner
@@ -537,24 +623,37 @@ final class TunnelManager: ObservableObject {
         scheduleZombieRecoveryReprobe()
     }
 
-    /// One delayed re-probe ~15 s after the final zombie error:
-    /// if the core answers now, the banner was stale (the tunnel
-    /// recovered on its own) and is cleared. Never restarts, never
-    /// re-schedules — one shot. Cancelled on manual stop / a new
-    /// manual start, like the probe itself.
+    /// Repeated re-probes every ~15 s after the final zombie error
+    /// (v0.2.101 — was one-shot): if the core answers now, the
+    /// banner was stale (the tunnel recovered on its own) and is
+    /// cleared. Never restarts anything itself — a re-detected
+    /// zombie goes through handleZombieDetected, which owns the
+    /// one-restart budget. Keeps going until the core answers,
+    /// the tunnel really drops (status != .connected), or a manual
+    /// stop / new manual start cancels this task. Each iteration
+    /// re-checks the data plane: live traffic means the core is
+    /// proxying and the probe is the thing that's wrong, so keep
+    /// waiting instead of restarting a working tunnel.
     @MainActor
     private func scheduleZombieRecoveryReprobe() {
         zombieRecoveryTask?.cancel()
         zombieRecoveryTask = Task { [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
-            guard !Task.isCancelled else { return }
-            // Only a live tunnel can have recovered; a stopped one
-            // is the user's (or the system's) business, and a new
-            // manual start cancels this task anyway.
-            guard self.status == .connected else { return }
-            if await self.probeExtensionCore() {
-                self.zombieNotice = nil
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard !Task.isCancelled, self.status == .connected else { return }
+                if await self.probeExtensionCore() {
+                    self.zombieNotice = nil
+                    return
+                }
+                guard !Task.isCancelled, self.status == .connected else { return }
+                // Still no IPC answer: only re-declare a zombie
+                // when the data plane is dead too.
+                if !self.dataPlaneAlive().alive {
+                    await self.handleZombieDetected()
+                    return
+                }
+                ZombieProbeDiagnostics.record("recovery re-probe: core still silent, data plane alive — keep waiting")
             }
         }
     }
@@ -735,6 +834,52 @@ final class TunnelManager: ObservableObject {
         return base
     }
 
+    /// The extension's vpn-startup.json record, fresh within 180 s
+    /// (same freshness as lastStartupDiagnostic), or nil when there
+    /// is no recent record for this run.
+    private func extensionStartupRecord() -> TunnelStartupDiagnosticRecord? {
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
+              let data = try? Data(contentsOf: container.appendingPathComponent("vpn-startup.json")),
+              let record = try? JSONDecoder().decode(TunnelStartupDiagnosticRecord.self, from: data),
+              Date().timeIntervalSince(record.date) < 180 else { return nil }
+        return record
+    }
+
+    /// Adopt the extension's actually-adopted startupID (v0.2.101).
+    /// The app only learns a startupID in startTunnel(); when the
+    /// system / On-Demand restarts the extension on its own, the
+    /// extension mints a new one (PacketTunnelProvider
+    /// startTunnel, options without startupID) and every IPC call
+    /// throws notRunning until the app re-syncs. Called from the
+    /// drainMessages catch when IPC threw notRunning while the
+    /// tunnel is .connected. A no-op when there is no fresh record
+    /// or the IDs already agree.
+    private func resyncStartupIDFromExtension() {
+        guard let record = extensionStartupRecord(),
+              record.id != currentStartupID else { return }
+        let old = currentStartupID.map { String($0.prefix(8)) } ?? "nil"
+        currentStartupID = record.id
+        ZombieProbeDiagnostics.record("startupID re-sync: app \(old) → ext \(String(record.id.prefix(8))) (extension restarted on its own)")
+    }
+
+    /// The startupID comparison for the probe log: the app's
+    /// currentStartupID against the extension's adopted ID in
+    /// vpn-startup.json. "match" / "MISMATCH" / "unknown" (no
+    /// fresh extension record) — the mismatch is what makes every
+    /// IPC call throw notRunning after an On-Demand restart.
+    private func startupIDMatchText() -> String {
+        let app = currentStartupID.map { String($0.prefix(8)) } ?? "nil"
+        guard let record = extensionStartupRecord() else {
+            return "startupID app=\(app) ext=unknown"
+        }
+        let ext = String(record.id.prefix(8))
+        if record.id == currentStartupID {
+            return "startupID match (\(app))"
+        }
+        return "startupID MISMATCH app=\(app) ext=\(ext)"
+    }
+
     /// The extension's vpn-diagnostics.json startedAt (audit D4):
     /// the tunnel's real start time, written when the tunnel comes
     /// up and refreshed on the watchdog tick (30 s). The app reads
@@ -859,6 +1004,9 @@ final class TunnelManager: ObservableObject {
     /// / geo loads 60 s (the extension's own boot timeout for
     /// config.apply). An explicit timeoutSeconds overrides the table.
     private struct QueuedMessage {
+        /// Set by the sender so the cancellation handler in
+        /// sendProviderMessage can drop exactly this message.
+        let id: UUID
         let data: Data
         let deadline: Date
         let startupID: String?
@@ -870,16 +1018,52 @@ final class TunnelManager: ObservableObject {
     /// One active system IPC request, matching FlClash's provider queue.
     @MainActor
     func sendProviderMessage(_ data: Data, timeoutSeconds: TimeInterval? = nil) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            guard messageQueue.count < 128 else {
-                continuation.resume(throwing: TunnelError.noReply)
-                return
+        // Already cancelled: fail fast instead of enqueueing a
+        // message the caller will never collect (the handler below
+        // runs before the enqueue when the task is already
+        // cancelled, so without this the message would drain
+        // normally and its reply would go nowhere).
+        guard !Task.isCancelled else { throw CancellationError() }
+        let messageID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard messageQueue.count < 128 else {
+                    continuation.resume(throwing: TunnelError.noReply)
+                    return
+                }
+                let timeout = timeoutSeconds ?? Self.timeoutForMethod(Self.methodName(in: data) ?? "?")
+                messageQueue.append(QueuedMessage(id: messageID, data: data, deadline: Date().addingTimeInterval(timeout),
+                                                  startupID: currentStartupID,
+                                                  continuation: continuation))
+                drainMessages()
             }
-            let timeout = timeoutSeconds ?? Self.timeoutForMethod(Self.methodName(in: data) ?? "?")
-            messageQueue.append(QueuedMessage(data: data, deadline: Date().addingTimeInterval(timeout),
-                                              startupID: currentStartupID,
-                                              continuation: continuation))
-            drainMessages()
+        } onCancel: {
+            // v0.2.101: a cancelled call must not poison the
+            // single-shot FIFO. Before this, the zombie probe's
+            // 10 s race cancelled attempt 1, but its continuation
+            // stayed queued until the 15 s / 60 s deadline — so
+            // attempts 2 and 3 queued behind their own cancelled
+            // attempt 1 and failed the same way. A still-queued
+            // message is now dropped here and resumed with a
+            // cancellation error, so the next attempt proceeds.
+            // Already draining (in flight via
+            // session.sendProviderMessage, which has no cancel
+            // API): the call finishes on its own deadline and the
+            // queue is unblocked once it completes — removing it
+            // from the queue is what the drop above does, and the
+            // remove is the single claim, so the continuation can
+            // never be resumed twice.
+            // NOTE: this project is Swift 5 mode (SWIFT_VERSION
+            // 5.0), which allows capturing self in this @Sendable
+            // handler; under Swift 6 mode this wants a
+            // lock-protected claim box on QueuedMessage instead.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let index = self.messageQueue.firstIndex(where: { $0.id == messageID }) {
+                    let cancelled = self.messageQueue.remove(at: index)
+                    cancelled.continuation.resume(throwing: CancellationError())
+                }
+            }
         }
     }
 
@@ -900,9 +1084,16 @@ final class TunnelManager: ObservableObject {
                 // a fast notRunning here is what made the zombie probe
                 // misfire. Bounded to 2 s; performProviderMessage still
                 // re-checks .connected before sending.
-                if self.status == .connecting {
+                // v0.2.101: also wait out .reasserting (a network
+                // handover re-asserts the tunnel; IPC during it fails
+                // just like during .connecting), and read the LIVE
+                // connection status rather than the cached
+                // self.status — the notification can lag behind the
+                // enqueue by more than the settle window.
+                if [.connecting, .reasserting].contains(self.manager?.connection.status ?? self.status) {
                     let settleDeadline = Date().addingTimeInterval(2)
-                    while self.status == .connecting, Date() < settleDeadline {
+                    while Date() < settleDeadline {
+                        guard [.connecting, .reasserting].contains(self.manager?.connection.status ?? self.status) else { break }
                         try? await Task.sleep(nanoseconds: 200_000_000)
                     }
                 }
@@ -913,6 +1104,18 @@ final class TunnelManager: ObservableObject {
                                                                  startupID: next.startupID)
                 next.continuation.resume(returning: reply)
             } catch {
+                // v0.2.101: a notRunning while the tunnel is
+                // .connected usually means the extension restarted
+                // on its own (system / On-Demand) and minted a new
+                // startupID the app never learned — re-sync from
+                // the extension's own record so the NEXT call is
+                // not rejected the same way. The failed call
+                // itself is not retried: the probe loop (and any
+                // other caller) retries on its own.
+                if case TunnelError.notRunning = error,
+                   (self.manager?.connection.status ?? self.status) == .connected {
+                    self.resyncStartupIDFromExtension()
+                }
                 next.continuation.resume(throwing: error)
             }
             self.messageBusy = false
@@ -1000,6 +1203,166 @@ final class TunnelManager: ObservableObject {
         }
         return 10
     }
+
+    // MARK: - Data-plane evidence (v0.2.101, Issue 1)
+
+    /// One App Group snapshot file ({updatedAt: <epoch ms>,
+    /// data: …}), decoded only when fresh within 10 s — the same
+    /// freshness rule ConcordClient.readSnapshot applies (a file
+    /// older than that is a previous run's stale data: the
+    /// extension only rewrites while the tunnel is alive).
+    private func readFreshSnapshot<Payload: Decodable>(name: String, type: Payload.Type) -> Payload? {
+        guard let url = ConfigStore.snapshotURL(name: name),
+              let raw = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        guard let snapshot = try? decoder.decode(SnapshotFile<Payload>.self, from: raw),
+              Date().timeIntervalSince1970 * 1000 - Double(snapshot.updatedAt) <= 10_000 else { return nil }
+        return snapshot.data
+    }
+
+    /// The snapshot envelope shared by every snapshots/*.json file.
+    private struct SnapshotFile<Payload: Decodable>: Decodable {
+        let updatedAt: Int64
+        let data: Payload
+    }
+
+    /// Whether the data plane shows life right now (v0.2.101):
+    /// a FRESH traffic / connections / engine snapshot showing
+    /// flowing traffic, growing totals, live connections, or a
+    /// running engine. Any one of these means the extension core
+    /// is alive and proxying — an IPC probe failure then is the
+    /// probe's problem (queue / startupID / session race), not a
+    /// dead core, and must NOT trigger a restart or the final
+    /// banner. Returns the evidence found, for the probe log.
+    /// Callers are serialized by probe-task cancellation (only
+    /// one probe / recovery task runs at a time), which is what
+    /// makes the lastTrafficTotals write safe here.
+    private func dataPlaneAlive() -> (alive: Bool, detail: String) {
+        var evidence: [String] = []
+        if let traffic: ConcordTraffic = readFreshSnapshot(name: "traffic", type: ConcordTraffic.self) {
+            if traffic.up > 0 || traffic.down > 0 {
+                evidence.append("流量流动中 ↑\(traffic.up)/↓\(traffic.down) B/s")
+            } else if let last = lastTrafficTotals,
+                      traffic.totalUp > last.up || traffic.totalDown > last.down {
+                evidence.append("累计流量增长 (↑\(traffic.totalUp)/↓\(traffic.totalDown))")
+            } else if lastTrafficTotals == nil, traffic.totalUp + traffic.totalDown > 0 {
+                evidence.append("累计流量非零 (↑\(traffic.totalUp)/↓\(traffic.totalDown))")
+            }
+            lastTrafficTotals = (traffic.totalUp, traffic.totalDown)
+        }
+        if let connections: ConcordConnectionSnapshot = readFreshSnapshot(name: "connections", type: ConcordConnectionSnapshot.self) {
+            if !connections.connections.isEmpty {
+                evidence.append("\(connections.connections.count) 个实时连接")
+            }
+        }
+        if let engine: ConcordEngineStatus = readFreshSnapshot(name: "engine", type: ConcordEngineStatus.self) {
+            if engine.state == "running" {
+                evidence.append("engine.state=running")
+            }
+        }
+        return (alive: !evidence.isEmpty, detail: evidence.joined(separator: "；"))
+    }
+
+    // MARK: - In-app core idle shutdown (v0.2.101, Issue 3)
+
+    /// Starts the 30 s poller that stops the in-app core after
+    /// 5 minutes idle (see checkAppCoreIdleShutdown). Started
+    /// once in init; it runs for the app's lifetime and costs one
+    /// Bool read per poll while the core is down.
+    private func startAppCoreIdleShutdownPoller() {
+        appCoreIdleTask?.cancel()
+        appCoreIdleTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                await self.checkAppCoreIdleShutdown()
+            }
+        }
+    }
+
+    /// One idle-shutdown poll (v0.2.101, Issue 3). Rules, in order:
+    ///  * tunnel up + in-app core running: stop it at once (the
+    ///    status observer normally does this on .connected; this
+    ///    is the backstop for a connect the observer missed);
+    ///  * tunnel down + core down: nothing to do, reset timers;
+    ///  * tunnel down + core up: stop it once it has been idle
+    ///    for 5 minutes, where "idle" is the last observed core
+    ///    start or the last finished delay test (report mtime),
+    ///    whichever is later — plus one quiet 30 s grace poll, and
+    ///    never while a batch delay run is in flight
+    ///    (delayRunPoll non-nil with done == false; a finished run
+    ///    keeps a done == true snapshot until the core stops, so
+    ///    done == true is NOT "in flight").
+    /// A stopped core is re-booted on demand by the next use
+    /// (every caller goes through AppCore.ensureStarted), so a
+    /// shutdown only ever costs one re-boot, never a failure.
+    /// Residual gap (TunnelManager-only): DNS queries and service
+    /// probes leave no file or flag this file can read, so one in
+    /// flight at the stop moment cannot be detected here — it
+    /// fails once with "核心会话已关闭" and the next call reboots
+    /// the core. Closing the gap needs an in-use counter in
+    /// AppCore (follow-up, not this file).
+    private func checkAppCoreIdleShutdown() async {
+        guard !isRunning else {
+            appCoreRunningSince = nil
+            appCoreIdleCandidateSince = nil
+            if AppCore.shared.isRunning {
+                await AppCore.shared.stop()
+            }
+            return
+        }
+        guard AppCore.shared.isRunning else {
+            appCoreRunningSince = nil
+            appCoreIdleCandidateSince = nil
+            return
+        }
+        let now = Date()
+        if appCoreRunningSince == nil {
+            appCoreRunningSince = now
+        }
+        // Last delay test that FINISHED (ProxyStore writes the
+        // report at the end of every run, single or batch).
+        let lastUse = max(appCoreRunningSince ?? .distantPast,
+                          lastDelayTestReportDate() ?? .distantPast)
+        guard now.timeIntervalSince(lastUse) >= 300 else {
+            appCoreIdleCandidateSince = nil
+            return
+        }
+        if let run = await AppCore.shared.delayRunPoll(), !run.done {
+            appCoreIdleCandidateSince = nil
+            return
+        }
+        // Quiet grace: the idle condition must hold for one more
+        // 30 s poll before stopping, so a short one-shot call that
+        // started just before the threshold (single delay test,
+        // config validate) finishes — and, for a delay test, writes
+        // its report, which moves lastUse and aborts the shutdown.
+        if let candidateSince = appCoreIdleCandidateSince {
+            if now.timeIntervalSince(candidateSince) >= 30 {
+                await AppCore.shared.stop()
+                appCoreRunningSince = nil
+                appCoreIdleCandidateSince = nil
+            }
+        } else {
+            appCoreIdleCandidateSince = now
+        }
+    }
+
+    /// Modification date of AppCore's last delay-test report
+    /// (last-delay-test-report.txt in the app home dir — see
+    /// AppCore.recordDelayTestReport, AppCore.swift:230; the
+    /// filename is private there, so the literal is repeated here
+    /// with this pointer), or nil when no test has ever been
+    /// recorded. The report is written at the END of every delay
+    /// test, so its mtime is the last delay test that finished.
+    private func lastDelayTestReportDate() -> Date? {
+        guard let home = try? AppCore.appHomeDirectory() else { return nil }
+        let url = home.appendingPathComponent("last-delay-test-report.txt")
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let mtime = attrs[.modificationDate] as? Date else { return nil }
+        return mtime
+    }
 }
 
 /// One-shot guard so a sendProviderMessage reply and its timeout
@@ -1056,4 +1419,52 @@ struct TunnelStartupDiagnosticRecord: Codable {
     /// timestamped strings like "19:06:52.123 tun.start: ok".
     /// Optional so JSON without it still decodes as nil.
     let steps: [String]?
+}
+
+// MARK: - Zombie probe diagnostics (v0.2.101)
+//
+// The v0.2.99 false positive (banner "VPN 核心无响应" while
+// traffic flowed, IMG_1276/1277) was undiagnosable: every probe
+// swallowed its error (`catch { return false }`). Same pattern as
+// IPLookupDiagnostics (DashboardView.swift): each probe attempt
+// writes one timestamped line (last 12 kept) to UserDefaults.
+// FOLLOW-UP (one line, LogStore.swift — deliberately not this
+// file): LogStore.fullExportText must add a
+// "== 僵尸探测诊断 ==\n" + (ZombieProbeDiagnostics.lastDiagnosticText() ?? "暂无记录")
+// section next to the IP lookup diagnostics, so the next
+// recurrence ships its cause in the log export.
+struct ZombieProbeDiagnostics {
+    private static let storageKey = "concord.zombieProbeDiagnostics"
+    private static let maxLines = 12
+
+    static func record(_ line: String) {
+        var lines = UserDefaults.standard.string(forKey: storageKey)
+            .map { $0.split(separator: "\n").map(String.init) } ?? []
+        lines.append("[\(timestamp())] \(line)")
+        if lines.count > maxLines {
+            lines.removeFirst(lines.count - maxLines)
+        }
+        UserDefaults.standard.set(lines.joined(separator: "\n"), forKey: storageKey)
+    }
+
+    /// One failed probe attempt: the error (with its domain +
+    /// code, so a timeout, a notRunning and a session error can be
+    /// told apart), the IPC queue depth and the tunnel status at
+    /// the time, and whether the startupID matched.
+    static func recordFailure(error: Error, queueDepth: Int, status: NEVPNStatus, startupIDMatch: String) {
+        let nsError = error as NSError
+        record("probe failed: \(error.localizedDescription) (\(nsError.domain) code \(nsError.code)); queue=\(queueDepth); status=\(status); \(startupIDMatch)")
+    }
+
+    static func lastDiagnosticText() -> String? {
+        guard let text = UserDefaults.standard.string(forKey: storageKey),
+              !text.isEmpty else { return nil }
+        return text
+    }
+
+    private static func timestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: Date())
+    }
 }

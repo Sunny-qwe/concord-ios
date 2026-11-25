@@ -73,13 +73,6 @@ struct ContentView: View {
     /// fade reuses the 0.3 s slide duration.
     private var tabAnimationFade: Bool { themeStore.tabAnimation == .fade }
 
-    /// App version from the bundle (Info.plist
-    /// CFBundleShortVersionString) for the environment watermark —
-    /// never hardcoded, so it tracks the bumped version.
-    private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
-    }
-
     var body: some View {
         Group {
             if themeStore.navBarStyle == .docked {
@@ -108,40 +101,46 @@ struct ContentView: View {
                 // shows it peeking out below the bar). As an overlay
                 // the pages run full-height underneath and the content
                 // scrolls under the bar and peeks out below it, like
-                // MuYu. The bar's bottom sits safeArea + 4pt above
-                // the screen bottom (the inset used to supply the safe
-                // area); the GeometryReader reads it. Pages already
-                // carry tabBarClearance (95pt) bottom padding, so the
-                // last card still clears the bar at max scroll.
+                // MuYu.
+                // v0.2.109: geometry follows upstream FlClash
+                // v0.9.5-rs.1 NavigationDock (prism_ui, pinned
+                // 8f5fc22 — MuYu pins 6c47901 with identical
+                // numbers): pill 62pt (_barHeight), side margins
+                // 21pt (_edgeMargin), bottom margin max(21, system
+                // bottom padding) (_bottomMarginOf). The v0.2.108
+                // overlay double-counted the bottom safe area: the
+                // root GeometryReader is already safe-area-bounded
+                // (its bottom sits at the safe area) and the overlay
+                // added safeAreaInsets.bottom + 4 on top, so the bar
+                // floated 72pt above the screen bottom instead of 34
+                // (IMG_1294 measured: bar 711–772pt on an 844pt
+                // screen) — and the bar top at 711 left the Tools
+                // last card 4pt behind the bar. The GeometryReader
+                // now ignores the bottom safe area so its frame
+                // reaches the screen bottom, and the bottom padding
+                // is exactly upstream's max(21, safeArea). The
+                // version watermark above the bar is gone (v0.2.109,
+                // user request): the version shows only in Tools →
+                // About. Pages carry tabBarClearance (95pt) bottom
+                // padding, so the last card clears the bar at max
+                // scroll with a 33pt gap.
                 GeometryReader { geo in
                     slidingTabView
                         .toolbar(.hidden, for: .tabBar)
                         .tint(themeStore.accentColor)
                         .overlay(alignment: .bottom) {
-                            VStack(spacing: 6) {
-                                // Environment watermark (FlClash 显示环境水印）:
-                                // a faint version label just above the
-                                // floating bar. The toggle itself lives in
-                                // SettingsStore.showEnvironmentWatermark
-                                // (default true); non-interactive so it
-                                // never blocks taps on the pages below.
-                                if settingsStore.showEnvironmentWatermark {
-                                    Text("Lumen v\(appVersion)")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(Color(.label))
-                                        .opacity(0.35)
-                                        .allowsHitTesting(false)
-                                }
-                                floatingTabBar
-                                    .padding(.horizontal, 16)
-                                    // Reference bar bottom sits 34pt above the screen
-                                    // bottom (810pt on an 844pt screen); the overlay
-                                    // no longer supplies the safe area, so it is
-                                    // read from the GeometryReader and added here.
-                                    .padding(.bottom, geo.safeAreaInsets.bottom + 4)
-                            }
+                            floatingTabBar
+                                .padding(.horizontal, 21)
+                                // Upstream NavigationDock._bottomMarginOf:
+                                // max(_edgeMargin = 21, system bottom
+                                // padding). The GeometryReader ignores
+                                // the bottom safe area (below), so its
+                                // frame reaches the screen bottom and
+                                // this padding is the whole margin.
+                                .padding(.bottom, max(21, geo.safeAreaInsets.bottom))
                         }
                 }
+                .ignoresSafeArea(edges: .bottom)
             }
         }
         .preferredColorScheme(themeStore.colorScheme)
@@ -496,14 +495,14 @@ struct ContentView: View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.self) { tab in
                 Button { tapTab(tab) } label: {
-                    VStack(spacing: 3) {
+                    VStack(spacing: 2) {
                         Image(systemName: tab.icon)
-                            .font(.system(size: 20, weight: .semibold))
+                            .font(.system(size: 28, weight: .semibold))
                         Text(tab.title)
-                            .font(.system(size: 8, weight: .semibold))
+                            .font(.system(size: 10, weight: .semibold))
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
+                    .padding(.vertical, 4)
                     .background {
                         if selectedTab == tab {
                             RoundedRectangle(cornerRadius: 24)
@@ -516,7 +515,12 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(6)
+        // Upstream NavigationDock: pill 62pt (_barHeight), inner
+        // padding 4 (_barPadding); icon 28, label 10, gap 2. The
+        // frame pins the pill to exactly 62 regardless of font
+        // metrics; the content centers inside it.
+        .padding(4)
+        .frame(height: 62)
         // White floating container, no shadow (v0.2.107): the bar
         // background is white like the MuYu reference; the
         // light-gray layer behind it is removed — no shadow, no

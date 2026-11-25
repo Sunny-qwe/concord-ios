@@ -147,28 +147,28 @@ enum ConcordTheme {
     /// Bottom content clearance for the floating tab bar (v0.2.59,
     /// IMG_1191): the total bottom padding every tab-page scroll
     /// view must carry so its last row can scroll fully above the
-    /// bar. Measured on a 390×844pt phone: the bar spans y 745–806
-    /// (61pt tall) with its bottom 38pt above the screen bottom
-    /// (34pt home-indicator safe area + 4pt bottom margin). The
-    /// ScrollViews' automatic bottom inset is only that 34pt — the
-    /// root safeAreaInset does not reach them through the sliding
-    /// container's GeometryReader — so at max scroll the content
-    /// bottom sits at 844 − 34 = 810 and a last row ends at
-    /// 810 − padding. v0.2.66 set this to 77 (= 61 bar + 4 margin
-    /// + 12 gap), measured to the BAR top (745) — but it forgot
-    /// the environment watermark ("Lumen v…", 10pt text +
-    /// 6pt spacing = 18pt) that sits ABOVE the bar in the same
-    /// safeAreaInset VStack, so the real obstruction top is the
-    /// watermark top (727), not the bar top — and with 77 the last
-    /// row ended at 733, overlapping the watermark (IMG_1226,
-    /// Tools page 关于 cut off, v0.2.80). 95 = 61 (bar) + 4 (bar
-    /// bottom margin) + 18 (watermark) + 12 (breathing gap);
-    /// 95pt of padding puts the last row at 715, i.e. 12pt above
-    /// the watermark top (727). The same value covers the shorter
-    /// docked bar (49pt) and a no-home-indicator phone (bar top
-    /// and content bottom both rise 34pt, gap unchanged). It is
-    /// a TOTAL bottom padding/margin, not an addition: each page
-    /// replaces its old 12/16pt bottom value with this.
+    /// bar. The ScrollViews' automatic bottom inset is only the
+    /// 34pt home-indicator safe area — the root safeAreaInset does
+    /// not reach them through the sliding container's
+    /// GeometryReader — so at max scroll the content bottom sits
+    /// at 844 − 34 = 810 and a last row ends at 810 − padding.
+    /// v0.2.109: the bar is upstream's 62pt pill with its bottom
+    /// at max(21, safe area) = 34pt above the screen bottom, so it
+    /// spans y 748–810; 95pt of padding puts the last row at 715,
+    /// i.e. 33pt above the bar top. (v0.2.108's overlay
+    /// double-counted the bottom safe area — the root
+    /// GeometryReader is already safe-area-bounded and the overlay
+    /// added safeAreaInsets.bottom + 4 on top — so the bar really
+    /// sat at y 711–772, bottom 72pt above the screen bottom, and
+    /// the last row at 715 ended 4pt BEHIND the bar top while the
+    /// watermark above the bar overlapped the card; that is the
+    /// IMG_1294 Tools 关于 clip. The 95pt value itself was never
+    /// the cause — it was computed for the intended bar top — so
+    /// it stays.) The same value covers the shorter docked bar
+    /// (49pt); on a no-home-indicator phone the bar bottom is
+    /// upstream's 21pt and the last row still clears it by 12pt.
+    /// It is a TOTAL bottom padding/margin, not an addition: each
+    /// page replaces its old 12/16pt bottom value with this.
     static let tabBarClearance: CGFloat = 95
     /// Soft card shadow.
     static let cardShadow = Color.black.opacity(0.05)

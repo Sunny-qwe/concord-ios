@@ -634,14 +634,17 @@ struct ContentView: View {
 /// detail) stays a system sheet. UNTESTED HYPOTHESIS — not proven
 /// to fix the freeze until it holds on-device.
 ///
-/// Drag behaviour: the gesture is attached to the sheet container.
-/// Drags starting on the header / search bar drive the sheet (they
-/// are outside the list's ScrollView); drags starting on the list
-/// scroll the list, as the ScrollView's own gesture wins there.
-/// Drag up grows toward 0.9, drag down follows the finger; on
-/// release a far drag (>140pt) dismisses, a short drag down from
-/// the tall detent steps back to 0.5625, otherwise it snaps to the
-/// nearest detent.
+/// Drag behaviour (v0.2.114): the gesture lives on the content
+/// view's header ONLY (see the onSheetDragChanged /
+/// onSheetDragEnded callbacks passed to DnsQueriesView) — never on
+/// the sheet container. v0.2.111–113 attached it to the container
+/// and the list never scrolled: the container gesture captured
+/// every vertical drag (the user's v0.2.113 video: swipe-up did
+/// nothing). The header is a sibling of the list, so it can never
+/// block list scrolling. Drag up on the header grows toward 0.9,
+/// drag down follows the finger; on release a far drag (>140pt)
+/// dismisses, a short drag down from the tall detent steps back to
+/// 0.5625, otherwise it snaps to the nearest detent.
 ///
 /// Keyboard: the sheet's search field opens the keyboard, which
 /// would cover the floating search bar (the system sheet moved
@@ -677,7 +680,14 @@ private struct DnsSheetOverlay: View {
                     .onTapGesture(perform: onDismiss)
                     .transition(.opacity)
                 VStack(spacing: 0) {
-                    DnsQueriesView(mode: .sheet, onClose: onDismiss)
+                    // v0.2.114: the sheet-drag gesture lives on
+                    // DnsQueriesView's header (via these callbacks),
+                    // NOT on this container — a .gesture here
+                    // captured every vertical drag and the list
+                    // never scrolled.
+                    DnsQueriesView(mode: .sheet, onClose: onDismiss,
+                                   onSheetDragChanged: { sheetDragChanged($0, screenHeight: geo.size.height) },
+                                   onSheetDragEnded: { sheetDragEnded($0) })
                     // Bottom strip: the home-indicator safe area
                     // normally, the keyboard height while the
                     // search field is focused — the sheet's
@@ -690,7 +700,6 @@ private struct DnsSheetOverlay: View {
                 .background(ConcordTheme.pageBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 28))
                 .offset(y: dragOffset)
-                .gesture(sheetDrag(screenHeight: geo.size.height))
                 .transition(.move(edge: .bottom))
             }
             .ignoresSafeArea()
@@ -717,46 +726,49 @@ private struct DnsSheetOverlay: View {
         }
     }
 
-    private func sheetDrag(screenHeight: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 8)
-            .onChanged { value in
-                if !dragging {
-                    dragging = true
-                    dragStartFraction = heightFraction
-                }
-                let translation = value.translation.height
-                if translation < 0 {
-                    // Drag up: grow toward the 0.9 detent.
-                    dragOffset = 0
-                    heightFraction = min(maxFraction, max(minFraction, dragStartFraction - translation / screenHeight))
-                } else {
-                    // Drag down: follow the finger; the detent
-                    // only changes on release.
-                    dragOffset = translation
-                }
+    /// Sheet-drag handlers (v0.2.114): driven by the drag gesture
+    /// on DnsQueriesView's header (see the callbacks passed
+    /// above), NOT by a gesture on this container. Same rules as
+    /// before: drag up grows toward 0.9, drag down follows the
+    /// finger; on release a far drag (>140pt) dismisses, a short
+    /// drag down from the tall detent steps back to 0.5625,
+    /// otherwise it snaps to the nearest detent.
+    private func sheetDragChanged(_ translation: CGFloat, screenHeight: CGFloat) {
+        if !dragging {
+            dragging = true
+            dragStartFraction = heightFraction
+        }
+        if translation < 0 {
+            // Drag up: grow toward the 0.9 detent.
+            dragOffset = 0
+            heightFraction = min(maxFraction, max(minFraction, dragStartFraction - translation / screenHeight))
+        } else {
+            // Drag down: follow the finger; the detent
+            // only changes on release.
+            dragOffset = translation
+        }
+    }
+
+    private func sheetDragEnded(_ translation: CGFloat) {
+        dragging = false
+        if translation > 140 {
+            // Dragged far down: dismiss (the overlay
+            // removal transition continues the slide).
+            onDismiss()
+        } else if heightFraction >= maxFraction - 0.01, translation > 40 {
+            // At the tall detent, a short drag down steps
+            // back to the short detent, not a dismiss.
+            withAnimation(.easeOut(duration: 0.25)) {
+                heightFraction = minFraction
+                dragOffset = 0
             }
-            .onEnded { value in
-                dragging = false
-                let translation = value.translation.height
-                if translation > 140 {
-                    // Dragged far down: dismiss (the overlay
-                    // removal transition continues the slide).
-                    onDismiss()
-                } else if heightFraction >= maxFraction - 0.01, translation > 40 {
-                    // At the tall detent, a short drag down steps
-                    // back to the short detent, not a dismiss.
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        heightFraction = minFraction
-                        dragOffset = 0
-                    }
-                } else {
-                    // Snap to the nearest detent.
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        heightFraction = heightFraction > (minFraction + maxFraction) / 2 ? maxFraction : minFraction
-                        dragOffset = 0
-                    }
-                }
+        } else {
+            // Snap to the nearest detent.
+            withAnimation(.easeOut(duration: 0.25)) {
+                heightFraction = heightFraction > (minFraction + maxFraction) / 2 ? maxFraction : minFraction
+                dragOffset = 0
             }
+        }
     }
 }
 
@@ -769,11 +781,10 @@ private struct DnsSheetOverlay: View {
 /// .sheet(item: $detail) inside ConnectionsView (connection
 /// detail) stays a system sheet, like the DNS entry detail.
 ///
-/// Drag behaviour mirrors DnsSheetOverlay: the gesture is
-/// attached to the sheet container. Drags starting on the header
-/// / search bar drive the sheet (they are outside the list's
-/// ScrollView); drags starting on the list scroll the list, as
-/// the ScrollView's own gesture wins there. Drag up grows toward
+/// Drag behaviour mirrors DnsSheetOverlay (v0.2.114): the gesture
+/// lives on the content view's header ONLY — never on the sheet
+/// container, which captured every vertical drag and left the list
+/// unscrollable on v0.2.113. Drag up on the header grows toward
 /// 0.9, drag down follows the finger; on release a far drag
 /// (>140pt) dismisses, a short drag down from the tall detent
 /// steps back to 0.5625, otherwise it snaps to the nearest
@@ -814,7 +825,14 @@ private struct ConnectionsSheetOverlay: View {
                     .onTapGesture(perform: onDismiss)
                     .transition(.opacity)
                 VStack(spacing: 0) {
-                    ConnectionsView(initialFeed: feed, sheetChrome: true, onClose: onDismiss)
+                    // v0.2.114: the sheet-drag gesture lives on
+                    // ConnectionsView's header (via these
+                    // callbacks), NOT on this container — a
+                    // .gesture here captured every vertical drag
+                    // and the list never scrolled.
+                    ConnectionsView(initialFeed: feed, sheetChrome: true, onClose: onDismiss,
+                                    onSheetDragChanged: { sheetDragChanged($0, screenHeight: geo.size.height) },
+                                    onSheetDragEnded: { sheetDragEnded($0) })
                     // Bottom strip: the home-indicator safe area
                     // normally, the keyboard height while the
                     // search field is focused — the sheet's
@@ -827,7 +845,6 @@ private struct ConnectionsSheetOverlay: View {
                 .background(ConcordTheme.pageBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 28))
                 .offset(y: dragOffset)
-                .gesture(sheetDrag(screenHeight: geo.size.height))
                 .transition(.move(edge: .bottom))
             }
             .ignoresSafeArea()
@@ -854,45 +871,48 @@ private struct ConnectionsSheetOverlay: View {
         }
     }
 
-    private func sheetDrag(screenHeight: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 8)
-            .onChanged { value in
-                if !dragging {
-                    dragging = true
-                    dragStartFraction = heightFraction
-                }
-                let translation = value.translation.height
-                if translation < 0 {
-                    // Drag up: grow toward the 0.9 detent.
-                    dragOffset = 0
-                    heightFraction = min(maxFraction, max(minFraction, dragStartFraction - translation / screenHeight))
-                } else {
-                    // Drag down: follow the finger; the detent
-                    // only changes on release.
-                    dragOffset = translation
-                }
+    /// Sheet-drag handlers (v0.2.114): driven by the drag gesture
+    /// on ConnectionsView's header (see the callbacks passed
+    /// above), NOT by a gesture on this container. Same rules as
+    /// before: drag up grows toward 0.9, drag down follows the
+    /// finger; on release a far drag (>140pt) dismisses, a short
+    /// drag down from the tall detent steps back to 0.5625,
+    /// otherwise it snaps to the nearest detent.
+    private func sheetDragChanged(_ translation: CGFloat, screenHeight: CGFloat) {
+        if !dragging {
+            dragging = true
+            dragStartFraction = heightFraction
+        }
+        if translation < 0 {
+            // Drag up: grow toward the 0.9 detent.
+            dragOffset = 0
+            heightFraction = min(maxFraction, max(minFraction, dragStartFraction - translation / screenHeight))
+        } else {
+            // Drag down: follow the finger; the detent
+            // only changes on release.
+            dragOffset = translation
+        }
+    }
+
+    private func sheetDragEnded(_ translation: CGFloat) {
+        dragging = false
+        if translation > 140 {
+            // Dragged far down: dismiss (the overlay
+            // removal transition continues the slide).
+            onDismiss()
+        } else if heightFraction >= maxFraction - 0.01, translation > 40 {
+            // At the tall detent, a short drag down steps
+            // back to the short detent, not a dismiss.
+            withAnimation(.easeOut(duration: 0.25)) {
+                heightFraction = minFraction
+                dragOffset = 0
             }
-            .onEnded { value in
-                dragging = false
-                let translation = value.translation.height
-                if translation > 140 {
-                    // Dragged far down: dismiss (the overlay
-                    // removal transition continues the slide).
-                    onDismiss()
-                } else if heightFraction >= maxFraction - 0.01, translation > 40 {
-                    // At the tall detent, a short drag down steps
-                    // back to the short detent, not a dismiss.
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        heightFraction = minFraction
-                        dragOffset = 0
-                    }
-                } else {
-                    // Snap to the nearest detent.
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        heightFraction = heightFraction > (minFraction + maxFraction) / 2 ? maxFraction : minFraction
-                        dragOffset = 0
-                    }
-                }
+        } else {
+            // Snap to the nearest detent.
+            withAnimation(.easeOut(duration: 0.25)) {
+                heightFraction = heightFraction > (minFraction + maxFraction) / 2 ? maxFraction : minFraction
+                dragOffset = 0
             }
+        }
     }
 }

@@ -36,12 +36,22 @@ struct ConnectionsView: View {
     /// (default) keeps the old dismiss() behaviour.
     let onClose: (() -> Void)?
 
+    /// Sheet-drag callbacks (v0.2.114): same as DnsQueriesView —
+    /// the overlay passes these so the drag gesture lives on the
+    /// header only, never on the sheet container (which captured
+    /// every vertical drag and left the list unscrollable on
+    /// v0.2.113). Nil (default) = no sheet-drag gesture.
+    let onSheetDragChanged: ((CGFloat) -> Void)?
+    let onSheetDragEnded: ((CGFloat) -> Void)?
+
     /// Opens the page on one feed (the dashboard's stat cells open
     /// it directly on live / recent); nil keeps the persisted feed.
-    init(initialFeed: ConnectionFeed? = nil, applyTabBarClearance: Bool = false, sheetChrome: Bool = false, onClose: (() -> Void)? = nil) {
+    init(initialFeed: ConnectionFeed? = nil, applyTabBarClearance: Bool = false, sheetChrome: Bool = false, onClose: (() -> Void)? = nil, onSheetDragChanged: ((CGFloat) -> Void)? = nil, onSheetDragEnded: ((CGFloat) -> Void)? = nil) {
         self.applyTabBarClearance = applyTabBarClearance
         self.sheetChrome = sheetChrome
         self.onClose = onClose
+        self.onSheetDragChanged = onSheetDragChanged
+        self.onSheetDragEnded = onSheetDragEnded
         if let initialFeed {
             _feed = State(initialValue: initialFeed)
         }
@@ -136,6 +146,20 @@ struct ConnectionsView: View {
             .padding(.top, 10)
             .padding(.bottom, 6)
         }
+        // v0.2.114: the sheet-drag gesture lives HERE, on the
+        // header only. The header is a sibling of the list
+        // (contentStack), not an ancestor, so it can never
+        // capture a drag that starts on the list — the list
+        // scrolls freely. Dragging up here expands the sheet
+        // toward the 0.9 detent; dragging down steps back /
+        // dismisses (the overlay owns those rules via the
+        // callbacks). A tap (<8pt) still reaches the ✕ / action
+        // buttons and the feed-switcher menu.
+        .gesture(
+            DragGesture(minimumDistance: 8)
+                .onChanged { if let onSheetDragChanged { onSheetDragChanged($0.translation.height) } }
+                .onEnded { if let onSheetDragEnded { onSheetDragEnded($0.translation.height) } }
+        )
     }
 
     /// Relative start time for live rows ("刚刚", "5 分钟前").

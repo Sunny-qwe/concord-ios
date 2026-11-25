@@ -70,9 +70,25 @@ struct DnsQueriesView: View {
     /// the old dismiss() behaviour.
     let onClose: (() -> Void)?
 
-    init(mode: Mode = .page, onClose: (() -> Void)? = nil) {
+    /// Sheet-drag callbacks (v0.2.114): the ContentView overlay
+    /// passes these so the sheet's drag gesture lives on the
+    /// header only — never on the sheet container. A .gesture on
+    /// the container (v0.2.111–113) captured every vertical drag
+    /// and the list ScrollView never scrolled (the user's
+    /// v0.2.113 video: swipe-up did nothing). The header and the
+    /// list are siblings, so a gesture on the header can never
+    /// block the list. Nil (default) = no sheet-drag gesture
+    /// (page mode never renders the header).
+    let onSheetDragChanged: ((CGFloat) -> Void)?
+    let onSheetDragEnded: ((CGFloat) -> Void)?
+
+    init(mode: Mode = .page, onClose: (() -> Void)? = nil,
+         onSheetDragChanged: ((CGFloat) -> Void)? = nil,
+         onSheetDragEnded: ((CGFloat) -> Void)? = nil) {
         self.mode = mode
         self.onClose = onClose
+        self.onSheetDragChanged = onSheetDragChanged
+        self.onSheetDragEnded = onSheetDragEnded
         // v0.2.103: follow starts ON in both modes. Sheet mode
         // no longer scrolls at all (no .onChange / ScrollViewReader
         // in the sheet branch — Connections parity), so there is
@@ -244,6 +260,19 @@ struct DnsQueriesView: View {
             .padding(.top, 10)
             .padding(.bottom, 6)
         }
+        // v0.2.114: the sheet-drag gesture lives HERE, on the
+        // header only. The header is a sibling of the list
+        // (sheetList), not an ancestor, so it can never capture a
+        // drag that starts on the list — the list scrolls freely.
+        // Dragging up here expands the sheet toward the 0.9
+        // detent; dragging down steps back / dismisses (the
+        // overlay owns those rules via the callbacks). A tap
+        // (<8pt) still reaches the ✕ / broom / ⋯ buttons.
+        .gesture(
+            DragGesture(minimumDistance: 8)
+                .onChanged { if let onSheetDragChanged { onSheetDragChanged($0.translation.height) } }
+                .onEnded { if let onSheetDragEnded { onSheetDragEnded($0.translation.height) } }
+        )
     }
 
     /// The sheet's records-only list (v0.2.68; rebuilt v0.2.102):

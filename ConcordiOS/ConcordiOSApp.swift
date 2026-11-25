@@ -32,6 +32,11 @@ struct ConcordiOSApp: App {
     @StateObject private var proxyStyleStore = ProxyStyleStore()
 
     init() {
+        // v0.2.102: the main-thread watchdog (see
+        // MainThreadWatchdog.swift) — start once at launch so a
+        // future freeze leaves its time + last user action in the
+        // log export.
+        MainThreadWatchdog.start()
         let client = ConcordClient()
         _client = StateObject(wrappedValue: client)
         let proxyStore = ProxyStore(client: client)

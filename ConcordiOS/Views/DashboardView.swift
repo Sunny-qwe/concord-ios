@@ -637,6 +637,14 @@ struct DashboardView: View {
         .sheet(isPresented: $showProvidersSheet) { providersSheetContent }
         .sheet(isPresented: $showGroupsSheet) { groupsSheetContent }
         .sheet(item: $statsDestination) { statsSheetContent(for: $0) }
+        .onChange(of: statsDestination) { _, newValue in
+            // v0.2.102: the stats sheet closed — DNS publishing is
+            // safe again (covers dismiss before the sheet's 0.6s
+            // unsuspend).
+            if newValue == nil {
+                dnsStore.setPublishSuspended(false)
+            }
+        }
         .sheet(isPresented: $showServiceManageSheet) { serviceManageSheet }
         // The dashboard's consent prompt (fork 0a55a31): the same
         // prompt the modules page uses, asked over the dashboard
@@ -1890,7 +1898,16 @@ struct DashboardView: View {
     /// v0.2.64: the contentShape makes the full cell column
     /// tappable, not just the number/label glyphs.
     private func statCell(value: String, label: String, destination: StatsDestination) -> some View {
-        Button { statsDestination = destination } label: {
+        Button {
+            // v0.2.102: suspend DNS publishing while the sheet
+            // presents (see DnsStore.publishSuspended) and note
+            // the action for the main-thread watchdog.
+            if destination == .dns {
+                dnsStore.setPublishSuspended(true)
+            }
+            MainThreadWatchdog.noteAction("statsDestination set to .\(destination.rawValue)")
+            statsDestination = destination
+        } label: {
             VStack(spacing: 4) {
                 Text(value)
                     .font(.system(size: statNumberSize, weight: .bold))

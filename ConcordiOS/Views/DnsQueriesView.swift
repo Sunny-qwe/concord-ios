@@ -241,65 +241,93 @@ struct DnsQueriesView: View {
         }
     }
 
-    /// The sheet's records-only list (v0.2.68): no manual query,
-    /// no cache / Fake-IP buttons, no filter segment, no follow
-    /// toggle + hint, no facet menus — just the folded records,
-    /// with bottom clearance for the floating search bar.
+    /// The sheet's records-only list (v0.2.68; rebuilt v0.2.102):
+    /// no manual query, no cache / Fake-IP buttons, no filter
+    /// segment, no follow toggle + hint, no facet menus — just
+    /// the folded records, with bottom clearance for the floating
+    /// search bar.
+    ///
+    /// v0.2.102: this was a List (.insetGrouped +
+    /// .scrollContentBackground(.hidden) + .refreshable +
+    /// ScrollViewReader + .onChange, presented from a just-scrolled
+    /// ScrollView) — the iOS 17.6.1 List-in-sheet presentation
+    /// layout hang. Tapping DNS froze the app with the sheet never
+    /// appearing, on v0.2.82/0.2.83/0.2.101, and scrollTo was
+    /// disproven as the cause (the 0.6s gate was wired correctly;
+    /// entries were empty, so the scroll never fired). MuYu's sheet
+    /// never hangs because Flutter's list is a plain ListView with
+    /// no UITableView — so ours is now the same kind of plain
+    /// scrolling stack: ScrollView + LazyVStack, one white rounded
+    /// card per record, exactly MuYu's layout. Page mode keeps its
+    /// List (it never froze).
     private var sheetList: some View {
-        List {
-            if client.mode == .sample {
-                HStack {
-                    SampleDataBadge()
-                    Text("DNS 记录为示例数据")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+        ScrollView {
+            LazyVStack(spacing: 12) {
+                if client.mode == .sample {
+                    HStack {
+                        SampleDataBadge()
+                        Text("DNS 记录为示例数据")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
                 }
-                .listRowBackground(Color.clear)
-            }
-            if foldedEntries.isEmpty {
-                Text(dnsStore.filtered.isEmpty ? "暂无 DNS 查询记录" : "没有符合筛选的记录")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if let error = dnsStore.lastError, dnsStore.filtered.isEmpty {
-                    Text(error).font(.caption2).foregroundStyle(.red)
-                } else if dnsStore.filtered.isEmpty, client.mode == .live, !TunnelManager.shared.isRunning {
-                    // v0.2.82: the appear refresh is skipped with the
-                    // VPN off (see .task above), so lastError is never
-                    // set — show the same reason statically instead
-                    // of a bare "暂无记录".
-                    Text("VPN 隧道未运行：请先在仪表盘启动 VPN，再查看实时数据")
-                        .font(.caption2).foregroundStyle(.red)
-                }
-            } else {
-                ForEach(foldedEntries) { folded in
-                    dnsSheetRow(folded)
-                        // v0.2.101 (Issue 2): track whether the
-                        // newest row is on screen — following only
-                        // scrolls while it is (see sheetAtTop).
-                        .onAppear {
-                            if folded.id == foldedEntries.first?.id {
-                                sheetAtTop = true
-                                // v0.2.101 (Issue 2): scrolling back
-                                // to the top re-enables following
-                                // (once presentation has finished) —
-                                // otherwise a user who scrolled down
-                                // in the first 0.6s would never get
-                                // follow-back in this sheet session,
-                                // as sheet mode has no follow toggle.
-                                if sheetPresented { followEnd = true }
-                            }
+                if foldedEntries.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(dnsStore.filtered.isEmpty ? "暂无 DNS 查询记录" : "没有符合筛选的记录")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if let error = dnsStore.lastError, dnsStore.filtered.isEmpty {
+                            Text(error).font(.caption2).foregroundStyle(.red)
+                        } else if dnsStore.filtered.isEmpty, client.mode == .live, !TunnelManager.shared.isRunning {
+                            // v0.2.82: the appear refresh is skipped with the
+                            // VPN off (see .task above), so lastError is never
+                            // set — show the same reason statically instead
+                            // of a bare "暂无记录".
+                            Text("VPN 隧道未运行：请先在仪表盘启动 VPN，再查看实时数据")
+                                .font(.caption2).foregroundStyle(.red)
                         }
-                        .onDisappear {
-                            if folded.id == foldedEntries.first?.id {
-                                sheetAtTop = false
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
+                } else {
+                    ForEach(foldedEntries) { folded in
+                        dnsSheetRow(folded)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
+                            .id(folded.id)
+                            // v0.2.101 (Issue 2): track whether the
+                            // newest row is on screen — following only
+                            // scrolls while it is (see sheetAtTop).
+                            .onAppear {
+                                if folded.id == foldedEntries.first?.id {
+                                    sheetAtTop = true
+                                    // v0.2.101 (Issue 2): scrolling back
+                                    // to the top re-enables following
+                                    // (once presentation has finished) —
+                                    // otherwise a user who scrolled down
+                                    // in the first 0.6s would never get
+                                    // follow-back in this sheet session,
+                                    // as sheet mode has no follow toggle.
+                                    if sheetPresented { followEnd = true }
+                                }
                             }
-                        }
+                            .onDisappear {
+                                if folded.id == foldedEntries.first?.id {
+                                    sheetAtTop = false
+                                }
+                            }
+                    }
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 76)
         }
-        .contentMargins(.bottom, 76)
-        .scrollContentBackground(.hidden)
-        .listStyle(.insetGrouped)
     }
 
     /// One DNS row in the video's layout (v0.2.68): line 1 time +
@@ -447,6 +475,10 @@ struct DnsQueriesView: View {
                     if mode == .sheet, sheetAtTop {
                         followEnd = true
                     }
+                    // v0.2.102: presentation finished — DNS
+                    // publishing is safe again (see
+                    // DnsStore.publishSuspended).
+                    dnsStore.setPublishSuspended(false)
                 }
             }
             .onChange(of: foldedEntries.first?.id) { old, _ in

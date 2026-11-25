@@ -88,6 +88,10 @@ final class LogStore: ObservableObject {
         // "VPN 核心无响应" banner ships its cause in the export.
         // Always present, even with no record.
         sections.append("== 僵尸探测诊断 ==\n" + (ZombieProbeDiagnostics.lastDiagnosticText() ?? "暂无记录（尚未探测，或探测未失败）"))
+        // Main-thread watchdog (v0.2.102): stall lines recorded
+        // when the main thread stops responding, so a freeze ships
+        // its time + last user action in the export. Always present.
+        sections.append("== 主线程卡死诊断 ==\n" + (MainThreadWatchdog.lastDiagnosticText() ?? "暂无记录（尚未检测到主线程卡死）"))
         sections.append("== 应用内核心启动诊断 ==\n" + (AppCore.lastBootReportText() ?? "暂无记录（尚未在应用内启动过核心）"))
         sections.append("== 最近一次测速诊断 ==\n" + (AppCore.lastDelayTestReportText() ?? "暂无记录（尚未测速，或本次测速未写入诊断）"))
         // Per-profile delay diagnostics (v0.2.58): the section

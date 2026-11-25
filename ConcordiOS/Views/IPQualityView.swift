@@ -88,7 +88,10 @@ struct IPQualityInfo: Codable {
         case qualityType, isProxy, isVpn, isTor, isAbuser, typeInferred
     }
 
-    init(status: String, message: String?, country: String?, countryCode: String?,
+    /// v0.2.121: `status` is optional here too — the property is
+    /// `String?` (a body with no `status` key must still decode),
+    /// and `assessed(...)` passes the property straight through.
+    init(status: String?, message: String?, country: String?, countryCode: String?,
          city: String?, regionName: String?, isp: String?, org: String?,
          asn: String?, timezone: String?, query: String?, lat: Double?, lon: Double?,
          mobile: Bool? = nil, proxyFlag: Bool? = nil, hosting: Bool? = nil,

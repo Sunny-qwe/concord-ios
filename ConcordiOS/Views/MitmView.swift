@@ -1147,7 +1147,7 @@ private func mitmHar(_ exchange: MitmExchangeDetail, request: MitmBody?, respons
     let log: [String: Any] = [
         "log": [
             "version": "1.2",
-            "creator": ["name": "Concord", "version": version],
+            "creator": ["name": "Lumen", "version": version],
             "entries": [logEntry],
         ],
     ]

@@ -323,7 +323,7 @@ struct AboutView: View {
                         .frame(width: 96, height: 96)
                     }
                     .buttonStyle(.plain)
-                    Text("Concord iOS")
+                    Text("Lumen")
                         .font(.title2.bold())
                     HStack(spacing: 8) {
                         // A-D3: the version pill is the primary

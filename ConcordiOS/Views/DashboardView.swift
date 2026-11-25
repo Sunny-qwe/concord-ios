@@ -3185,7 +3185,7 @@ private struct ServicesCardView: View {
             LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
                 .font(.footnote.weight(.semibold))
             Text(client.mode == .live
-                 ? "数据面：PacketTunnel 扩展内的 Concord 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
+                 ? "数据面：PacketTunnel 扩展内的 Lumen 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
                  : "示例模式：VPN 开关只切换界面状态，不转发流量。切到实时核心并启动 VPN 后由扩展转发流量。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)

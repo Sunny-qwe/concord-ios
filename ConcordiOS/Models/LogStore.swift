@@ -59,7 +59,7 @@ final class LogStore: ObservableObject {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         var sections: [String] = []
         sections.append("""
-            Concord iOS 日志导出
+            Lumen 日志导出
             导出时间：\(Self.fullTimestamp(Int64(Date().timeIntervalSince1970 * 1000)))
             应用版本：\(version)
             VPN 状态：\(TunnelManager.shared.isRunning ? "运行中" : "未运行")

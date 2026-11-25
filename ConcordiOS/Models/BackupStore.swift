@@ -617,7 +617,7 @@ final class BackupStore: ObservableObject {
               let manifest = try? JSONDecoder().decode(Manifest.self, from: manifestData),
               manifest.format == "concord-ios-backup", manifest.version == 1 else {
             throw NSError(domain: "ConcordiOS", code: 3, userInfo: [
-                NSLocalizedDescriptionKey: "这不是 Concord iOS 的备份文件（缺少清单或版本不对），未做任何改动"])
+                NSLocalizedDescriptionKey: "这不是 Lumen 的备份文件（缺少清单或版本不对），未做任何改动"])
         }
         guard let defaultsData = byPath[Self.userDefaultsFileName],
               let defaultsBackup = try? JSONDecoder().decode(UserDefaultsBackup.self, from: defaultsData) else {

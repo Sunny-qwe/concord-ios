@@ -55,7 +55,7 @@ enum DefaultConfig {
     /// Wraps an already-rendered "proxies:" section with the select
     /// group and the two basic rules.
     static func wrap(proxiesSection: String, names: [String]) -> String {
-        var out = "# 由 Concord iOS 统一导入生成\n"
+        var out = "# 由 Lumen 统一导入生成\n"
         out += proxiesSection + "\n"
         out += "proxy-groups:\n"
         out += "  - name: \(NodeLinkParser.yamlQuote(groupName))\n"

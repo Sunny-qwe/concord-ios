@@ -422,9 +422,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             case .tunDisabled:
                 return "TUN 已在设置中关闭：iOS 上 TUN 是唯一的数据面，请在主 App 设置里重新启用 TUN 后再启动"
             case .coreStartFailed:
-                return "Concord 核心启动失败（concord_ios_start 返回非 0）"
+                return "Lumen 核心启动失败（concord_ios_start 返回非 0）"
             case .sessionFailed:
-                return "Concord 核心会话打开失败（核心未运行）"
+                return "Lumen 核心会话打开失败（核心未运行）"
             case .channelFailed:
                 return "数据包通道打开失败（concord_ios_packet_channel_open 返回 0）"
             case .tunFdNotFound:

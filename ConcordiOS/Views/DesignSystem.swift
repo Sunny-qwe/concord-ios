@@ -156,7 +156,7 @@ enum ConcordTheme {
     /// bottom sits at 844 − 34 = 810 and a last row ends at
     /// 810 − padding. v0.2.66 set this to 77 (= 61 bar + 4 margin
     /// + 12 gap), measured to the BAR top (745) — but it forgot
-    /// the environment watermark ("Concord iOS v…", 10pt text +
+    /// the environment watermark ("Lumen v…", 10pt text +
     /// 6pt spacing = 18pt) that sits ABOVE the bar in the same
     /// safeAreaInset VStack, so the real obstruction top is the
     /// watermark top (727), not the bar top — and with 77 the last

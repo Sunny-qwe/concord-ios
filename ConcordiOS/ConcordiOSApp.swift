@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Concord iOS — main app entry point.
+// Lumen — main app entry point.
 // One shared ConcordClient feeds every store; the stores are the single
 // source of truth for their page. The client runs in `.live` mode by
 // default: the real core lives in the PacketTunnel extension process

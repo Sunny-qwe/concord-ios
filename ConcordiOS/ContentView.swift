@@ -111,7 +111,7 @@ struct ContentView: View {
                             // (default true); non-interactive so it
                             // never blocks taps on the pages below.
                             if settingsStore.showEnvironmentWatermark {
-                                Text("Concord iOS v\(appVersion)")
+                                Text("Lumen v\(appVersion)")
                                     .font(.system(size: 10))
                                     .foregroundStyle(Color(.label))
                                     .opacity(0.35)
@@ -450,17 +450,25 @@ struct ContentView: View {
         .overlay(Divider(), alignment: .top)
     }
 
-    /// Floating transparent bar (reference bottom bar, v0.2.103):
-    /// NO container background and NO shadow — the page background
-    /// shows straight through, like MuYu IMG_1281 (the old white
-    /// rounded container + shadow are removed). The selected tab
-    /// gets a LIGHT tint of the accent with a solid-accent icon +
-    /// label in EVERY theme, including the default blue: MuYu
-    /// IMG_1281 is a blue-theme screenshot (blue play button, blue
-    /// 规则 pill) whose selected tab pill is still light with a
+    /// Floating bar (reference bottom bar): a near-white rounded
+    /// container + soft shadow, like MuYu's NavigationDock
+    /// (prism_ui navigation_dock.dart: _DockSurface is a distinct
+    /// floating surface with dockShadows, NOT the page colour).
+    /// v0.2.105 restores the container v0.2.103 removed: that
+    /// removal misread IMG_1281 — pixel sampling shows MuYu's dock
+    /// is #fcf8f9 against a #efedf0 page, and our transparent bar
+    /// (IMG_1286, #f2f2f6) is what looks "completely different".
+    /// cardBackground is pure white under default blue and a ~5%
+    /// theme tint otherwise (v0.2.100), matching MuYu's pink-theme
+    /// dock #FBF8F9. The selected tab gets a LIGHT tint of the
+    /// accent with a solid-accent icon + label in EVERY theme,
+    /// including the default blue (MuYu IMG_1281 is a blue-theme
+    /// screenshot whose selected tab pill is still light with a
     /// blue icon — the v0.2.82 inference that default blue kept a
-    /// solid capsule + white icon was wrong (see
+    /// solid capsule + white icon was wrong; see
     /// ConcordTheme.tabSelectedFill / tabSelectedForeground).
+    /// The sliding matchedGeometryEffect pill and the page
+    /// slide/fade switching are untouched.
     private var floatingTabBar: some View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases, id: \.self) { tab in
@@ -486,8 +494,13 @@ struct ContentView: View {
             }
         }
         .padding(6)
-        // v0.2.103: fully transparent — no container background,
-        // no shadow (MuYu IMG_1281). The page background shows
-        // through; the selected-tab pill is the only fill.
+        // Floating surface (v0.2.105, restored): white like the
+        // reference — secondarySystemBackground reads grey against
+        // the grouped page background and makes the bar look like
+        // it runs into the screen edge. MuYu's NavigationDock is a
+        // distinct floating surface (#fcf8f9) with a soft shadow,
+        // not the page colour (see the doc comment above).
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 30))
+        .shadow(color: .black.opacity(0.10), radius: 16, x: 0, y: 6)
     }
 }

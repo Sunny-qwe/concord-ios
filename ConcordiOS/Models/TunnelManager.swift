@@ -22,7 +22,7 @@ import NetworkExtension
 // live transport reads the files (see ConfigStore.snapshotURL).
 //
 // First launch: loadAllFromPreferences finds no saved manager, so one
-// is created (providerBundleIdentifier below, serverAddress "Concord")
+// is created (providerBundleIdentifier below, serverAddress "Lumen")
 // and saved. Starting the VPN the first time prompts the user for VPN
 // permission; that prompt, and the `packet-tunnel-provider`
 // entitlement, require a paid Apple Developer Program provisioning
@@ -32,7 +32,7 @@ final class TunnelManager: ObservableObject {
     static let shared = TunnelManager()
 
     static let providerBundleID = "com.lumen.ios.PacketTunnel"
-    static let serverAddress = "Concord"
+    static let serverAddress = "Lumen"
 
     @Published private(set) var status: NEVPNStatus = .invalid
     @Published private(set) var lastError: String?
@@ -321,9 +321,47 @@ final class TunnelManager: ObservableObject {
         }
         if let existing = managers.first(where: { ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == Self.providerBundleID }) {
             manager = existing
+            // v0.2.105 rebrand: rename the EXISTING saved VPN
+            // configuration so iOS Settings → VPN shows "Lumen" (the
+            // bold name is localizedDescription; the subtitle is the
+            // owning app's display name, already "Lumen" since
+            // v0.2.104). Idempotent: only touches our manager
+            // (matched by providerBundleIdentifier above) and only
+            // when it still carries the old "Concord" name; the save
+            // is best-effort — a failure leaves the old name in
+            // Settings but never blocks the VPN, and prepare() runs
+            // again on the next launch to retry.
+            var needsSave = false
+            if existing.localizedDescription == "Concord" {
+                existing.localizedDescription = "Lumen"
+                needsSave = true
+            }
+            if let proto = existing.protocolConfiguration as? NETunnelProviderProtocol,
+               proto.serverAddress == "Concord" {
+                proto.serverAddress = Self.serverAddress
+                existing.protocolConfiguration = proto
+                needsSave = true
+            }
+            if needsSave {
+                do {
+                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                        existing.saveToPreferences { error in
+                            if let error {
+                                continuation.resume(throwing: error)
+                            } else {
+                                continuation.resume()
+                            }
+                        }
+                    }
+                } catch {
+                    // Best-effort rename: keep going with the old
+                    // name; the next launch retries.
+                    NSLog("TunnelManager: renaming VPN config to Lumen failed: \(error)")
+                }
+            }
         } else {
             let created = NETunnelProviderManager()
-            created.localizedDescription = "Concord"
+            created.localizedDescription = "Lumen"
             let proto = NETunnelProviderProtocol()
             proto.providerBundleIdentifier = Self.providerBundleID
             proto.serverAddress = Self.serverAddress

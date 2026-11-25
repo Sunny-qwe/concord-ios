@@ -24,7 +24,7 @@ struct ShortcutsView: View {
     var body: some View {
         List {
             Section("快捷指令动作") {
-                Text("在 iPhone「快捷指令」App 里搜索 Concord，就能找到这 4 个动作；也可以把它们放到小组件、自动化或操作按钮上。")
+                Text("在 iPhone「快捷指令」App 里搜索 Lumen，就能找到这 4 个动作；也可以把它们放到小组件、自动化或操作按钮上。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 shortcutRow(icon: "power", title: "开启 VPN", subtitle: "启动 VPN 隧道")

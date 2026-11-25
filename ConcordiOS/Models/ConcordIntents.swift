@@ -54,7 +54,7 @@ private func vpnConfirmedStopped() async -> Bool {
 
 struct StartVPNIntent: AppIntent {
     static var title: LocalizedStringResource = "开启 VPN"
-    static var description = IntentDescription("启动 Concord VPN 隧道。")
+    static var description = IntentDescription("启动 Lumen VPN 隧道。")
 
     func perform() async throws -> some IntentResult {
         do {
@@ -62,14 +62,14 @@ struct StartVPNIntent: AppIntent {
             return .result(dialog: "VPN 已开启")
         } catch {
             throw ConcordIntentError.failed(
-                "直接开启 VPN 失败：\(error.localizedDescription)。请打开 Concord App 手动开启，或在快捷指令里用「打开 URL」动作打开 concord://vpn/on")
+                "直接开启 VPN 失败：\(error.localizedDescription)。请打开 Lumen App 手动开启，或在快捷指令里用「打开 URL」动作打开 concord://vpn/on")
         }
     }
 }
 
 struct StopVPNIntent: AppIntent {
     static var title: LocalizedStringResource = "关闭 VPN"
-    static var description = IntentDescription("停止 Concord VPN 隧道。")
+    static var description = IntentDescription("停止 Lumen VPN 隧道。")
 
     func perform() async throws -> some IntentResult {
         // prepare() FIRST: in a fresh Shortcuts process the manager
@@ -80,7 +80,7 @@ struct StopVPNIntent: AppIntent {
             try await TunnelManager.shared.prepare()
         } catch {
             throw ConcordIntentError.failed(
-                "读取 VPN 状态失败：\(error.localizedDescription)。请打开 Concord App 手动关闭，或在快捷指令里用「打开 URL」动作打开 concord://vpn/off")
+                "读取 VPN 状态失败：\(error.localizedDescription)。请打开 Lumen App 手动关闭，或在快捷指令里用「打开 URL」动作打开 concord://vpn/off")
         }
         await TunnelManager.shared.stop()
         // stop() is best-effort (it waits up to 5 s for a terminal
@@ -91,7 +91,7 @@ struct StopVPNIntent: AppIntent {
             return .result(dialog: "VPN 已关闭")
         }
         throw ConcordIntentError.failed(
-            "停止 VPN 未生效：隧道仍在运行。请打开 Concord App 手动关闭，或在快捷指令里用「打开 URL」动作打开 concord://vpn/off")
+            "停止 VPN 未生效：隧道仍在运行。请打开 Lumen App 手动关闭，或在快捷指令里用「打开 URL」动作打开 concord://vpn/off")
     }
 }
 
@@ -110,7 +110,7 @@ struct ToggleVPNIntent: AppIntent {
             try await TunnelManager.shared.prepare()
         } catch {
             throw ConcordIntentError.failed(
-                "读取 VPN 状态失败：\(error.localizedDescription)。请打开 Concord App 手动切换，或在快捷指令里用「打开 URL」动作打开 concord://vpn/toggle")
+                "读取 VPN 状态失败：\(error.localizedDescription)。请打开 Lumen App 手动切换，或在快捷指令里用「打开 URL」动作打开 concord://vpn/toggle")
         }
         let running = await MainActor.run { TunnelManager.shared.isRunning }
         if running {
@@ -121,14 +121,14 @@ struct ToggleVPNIntent: AppIntent {
                 return .result(dialog: "VPN 已关闭")
             }
             throw ConcordIntentError.failed(
-                "停止 VPN 未生效：隧道仍在运行。请打开 Concord App 手动关闭，或在快捷指令里用「打开 URL」动作打开 concord://vpn/off")
+                "停止 VPN 未生效：隧道仍在运行。请打开 Lumen App 手动关闭，或在快捷指令里用「打开 URL」动作打开 concord://vpn/off")
         }
         do {
             try await TunnelManager.shared.start()
             return .result(dialog: "VPN 已开启")
         } catch {
             throw ConcordIntentError.failed(
-                "直接开启 VPN 失败：\(error.localizedDescription)。请打开 Concord App 手动开启，或在快捷指令里用「打开 URL」动作打开 concord://vpn/on")
+                "直接开启 VPN 失败：\(error.localizedDescription)。请打开 Lumen App 手动开启，或在快捷指令里用「打开 URL」动作打开 concord://vpn/on")
         }
     }
 }

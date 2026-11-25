@@ -796,6 +796,17 @@ struct ProxiesView: View {
             }
         }
         .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
+        // v0.2.108: force the bar background visible at all times.
+        // Upstream's Scaffold bar sits on the page surface (tone 94)
+        // with no separate bar background (scaffold.dart: the bar
+        // and body share backgroundColor; ProxiesView passes none,
+        // so both are the page surface). With the default .automatic
+        // visibility the bar shows the system translucent material
+        // at rest instead of the solid page colour, which rendered
+        // as a near-white strip (~#FBFBFD) across the top of this
+        // page while the page itself is #F2F2F7 (IMG_1290). The
+        // Dashboard has no NavigationStack and no such strip.
+        .toolbarBackgroundVisibility(.visible, for: .navigationBar)
         // ⋯ menu overlay (v0.2.72): a custom overlay, NOT a system
         // .popover — the popover's content never received taps
         // on-device (IMG_1212). The overlay is part of the normal

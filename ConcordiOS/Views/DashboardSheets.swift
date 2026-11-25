@@ -311,19 +311,20 @@ struct SheetInfoRow: View {
 // MARK: - Outbound IP sheet (status card)
 //
 // MuYu key_3: "出站 IP" — note "依赖第三方api，仅供参考",
-// then a "基础信息" card (IP 地址， 等级， …). The rows come
-// from the same ip-api.com lookup the status card already
-// runs (DashboardView.fetchIPInfo) plus the core's egress
-// probe (displayIp); the level/type are the assessed ones
-// (hosting -> 机房， silence -> residential, inferred).
+// then a "基础信息" card (IP 地址， 等级， …). The IP comes
+// ONLY from the core's egress probe (displayIp, v0.2.115 —
+// the direct HTTP IP chain is gone); the ip-api.com lookup
+// (DashboardView.fetchIPInfo) only enriches that IP's geo/org
+// for the level/type rows (hosting -> 机房， silence ->
+// residential, inferred).
 // The IP row opens the full IP-quality page (MuYu taps the
 // IP line for the same page); v0.2.68 removed the in-sheet
 // "查看完整 IP 质量" button (the video's sheet has none), and
 // v0.2.85 removed the dashboard's dead IP-quality sheet
 // presentation (its trigger was deleted in v0.2.68 and nothing
 // ever set it) — the IP-quality page itself stays reachable
-// from Settings. The refresh button re-runs
-// both lookups. hideIp masks the address like the card does.
+// from Settings. The refresh button re-runs the probe plus the
+// enrichment lookup. hideIp masks the address like the card does.
 
 struct OutboundIPSheet: View {
     let displayIp: String?
@@ -430,7 +431,7 @@ struct OutboundIPSheet: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, 24)
                     } else {
-                        Text("暂无出站 IP：启动 VPN 后查看出口 IP，也可点右上角刷新直接查询本机 IP。")
+                        Text("暂无出站 IP：启动 VPN 后查看出口 IP，也可点右上角刷新重新检测出口 IP。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)

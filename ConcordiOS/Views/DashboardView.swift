@@ -56,11 +56,15 @@ struct IPLookupDiagnostics {
 // is unchanged from the previous dashboard: proxyStore (running +
 // groups), connectionStore, profileStore, ruleStore (provider list
 // for the subscription info), settingsStore, eventStore / dnsStore
-// (stats), tunnelManager and client. TrafficStore (speed + services
-// + engine) is NOT observed here — v0.2.69 moved every read into
-// narrow leaf views (see the MARK at the end of this file), so the
-// 1 s traffic tick no longer re-evaluates this body. Only the look
-// and the navigation changed.
+// (stats), tunnelManager and client. TrafficStore's speed /
+// services / engine reads still live in narrow leaf views
+// (v0.2.69, see the MARK at the end of this file), but v0.2.115
+// adds three direct probe reads here (outboundIp,
+// outboundIpInfo.countryCode, outboundIpProbeFailed) — the status
+// card's IP comes only from the core probe now — so this body
+// subscribes to TrafficStore and re-evaluates when the probe
+// lands (and on the 1 s tick); the leaves still isolate their own
+// re-renders. Only the look and the navigation changed.
 
 struct DashboardView: View {
     /// Switches the main tab (called with .proxies / .profiles from
@@ -80,6 +84,18 @@ struct DashboardView: View {
     /// surfaces them in a card and asks about each in turn (fork
     /// 0a55a31) instead of only showing them in the modules list.
     @EnvironmentObject private var mitmModuleStore: MitmModuleStore
+    /// v0.2.115: the status card's IP comes ONLY from the core
+    /// probe (TrafficStore.probe + parseOutboundIp), so this view
+    /// reads the probe IP, its country and its failure flag
+    /// directly. NOTE: this subscribes the dashboard body to
+    /// TrafficStore — the v0.2.69 "parent stays unsubscribed"
+    /// design no longer holds for these reads, so the body
+    /// re-evaluates on the 1 s traffic tick too; the per-second
+    /// numbers still live in leaf views, so the tick never
+    /// re-renders the leaves themselves. (Also fixes the base:
+    /// fetchIPInfo already referenced this store with no
+    /// declaration in scope.)
+    @EnvironmentObject private var trafficStore: TrafficStore
     /// On-Demand state (Batch F): the VPN card shows whether
     /// auto-reconnect is on, and the unexpected-disconnect banner
     /// reads tunnelManager.unexpectedDisconnect.
@@ -113,13 +129,15 @@ struct DashboardView: View {
     /// `_editing`): the pencil in the title row toggles editing
     /// on this page and becomes a check "done" — no sheet.
     @State private var isEditingDashboard = false
-    /// Non-subscribing TrafficStore action channel (v0.2.69): this
-    /// view no longer observes TrafficStore, so its body does not
-    /// re-evaluate on the 1 s traffic tick. The DashboardTrafficEffects
-    /// leaf observes the store and fills these closures on appear;
-    /// the dashboard only *calls* them from user gestures
-    /// (pull-to-refresh, the clover refresh), which never subscribe
-    /// and never re-render the body.
+    /// TrafficStore action channel (v0.2.69): the
+    /// DashboardTrafficEffects leaf observes the store and fills
+    /// these closures on appear; the dashboard only *calls* them
+    /// from user gestures (pull-to-refresh, the clover refresh),
+    /// which never subscribe by themselves. v0.2.115: the view
+    /// itself now observes TrafficStore for the probe IP/flag
+    /// (status card), so the body does re-evaluate on probe
+    /// changes and on the 1 s tick — the channel still avoids
+    /// *extra* subscriptions from gestures.
     @State private var trafficActions = DashboardTrafficActions()
     @State private var servicesExpanded = false
     /// Service management sheet (D-M3): reorder + enable/disable
@@ -156,22 +174,17 @@ struct DashboardView: View {
     @State private var ipInfo: IPQualityInfo? = DashboardView.cachedIpInfo()
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
-    @State private var ipFetchFailed = false
-    /// In-flight guard for the egress-IP lookup (v0.2.101 issue
-    /// 1b): .task, onChange(isRunning), pull-to-refresh and the
-    /// manual re-fetch taps all funnel through fetchIPInfo(); with
-    /// no guard two of them can run the 3-source sequence
+    /// In-flight guard for the egress-IP geo enrichment (v0.2.101
+    /// issue 1b): .task, onChange(isRunning), pull-to-refresh and
+    /// the manual re-fetch taps all funnel through fetchIPInfo();
+    /// with no guard two of them can run the enrichment lookup
     /// concurrently (TrafficStore.probe has isProbingOutboundIp;
-    /// this lookup had none).
+    /// this lookup had none). v0.2.115: the direct 3-source IP
+    /// chain is gone — fetchIPInfo only enriches the probed IP,
+    /// and the failure flag it used to set (ipFetchFailed) is
+    /// deleted: the red failure is the probe's own flag now
+    /// (trafficStore.outboundIpProbeFailed).
     @State private var ipFetchInFlight = false
-    /// Backoff retry loop for a failed lookup (v0.2.101 issue 1b):
-    /// at most one may exist. It sleeps 3 s / 5 s / 10 s (capped
-    /// at 10 s) and re-calls fetchIPInfo while the tunnel runs and
-    /// ipFetchFailed is set, mirroring
-    /// TrafficStore.maybeRetryOutboundIpProbe (3 s for the first
-    /// 20 attempts, then 10 s). A success, or the tunnel going
-    /// down, ends the loop at its next wake.
-    @State private var ipFetchRetryTask: Task<Void, Never>?
     /// The ip-api.com `as` field ("AS15169 Google LLC"), parsed to
     /// the bare "AS<n>" token for the org fallback (FlClash
     /// current_outbound.dart: organization ?? "AS{asn}").
@@ -208,12 +221,19 @@ struct DashboardView: View {
 
     // MARK: - Derived data
 
+    /// v0.2.115: MuYu _vpnSubtitle parity — a failed start
+    /// appends the reason (proxyStore.startError is set only
+    /// when a start attempt fails and cleared on success/stop).
     private var tunnelStatusText: String {
         switch tunnelManager.status {
         case .connected: return "已连接"
         case .connecting: return "连接中"
         case .disconnecting: return "断开中"
-        case .disconnected: return "已断开"
+        case .disconnected:
+            if let startError = proxyStore.startError, !startError.isEmpty {
+                return "已断开: \(startError)"
+            }
+            return "已断开"
         case .reasserting: return "重新协商"
         case .invalid: return "未配置"
         @unknown default: return "未知"
@@ -398,9 +418,9 @@ struct DashboardView: View {
         UserDefaults.standard.string(forKey: cachedIpAsnKey)
     }
 
-    /// Stores a fresh IP lookup and persists it (see above). Every
-    /// source funnels through here so the cache is always the
-    /// newest answer.
+    /// Stores a fresh IP lookup and persists it (see above). The
+    /// enrichment lookup funnels through here so the cache is
+    /// always the newest answer.
     private func setIpInfo(_ info: IPQualityInfo?, asn: String?) {
         ipInfo = info
         ipAsn = asn
@@ -412,43 +432,36 @@ struct DashboardView: View {
         }
     }
 
-    /// Public-IP lookup. ip-api.com first (full geo/org/ASN answer,
-    /// 10 s) — but on-device 0.2.93 the ip-api.com request died
-    /// before TCP (the core never saw it: most likely the app's DNS
-    /// resolution of ip-api.com), so a single source leaves the
-    /// status card red even though the VPN proxies fine. Fall back
-    /// to ident.me/json (8 s) and then api.ipify.org?format=json
-    /// (8 s, IP only): first success wins and clears ipFetchFailed;
-    /// only an all-sources failure sets it. v0.2.101 issue 1b: an
-    /// all-sources failure now schedules a backoff retry (3 s /
-    /// 5 s / 10 s, capped) while the tunnel runs, and concurrent
-    /// callers are held off by an in-flight guard; the first query
-    /// after connect waits until 4 s after the tunnel started, so
-    /// it does not run while the app's DNS/routing is still
-    /// settling. The fallbacks carry
-    /// only the IP (ident.me also fills country + code / city /
-    /// ASN when present) — enough for the status card's fallbackQuery; the
-    /// geo/org enrichment stays ip-api.com-only. v0.2.115: the
-    /// lookup prefers the core-probed egress IP (see the branch
-    /// below) and the status card shows the result with the VPN off
-    /// too — MuYu shows the full card with the tunnel down. When
-    /// the VPN is on, URLSession follows the tunnel, so the
-    /// no-arg answer is the proxy egress IP; when it is off, it is
-    /// the phone's direct IP (only used when the core probe has no
-    /// answer yet).
+    /// Geo/quality enrichment for the already-probed egress IP
+    /// (v0.2.115, MuYu parity). The IP itself comes ONLY from the
+    /// core probe (TrafficStore.probe + parseOutboundIp) — this
+    /// never discovers an IP via HTTP: the direct ip-api.com /
+    /// ident.me / ipify chain is deleted, so the status card can
+    /// no longer show the phone's direct IP as the egress. This
+    /// only fetches geo/org/ASN for the probed IP (the upstream
+    /// ipQualityProvider equivalent — upstream also looks the
+    /// quality up over HTTP for the known probed IP). A failed
+    /// enrichment sets no failure flag and schedules no retry:
+    /// the IP still shows from the probe, and the next probe /
+    /// pull-to-refresh / manual re-fetch enriches again. The
+    /// status card shows the result with the VPN off too — MuYu
+    /// shows the full card with the tunnel down.
     private func fetchIPInfo() async {
+        // v0.2.115: the IP comes from the core probe only — no
+        // probed IP yet means nothing to enrich.
+        guard let ip = trafficStore.outboundIp, !ip.isEmpty else { return }
         // v0.2.101 issue 1b: in-flight guard — .task and
         // onChange(isRunning) can fire at the same moment (appear
         // while the tunnel is connecting), and a manual re-fetch
-        // tap can land mid-sequence; the second caller returns
-        // instead of running a duplicate 3-source lookup.
+        // tap can land mid-lookup; the second caller returns
+        // instead of running a duplicate enrichment lookup.
         guard !ipFetchInFlight else { return }
         ipFetchInFlight = true
         defer { ipFetchInFlight = false }
         // v0.2.101 issue 1b: the first query after connect used to
         // run in the instant the tunnel came up, when the app
-        // process's DNS/routing is not yet stable — all three
-        // sources fast-fail and the card stays red until a manual
+        // process's DNS/routing is not yet stable — the lookup
+        // fast-fails and the card stays without geo until a manual
         // re-fetch. Wait until 4 s after the tunnel started
         // before querying (no delay when the tunnel has been up
         // for a while, or its start time is unknown).
@@ -461,61 +474,18 @@ struct DashboardView: View {
         }
         ipChecking = true
         defer { ipChecking = false }
-        // v0.2.115: prefer the core-probed egress IP — the core
-        // routes the probe through the selected outbound, so its IP
-        // is the proxy egress even with the tunnel down. Query
-        // ip-api for THAT IP's geo (it answers geo for any IP), so
-        // the card shows the egress's country/org instead of the
-        // phone's direct IP.
-        if let coreIp = trafficStore.outboundIp?.trimmingCharacters(in: .whitespacesAndNewlines), !coreIp.isEmpty {
-            if await fetchIPInfoFromIpApi(for: coreIp) { return }
-        }
         // Interface B3 (DashboardView part): a stalled ip-api.com
         // used to hang this lookup forever (URLSession.shared
         // defaults: 60 s request / 7 days resource). 10 s, then
-        // the next source is tried instead of hanging.
-        if await fetchIPInfoFromIpApi() { return }
-        if await fetchIPInfoFromIdentMe() { return }
-        if await fetchIPInfoFromIpify() { return }
-        // No source answered: keep the previous (or empty) values —
-        // the card shows "服务失败" while running, or the skeleton
-        // bars while not running, instead of stale numbers.
-        IPLookupDiagnostics.record("all IP sources failed")
-        ipFetchFailed = true
-        // v0.2.101 issue 1b: no auto-retry used to leave the card
-        // red until the user tapped re-fetch (which just calls
-        // this same function later, when the tunnel DNS is
-        // stable). Schedule the backoff retry loop instead.
-        scheduleIPFetchRetry()
+        // the lookup fails instead of hanging.
+        _ = await fetchIPInfoFromIpApi(for: ip)
     }
 
-    /// Backoff retry loop for a failed egress-IP lookup (v0.2.101
-    /// issue 1b): 3 s, then 5 s, then 10 s, capped at 10 s. The
-    /// loop re-checks before every attempt and stops as soon as
-    /// the tunnel is down or a fetch succeeds; scheduleIPFetchRetry
-    /// is a no-op while a loop already exists, so concurrent
-    /// failures never start a second one.
-    private func scheduleIPFetchRetry() {
-        guard ipFetchRetryTask == nil else { return }
-        ipFetchRetryTask = Task {
-            let delays: [TimeInterval] = [3, 5, 10]
-            var attempt = 0
-            while proxyStore.isRunning && ipFetchFailed {
-                let delay = delays[min(attempt, delays.count - 1)]
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                guard !Task.isCancelled else { break }
-                guard proxyStore.isRunning && ipFetchFailed else { break }
-                attempt += 1
-                await fetchIPInfo()
-            }
-            ipFetchRetryTask = nil
-        }
-    }
-
-    /// Applies one ip-api.com response (shared by the caller-IP and
-    /// known-IP lookups): decodes IPQualityInfo + the `as` token,
-    /// stores + persists them, clears the failure flag. False when
-    /// the answer does not decode or reports a non-success status.
+    /// Applies one ip-api.com response (the known-IP lookup):
+    /// decodes IPQualityInfo + the `as` token, stores + persists
+    /// them. False when the answer does not decode or reports a
+    /// non-success status. v0.2.115: a failed enrichment sets no
+    /// failure flag — the probed IP still shows.
     private func applyIpApiResponse(_ data: Data) -> Bool {
         let decoded: IPQualityInfo
         do {
@@ -529,35 +499,15 @@ struct DashboardView: View {
             return false
         }
         setIpInfo(decoded, asn: (try? JSONDecoder().decode(IPApiAsField.self, from: data))?.asNumber)
-        ipFetchFailed = false
         return true
-    }
-
-    /// ip-api.com (primary): the only source returning the full
-    /// geo/org/ASN answer in one shape. True when it answered.
-    private func fetchIPInfoFromIpApi() async -> Bool {
-        guard let url = URL(string: "http://ip-api.com/json/?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting") else { return false }
-        do {
-            let request = URLRequest(url: url, timeoutInterval: 10)
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-                IPLookupDiagnostics.record("ip-api.com: HTTP \(status)")
-                return false
-            }
-            return applyIpApiResponse(data)
-        } catch {
-            IPLookupDiagnostics.recordError(source: "ip-api.com", error: error)
-            return false
-        }
     }
 
     /// ip-api.com for a KNOWN IP (v0.2.115): queries the geo of the
     /// core-probed egress IP. ip-api answers geo for any IP, not
     /// just the caller's — so with the VPN off the card shows the
-    /// proxy egress's country/org instead of the phone's direct IP
-    /// (the no-arg lookup answers the caller's IP, which is the
-    /// direct IP when the tunnel is down).
+    /// proxy egress's country/org instead of the phone's direct IP.
+    /// This is now the ONLY ip-api.com path: the no-arg caller-IP
+    /// variant is deleted (the IP comes only from the core probe).
     private func fetchIPInfoFromIpApi(for ip: String) async -> Bool {
         guard let url = URL(string: "http://ip-api.com/json/\(ip)?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting") else { return false }
         do {
@@ -573,81 +523,6 @@ struct DashboardView: View {
             IPLookupDiagnostics.recordError(source: "ip-api.com", error: error)
             return false
         }
-    }
-
-    /// ident.me/json (fallback): {"ip","country","cc","city","aso",
-    /// "asn","timezone",...} — the IP plus geo/ASN when present.
-    /// Its "asn" is a string ("AS13335") or a number; ipAsn keeps
-    /// the bare "AS<n>" token like the ip-api.com path. Its country
-    /// code is the "cc" field ("HK") — "country" is the full name
-    /// ("Hong Kong"), so reading only "country" leaves the clover
-    /// badge on the globe while upstream/MuYu shows the code.
-    private func fetchIPInfoFromIdentMe() async -> Bool {
-        guard let url = URL(string: "https://ident.me/json") else { return false }
-        do {
-            let request = URLRequest(url: url, timeoutInterval: 8)
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-                IPLookupDiagnostics.record("ident.me: HTTP \(status)")
-                return false
-            }
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let ip = json["ip"] as? String, !ip.isEmpty else {
-                IPLookupDiagnostics.record("ident.me: decode failed")
-                return false
-            }
-            setIpInfo(IPQualityInfo(
-                status: "success", message: nil,
-                country: json["country"] as? String, countryCode: json["cc"] as? String,
-                city: json["city"] as? String, regionName: nil,
-                isp: json["aso"] as? String, org: json["aso"] as? String,
-                asn: identMeAsn(json["asn"]), timezone: json["timezone"] as? String,
-                query: ip, lat: nil, lon: nil), asn: identMeAsn(json["asn"]))
-            ipFetchFailed = false
-            return true
-        } catch {
-            IPLookupDiagnostics.recordError(source: "ident.me", error: error)
-            return false
-        }
-    }
-
-    /// api.ipify.org (last resort): {"ip": "..."} — IP only.
-    /// Enough for the status card's fallbackQuery so the red error
-    /// clears; it carries no ASN, so ipAsn is cleared with it.
-    private func fetchIPInfoFromIpify() async -> Bool {
-        guard let url = URL(string: "https://api.ipify.org?format=json") else { return false }
-        do {
-            let request = URLRequest(url: url, timeoutInterval: 8)
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-                IPLookupDiagnostics.record("api.ipify.org: HTTP \(status)")
-                return false
-            }
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let ip = json["ip"] as? String, !ip.isEmpty else {
-                IPLookupDiagnostics.record("api.ipify.org: decode failed")
-                return false
-            }
-            setIpInfo(IPQualityInfo(
-                status: "success", message: nil, country: nil, countryCode: nil,
-                city: nil, regionName: nil, isp: nil, org: nil, asn: nil,
-                timezone: nil, query: ip, lat: nil, lon: nil), asn: nil)
-            ipFetchFailed = false
-            return true
-        } catch {
-            IPLookupDiagnostics.recordError(source: "api.ipify.org", error: error)
-            return false
-        }
-    }
-
-    /// ident.me's "asn" is a string ("AS13335") or a number — both
-    /// become the bare "AS<n>" token ipAsn keeps.
-    private func identMeAsn(_ value: Any?) -> String? {
-        if let s = value as? String, !s.isEmpty { return s }
-        if let n = value as? NSNumber { return "AS\(n.intValue)" }
-        return nil
     }
 
     /// The ip-api.com answer assessed like upstream (D-D3): the
@@ -710,6 +585,14 @@ struct DashboardView: View {
         .background { dashboardTrafficEffects }
         .onChange(of: settingsStore.mode) { _, _ in
             Task { await settingsStore.applyGeneralToCore() }
+        }
+        // v0.2.115: the geo/quality enrichment follows the core
+        // probe (upstream ipQualityProvider watches the probe's
+        // IpInfo) — whenever a fresh probed IP lands, enrich it.
+        .onChange(of: trafficStore.outboundIp) { _, ip in
+            if ip != nil {
+                Task { await fetchIPInfo() }
+            }
         }
         .sheet(isPresented: $showMemoryDetail) { memoryDetailSheet }
         .sheet(isPresented: $showTrafficDetail) { trafficDetailSheet }
@@ -781,7 +664,6 @@ struct DashboardView: View {
             morphProgress: $morphProgress,
             ipInfo: $ipInfo,
             ipAsn: $ipAsn,
-            ipFetchFailed: $ipFetchFailed,
             trafficActions: $trafficActions,
             statsDestination: $statsDestination,
             fetchIPInfo: fetchIPInfo,
@@ -825,7 +707,7 @@ struct DashboardView: View {
             assessed: assessedIpInfo,
             ipAsn: ipAsn,
             isChecking: ipChecking,
-            fetchFailed: ipFetchFailed,
+            fetchFailed: trafficStore.outboundIpProbeFailed,
             fetchIPInfo: fetchIPInfo
         )
         .presentationDetents([.medium, .large])
@@ -1188,7 +1070,9 @@ struct DashboardView: View {
                         PillBadge(text: "类型未知", tint: .gray)
                     }
                 }
-            } else if ipFetchFailed {
+            // v0.2.115: the retry hint is driven by the PROBE
+            // failure now, not the deleted HTTP chain.
+            } else if trafficStore.outboundIpProbeFailed {
                 Text("点击图标重试")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -1216,7 +1100,7 @@ struct DashboardView: View {
                     .font(.system(size: 14))
                     .fontWeight(.semibold)
                     .lineLimit(1)
-            } else if ipInfo == nil && !ipFetchFailed {
+            } else if ipInfo == nil && !trafficStore.outboundIpProbeFailed {
                 SkeletonBar(width: 96, height: 14, animated: true)
             } else {
                 Text("—")
@@ -1242,7 +1126,11 @@ struct DashboardView: View {
                     Spacer().frame(height: 12)
                     HStack(spacing: 12) {
                         CloverBadge(
-                            countryCode: ipInfo?.countryCode,
+                            // v0.2.115: the probe's country is
+                            // authoritative; the cached/quality
+                            // ipInfo stays as the instant-on-launch
+                            // fallback.
+                            countryCode: trafficStore.outboundIpInfo?.countryCode ?? ipInfo?.countryCode,
                             checking: ipChecking,
                             // D-D9: the clover refresh re-probes the
                             // egress IP through the core as well as
@@ -1261,7 +1149,7 @@ struct DashboardView: View {
                             // v0.2.69: the IP slot observes
                             // TrafficStore itself, so the 1 s tick
                             // re-renders only the slot.
-                            StatusIpSlotView(ipInfo: ipInfo, ipFetchFailed: ipFetchFailed)
+                            StatusIpSlotView()
                             Spacer().frame(height: 4)
                             chipsSlot
                         }
@@ -1650,10 +1538,11 @@ struct DashboardView: View {
             // network_takeover.dart `tun.enable`), NOT to the live
             // tunnel state — it stays on across tunnel stops and
             // app restarts, and the status card's play button is
-            // the start/stop control. Flipping it still starts /
-            // stops the tunnel (setVpnEnabled), so it turns the VPN
-            // on/off the first time; start errors land in
-            // proxyStore.startError.
+            // the start/stop control. Flipping it only flips the
+            // persisted setting — setVpnEnabled is setting-only
+            // (MuYu _setVpn literal) and does NOT start/stop the
+            // tunnel; a failed start still lands in
+            // proxyStore.startError via the play button.
             .tint(ConcordTheme.accent)
         }
         .concordCard(padding: 12)
@@ -2541,20 +2430,24 @@ private struct DashboardWarningsPill: View {
 }
 
 /// IP to show in the status card and the IP sheets (audit D10):
-/// the core's own probe.outboundIp result first — it measures
-/// the egress through the selected proxy — ip-api.com only as
-/// fallback for the geo/org enrichment. TrafficStore.probe()
-/// runs when the tunnel connects (see DashboardTrafficEffects).
-/// v0.2.115: the core IP is used whenever present, tunnel up or
-/// down — with the VPN off the in-app core still probes the
-/// egress through the selected outbound, so it IS the outbound
-/// IP then too (MuYu shows it with the tunnel down).
-private func dashboardDisplayIp(coreIp: String?, fallbackQuery: String?) -> String? {
-    if let coreIp = coreIp?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !coreIp.isEmpty {
-        return coreIp
+/// ONLY the core's own probe.outboundIp result — it measures the
+/// egress through the selected proxy. There is no HTTP fallback
+/// anymore (v0.2.115): the direct ip-api.com / ident.me / ipify
+/// chain is deleted, so the card can never show the phone's
+/// direct IP as the egress. TrafficStore.probe() runs when the
+/// tunnel connects (see DashboardTrafficEffects) and refreshes
+/// when the route changes; ip-api.com is only the geo/org
+/// enrichment for the probed IP (fetchIPInfo). The core IP is
+/// used whenever present, tunnel up or down — with the VPN off
+/// the in-app core still probes the egress through the selected
+/// outbound, so it IS the outbound IP then too (MuYu shows it
+/// with the tunnel down).
+private func dashboardDisplayIp(coreIp: String?) -> String? {
+    guard let coreIp = coreIp?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !coreIp.isEmpty else {
+        return nil
     }
-    return fallbackQuery
+    return coreIp
 }
 
 /// The app process's resident size (FlClash reads
@@ -2580,9 +2473,11 @@ private func readAppMemoryBytes() -> UInt64? {
 /// is clear colour, so the 1 s traffic tick re-evaluates almost
 /// nothing. It is placed in the ScrollView's background, so its
 /// .task fires exactly when the dashboard first appears, like
-/// the .task it replaces. The closures it receives only touch
-/// DashboardView's own @State and other stores — never
-/// TrafficStore — so the parent stays unsubscribed.
+/// the .task it replaces. The closures it receives touch
+/// DashboardView's own @State; fetchIPInfo reads
+/// TrafficStore.outboundIp, but only inside Tasks, which does not
+/// subscribe the parent (v0.2.115: the parent's own subscription
+/// comes from its status-card reads — see the header comment).
 private struct DashboardTrafficEffects: View {
     @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var proxyStore: ProxyStore
@@ -2596,7 +2491,6 @@ private struct DashboardTrafficEffects: View {
     @Binding var morphProgress: CGFloat
     @Binding var ipInfo: IPQualityInfo?
     @Binding var ipAsn: String?
-    @Binding var ipFetchFailed: Bool
     @Binding var trafficActions: DashboardTrafficActions
     /// v0.2.101 issue 2: whether a stats sheet is open — the
     /// appear task skips its dnsStore.refresh() while one is, so
@@ -2732,13 +2626,17 @@ private struct DashboardTrafficEffects: View {
                     morphProgress = running ? 1 : 0
                 }
                 // The egress IP changes when the VPN toggles: drop the
-                // stale direct-IP result so the card shows the loading
+                // stale probe result so the card shows the loading
                 // skeletons (FlClash re-probes on start), then re-fetch
                 // so the status card shows the current proxy egress IP.
+                // v0.2.115: clear the probe FIRST — the core probe
+                // re-runs for the new egress (upstream refreshes the
+                // probe when the route changes) and the geo
+                // enrichment follows the fresh probed IP.
                 if running {
+                    trafficStore.clearOutboundIp()
                     ipInfo = nil
                     ipAsn = nil
-                    ipFetchFailed = false
                 }
                 Task { await fetchIPInfo() }
                 // D8/D10: the tunnel flip also refreshes the engine /
@@ -2772,23 +2670,24 @@ private struct DashboardTrafficEffects: View {
 }
 
 /// IP slot (FlClash _ExitRow): a pulsing skeleton while the probe
-/// has not answered, the real IP once it has, "服务失败" (red) if
-/// the probe failed. The only TrafficStore read is outboundIp, so
-/// this slot — not the status card — re-renders when the probe
-/// lands. v0.2.115: shows the IP whenever it is known, tunnel up
-/// or down — the old `!isRunning` branch forced a static grey bar
-/// with the VPN off, but MuYu shows the egress IP with the tunnel
-/// down (the in-app core probes it at launch). The skeleton is
-/// only the transient pre-probe state now.
+/// has not answered, the real IP once it has, "IP 查询失败" (red)
+/// if the probe failed. Reads TrafficStore directly, so this slot
+/// — not the status card — re-renders when the probe lands.
+/// v0.2.115: the IP comes ONLY from the core probe
+/// (dashboardDisplayIp has no fallback anymore) and the red
+/// failure is driven by the PROBE failure
+/// (trafficStore.outboundIpProbeFailed), not the old HTTP chain.
+/// Shows the IP whenever it is known, tunnel up or down — MuYu
+/// shows the egress IP with the tunnel down (the in-app core
+/// probes it at launch). The skeleton is only the transient
+/// pre-probe state now.
 private struct StatusIpSlotView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
     @EnvironmentObject private var settingsStore: SettingsStore
-    let ipInfo: IPQualityInfo?
-    let ipFetchFailed: Bool
 
     var body: some View {
         Group {
-            if let ip = dashboardDisplayIp(coreIp: trafficStore.outboundIp, fallbackQuery: ipInfo?.query) {
+            if let ip = dashboardDisplayIp(coreIp: trafficStore.outboundIp) {
                 // FlClash _IpText: hideIp masks the IP as "*****
                 // (current_outbound.dart _ipMask).
                 // v0.2.68: 24pt bold, like the video (was 18pt semibold).
@@ -2796,7 +2695,7 @@ private struct StatusIpSlotView: View {
                     .font(.system(size: 24, weight: .bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
-            } else if ipFetchFailed {
+            } else if trafficStore.outboundIp == nil && trafficStore.outboundIpProbeFailed {
                 Text("IP 查询失败")
                     .font(.system(size: 24, weight: .bold))
                     .foregroundStyle(.red)
@@ -3167,12 +3066,20 @@ private struct ServicesCardView: View {
         }
     }
 
+    /// v0.2.115: MuYu _vpnSubtitle parity — a failed start
+    /// appends the reason (proxyStore.startError is set only
+    /// when a start attempt fails and cleared on success/stop).
+    /// Kept in sync with DashboardView.tunnelStatusText.
     private var tunnelStatusText: String {
         switch tunnelManager.status {
         case .connected: return "已连接"
         case .connecting: return "连接中"
         case .disconnecting: return "断开中"
-        case .disconnected: return "已断开"
+        case .disconnected:
+            if let startError = proxyStore.startError, !startError.isEmpty {
+                return "已断开: \(startError)"
+            }
+            return "已断开"
         case .reasserting: return "重新协商"
         case .invalid: return "未配置"
         @unknown default: return "未知"
@@ -3435,7 +3342,7 @@ private struct OutboundIPSheetHost: View {
 
     var body: some View {
         OutboundIPSheet(
-            displayIp: dashboardDisplayIp(coreIp: trafficStore.outboundIp, fallbackQuery: ipInfo?.query),
+            displayIp: dashboardDisplayIp(coreIp: trafficStore.outboundIp),
             hideIp: $hideIp,
             assessed: assessed,
             ipAsn: ipAsn,

@@ -92,10 +92,90 @@ struct DayTotals {
     }
 }
 
+// v0.2.115: client-side parsing of the probe.outboundIp raw body,
+// mirroring upstream FlClash lib/common/service_probe.dart
+// (`parseOutboundIp` + `ipInfoSources`) and lib/models/common.dart
+// (`IpInfo {ip, countryCode}`). The core returns the RAW response
+// body (crates/engine/src/probe/outbound_ip.rs) — assigning it
+// straight to outboundIp showed raw JSON/trace text on the status
+// card. Returns nil on unknown URL, empty body, or any parse
+// failure, exactly like upstream returning null.
+struct ProbedIpInfo {
+    let ip: String
+    let countryCode: String
+}
+
+func parseOutboundIp(_ result: ConcordOutboundIp) -> ProbedIpInfo? {
+    let body = result.body.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !body.isEmpty else { return nil }
+
+    func jsonObject(_ text: String) -> [String: Any]? {
+        guard let data = text.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+    /// Trims whitespace; returns nil for a missing, non-string,
+    /// or blank value — both fields must be non-empty.
+    func string(_ value: Any?) -> String? {
+        guard let value = value as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+    func make(ip: String?, countryCode: String?) -> ProbedIpInfo? {
+        guard let ip, let countryCode else { return nil }
+        return ProbedIpInfo(ip: ip, countryCode: countryCode)
+    }
+
+    switch result.url {
+    case "https://www.cloudflare.com/cdn-cgi/trace":
+        // fromCloudflareTrace: line-split key=value; need ip + loc.
+        var fields: [String: String] = [:]
+        for line in body.components(separatedBy: .newlines) {
+            let parts = line.split(separator: "=", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
+            let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
+            fields[key] = value
+        }
+        return make(ip: string(fields["ip"]), countryCode: string(fields["loc"]))
+    case "https://api.ip.sb/geoip":
+        guard let json = jsonObject(body) else { return nil }
+        return make(ip: string(json["ip"]), countryCode: string(json["country_code"]))
+    case "https://ipinfo.io/json":
+        guard let json = jsonObject(body) else { return nil }
+        return make(ip: string(json["ip"]), countryCode: string(json["country"]))
+    case "https://ipwho.is":
+        guard let json = jsonObject(body) else { return nil }
+        return make(ip: string(json["ip"]), countryCode: string(json["country_code"]))
+    case "https://get.geojs.io/v1/ip/geo.json":
+        guard let json = jsonObject(body) else { return nil }
+        return make(ip: string(json["ip"]), countryCode: string(json["country_code"]))
+    case "https://api.country.is":
+        guard let json = jsonObject(body) else { return nil }
+        return make(ip: string(json["ip"]), countryCode: string(json["country"]))
+    case "https://api.ipquery.io/?format=json":
+        guard let json = jsonObject(body),
+              let location = json["location"] as? [String: Any] else { return nil }
+        return make(ip: string(json["ip"]), countryCode: string(location["country_code"]))
+    case "https://ident.me/json":
+        guard let json = jsonObject(body) else { return nil }
+        return make(ip: string(json["ip"]), countryCode: string(json["cc"]))
+    default:
+        return nil
+    }
+}
+
 final class TrafficStore: ObservableObject {
     @Published var current = ConcordTraffic(up: 0, down: 0, totalUp: 0, totalDown: 0)
     @Published var history: [TrafficPoint] = []
     @Published var outboundIp: String?
+    /// v0.2.115: the parsed IP + country code from the egress-IP
+    /// probe (see parseOutboundIp below) — the status card's IP and
+    /// country come from here, mirroring MuYu's probe.outboundIp.
+    @Published var outboundIpInfo: ProbedIpInfo?
+    /// v0.2.115: true when the last egress-IP probe failed (RPC
+    /// error or unparseable body); the status card shows its
+    /// failure state from this instead of guessing from a nil IP.
+    @Published var outboundIpProbeFailed: Bool = false
     @Published var outboundChains: [String] = []
     /// In-flight guard for the egress-IP probe (probe()): the probe
     /// is a 6 s-timeout RPC to the extension core, so overlapping
@@ -1379,6 +1459,16 @@ final class TrafficStore: ObservableObject {
         }
     }
 
+    /// v0.2.115: clears the egress-IP state so the probe re-runs
+    /// for the new route — upstream refreshes the probe when the
+    /// route changes. The Dashboard calls this on tunnel start.
+    @MainActor
+    func clearOutboundIp() {
+        outboundIp = nil
+        outboundIpInfo = nil
+        outboundIpProbeFailed = false
+    }
+
     @MainActor
     func probe() async {
         guard !isProbingOutboundIp else { return }
@@ -1387,13 +1477,29 @@ final class TrafficStore: ObservableObject {
         lastOutboundIpProbeAt = Date()
         do {
             let result = try await probeOutboundIpThroughCore()
-            outboundIp = result.body
-            outboundChains = result.chains
-            if outboundIp != nil {
-                outboundIpProbeAttempts = 0
+            // v0.2.115: the core returns the RAW response body, so
+            // parse it client-side per upstream parseOutboundIp
+            // before anything reaches the status card.
+            guard let parsed = parseOutboundIp(result) else {
+                outboundIpProbeFailed = true
+                // Leave outboundIp / outboundIpInfo untouched (nil)
+                // so the retry loop keeps trying.
+                IPLookupDiagnostics.recordError(
+                    source: "probe.outboundIp",
+                    error: NSError(
+                        domain: "ConcordiOS", code: -1,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "probe.outboundIp: could not parse body from \(result.url)"]))
+                return
             }
+            outboundIp = parsed.ip
+            outboundIpInfo = parsed
+            outboundIpProbeFailed = false
+            outboundChains = result.chains
+            outboundIpProbeAttempts = 0
         } catch {
             lastError = error.localizedDescription
+            outboundIpProbeFailed = true
             IPLookupDiagnostics.recordError(source: "probe.outboundIp", error: error)
         }
     }
@@ -1422,25 +1528,28 @@ final class TrafficStore: ObservableObject {
         return try await AppCore.shared.probeOutboundIp()
     }
 
-    /// Retries the egress-IP probe while the tunnel runs and the IP
-    /// is still unknown. probe() is single-shot — it fires once in
-    /// start() and once when the tunnel connects — and if that one
-    /// attempt lands before the extension core's RPC is ready, the
-    /// IPC throws and outboundIp stays nil forever, so the status
-    /// card shows "IP 查询失败" even though the VPN proxies fine
-    /// (v0.2.93 on-device: the core log proves traffic flows, yet
-    /// outboundIp was empty and ip-api.com also failed). v0.2.94
-    /// throttled the retry to one attempt per 10 s, which still
-    /// left the card red at 7 s uptime on-device (the first probe
-    /// at connect had failed and the retry was not due yet), so
-    /// v0.2.95 retries every 3 s for the first 20 attempts, then
-    /// every 10 s. The in-flight guard in probe() keeps a 6 s
-    /// timeout attempt from overlapping itself. Called from the
-    /// 1 s tick (Dashboard-only work).
+    /// Retries the egress-IP probe while the IP is still unknown,
+    /// regardless of tunnel state (v0.2.115 — MuYu's keepAlive
+    /// probe retries with the tunnel down too, so the status card
+    /// fills at launch; the gate on TunnelManager.isRunning used
+    /// to leave the card red until the VPN started). probe() is
+    /// single-shot — it fires once in start() and once when the
+    /// tunnel connects — and if that one attempt lands before the
+    /// extension core's RPC is ready, the IPC throws and outboundIp
+    /// stays nil forever, so the status card shows "IP 查询失败"
+    /// even though the VPN proxies fine (v0.2.93 on-device: the
+    /// core log proves traffic flows, yet outboundIp was empty and
+    /// ip-api.com also failed). v0.2.94 throttled the retry to one
+    /// attempt per 10 s, which still left the card red at 7 s
+    /// uptime on-device (the first probe at connect had failed and
+    /// the retry was not due yet), so v0.2.95 retries every 3 s
+    /// for the first 20 attempts, then every 10 s. The in-flight
+    /// guard in probe() keeps a 6 s timeout attempt from
+    /// overlapping itself. Called from the 1 s tick (Dashboard-only
+    /// work).
     @MainActor
     private func maybeRetryOutboundIpProbe() {
-        guard TunnelManager.shared.isRunning,
-              outboundIp == nil,
+        guard outboundIp == nil,
               !isProbingOutboundIp else { return }
         let interval: TimeInterval = outboundIpProbeAttempts < 20 ? 3 : 10
         if let last = lastOutboundIpProbeAt,

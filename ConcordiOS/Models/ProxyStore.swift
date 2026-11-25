@@ -2486,19 +2486,14 @@ final class ProxyStore: ObservableObject {
     private var isToggling = false
 
     @MainActor
-    /// Sets the persistent VPN-enabled flag (v0.2.115). Turning it
-    /// ON starts the tunnel when it is down; turning it OFF stops
-    /// the tunnel when it is up — so the switch still turns the VPN
-    /// on/off the first time, but the flag itself never follows the
-    /// tunnel state afterwards. The play button (toggle()) starts
-    /// and stops the tunnel without touching the flag.
+    /// Sets the persistent VPN-enabled flag ONLY (v0.2.115 — MuYu
+    /// `_setVpn`, lib/views/dashboard/widgets/network_takeover.dart:
+    /// 195-198: it only updates the persisted `vpnSetting.enable`
+    /// setting and does NOT start/stop the tunnel; the play button
+    /// `toggle()` is the only start/stop). The flag's didSet
+    /// persists it to UserDefaults.
     func setVpnEnabled(_ enabled: Bool) async {
         vpnEnabled = enabled
-        if enabled {
-            if !isRunning { await toggle() }
-        } else {
-            if isRunning { await toggle() }
-        }
     }
 
     func toggle() async {

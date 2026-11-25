@@ -462,6 +462,9 @@ final class ProfileStore: ObservableObject {
         // v0.2.105: reconstruct profiles orphaned by the Bundle ID
         // change (see migrateOrphanedAppGroupProfilesIfNeeded).
         migrateOrphanedAppGroupProfilesIfNeeded()
+        // v0.2.107: remove the duplicate rows the v0.2.105
+        // migration created (see deduplicateMigratedProfilesIfNeeded).
+        deduplicateMigratedProfilesIfNeeded()
         // The sample profile is sample-mode data: seed it only while
         // the client is in .sample mode, never in .live mode.
         seedSampleIfNeeded()
@@ -494,7 +497,14 @@ final class ProfileStore: ObservableObject {
     /// Group (<AppGroup>/profiles/*.yaml). Without this, Config /
     /// Proxies show "暂无配置" / "暂无代理组" although the user's
     /// subscriptions are sitting on disk. Reconstructs one Profile
-    /// per orphan YAML file when the list is empty.
+    /// per distinct orphan YAML content when the list is empty.
+    /// v0.2.107: deduplicate by YAML content — several App Group
+    /// files can hold the same subscription (same bytes under
+    /// different UUID names), and reconstructing one profile per
+    /// file produced duplicate Config rows (four "导入的配置",
+    /// two "节点选择" in the user's video). Only one profile is
+    /// reconstructed per distinct content, using the file with
+    /// the newest mtime.
     /// Idempotent: only runs when profiles.isEmpty, and it saves
     /// immediately, so a second launch finds a non-empty list.
     /// Never overwrites a non-empty list; never deletes or modifies
@@ -515,7 +525,11 @@ final class ProfileStore: ObservableObject {
             .filter { $0.pathExtension.lowercased() == "yaml" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
         guard !yamlURLs.isEmpty else { return }
-        var reconstructed: [Profile] = []
+        // One candidate per distinct YAML content: several files
+        // can hold the same subscription bytes under different
+        // UUID names. Keep the file with the newest mtime per
+        // content so the kept profile points at the freshest copy.
+        var bestByContent: [Data: (url: URL, mtime: Date)] = [:]
         for url in yamlURLs {
             // Skip files that are not Clash documents at all
             // (empty / truncated / wrong file) — they cannot
@@ -523,20 +537,29 @@ final class ProfileStore: ObservableObject {
             // apply time.
             guard let data = try? Data(contentsOf: url),
                   Self.localSanityCheck(data) == nil,
+                  String(data: data, encoding: .utf8) != nil else { continue }
+            let mtime = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? Date()
+            if let existing = bestByContent[data] {
+                guard mtime > existing.mtime else { continue }
+            }
+            bestByContent[data] = (url: url, mtime: mtime)
+        }
+        var reconstructed: [Profile] = []
+        for candidate in bestByContent.values.sorted(by: { $0.url.lastPathComponent < $1.url.lastPathComponent }) {
+            guard let data = try? Data(contentsOf: candidate.url),
                   let text = String(data: data, encoding: .utf8) else { continue }
-            let base = url.deletingPathExtension().lastPathComponent
+            let base = candidate.url.deletingPathExtension().lastPathComponent
             let id = UUID(uuidString: base) ?? UUID()
             // Defensive duplicate guard (the isEmpty guard above
             // normally makes this unreachable).
             guard !reconstructed.contains(where: { $0.id == id }) else { continue }
             let name = Self.orphanProfileDisplayName(yamlText: text)
-            let mtime = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? Date()
             reconstructed.append(Profile(
                 id: id,
                 name: name,
                 kind: .file,
                 fileName: name,
-                updatedAt: mtime,
+                updatedAt: candidate.mtime,
                 isActive: false,
                 note: "从旧版恢复：订阅链接已丢失，无法自动更新，请在编辑页重新填写订阅链接"
             ))
@@ -552,6 +575,42 @@ final class ProfileStore: ObservableObject {
         }
         profiles = reconstructed
         save()
+    }
+
+    /// v0.2.107 one-time cleanup for the duplicates the v0.2.105
+    /// migration created: it reconstructed one profile per YAML
+    /// file, and several files held the same subscription, so the
+    /// Config page showed four "导入的配置" and two "节点选择".
+    /// Groups profiles that came from the migration (same name,
+    /// kind .file, nil urlString — a real subscription profile
+    /// always has a urlString) and keeps one per group: the active
+    /// one if any, else the newest updatedAt. Never deletes a
+    /// profile with a urlString or a different kind; never deletes
+    /// YAML files. Runs once (flagged in UserDefaults), so
+    /// profiles the user creates later with the same name are
+    /// never merged.
+    private func deduplicateMigratedProfilesIfNeeded() {
+        let flagKey = "ConcordiOS.profiles.migratedDuplicatesCleaned.v1"
+        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
+        UserDefaults.standard.set(true, forKey: flagKey)
+        var keepIDs = Set<UUID>()
+        for (_, group) in Dictionary(grouping: profiles, by: \.name) {
+            let migrated = group.filter { $0.kind == .file && $0.urlString == nil }
+            guard migrated.count > 1 else {
+                keepIDs.formUnion(group.map(\.id))
+                continue
+            }
+            // Prefer the active profile so the user's current
+            // selection never changes identity; otherwise the
+            // newest one.
+            let keeper = migrated.first(where: { $0.isActive })
+                ?? migrated.max(by: { ($0.updatedAt ?? .distantPast) < ($1.updatedAt ?? .distantPast) })
+            if let keeper { keepIDs.insert(keeper.id) }
+            keepIDs.formUnion(group.filter { $0.kind != .file || $0.urlString != nil }.map(\.id))
+        }
+        let before = profiles.count
+        profiles = profiles.filter { keepIDs.contains($0.id) }
+        if profiles.count != before { save() }
     }
 
     /// Derive a display name for a reconstructed profile from its

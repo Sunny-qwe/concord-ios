@@ -99,36 +99,49 @@ struct ContentView: View {
                 // FlClash home.dart: a PageView (300 ms ease-out slide,
                 // pages kept alive) — NOT a TabView, whose switch is an
                 // instant jump with no transition and no shared pill.
-                slidingTabView
-                    .toolbar(.hidden, for: .tabBar)
-                    .tint(themeStore.accentColor)
-                    .safeAreaInset(edge: .bottom) {
-                        VStack(spacing: 6) {
-                            // Environment watermark (FlClash 显示环境水印）:
-                            // a faint version label just above the
-                            // floating bar. The toggle itself lives in
-                            // SettingsStore.showEnvironmentWatermark
-                            // (default true); non-interactive so it
-                            // never blocks taps on the pages below.
-                            if settingsStore.showEnvironmentWatermark {
-                                Text("Lumen v\(appVersion)")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(Color(.label))
-                                    .opacity(0.35)
-                                    .allowsHitTesting(false)
+                // v0.2.108: the bar FLOATS over the page (overlay),
+                // it does not reserve a safeAreaInset strip. The
+                // inset made the bottom a dead zone page content
+                // could never enter, so the bar completely covered
+                // whatever was below it (v0.2.107: the Dashboard's
+                // bottom card hid behind the bar, while MuYu IMG_1281
+                // shows it peeking out below the bar). As an overlay
+                // the pages run full-height underneath and the content
+                // scrolls under the bar and peeks out below it, like
+                // MuYu. The bar's bottom sits safeArea + 4pt above
+                // the screen bottom (the inset used to supply the safe
+                // area); the GeometryReader reads it. Pages already
+                // carry tabBarClearance (95pt) bottom padding, so the
+                // last card still clears the bar at max scroll.
+                GeometryReader { geo in
+                    slidingTabView
+                        .toolbar(.hidden, for: .tabBar)
+                        .tint(themeStore.accentColor)
+                        .overlay(alignment: .bottom) {
+                            VStack(spacing: 6) {
+                                // Environment watermark (FlClash 显示环境水印）:
+                                // a faint version label just above the
+                                // floating bar. The toggle itself lives in
+                                // SettingsStore.showEnvironmentWatermark
+                                // (default true); non-interactive so it
+                                // never blocks taps on the pages below.
+                                if settingsStore.showEnvironmentWatermark {
+                                    Text("Lumen v\(appVersion)")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Color(.label))
+                                        .opacity(0.35)
+                                        .allowsHitTesting(false)
+                                }
+                                floatingTabBar
+                                    .padding(.horizontal, 16)
+                                    // Reference bar bottom sits 34pt above the screen
+                                    // bottom (810pt on an 844pt screen); the overlay
+                                    // no longer supplies the safe area, so it is
+                                    // read from the GeometryReader and added here.
+                                    .padding(.bottom, geo.safeAreaInsets.bottom + 4)
                             }
-                            floatingTabBar
-                                .padding(.horizontal, 16)
-                                // Reference bar bottom sits 34pt above the screen
-                                // bottom (810pt on an 844pt screen); the safe-area
-                                // inset already supplies those 34pt on a home-
-                                // indicator phone, so only 4pt extra padding is
-                                // needed. (Fixed 4pt: there is no safe-area
-                                // environment value in SwiftUI, so the previous
-                                // property wrapper did not compile.)
-                                .padding(.bottom, 4)
                         }
-                    }
+                }
             }
         }
         .preferredColorScheme(themeStore.colorScheme)

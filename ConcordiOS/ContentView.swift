@@ -130,13 +130,27 @@ struct ContentView: View {
                 // geo.safeAreaInsets.bottom became 0 and the
                 // padding came out max(21, 0) = 21, leaving the
                 // bar 13pt too low (v0.2.111 audit: bar bottom
-                // 823, top 761 on an 844pt screen). The reader
-                // now stays safe-area-aware, so it reports the
-                // real 34, and the bottom safe area is ignored
-                // on slidingTabView below instead, so the page
-                // container's frame still reaches the screen
-                // bottom and the padding is exactly upstream's
-                // max(21, safeArea) = 34. The version watermark
+                // 823, top 761 on an 844pt screen). v0.2.111
+                // tried to fix it by keeping the reader
+                // safe-area-aware (real 34) and ignoring the
+                // bottom safe area on slidingTabView instead —
+                // but that assumed the overlay aligns to the
+                // SCREEN bottom. It does not: the overlay
+                // aligns to the GeometryReader's bottom, the
+                // safe-area boundary (810 on an 844pt notched
+                // phone), so the padding max(21, 34) = 34
+                // counted the safe area a second time and the
+                // bar floated 34pt too high (IMG_1298 measured
+                // v0.2.111: bar 714–775pt, bottom margin 68).
+                // v0.2.112: the overlay bottom is already
+                // safeArea above the screen bottom, so the
+                // padding only needs the remainder of
+                // upstream's max(21, safeArea) margin:
+                // max(0, 21 - safeArea). Notched (34): padding
+                // 0, bar bottom 810, margin 34, bar top 748 —
+                // matches the reference (IMG_1299, icons centre
+                // 772). Non-notched (0): padding 21, bar bottom
+                // 823, margin 21. The version watermark
                 // above the bar is gone (v0.2.109, user request):
                 // the version shows only in Tools → About. Pages
                 // carry tabBarClearance (95pt) bottom padding, so
@@ -146,11 +160,14 @@ struct ContentView: View {
                     slidingTabView
                         // v0.2.111: the bottom safe area is ignored
                         // HERE, on the page container — NOT on this
-                        // GeometryReader (see the comment above).
-                        // The container's frame still reaches the
-                        // screen bottom, so the overlay aligns to
-                        // the screen bottom and the padding below
-                        // is the whole margin.
+                        // GeometryReader (see the comment above),
+                        // so the page content runs under the bar.
+                        // NOTE: that does NOT move the overlay —
+                        // it still aligns to this GeometryReader's
+                        // bottom (the safe-area boundary, 810 on a
+                        // notched 844pt screen), so the padding
+                        // below is only the remainder of the
+                        // upstream margin (see below).
                         .ignoresSafeArea(edges: .bottom)
                         .toolbar(.hidden, for: .tabBar)
                         .tint(themeStore.accentColor)
@@ -159,11 +176,16 @@ struct ContentView: View {
                                 .padding(.horizontal, 21)
                                 // Upstream NavigationDock._bottomMarginOf:
                                 // max(_edgeMargin = 21, system bottom
-                                // padding). The reader does not ignore
-                                // the safe area, so geo.safeAreaInsets
-                                // .bottom is the real 34 and this
-                                // padding is max(21, 34) = 34.
-                                .padding(.bottom, max(21, geo.safeAreaInsets.bottom))
+                                // padding), measured from the SCREEN
+                                // bottom. The overlay already sits
+                                // safeAreaInsets.bottom above the
+                                // screen bottom (the reader is
+                                // safe-area-bounded), so this padding
+                                // is only the remainder:
+                                // max(21, safeArea) - safeArea =
+                                // max(0, 21 - safeArea). Notched
+                                // (34): 0, bar bottom 810, margin 34.
+                                .padding(.bottom, max(0, 21 - geo.safeAreaInsets.bottom))
                         }
                 }
             }

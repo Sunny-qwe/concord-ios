@@ -142,7 +142,13 @@ struct LogsView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .concordCard(padding: 12)
+                        // v0.2.111: this card only — radius 20, not the
+                        // global cardRadius 28 (user: 核心警告 card too
+                        // round). Same fill + padding + shadow as
+                        // .concordCard, only the corner radius differs.
+                        .padding(12)
+                        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
+                        .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
                         .padding(.horizontal)
                         .padding(.vertical, 4)
                     }
@@ -292,7 +298,6 @@ struct LogsView: View {
         // never covers it anyway.
         .ignoresSafeArea(.keyboard)
             .background(ConcordTheme.pageBackground)
-            .navigationTitle("日志")
             .navigationBarTitleDisplayMode(.inline)
             // Upstream has no "返回" text: the leading slot holds a
             // back chevron glyph only (scaffold.dart _buildPopButton).
@@ -304,11 +309,6 @@ struct LogsView: View {
                 }
             }
                 if tab == .logs {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Toggle("自动滚动", isOn: $logStore.autoScroll)
-                            .toggleStyle(.switch)
-                            .labelsHidden()
-                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         // Level filter (upstream: the filter lives in
                         // the bar's overflow menu, not a permanent row;

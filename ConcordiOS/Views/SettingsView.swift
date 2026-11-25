@@ -301,10 +301,6 @@ struct SettingsView: View {
                 // hidden (ToolsView gates on openLogs); logging
                 // itself is still collected by LogStore either way.
                 Toggle("日志捕获", isOn: $settingsStore.openLogs)
-                // v0.2.68: 显示环境水印 — ContentView reads
-                // settingsStore.showEnvironmentWatermark for the
-                // watermark overlay (default true).
-                Toggle("显示环境水印", isOn: $settingsStore.showEnvironmentWatermark)
                 Button("从核心读取当前配置") {
                     Task { await settingsStore.refreshFromCore() }
                 }
@@ -557,7 +553,6 @@ struct SettingsView: View {
         }
         .onChange(of: settingsStore.autoCheckUpdate) { _, _ in settingsStore.save() }
         .onChange(of: settingsStore.openLogs) { _, _ in settingsStore.save() }
-        .onChange(of: settingsStore.showEnvironmentWatermark) { _, _ in settingsStore.save() }
         .onAppear { hostsSummaryCache = Self.readHostsSummary() }
     }
 }

@@ -465,6 +465,9 @@ final class ProfileStore: ObservableObject {
         // v0.2.107: remove the duplicate rows the v0.2.105
         // migration created (see deduplicateMigratedProfilesIfNeeded).
         deduplicateMigratedProfilesIfNeeded()
+        // v0.2.108: drop the placeholder rows the v0.2.105
+        // migration created (see removeMigratedPlaceholderProfilesIfNeeded).
+        removeMigratedPlaceholderProfilesIfNeeded()
         // The sample profile is sample-mode data: seed it only while
         // the client is in .sample mode, never in .live mode.
         seedSampleIfNeeded()
@@ -622,6 +625,42 @@ final class ProfileStore: ObservableObject {
         if !profiles.contains(where: { $0.isActive }),
            let newestIndex = profiles.indices.max(by: { (profiles[$0].updatedAt ?? .distantPast) < (profiles[$1].updatedAt ?? .distantPast) }) {
             profiles[newestIndex].isActive = true
+            activated = true
+        }
+        if profiles.count != before || activated { save() }
+    }
+
+    /// Drop the placeholder profiles the v0.2.105 migration
+    /// created: "节点选择" (a YAML proxy-group name used as the
+    /// profile name when every group was generic) and "导入的配置"
+    /// (the fallback when no name could be derived). Upstream
+    /// FlClash has no such profiles — profiles come only from the
+    /// user's own subscriptions/files (database.profilesDao), so
+    /// these two rows are ours-only and the user asked them gone.
+    /// Matches by kind .file + nil urlString + the exact name, never
+    /// by ID (IDs are per-device UUIDs). Never removes a profile
+    /// with a subscription URL, and never deletes YAML files — the
+    /// migration only re-runs on an empty list, and the list still
+    /// holds the URL-backed profiles, so these cannot come back.
+    /// If the removed row was the active one, activate the newest
+    /// remaining profile that HAS a subscription URL, so Proxies
+    /// keeps showing nodes; if one is already active, change
+    /// nothing. Runs once (flagged in UserDefaults).
+    private func removeMigratedPlaceholderProfilesIfNeeded() {
+        let flagKey = "ConcordiOS.profiles.removeMigratedPlaceholders.v1"
+        guard !UserDefaults.standard.bool(forKey: flagKey) else { return }
+        UserDefaults.standard.set(true, forKey: flagKey)
+        let placeholders: Set<String> = ["节点选择", "导入的配置"]
+        let before = profiles.count
+        profiles = profiles.filter {
+            !($0.kind == .file && $0.urlString == nil && placeholders.contains($0.name))
+        }
+        var activated = false
+        if !profiles.contains(where: { $0.isActive }),
+           let newestURLIndex = profiles.indices
+            .filter({ profiles[$0].urlString != nil })
+            .max(by: { (profiles[$0].updatedAt ?? .distantPast) < (profiles[$1].updatedAt ?? .distantPast) }) {
+            profiles[newestURLIndex].isActive = true
             activated = true
         }
         if profiles.count != before || activated { save() }

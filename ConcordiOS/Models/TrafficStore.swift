@@ -1739,7 +1739,7 @@ final class TrafficStore: ObservableObject {
     /// single-shot — it fires once in start() and once when the
     /// tunnel connects — and if that one attempt lands before the
     /// extension core's RPC is ready, the IPC throws and outboundIp
-    /// stays nil forever, so the status card shows "IP 查询失败"
+    /// stays nil forever, so the status card shows "检测失败"
     /// even though the VPN proxies fine (v0.2.93 on-device: the
     /// core log proves traffic flows, yet outboundIp was empty and
     /// ip-api.com also failed). v0.2.94 throttled the retry to one

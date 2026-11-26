@@ -11,7 +11,7 @@ import SwiftUI
 // probe.outboundIp writes one timestamped line here (last 16 kept),
 // and LogStore.fullExportText includes them, so the next on-device
 // failure ships its cause in the log export instead of a bare red
-// "IP 查询失败".
+// "检测失败".
 struct IPLookupDiagnostics {
     private static let storageKey = "concord.ipLookupDiagnostics"
     private static let maxLines = 16
@@ -33,7 +33,7 @@ struct IPLookupDiagnostics {
     }
 
     /// The last recorded line only (v0.2.119 Fix 1): the status
-    /// card shows one secondary line under "IP 查询失败" instead
+    /// card shows one secondary line under "检测失败" instead
     /// of the whole 16-line history (the Diagnostics hub that
     /// would have shown it was deleted in v0.2.118, so the
     /// recorded reason was invisible in the UI).
@@ -1134,14 +1134,13 @@ struct DashboardView: View {
         Group {
             if ipInfo != nil {
                 HStack(spacing: 8) {
-                    // v0.2.68: the first chip is the EXIT IP's type
-                    // (机房/住宅/… from the assessed lookup) when
-                    // known; the device network type is only the
-                    // fallback when there is no lookup yet.
+                    // v0.2.126: upstream _IpChips shows the EXIT IP's
+                    // type (机房/住宅/… from the assessed lookup)
+                    // only when known; when quality is null and not
+                    // loading it shows only the "类型未知" chip —
+                    // never the device network type.
                     if let ipType = assessedIpInfo?.qualityType?.label {
                         PillBadge(text: ipType, tint: .gray)
-                    } else {
-                        PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
                     }
                     if let assessed = assessedIpInfo, let level = assessed.qualityLevel {
                         // D-D3: the quality pill comes from the real
@@ -1166,13 +1165,11 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
             } else if ipEnrichmentFailed {
                 // v0.2.121: the enrichment failed (e.g. a foreign
-                // body from ip-api.com) — settle on the fallback
-                // chips instead of pulsing skeletons forever (the
-                // same fallback the ipInfo branch uses above).
-                HStack(spacing: 8) {
-                    PillBadge(text: DeviceNetwork.currentNetworkType(), tint: .gray)
-                    PillBadge(text: "类型未知", tint: .gray)
-                }
+                // body from ip-api.com) — settle on the single
+                // "类型未知" chip instead of pulsing skeletons
+                // forever (upstream _IpChips: quality null and not
+                // loading shows only that chip).
+                PillBadge(text: "类型未知", tint: .gray)
             } else {
                 HStack(spacing: 6) {
                     SkeletonBar(width: 48, height: 28, animated: true)
@@ -1258,7 +1255,7 @@ struct DashboardView: View {
                     Spacer().frame(height: 16)
                     HStack(spacing: 24) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("运行时间")
+                            Text("运行时长")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                             // v0.2.69: the uptime text is its own leaf
@@ -2848,7 +2845,7 @@ private struct DashboardTrafficEffects: View {
 }
 
 /// IP slot (FlClash _ExitRow): a pulsing skeleton while the probe
-/// has not answered, the real IP once it has, "IP 查询失败" (red)
+/// has not answered, the real IP once it has, "检测失败" (red)
 /// if the probe failed. Reads TrafficStore directly, so this slot
 /// — not the status card — re-renders when the probe lands.
 /// v0.2.115: the IP comes ONLY from the core probe
@@ -2869,7 +2866,7 @@ private struct StatusIpSlotView: View {
     /// v0.2.124: settled failure only (see
     /// outboundIpFailureSettled) — the first probe on entry fails
     /// fast while the core session is still starting, and a bare
-    /// probeFailed here flashed "IP 查询失败" for ~1 s before the
+    /// probeFailed here flashed "检测失败" for ~1 s before the
     /// retry landed the IP. While retries are still running, the
     /// skeleton below shows instead.
     private var isFailed: Bool {
@@ -2888,7 +2885,7 @@ private struct StatusIpSlotView: View {
                     .minimumScaleFactor(0.75)
             } else if isFailed {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("IP 查询失败")
+                    Text("检测失败")
                         .font(.system(size: 24, weight: .bold))
                         .foregroundStyle(.red)
                         .lineLimit(1)

@@ -80,7 +80,7 @@ final class LogStore: ObservableObject {
         }
         // IP lookup diagnostics (v0.2.95 Bug 2): the last few
         // failed IP-source / probe.outboundIp attempts with their
-        // error domain + code, so a red "IP 查询失败" ships its
+        // error domain + code, so a red "检测失败" ships its
         // cause in the export. Always present, even with no record.
         sections.append("== IP 查询诊断 ==\n" + (IPLookupDiagnostics.lastDiagnosticText() ?? "暂无记录（尚未查询，或查询未失败）"))
         // Zombie probe diagnostics (v0.2.101): every probe attempt's

@@ -232,24 +232,73 @@ struct DashboardBottomSheet<Content: View, Actions: View>: View {
     let singleAction: Bool
     let actions: Actions
     let content: Content
+    /// v0.2.124: explicit close for sheets rendered as a custom
+    /// overlay (no system presentation, so @Environment(\.dismiss)
+    /// is a no-op there). Nil keeps the old dismiss() path for
+    /// every system-sheet call site.
+    let onClose: (() -> Void)?
+    /// v0.2.124: drag callbacks for the overlay sheets (drag the
+    /// header to grow / dismiss, mirroring DnsSheetOverlay). Nil
+    /// means no gesture is attached at all — system sheets are
+    /// untouched. The gesture lives on the header only (never on
+    /// the scrollable content — v0.2.114: a gesture on the
+    /// container captures vertical drags and the list never
+    /// scrolls). Velocity is 0: DragGesture.Value exposes no
+    /// public velocity; the overlay relies on the translation
+    /// branches, same as DnsQueriesView's header.
+    let onDragChanged: ((CGFloat) -> Void)?
+    let onDragEnded: ((CGFloat, CGFloat) -> Void)?
 
     @Environment(\.dismiss) private var dismiss
 
-    init(title: String, singleAction: Bool = false, @ViewBuilder actions: () -> Actions, @ViewBuilder content: () -> Content) {
+    init(title: String, singleAction: Bool = false, onClose: (() -> Void)? = nil, onDragChanged: ((CGFloat) -> Void)? = nil, onDragEnded: ((CGFloat, CGFloat) -> Void)? = nil, @ViewBuilder actions: () -> Actions, @ViewBuilder content: () -> Content) {
         self.title = title
         self.singleAction = singleAction
         self.actions = actions()
         self.content = content()
+        self.onClose = onClose
+        self.onDragChanged = onDragChanged
+        self.onDragEnded = onDragEnded
     }
 
-    init(title: String, @ViewBuilder content: () -> Content) where Actions == EmptyView {
+    init(title: String, onClose: (() -> Void)? = nil, onDragChanged: ((CGFloat) -> Void)? = nil, onDragEnded: ((CGFloat, CGFloat) -> Void)? = nil, @ViewBuilder content: () -> Content) where Actions == EmptyView {
         self.title = title
         self.singleAction = false
         self.actions = EmptyView()
         self.content = content()
+        self.onClose = onClose
+        self.onDragChanged = onDragChanged
+        self.onDragEnded = onDragEnded
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            header
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
+
+    /// Handle + title row. The drag gesture (overlay sheets only)
+    /// attaches here; a tap (<10pt movement) still reaches the ✕
+    /// / action buttons because the gesture's minimumDistance is
+    /// 10pt.
+    private var header: some View {
+        Group {
+            if onDragChanged != nil {
+                headerContent
+                    .gesture(
+                        DragGesture(minimumDistance: 10)
+                            .onChanged { onDragChanged?($0.translation.height) }
+                            .onEnded { onDragEnded?($0.translation.height, 0) }
+                    )
+            } else {
+                headerContent
+            }
+        }
+    }
+
+    private var headerContent: some View {
         VStack(spacing: 0) {
             Capsule()
                 .fill(Color(.systemGray3))
@@ -260,7 +309,7 @@ struct DashboardBottomSheet<Content: View, Actions: View>: View {
                     .font(.headline)
                     .lineLimit(1)
                 HStack {
-                    Button { dismiss() } label: {
+                    Button { if let onClose { onClose() } else { dismiss() } } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(Color(.label))
@@ -282,8 +331,6 @@ struct DashboardBottomSheet<Content: View, Actions: View>: View {
             .padding(.horizontal, 16)
             .padding(.top, 10)
             .padding(.bottom, 6)
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
     }
 }
@@ -477,17 +524,61 @@ struct ServiceStatusSheet: View {
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var client: ConcordClient
 
+    /// v0.2.124: explicit close + header-drag callbacks for the
+    /// custom-overlay presentation (ContentView root — the system
+    /// .sheet path froze, see the overlay note). Nil = the old
+    /// system-sheet presentation (dismiss() + no drag gesture).
+    let onClose: (() -> Void)? = nil
+    let onDragChanged: ((CGFloat) -> Void)? = nil
+    let onDragEnded: ((CGFloat, CGFloat) -> Void)? = nil
+
     @State private var nodeIPs: [String: String] = [:]
     @State private var nodeIPPending: Set<String> = []
     @State private var showManage = false
 
+    /// v0.2.124 (services=0): the proxy a services probe runs
+    /// through. Every probe call site used to gate on
+    /// selectedOutbound != nil, and this user never picked a node
+    /// (出站=无), so no probe ever ran and services stayed empty
+    /// forever — the card's "?" pills and the empty sheet. DIRECT
+    /// is the core's own default probe proxy (upstream
+    /// probe/testing.rs: None => "DIRECT"), i.e. the route the
+    /// user's traffic actually takes with nothing selected. Once
+    /// the user picks a node, ServiceProbeStore.outboundChanged
+    /// re-probes through it, replacing these results.
+    private var probeProxy: String {
+        proxyStore.selectedOutbound ?? "DIRECT"
+    }
+
     private var canProbe: Bool {
-        proxyStore.selectedOutbound != nil && !trafficStore.isProbingServices
+        !trafficStore.isProbingServices
+    }
+
+    /// v0.2.124 diagnostic: body-evaluation counter. If the
+    /// overlay still freezes, the ring buffer settles whether the
+    /// SwiftUI body is re-evaluating in a loop (count explodes to
+    /// 1024 within a second) or the body is quiet (count stays
+    /// ~1-3 while the main thread spins, so the spin is in UIKit
+    /// layout, not the body). A static counter — NOT @State /
+    /// @Published — so counting itself can never trigger a
+    /// re-render; logged only at powers of two, capped at 1024.
+    private static var bodyEvaluations = 0
+
+    private static func noteBodyEvaluation() {
+        bodyEvaluations += 1
+        let n = bodyEvaluations
+        if n <= 1024, n & (n - 1) == 0 {
+            ServiceSheetDiagnostics.record("ServiceStatusSheet body 已评估 \(n) 次")
+        }
     }
 
     var body: some View {
-        DashboardBottomSheet(
+        Self.noteBodyEvaluation()
+        return DashboardBottomSheet(
             title: "服务状态",
+            onClose: onClose,
+            onDragChanged: onDragChanged,
+            onDragEnded: onDragEnded,
             actions: {
                 SheetActionsPill {
                     SheetActionButton(systemImage: "bolt.fill", label: "全部检测", disabled: !canProbe) {
@@ -536,12 +627,15 @@ struct ServiceStatusSheet: View {
             }
         }
         // v0.2.123 diagnostic (服务状态 freeze 2026-11-26 08:08):
-        // phase 3 — the sheet actually appeared. If the next
-        // freeze shows the tap + state lines but not this one,
-        // the main thread died during system .sheet presentation
-        // itself; if this line is present, presentation finished
-        // and the freeze is inside the sheet (probeNodeIPs lines
-        // below say where). Logging only.
+        // phase 3 — the sheet content actually appeared. On 124
+        // the sheet is a custom overlay (no system .sheet), so
+        // this line now means the overlay mounted and its body
+        // evaluated; if a freeze still shows the tap + target
+        // lines but not this one, the main thread died mounting
+        // the overlay; if this line is present, the freeze is
+        // inside the sheet (probeNodeIPs lines below say where,
+        // and the body-evaluation counter says whether the body
+        // itself is looping). Logging only.
         .onAppear { ServiceSheetDiagnostics.record("服务状态 sheet 已出现") }
         .task { await probeNodeIPs(source: "打开时") }
         .sheet(isPresented: $showManage) {
@@ -649,14 +743,12 @@ struct ServiceStatusSheet: View {
     }
 
     private func recheckAll() async {
-        guard let proxy = proxyStore.selectedOutbound else { return }
-        await trafficStore.serviceProbeStore.probeAll(proxy: proxy, names: trafficStore.orderedServiceNames)
+        await trafficStore.serviceProbeStore.probeAll(proxy: probeProxy, names: trafficStore.orderedServiceNames)
         await probeNodeIPs(source: "全部检测")
     }
 
     private func recheckOne(_ service: ConcordServiceItem) async {
-        guard let proxy = proxyStore.selectedOutbound else { return }
-        await trafficStore.probeService(proxy: proxy, name: service.name)
+        await trafficStore.probeService(proxy: probeProxy, name: service.name)
         // v0.2.86 item 16: feed the single-service result through
         // the confirm/backoff machine instead of showing a first
         // failure instantly.

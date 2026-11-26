@@ -219,8 +219,6 @@ struct DashboardView: View {
     @State private var showTrafficDetail = false
     /// Outbound-IP sheet (status card, MuYu key_3).
     @State private var showOutboundIPSheet = false
-    /// Service-status sheet (services card, MuYu key_7).
-    @State private var showServiceSheet = false
     /// Rule-providers sheet (config card, MuYu key_25).
     @State private var showProvidersSheet = false
     /// Strategy-groups sheet (groups card, v0.2.64): upstream
@@ -693,7 +691,6 @@ struct DashboardView: View {
         .sheet(isPresented: $showMemoryDetail) { memoryDetailSheet }
         .sheet(isPresented: $showTrafficDetail) { trafficDetailSheet }
         .sheet(isPresented: $showOutboundIPSheet) { outboundIPSheet }
-        .sheet(isPresented: $showServiceSheet) { serviceStatusSheet }
         .sheet(isPresented: $showProvidersSheet) { providersSheetContent }
         .sheet(isPresented: $showGroupsSheet) { groupsSheetContent }
         .sheet(isPresented: $showServiceManageSheet) { serviceManageSheet }
@@ -804,23 +801,13 @@ struct DashboardView: View {
             assessed: assessedIpInfo,
             ipAsn: ipAsn,
             isChecking: ipChecking,
-            fetchFailed: trafficStore.outboundIpProbeFailed,
+            fetchFailed: trafficStore.outboundIpFailureSettled,
             fetchIPInfo: fetchIPInfo
         )
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.hidden)
         .presentationBackground(ConcordTheme.pageBackground)
         .presentationCornerRadius(28)
-    }
-
-    /// v0.2.56: the services card opens the 服务状态 sheet
-    /// (MuYu key_7).
-    private var serviceStatusSheet: some View {
-        ServiceStatusSheet()
-            .presentationDetents([.fraction(0.5625), .fraction(0.9)])
-            .presentationDragIndicator(.hidden)
-            .presentationBackground(ConcordTheme.pageBackground)
-            .presentationCornerRadius(28)
     }
 
     /// v0.2.56: the config card opens the rule-providers
@@ -1169,7 +1156,11 @@ struct DashboardView: View {
                 }
             // v0.2.115: the retry hint is driven by the PROBE
             // failure now, not the deleted HTTP chain.
-            } else if trafficStore.outboundIpProbeFailed {
+            // v0.2.124: settled failure only (see
+            // outboundIpFailureSettled) — while the fast retries
+            // are still running, the chips below show the probing
+            // skeletons instead of this hint.
+            } else if trafficStore.outboundIpFailureSettled {
                 Text("点击图标重试")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -1206,7 +1197,7 @@ struct DashboardView: View {
                     .font(.system(size: 14))
                     .fontWeight(.semibold)
                     .lineLimit(1)
-            } else if ipInfo == nil && !trafficStore.outboundIpProbeFailed && !ipEnrichmentFailed {
+            } else if ipInfo == nil && !trafficStore.outboundIpFailureSettled && !ipEnrichmentFailed {
                 SkeletonBar(width: 96, height: 14, animated: true)
             } else {
                 Text("—")
@@ -1670,20 +1661,19 @@ struct DashboardView: View {
         ServicesCardView(
             expanded: $servicesExpanded,
             onOpenServiceSheet: {
-                // v0.2.123 diagnostic (服务状态 freeze 2026-11-26
-                // 08:08, main-thread CPU 100%): the tap is the one
-                // action the watchdog never recorded, so the stall
-                // line blamed the earlier DNS tap. Note it first —
-                // the next stall line will then read
-                // "service sheet tap" — then record the tap phase
-                // (services count settles whether probeNodeIPs
-                // could even run: it returns immediately when
-                // services is empty) and the sheet-state phase.
-                // Logging only; the sheet opens exactly as before.
+                // v0.2.124: the 服务状态 sheet is now a custom
+                // overlay at the ContentView root (statsDestination
+                // .services), like .dns / .live / .recent since
+                // v0.2.111 / v0.2.113 — the system .sheet path
+                // froze on 123 (main-thread CPU 100% after the
+                // sheet appeared, probe skipped). The tap
+                // diagnostic stays: it records the tap phase and
+                // the overlay-target phase for the next stall line.
                 MainThreadWatchdog.noteAction("service sheet tap")
                 ServiceSheetDiagnostics.record("点按服务状态 (services=\(trafficStore.services.count) 个, 出站=\(proxyStore.selectedOutbound ?? "无"), VPN=\(tunnelManager.isRunning ? "开" : "关"))")
-                showServiceSheet = true
-                ServiceSheetDiagnostics.record("服务状态 sheet 状态已置 true")
+                MainThreadWatchdog.noteAction("statsDestination set to .services")
+                statsDestination = .services
+                ServiceSheetDiagnostics.record("服务状态 overlay 目标已置 .services")
             },
             onManageServices: { showServiceManageSheet = true }
         )
@@ -2099,7 +2089,7 @@ struct DashboardView: View {
 /// v0.2.111: internal, not private — ContentView owns the state
 /// and presents the .dns destination as a root overlay.
 enum StatsDestination: String, Identifiable {
-    case live, recent, dns
+    case live, recent, dns, services
 
     var id: String { rawValue }
 }
@@ -2711,9 +2701,15 @@ private struct DashboardTrafficEffects: View {
                 // through the in-app core when the tunnel is down
                 // (TrafficStore.probeServices), so no gate is needed
                 // here.
-                if trafficStore.services.isEmpty,
-                   let proxy = proxyStore.selectedOutbound {
-                    await trafficStore.serviceProbeStore.probeAll(proxy: proxy)
+                // v0.2.124 (services=0): the probe used to gate on
+                // selectedOutbound != nil, and this user never
+                // picked a node (出站=无), so it never ran and
+                // services stayed empty forever. DIRECT is the
+                // core's own default probe proxy (upstream
+                // probe/testing.rs: None => "DIRECT") — the route
+                // the traffic actually takes with nothing selected.
+                if trafficStore.services.isEmpty {
+                    await trafficStore.serviceProbeStore.probeAll(proxy: proxyStore.selectedOutbound ?? "DIRECT")
                 }
             }
             // v0.2.121: keep the 最近请求 stat live — ConnectionStore
@@ -2789,9 +2785,11 @@ private struct DashboardTrafficEffects: View {
                         // tunnel-probe values; re-probe through the
                         // in-app core so the card stays live with
                         // the VPN off, like MuYu.
-                        if let proxy = proxyStore.selectedOutbound {
-                            await trafficStore.serviceProbeStore.probeAll(proxy: proxy)
-                        }
+                        // v0.2.124: DIRECT fallback (see the
+                        // appear auto-check above) — with no node
+                        // selected the probe would otherwise never
+                        // run and services would stay empty.
+                        await trafficStore.serviceProbeStore.probeAll(proxy: proxyStore.selectedOutbound ?? "DIRECT")
                     }
                 }
                 // D-M7: hold the service/IP-probe results through the
@@ -2868,8 +2866,14 @@ private struct StatusIpSlotView: View {
     /// v0.2.119 (Fix 1): the failure state grows to fit the
     /// one-line recorded reason under the red error; the
     /// success / loading states keep the 30 pt slot.
+    /// v0.2.124: settled failure only (see
+    /// outboundIpFailureSettled) — the first probe on entry fails
+    /// fast while the core session is still starting, and a bare
+    /// probeFailed here flashed "IP 查询失败" for ~1 s before the
+    /// retry landed the IP. While retries are still running, the
+    /// skeleton below shows instead.
     private var isFailed: Bool {
-        trafficStore.outboundIp == nil && trafficStore.outboundIpProbeFailed
+        trafficStore.outboundIp == nil && trafficStore.outboundIpFailureSettled
     }
 
     var body: some View {

@@ -176,6 +176,19 @@ final class TrafficStore: ObservableObject {
     /// error or unparseable body); the status card shows its
     /// failure state from this instead of guessing from a nil IP.
     @Published var outboundIpProbeFailed: Bool = false
+    /// v0.2.124 (IP "查询失败" flicker): the failure the status
+    /// card / IP sheet actually show. The first probe on app
+    /// entry fails fast while the in-app core session is still
+    /// starting ("核心会话已关闭"), then a retry succeeds ~1 s
+    /// later — a bare `outboundIpProbeFailed` flashes red before
+    /// the IP lands. While a probe is in flight, or the fast 3 s
+    /// retry phase (first 20 attempts, maybeRetryOutboundIpProbe)
+    /// is still running, the card shows the probing skeleton
+    /// instead; only once the fast retries are over does the
+    /// failure settle and show.
+    var outboundIpFailureSettled: Bool {
+        outboundIpProbeFailed && !isProbingOutboundIp && outboundIpProbeAttempts >= 20
+    }
     @Published var outboundChains: [String] = []
     /// In-flight guard for the egress-IP probe (probe()): the probe
     /// is a 6 s-timeout RPC to the extension core, so overlapping
@@ -1499,6 +1512,12 @@ final class TrafficStore: ObservableObject {
         outboundIpInfo = nil
         outboundIpProbeFailed = false
         consecutiveExtensionProbeFailures = 0
+        // v0.2.124: a fresh route gets a fresh fast-retry window
+        // before the failure settles and shows (see
+        // outboundIpFailureSettled) — otherwise a stale attempt
+        // count from the old route would flash the failure on the
+        // first tunnel-start probe miss.
+        outboundIpProbeAttempts = 0
     }
 
     @MainActor

@@ -394,9 +394,18 @@ struct ContentView: View {
         // CONFIRMED fixed on-device (user 2026-11-25: "DNS查询现在
         // 不卡死了"); .live / .recent are not proven until they
         // hold on-device.
+        // v0.2.124 (服务状态 freeze): the services card joins
+        // them. The 123 diagnostic proved the sheet appeared and
+        // the probe was skipped, and a static trace proves the
+        // SwiftUI body cannot loop (it writes no state), so the
+        // spin is in the UIKit sheet layout layer — the same fix
+        // that already cured the identical DNS / .live / .recent
+        // freezes. ServiceStatusSheet is unchanged inside.
         .overlay {
             if statsDestination == .dns {
                 DnsSheetOverlay(onDismiss: { statsDestination = nil })
+            } else if statsDestination == .services {
+                ServiceStatusSheetOverlay(onDismiss: { statsDestination = nil })
             } else if let destination = statsDestination,
                       destination == .live || destination == .recent {
                 ConnectionsSheetOverlay(
@@ -947,6 +956,124 @@ private struct ConnectionsSheetOverlay: View {
             // velocity) and relies on the translation branch,
             // the UIKit list bridge passes the real release
             // velocity.
+            withAnimation(.easeOut(duration: 0.25)) {
+                heightFraction = maxFraction
+                dragOffset = 0
+            }
+        } else {
+            // Snap to the nearest detent.
+            withAnimation(.easeOut(duration: 0.25)) {
+                heightFraction = heightFraction > (minFraction + maxFraction) / 2 ? maxFraction : minFraction
+                dragOffset = 0
+            }
+        }
+    }
+}
+
+/// v0.2.124 (服务状态 freeze): sibling of DnsSheetOverlay /
+/// ConnectionsSheetOverlay for the services card. The system
+/// .sheet presentation froze on 123 — the 123 diagnostic proved
+/// the sheet appeared and the probe was skipped, and a static
+/// trace proves the SwiftUI body cannot loop (it writes no
+/// state; .onAppear writes only UserDefaults; .task returns
+/// before any @State write when services is empty), so the spin
+/// is in the UIKit sheet layout layer (UISheetPresentationController
+/// + fractional detents), which this bypasses — the same fix that
+/// already cured the identical DNS / .live / .recent freezes
+/// (v0.2.111 / v0.2.113, DNS confirmed on-device, .live / .recent
+/// holding). Same content (ServiceStatusSheet), same 28pt corners,
+/// same detents (0.5625 / 0.9), same dim, drag-down-to-dismiss,
+/// tap-dim-to-dismiss, ✕ dismiss. No keyboard handling: the sheet
+/// has no TextField (the nested manage sheet is a separate system
+/// sheet, like the DNS entry detail).
+private struct ServiceStatusSheetOverlay: View {
+    let onDismiss: () -> Void
+
+    /// Current detent, as a fraction of screen height.
+    @State private var heightFraction: CGFloat = 0.5625
+    /// Live drag offset (downward drags slide the sheet down).
+    @State private var dragOffset: CGFloat = 0
+    /// Detent the drag started from; captured on the first
+    /// onChanged so upward drags grow from the right base.
+    @State private var dragStartFraction: CGFloat = 0.5625
+    @State private var dragging = false
+
+    private let minFraction: CGFloat = 0.5625
+    private let maxFraction: CGFloat = 0.9
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .bottom) {
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+                    .onTapGesture(perform: onDismiss)
+                    .transition(.opacity)
+                VStack(spacing: 0) {
+                    ServiceStatusSheet(
+                        onClose: onDismiss,
+                        onDragChanged: { sheetDragChanged($0, screenHeight: geo.size.height) },
+                        onDragEnded: { sheetDragEnded($0, velocity: $1) }
+                    )
+                    // Bottom strip: the home-indicator safe area —
+                    // the sheet's background extends to the screen
+                    // bottom, like the system sheet.
+                    Color.clear
+                        .frame(height: geo.safeAreaInsets.bottom)
+                }
+                .frame(width: geo.size.width, height: geo.size.height * heightFraction)
+                .background(ConcordTheme.pageBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 28))
+                .offset(y: dragOffset)
+                .transition(.move(edge: .bottom))
+            }
+            .ignoresSafeArea()
+        }
+    }
+
+    /// Sheet-drag handlers (same rules as DnsSheetOverlay /
+    /// ConnectionsSheetOverlay): driven by the drag gesture on
+    /// the sheet's header (via DashboardBottomSheet's callbacks)
+    /// — NOT by a gesture on this container. Drag up grows toward
+    /// 0.9, drag down follows the finger; on release a far drag
+    /// (>140pt) dismisses, a short drag down from the tall detent
+    /// steps back to 0.5625, a clear upward drag (net translation
+    /// <= -20pt) or an upward fling (release velocity <= -200
+    /// pt/s) settles at 0.9, otherwise it snaps to the nearest
+    /// detent. The header passes velocity 0 (DragGesture.Value
+    /// exposes no public velocity) and relies on the translation
+    /// branches.
+    private func sheetDragChanged(_ translation: CGFloat, screenHeight: CGFloat) {
+        if !dragging {
+            dragging = true
+            dragStartFraction = heightFraction
+        }
+        if translation < 0 {
+            // Drag up: grow toward the 0.9 detent.
+            dragOffset = 0
+            heightFraction = min(maxFraction, max(minFraction, dragStartFraction - translation / screenHeight))
+        } else {
+            // Drag down: follow the finger; the detent
+            // only changes on release.
+            dragOffset = translation
+        }
+    }
+
+    private func sheetDragEnded(_ translation: CGFloat, velocity: CGFloat = 0) {
+        dragging = false
+        if translation > 140 {
+            // Dragged far down: dismiss (the overlay
+            // removal transition continues the slide).
+            onDismiss()
+        } else if heightFraction >= maxFraction - 0.01, translation > 40 {
+            // At the tall detent, a short drag down steps
+            // back to the short detent, not a dismiss.
+            withAnimation(.easeOut(duration: 0.25)) {
+                heightFraction = minFraction
+                dragOffset = 0
+            }
+        } else if translation <= -20 || velocity <= -200 {
+            // A clear upward drag — or an upward fling,
+            // even a short one — settles at 0.9.
             withAnimation(.easeOut(duration: 0.25)) {
                 heightFraction = maxFraction
                 dragOffset = 0

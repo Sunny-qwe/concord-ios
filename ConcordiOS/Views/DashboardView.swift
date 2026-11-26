@@ -8,13 +8,13 @@ import SwiftUI
 // TCP — most likely the app's DNS resolution — but every source
 // swallowed its error (`catch { return false }`). These lines are
 // the record of that: each failed source and each failed
-// probe.outboundIp writes one timestamped line here (last 8 kept),
+// probe.outboundIp writes one timestamped line here (last 16 kept),
 // and LogStore.fullExportText includes them, so the next on-device
 // failure ships its cause in the log export instead of a bare red
 // "IP 查询失败".
 struct IPLookupDiagnostics {
     private static let storageKey = "concord.ipLookupDiagnostics"
-    private static let maxLines = 8
+    private static let maxLines = 16
 
     static func record(_ line: String) {
         var lines = UserDefaults.standard.string(forKey: storageKey)
@@ -34,7 +34,7 @@ struct IPLookupDiagnostics {
 
     /// The last recorded line only (v0.2.119 Fix 1): the status
     /// card shows one secondary line under "IP 查询失败" instead
-    /// of the whole 8-line history (the Diagnostics hub that
+    /// of the whole 16-line history (the Diagnostics hub that
     /// would have shown it was deleted in v0.2.118, so the
     /// recorded reason was invisible in the UI).
     static func lastDiagnosticLine() -> String? {

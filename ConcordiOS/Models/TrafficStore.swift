@@ -172,6 +172,16 @@ final class TrafficStore: ObservableObject {
     /// probe (see parseOutboundIp below) — the status card's IP and
     /// country come from here, mirroring MuYu's probe.outboundIp.
     @Published var outboundIpInfo: ProbedIpInfo?
+    /// v0.2.125 (Part B): true when the displayed IP is the
+    /// last-known value restored from UserDefaults, not a fresh
+    /// probe result — upstream keepValue: a cold start shows the
+    /// cached IP instantly while the retry loop re-probes in the
+    /// background, instead of sitting on a skeleton.
+    @Published var outboundIpIsStale = false
+    /// v0.2.125 (Part B): the persisted last-known egress IP +
+    /// country code (restored in init, written on probe() success).
+    private static let lastKnownIpKey = "ConcordiOS.lastKnownOutboundIp.v1"
+    private static let lastKnownIpCountryKey = "ConcordiOS.lastKnownOutboundIpCountry.v1"
     /// v0.2.115: true when the last egress-IP probe failed (RPC
     /// error or unparseable body); the status card shows its
     /// failure state from this instead of guessing from a nil IP.
@@ -1303,6 +1313,16 @@ final class TrafficStore: ObservableObject {
     init(client: ConcordClient = ConcordClient()) {
         self.client = client
         loadDailyHistory()
+        // v0.2.125 (Part B): restore the last-known egress IP so
+        // a cold start shows it instantly (upstream keepValue)
+        // while the retry loop re-probes in the background.
+        if let ip = UserDefaults.standard.string(forKey: Self.lastKnownIpKey),
+           let country = UserDefaults.standard.string(forKey: Self.lastKnownIpCountryKey),
+           !ip.isEmpty, !country.isEmpty {
+            outboundIp = ip
+            outboundIpInfo = ProbedIpInfo(ip: ip, countryCode: country)
+            outboundIpIsStale = true
+        }
         backgroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
             object: nil,
@@ -1506,10 +1526,16 @@ final class TrafficStore: ObservableObject {
     /// v0.2.115: clears the egress-IP state so the probe re-runs
     /// for the new route — upstream refreshes the probe when the
     /// route changes. The Dashboard calls this on tunnel start.
+    /// v0.2.125: the displayed IP itself is KEPT (upstream
+    /// keepValue) and marked stale — only the failure flag and
+    /// counters reset, so the card keeps showing the last-known
+    /// IP while the re-probe runs.
     @MainActor
     func clearOutboundIp() {
-        outboundIp = nil
-        outboundIpInfo = nil
+        // v0.2.125 (Part B): keep the displayed IP (upstream
+        // keepValue) — mark it stale so the retry loop re-probes
+        // in the background instead of flashing a skeleton.
+        outboundIpIsStale = outboundIp != nil
         outboundIpProbeFailed = false
         consecutiveExtensionProbeFailures = 0
         // v0.2.124: a fresh route gets a fresh fast-retry window
@@ -1571,7 +1597,15 @@ final class TrafficStore: ObservableObject {
             outboundIp = parsed.ip
             outboundIpInfo = parsed
             outboundIpProbeFailed = false
-            outboundChains = result.chains
+            // v0.2.125 (Part B): persist the fresh IP so the next
+            // cold start shows it instantly (upstream keepValue).
+            UserDefaults.standard.set(parsed.ip, forKey: Self.lastKnownIpKey)
+            UserDefaults.standard.set(parsed.countryCode, forKey: Self.lastKnownIpCountryKey)
+            outboundIpIsStale = false
+            // v0.2.125 (Part A): the local-proxy fetch returns
+            // chains: [] — only overwrite when the core actually
+            // reported chains, so the value doesn't flap.
+            if !result.chains.isEmpty { outboundChains = result.chains }
             outboundIpProbeAttempts = 0
         } catch {
             if usedExtensionCore { consecutiveExtensionProbeFailures += 1 }
@@ -1603,6 +1637,56 @@ final class TrafficStore: ObservableObject {
         }
     }
 
+    /// v0.2.125 (Part A): the egress-IP lookup done app-side
+    /// through the core's local mixed proxy (127.0.0.1:17890) —
+    /// the extension core listens there while the VPN is up (and
+    /// the in-app core on the same fixed ports when it is off;
+    /// the two never run simultaneously). This routes around the
+    /// dead app→extension RPC channel (log-confirmed: every
+    /// sendProviderMessage returns nil while connected) with the
+    /// same egress lookup by another transport: race the first 3
+    /// ip-info sources, 5 s each, return the first that parses.
+    /// The 5 s per-source timeout keeps a cold proxy from
+    /// stalling the probe longer than the RPC path's 6 s.
+    private func probeOutboundIpViaLocalProxy() async throws -> ConcordOutboundIp {
+        let proxyConfig: [AnyHashable: Any] = [
+            "HTTPEnable": 1, "HTTPProxy": "127.0.0.1", "HTTPPort": 17890,
+            "HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 17890,
+        ]
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = proxyConfig
+        config.timeoutIntervalForRequest = 5
+        config.timeoutIntervalForResource = 5
+        let session = URLSession(configuration: config)
+        let startedAt = Date()
+        let winner = await withTaskGroup(of: ConcordOutboundIp?.self) { group in
+            for urlString in concordOutboundIpUrls.prefix(3) {
+                group.addTask {
+                    guard let url = URL(string: urlString) else { return nil }
+                    guard let (data, response) = try? await session.data(for: URLRequest(url: url, timeoutInterval: 5)),
+                          (response as? HTTPURLResponse)?.statusCode == 200,
+                          let body = String(data: data, encoding: .utf8), !body.isEmpty else { return nil }
+                    let candidate = ConcordOutboundIp(url: urlString, body: body,
+                        delay: Int64(Date().timeIntervalSince(startedAt) * 1000),
+                        chains: [], error: nil, epoch: 0, version: 0)
+                    return parseOutboundIp(candidate) == nil ? nil : candidate
+                }
+            }
+            for await candidate in group {
+                if let candidate {
+                    group.cancelAll()
+                    return candidate
+                }
+            }
+            return nil
+        }
+        guard let winner else {
+            throw NSError(domain: "ConcordiOS", code: -2, userInfo: [NSLocalizedDescriptionKey: "local-proxy: no ip-info source answered via 127.0.0.1:17890"])
+        }
+        IPLookupDiagnostics.record("local-proxy: \(winner.url) ok (\(winner.delay) ms)")
+        return winner
+    }
+
     /// Asks the tunnel core for the exit IP when it is up, or the
     /// in-app core (booted on demand) when the VPN is off (v0.2.115
     /// — MuYu probes the outbound IP at launch through the in-app
@@ -1614,6 +1698,20 @@ final class TrafficStore: ObservableObject {
     /// is used instead, not reported as a failure.
     private func probeOutboundIpThroughCore() async throws -> ConcordOutboundIp {
         if client.mode == .sample || TunnelManager.shared.isRunning {
+            // v0.2.125 (Part A): the app→extension RPC channel is
+            // dead while the tunnel is connected (log-confirmed:
+            // probe.outboundIp 7x TunnelError code 4 + the zombie
+            // probe's config.general also code 4, status=connected)
+            // — ask the core's local proxy first and keep RPC only
+            // as the fallback. Sample mode has no core on 17890,
+            // so it goes straight to RPC.
+            if client.mode != .sample {
+                do {
+                    return try await probeOutboundIpViaLocalProxy()
+                } catch {
+                    IPLookupDiagnostics.record("local-proxy fetch failed (\(error.localizedDescription)); falling back to extension RPC")
+                }
+            }
             // v0.2.118 (Job 5): after 5 consecutive extension-
             // probe failures the probe retries with a 15 s timeout
             // instead of FlClash's 6 s (see the counter's comment).
@@ -1653,7 +1751,10 @@ final class TrafficStore: ObservableObject {
     /// work).
     @MainActor
     private func maybeRetryOutboundIpProbe() {
-        guard outboundIp == nil,
+        // v0.2.125: the gate is now "unknown OR stale" — a cached
+        // IP (outboundIpIsStale) keeps re-probing in the background
+        // until a fresh result lands, instead of going quiet.
+        guard outboundIp == nil || outboundIpIsStale,
               !isProbingOutboundIp else { return }
         let interval: TimeInterval = outboundIpProbeAttempts < 20 ? 3 : 10
         if let last = lastOutboundIpProbeAt,

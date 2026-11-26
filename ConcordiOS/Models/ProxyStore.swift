@@ -2037,8 +2037,13 @@ final class ProxyStore: ObservableObject {
     /// A returned value is the verdict (-1 timeout, -2 failure);
     /// a THROW is a transport failure (the core never throws for a
     /// dead node — urltest.rs test_delay returns Failed), so it
-    /// records -2 for that node and, after 3 such throws, cancels
-    /// the rest of the run: the backend is down, not the nodes.
+    /// records -2 for that node. A throw does NOT cancel the run
+    /// (v0.2.133): on the VPN-on path the controller can time out
+    /// a few calls under 32-way load while the backend is alive,
+    /// so the run finishes every target and then retries the
+    /// transport-failed ones in small batches (see the retry pass
+    /// below) — a node is only left -2 when it still does not
+    /// answer after the retries, never because the run stopped.
     /// How many delay.test calls run at once (v0.2.64, user
     /// direction 2026-11-22: "一次测多少个改的和上游一样"):
     /// upstream FlClash caps iOS at 2 but runs 32 on
@@ -2051,6 +2056,15 @@ final class ProxyStore: ObservableObject {
     /// asked for. The per-outcome applyLatencies() streaming
     /// (same version) shows each result as it lands.
     private static let delayTestBatchSize = 32
+    /// Retry pass for transport failures (v0.2.133): small batches
+    /// so the controller is not re-flooded, at most
+    /// delayTestRetryAttempts passes with 1 s then 2 s backoff, and
+    /// only when a handful of targets failed on transport — a wall
+    /// of transport failures means the backend is down, and
+    /// retrying it would only grind.
+    private static let delayTestRetryBatchSize = 8
+    private static let delayTestRetryMaxTargets = 8
+    private static let delayTestRetryAttempts = 2
     @MainActor
     private func runLatencyTest(targets: [DelayTarget], groupNames: Set<String>) async {
         let startedAt = Date()
@@ -2073,6 +2087,17 @@ final class ProxyStore: ObservableObject {
         /// core failure, but the names tell the report which -2s are
         /// call failures, not dead nodes.
         var transportFailedNames: [String] = []
+        /// Targets whose call threw on the transport layer, kept for
+        /// the retry pass (v0.2.133): a retry that answers overwrites
+        /// the -2 with the real latency and drops the target from
+        /// this list and from transportThrowCount /
+        /// transportFailedNames; whatever is still here after the
+        /// retries is the run's real transport-failure set.
+        var transportFailedTargets: [DelayTarget] = []
+        /// How many transport-failed targets a retry recovered with
+        /// a real latency (v0.2.133) — reported, so the log shows
+        /// the retries worked instead of hiding them.
+        var retryRecoveredCount = 0
         var throwError: Error?
         var preloadNote: String?
         var channelNote: String?
@@ -2132,6 +2157,9 @@ final class ProxyStore: ObservableObject {
             }
             if transportThrowCount > 0 {
                 lines.append("传输失败（调用抛错）：\(transportThrowCount) 次")
+            }
+            if retryRecoveredCount > 0 {
+                lines.append("传输重试恢复：\(retryRecoveredCount) 个节点（超时后重试成功）")
             }
             if !transportFailedNames.isEmpty {
                 let transportNamesText = transportFailedNames.prefix(8).joined(separator: "、") + (transportFailedNames.count > 8 ? "…" : "")
@@ -2266,10 +2294,9 @@ final class ProxyStore: ObservableObject {
         // upstream's iOS cap of 2). Each call carries the settings
         // timeout and the 30 s guard; see runOneDelayTest.
         var firstTransportError: Error?
-        var cancelledByTransport = false
         var index = 0
         let loopStart = Date()
-        while index < targets.count, !cancelledByTransport {
+        while index < targets.count {
             let batch = Array(targets[index..<min(index + Self.delayTestBatchSize, targets.count)])
             index += batch.count
             await withTaskGroup(of: DelayTargetOutcome.self) { group in
@@ -2286,12 +2313,14 @@ final class ProxyStore: ObservableObject {
                     case .transportFailed(let target, let message):
                         // A throw is a transport failure, never a
                         // dead node — but the node still shows as
-                        // failed (-2) instead of silently untested.
+                        // failed (-2) instead of silently untested,
+                        // and it goes on the retry list (v0.2.133):
+                        // the run finishes every target first.
                         recordLatency(name: target.proxyName, url: target.testUrl, value: -2)
                         transportThrowCount += 1
                         transportFailedNames.append(target.proxyName)
+                        transportFailedTargets.append(target)
                         if firstTransportError == nil { firstTransportError = DelayTransportFailure(message: message) }
-                        if transportThrowCount >= 3 { cancelledByTransport = true }
                     }
                     // Stream results: recordLatency only writes the
                     // dictionaries — the page reads groups, which
@@ -2302,6 +2331,67 @@ final class ProxyStore: ObservableObject {
                 }
             }
             applyLatencies()
+        }
+        // v0.2.133 retry pass: a transport failure no longer abandons
+        // the run (the 18:10:50 log: 3 controller timeouts cut it
+        // short and 15 nodes went untested). A throw is the
+        // controller not answering in time under 32-way load — the
+        // backend is alive (it answered the other calls in the same
+        // batch) — so the stragglers get a second chance under low
+        // contention (batches of 8, 1 s then 2 s backoff). Each
+        // retry is a fresh runOneDelayTest (fresh 30 s guard). A
+        // target that answers overwrites its -2 with the real
+        // latency (or -1 on a guard timeout) and drops out of the
+        // transport-failure counts; one that still throws stays -2
+        // and is tried once more in the next pass, if any. When
+        // MANY targets failed on transport the backend is likely
+        // down, not congested — skip the grind and keep the -2s
+        // with the transport reason instead.
+        if !transportFailedTargets.isEmpty, transportFailedTargets.count <= Self.delayTestRetryMaxTargets {
+            var remaining = transportFailedTargets
+            for attempt in 1...Self.delayTestRetryAttempts {
+                guard !remaining.isEmpty else { break }
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+                var stillFailing: [DelayTarget] = []
+                var retryIndex = 0
+                while retryIndex < remaining.count {
+                    let batch = Array(remaining[retryIndex..<min(retryIndex + Self.delayTestRetryBatchSize, remaining.count)])
+                    retryIndex += batch.count
+                    await withTaskGroup(of: DelayTargetOutcome.self) { group in
+                        for target in batch {
+                            group.addTask { await self.runOneDelayTest(target: target, useAppCore: useAppCore) }
+                        }
+                        for await outcome in group {
+                            switch outcome {
+                            case .value(let target, let value):
+                                recordLatency(name: target.proxyName, url: target.testUrl, value: value)
+                                transportThrowCount -= 1
+                                transportFailedNames.removeAll { $0 == target.proxyName }
+                                // Only a positive latency is a
+                                // recovery — a -1 (504) or -2 (503)
+                                // is a real verdict from the core,
+                                // not a recovered transport failure.
+                                if value > 0 { retryRecoveredCount += 1 }
+                            case .guardTimedOut(let target):
+                                recordLatency(name: target.proxyName, url: target.testUrl, value: -1)
+                                guardTimedOutCount += 1
+                                transportThrowCount -= 1
+                                transportFailedNames.removeAll { $0 == target.proxyName }
+                            case .transportFailed(let target, _):
+                                // Still no answer — stays -2 (already
+                                // counted once in the main loop; do
+                                // NOT count it again) and is retried
+                                // once more in the next pass, if any.
+                                stillFailing.append(target)
+                            }
+                            applyLatencies()
+                        }
+                    }
+                    applyLatencies()
+                }
+                remaining = stillFailing
+            }
+            if transportThrowCount == 0 { firstTransportError = nil }
         }
         loopSeconds = Int(Date().timeIntervalSince(loopStart))
         if let firstTransportError { throwError = firstTransportError }
@@ -2321,14 +2411,17 @@ final class ProxyStore: ObservableObject {
         }
         if okCount > 0 { everDelaySucceeded = true }
         // Failure handling, FlClash _runDelayTest (:449-458): only a
-        // dead core cancels the job. Three transport throws in one
-        // run mean the backend is down — a dead node returns -2, it
-        // never throws (urltest.rs test_delay) — so the run was cut
-        // short above and the banner carries the real transport
+        // dead core cancels the job. A transport throw is never a
+        // dead node (urltest.rs test_delay returns -2, it never
+        // throws) — the run finishes every target and retries the
+        // transport-failed ones (v0.2.133), so any -2 left here
+        // really did not answer. The banner carries the transport
         // reason instead of silence.
-        if cancelledByTransport, let firstTransportError {
+        if transportThrowCount > 0, let firstTransportError {
             noteTestError(firstTransportError)
-            channelNote = "传输层连续失败 \(transportThrowCount) 次，已停止剩余测速：\(firstTransportError.localizedDescription)"
+            channelNote = "传输层失败 \(transportThrowCount) 个节点（已重试，仍未返回）：\(firstTransportError.localizedDescription)"
+        } else if retryRecoveredCount > 0 {
+            channelNote = "传输层超时 \(retryRecoveredCount) 个节点已重试恢复"
         } else if client.mode == .live, okCount == 0, failedCount == targets.count {
             // FIX 1b (v0.2.45): all targets -2 AND the core's
             // provider list empty → config.validate may name the

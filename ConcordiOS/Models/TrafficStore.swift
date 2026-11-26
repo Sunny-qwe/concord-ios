@@ -1854,17 +1854,43 @@ final class TrafficStore: ObservableObject {
     /// instead, not reported as a failure.
     private func probeServicesThroughCore(proxy: String, names: [String]) async throws -> [ConcordServiceItem] {
         if client.mode == .sample || TunnelManager.shared.isRunning {
-            return try await client.probeServices(proxy: proxy, names: names)
+            return try await probeServicesViaTunnel(proxy: proxy, names: names)
         }
         do {
             try await AppCore.shared.ensureStarted()
         } catch {
             if case AppCoreError.tunnelRunning = error {
-                return try await client.probeServices(proxy: proxy, names: names)
+                return try await probeServicesViaTunnel(proxy: proxy, names: names)
             }
             throw error
         }
         return try await AppCore.shared.probeServices(proxy: proxy, names: names)
+    }
+
+    /// The tunnel-up service probe (v0.2.127): the app→extension
+    /// RPC channel is dead (log-confirmed: probe.services gets
+    /// noReply, code 4), so the 13 checks run in-app through the
+    /// core's local mixed proxy first (same pattern as the
+    /// v0.2.125 IP probe) and the RPC stays only as the fallback
+    /// for an unexpected local error. Sample mode has no core on
+    /// 17890, so it goes straight to RPC. A failed check is an
+    /// item, never an error, so a whole-sweep transport failure
+    /// returns 13 failed items (and ServiceProbeStore's confirm
+    /// machine re-probes in 1 s) instead of falling back — the
+    /// RPC is dead anyway, and throwing would leave services
+    /// empty with only a manual retry to recover. Cancellation
+    /// must NOT fall through to a 6 s RPC attempt, so it is
+    /// rethrown as-is.
+    private func probeServicesViaTunnel(proxy: String, names: [String]) async throws -> [ConcordServiceItem] {
+        if client.mode != .sample {
+            do {
+                return try await ServiceProbeLocal.probeServices(proxy: proxy, names: names)
+            } catch {
+                if error is CancellationError { throw error }
+                ServiceProbeDiagnostics.record("service-probe: local-proxy failed (\(error.localizedDescription)); falling back to extension RPC")
+            }
+        }
+        return try await client.probeServices(proxy: proxy, names: names)
     }
 
     /// Re-checks one service and merges the result into the current

@@ -101,6 +101,11 @@ final class LogStore: ObservableObject {
         // sheet appeared, probeNodeIPs enter/exit), so a freeze ships
         // its exact phase in the export. Always present.
         sections.append("== 服务状态打开诊断 ==\n" + (ServiceSheetDiagnostics.lastDiagnosticText() ?? "暂无记录（尚未打开服务状态）"))
+        // Service probe diagnostics (v0.2.127): one line per
+        // service check through the local proxy + a sweep summary,
+        // so a service sheet that stays empty ships its cause in
+        // the export. Always present, even with no record.
+        sections.append("== 服务检测诊断 ==\n" + (ServiceProbeDiagnostics.lastDiagnosticText() ?? "暂无记录（尚未检测服务）"))
         sections.append("== 应用内核心启动诊断 ==\n" + (AppCore.lastBootReportText() ?? "暂无记录（尚未在应用内启动过核心）"))
         sections.append("== 最近一次测速诊断 ==\n" + (AppCore.lastDelayTestReportText() ?? "暂无记录（尚未测速，或本次测速未写入诊断）"))
         // Per-profile delay diagnostics (v0.2.58): the section

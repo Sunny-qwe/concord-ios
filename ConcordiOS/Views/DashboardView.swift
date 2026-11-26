@@ -58,6 +58,58 @@ struct IPLookupDiagnostics {
     }
 }
 
+// MARK: - Service status sheet open diagnostics (v0.2.123)
+//
+// On-device 2026-11-26 ~08:08 (v0.2.122, VPN off) the app froze
+// right after the user tapped 服务状态 (the DNS sheet had opened
+// fine just before and was dismissed first — the DNS path is
+// exonerated). The watchdog proved a main-thread spin (CPU 100%,
+// stall 08:08:33, ping sent 08:08:31) but its last action was the
+// DNS tap (statsDestination set to .dns at 08:08:25): the 服务状态
+// tap was never instrumented, so the stall line cannot tell the
+// two taps apart. These lines are the four phases of opening the
+// 服务状态 sheet — tap, sheet state set, sheet appeared,
+// probeNodeIPs enter/exit (with per-node lines) — so the next
+// freeze ships its exact phase in the log export: a freeze with
+// only the tap line died in presentation; one with "正在探测节点
+// X" and no completion died inside that node's probeOutboundIp.
+// Same UserDefaults ring buffer as IPLookupDiagnostics (last 16
+// lines — per-node lines can be several), synchronous write so it
+// survives a force-quit. LogStore must surface it (parent wires
+// one line: "== 服务状态打开诊断 ==" +
+// ServiceSheetDiagnostics.lastDiagnosticText()). The static
+// trace found NO deterministic cause (see the v0.2.123 report):
+// probeNodeIPs returns immediately when services is empty, every
+// await on the path is a true suspension, there is no semaphore /
+// sync wait / busy loop anywhere in the app, and icon decoding
+// runs off the main thread — so this is diagnosis, not a fix.
+struct ServiceSheetDiagnostics {
+    private static let storageKey = "concord.serviceSheetDiagnostics"
+    private static let maxLines = 16
+
+    static func record(_ line: String) {
+        var lines = UserDefaults.standard.string(forKey: storageKey)
+            .map { $0.split(separator: "\n").map(String.init) } ?? []
+        lines.append("[\(timestamp())] \(line)")
+        if lines.count > maxLines {
+            lines.removeFirst(lines.count - maxLines)
+        }
+        UserDefaults.standard.set(lines.joined(separator: "\n"), forKey: storageKey)
+    }
+
+    static func lastDiagnosticText() -> String? {
+        guard let text = UserDefaults.standard.string(forKey: storageKey),
+              !text.isEmpty else { return nil }
+        return text
+    }
+
+    private static func timestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: Date())
+    }
+}
+
 // MARK: - Dashboard (reference screenshots IMG_1082 / IMG_1083)
 // Layout, top to bottom: big title + edit button; status card (big
 // blue play button); network speed; outbound mode pills; VPN card;
@@ -1617,7 +1669,22 @@ struct DashboardView: View {
     private var servicesCard: some View {
         ServicesCardView(
             expanded: $servicesExpanded,
-            onOpenServiceSheet: { showServiceSheet = true },
+            onOpenServiceSheet: {
+                // v0.2.123 diagnostic (服务状态 freeze 2026-11-26
+                // 08:08, main-thread CPU 100%): the tap is the one
+                // action the watchdog never recorded, so the stall
+                // line blamed the earlier DNS tap. Note it first —
+                // the next stall line will then read
+                // "service sheet tap" — then record the tap phase
+                // (services count settles whether probeNodeIPs
+                // could even run: it returns immediately when
+                // services is empty) and the sheet-state phase.
+                // Logging only; the sheet opens exactly as before.
+                MainThreadWatchdog.noteAction("service sheet tap")
+                ServiceSheetDiagnostics.record("点按服务状态 (services=\(trafficStore.services.count) 个, 出站=\(proxyStore.selectedOutbound ?? "无"), VPN=\(tunnelManager.isRunning ? "开" : "关"))")
+                showServiceSheet = true
+                ServiceSheetDiagnostics.record("服务状态 sheet 状态已置 true")
+            },
             onManageServices: { showServiceManageSheet = true }
         )
     }

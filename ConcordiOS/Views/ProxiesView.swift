@@ -11,8 +11,8 @@ import SwiftUI
 //   popup); 排序/布局/尺寸/图标样式 each open a submenu with a
 //   checkmark on the current value, plus 隐藏超时代理. No test-all
 //   and no refresh in the menu (FlClash
-//   has neither there). 滚动到已选 is the menu's first row in tab
-//   style (the MuYu video build shows it there); re-tapping the
+//   has neither there). 滚动到已选 is a top-bar button in tab
+//   style (upstream iconActions, v0.2.123); re-tapping the
 //   active group pill scrolls to the selected node too. The page
 //   title is the 24pt pageTitle (FlClash
 //   scaffold: compactTitle is false on a tab page — only sheets and
@@ -83,63 +83,29 @@ private struct PillsWidthKey: PreferenceKey {
     }
 }
 
-// MARK: - Proxies nav bar appearance (v0.2.108)
-// Forces the Proxies navigation bar to a SOLID page background
-// (opaque, no translucent material, no hairline), matching
-// upstream FlClash's Scaffold bar, which sits on the page surface
-// (tone 94) with no separate bar background. Implemented as a
-// UIViewControllerRepresentable so it touches the LIVE bar
-// instance: the Proxies bar already exists when this page appears
-// (all four tabs are mounted at launch), so setting only the
-// UINavigationBar appearance proxy would not restyle it. The
-// representable also sets the proxy, so any bar created later
-// gets the same opaque look. iOS 13+ API throughout — the
-// toolbarBackgroundVisibility(.visible) this replaces is iOS 18+
-// and broke the v0.2.108 archive on the iOS 17.0 target.
-private struct ProxiesNavBarAppearance: UIViewControllerRepresentable {
-    var background: UIColor
-
-    func makeUIViewController(context: Context) -> UIViewController {
-        // v0.2.122: the view is only a nav-bar styling hook — it
-        // never needs touches. A bare UIViewController's view is
-        // interaction-enabled by default, and as a full-page
-        // .background on the NavigationStack it is the prime
-        // suspect for the dead Proxies taps (4 fixes failed, all
-        // below this layer; introduced v0.2.108, first complaint
-        // ~1 h later on v0.2.109): if its view lands above the
-        // nav controller's view it swallows every touch while
-        // staying invisible. Non-interactive here is both the
-        // diagnostic and, if the theory holds, the fix.
-        let vc = UIViewController()
-        vc.view.isUserInteractionEnabled = false
-        return vc
-    }
-
-    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        let appearance = UINavigationBarAppearance()
-        appearance.configureWithOpaqueBackground()
-        appearance.backgroundColor = background
-        appearance.shadowColor = .clear
-        // Any navigation bar created after this point.
-        UINavigationBar.appearance().standardAppearance = appearance
-        UINavigationBar.appearance().scrollEdgeAppearance = appearance
-        UINavigationBar.appearance().compactAppearance = appearance
-        // The live bar: walk the responder chain to the enclosing
-        // UINavigationController and set its bar directly. The
-        // representable's view controller is a child of the page's
-        // hosting controller, whose parent is the nav controller.
-        var responder: UIResponder? = uiViewController
-        while let current = responder {
-            if let nav = current as? UINavigationController {
-                nav.navigationBar.standardAppearance = appearance
-                nav.navigationBar.scrollEdgeAppearance = appearance
-                nav.navigationBar.compactAppearance = appearance
-                break
-            }
-            responder = current.next
-        }
-    }
-}
+// MARK: - Proxies nav bar appearance (v0.2.108, rebuilt v0.2.123)
+// The bar is a SOLID page background (opaque, no translucent
+// material, no hairline), matching upstream FlClash's Scaffold
+// bar, which sits on the page surface with no separate bar
+// background. v0.2.108–122 did this with ProxiesNavBarAppearance,
+// a UIViewControllerRepresentable attached as a full-page
+// .background on the NavigationStack — the only UIKit view in
+// this page's hierarchy, and the prime suspect for the dead
+// Proxies taps (introduced v0.2.108, first complaint ~1 h later
+// on v0.2.109; five card/Button fixes failed, the log's
+// "代理组点按诊断" stayed empty). v0.2.122 set its view
+// non-interactive and the taps STILL stayed dead, so the shield
+// theory is closed — but the layer is removed anyway: upstream's
+// page is a plain Scaffold + scroll view with no full-page
+// overlay, and this page now has no representable at all. The
+// same opaque UINavigationBarAppearance is applied by plain code
+// instead — ProxiesView.applyNavBarAppearance(), called from
+// .onAppear and on theme change — via the appearance proxy (bars
+// created later) plus a window walk (the live bar). No view, no
+// view controller, nothing that can sit above the page and
+// swallow a touch. iOS 13+ API throughout; the
+// toolbarBackgroundVisibility(.visible) alternative is iOS 18+
+// and the deployment target is iOS 17.
 
 struct ProxiesView: View {
     /// Picker mode (FlClash proxies.dart:14-18,157,165,174):
@@ -177,7 +143,7 @@ struct ProxiesView: View {
     /// Observed so the nav bar appearance follows the theme:
     /// pageBackground is theme-dependent (magenta keeps a pink
     /// tint, dark mode tints), so a theme change must re-run
-    /// ProxiesNavBarAppearance below with the new colour.
+    /// applyNavBarAppearance below with the new colour.
     @EnvironmentObject private var themeStore: ThemeStore
     @StateObject private var customStore = CustomProxyStore()
     @State private var searchText = ""
@@ -800,6 +766,18 @@ struct ProxiesView: View {
                     ToolbarItem(placement: .topBarTrailing) {
                         topBarPill
                     }
+                    // Upstream proxies.dart iconActions (v0.2.123):
+                    // in tab style the locate button sits in the
+                    // top bar next to the search/bolt pill — scroll
+                    // to the selected node of the current group.
+                    // It used to live as the ⋯ menu's first row
+                    // (MuYu video build); upstream has it here and
+                    // the menu has no such row, so it moves here.
+                    if styleStore.style == .tab {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            locateButton
+                        }
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         moreButton
                     }
@@ -874,11 +852,24 @@ struct ProxiesView: View {
                 if let current = proxyStore.selectError { notice = current }
             }
             .onAppear {
+                // The bar's opaque appearance has no view behind
+                // it anymore (v0.2.123: the representable is
+                // gone), so it is applied here on every appear.
+                applyNavBarAppearance()
                 // Returning to this page with a failure already
                 // recorded (e.g. the run finished while another tab
                 // was frontmost) must still show it.
                 if let current = proxyStore.testError { notice = current }
                 if let current = proxyStore.selectError { notice = current }
+            }
+            .onChange(of: themeStore.accent) { _, _ in
+                applyNavBarAppearance()
+            }
+            .onChange(of: themeStore.appearance) { _, _ in
+                applyNavBarAppearance()
+            }
+            .onChange(of: themeStore.pureBlack) { _, _ in
+                applyNavBarAppearance()
             }
         }
         .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
@@ -896,12 +887,13 @@ struct ProxiesView: View {
         // toolbarBackgroundVisibility(.visible) would force it, but
         // that API is iOS 18+ and the deployment target is iOS 17
         // (CI archive error: 'toolbarBackgroundVisibility is only
-        // available in iOS 18.0 or newer'). Instead
-        // ProxiesNavBarAppearance above applies an opaque
-        // UINavigationBarAppearance to the bar instance (plus the
-        // appearance proxy), which is iOS 13+ and works on
-        // iOS 17.6.1. It re-runs on theme change via themeStore.
-        .background(ProxiesNavBarAppearance(background: UIColor(ConcordTheme.pageBackground)))
+        // available in iOS 18.0 or newer'). The opaque
+        // UINavigationBarAppearance is therefore applied by plain
+        // code — applyNavBarAppearance(), from .onAppear and on
+        // theme change — NOT by a representable: v0.2.123 removed
+        // the ProxiesNavBarAppearance .background layer entirely
+        // (see the file-scope note at the top), so no UIKit view
+        // sits anywhere above this page's content.
         // ⋯ menu overlay (v0.2.72): a custom overlay, NOT a system
         // .popover — the popover's content never received taps
         // on-device (IMG_1212). The overlay is part of the normal
@@ -929,8 +921,7 @@ struct ProxiesView: View {
                                 .padding(.trailing, 18)
                                 .padding(.bottom, -1)
                             ProxiesMoreMenuView(
-                                isPresented: $showMoreMenu,
-                                onScrollToSelected: styleStore.style == .tab ? { scrollToSelected(in: selectedGroup) } : nil
+                                isPresented: $showMoreMenu
                             )
                             .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
                             .shadow(color: .black.opacity(0.18), radius: 16, x: 0, y: 6)
@@ -943,6 +934,46 @@ struct ProxiesView: View {
             }
         }
         .onDisappear { showMoreMenu = false }
+    }
+
+    /// The opaque nav-bar appearance, applied by plain code —
+    /// no view, no view controller (see the file-scope note at
+    /// the top: the v0.2.108–122 UIViewControllerRepresentable
+    /// is gone in v0.2.123). The appearance proxy covers bars
+    /// created later; the window walk restyles the live bar —
+    /// the Proxies bar already exists when this page appears
+    /// (all four tabs mount at launch), so the proxy alone would
+    /// not restyle it. Called from .onAppear and whenever the
+    /// theme changes (the .onChange observers below).
+    private func applyNavBarAppearance() {
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = UIColor(ConcordTheme.pageBackground)
+        appearance.shadowColor = .clear
+        UINavigationBar.appearance().standardAppearance = appearance
+        UINavigationBar.appearance().scrollEdgeAppearance = appearance
+        UINavigationBar.appearance().compactAppearance = appearance
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            for window in windowScene.windows {
+                Self.applyNavBarAppearance(appearance, to: window.rootViewController)
+            }
+        }
+    }
+
+    /// Recursively applies one appearance to every navigation
+    /// bar under a view controller (children + presented).
+    private static func applyNavBarAppearance(_ appearance: UINavigationBarAppearance, to viewController: UIViewController?) {
+        guard let viewController else { return }
+        if let nav = viewController as? UINavigationController {
+            nav.navigationBar.standardAppearance = appearance
+            nav.navigationBar.scrollEdgeAppearance = appearance
+            nav.navigationBar.compactAppearance = appearance
+        }
+        for child in viewController.children {
+            applyNavBarAppearance(appearance, to: child)
+        }
+        applyNavBarAppearance(appearance, to: viewController.presentedViewController)
     }
 
     // MARK: - Top bar
@@ -1009,12 +1040,11 @@ struct ProxiesView: View {
     /// ALL groups in list / card style (MuYu _delayTestAllGroups);
     /// the search is a magnifier button that presents the search
     /// field (a plain TextField while isSearching — see
-    /// searchField). Scroll-to-selected lives in the ⋯ menu as its
-    /// first row in tab style (the MuYu video build shows it there;
-    /// the checked-out MuYu code has it as a separate bar item
-    /// instead — the video is the newer build and the user's live
-    /// reference, so the video wins); re-tapping the active group
-    /// pill scrolls to the selected node too.
+    /// searchField). Scroll-to-selected is a top-bar button in
+    /// tab style (upstream proxies.dart iconActions, v0.2.123 —
+    /// it used to be the ⋯ menu's first row, MuYu video build);
+    /// re-tapping the active group pill scrolls to the selected
+    /// node too.
     /// The pill and the ⋯ are TWO toolbar items, not one HStack:
     /// with a single item SwiftUI anchors the ⋯ popover to the whole
     /// 140pt bar, so its arrow pointed at the bolt (v0.2.28). The
@@ -1025,7 +1055,13 @@ struct ProxiesView: View {
     /// barButtonGap.
     private var topBarPill: some View {
         HStack(spacing: 0) {
-            Button { isSearching = true } label: {
+            Button {
+                // v0.2.123 discriminator: if the group headers
+                // stay dead, this line proves whether ANY touch
+                // reaches the page at all (toolbar vs cards).
+                ProxyTapDiagnostics.record("top bar search tapped")
+                isSearching = true
+            } label: {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 19, weight: .semibold))
                     .imageScale(.medium)
@@ -1151,7 +1187,12 @@ struct ProxiesView: View {
     /// inside the normal view hierarchy hit-tests normally.
     /// The overlay itself lives on the NavigationStack below.
     private var moreButton: some View {
-        Button { showMoreMenu.toggle() } label: {
+        Button {
+            // v0.2.123 discriminator, as on the search button
+            // above: toolbar proof vs group-card proof.
+            ProxyTapDiagnostics.record("top bar more tapped")
+            showMoreMenu.toggle()
+        } label: {
             Image(systemName: "ellipsis")
                 .rotationEffect(.degrees(90))
                 .font(.system(size: 19, weight: .semibold))
@@ -1191,12 +1232,29 @@ struct ProxiesView: View {
         .accessibilityLabel("测速")
     }
 
+    /// The locate button (FlClash proxies.dart iconActions,
+    /// v0.2.123): tab style only, in the top bar next to the
+    /// search/bolt pill. Scrolls the current group's grid to its
+    /// selected node. Same 44pt circle as the ⋯ button; the
+    /// target glyph matches the per-header locate button below.
+    private var locateButton: some View {
+        Button { scrollToSelected(in: selectedGroup) } label: {
+            Image(systemName: "scope")
+                .font(.system(size: 19, weight: .semibold))
+                .imageScale(.medium)
+                .frame(width: 44, height: 44)
+        }
+        .buttonStyle(.plain)
+        .disabled(selectedGroup?.selectedNodeName == nil)
+        .accessibilityLabel("滚动到已选")
+        .background(ConcordTheme.cardBackground, in: Circle())
+    }
+
     // MARK: - ⋯ menu (FlClash PopupMenu, lib/views/proxies/proxies.dart)
 
     /// The ⋯ menu is a white card, not a native context menu:
-    /// 滚动到已选 (tab style only, first row), 风格， 排序， 布局，
-    /// 尺寸， 图标样式 (not in tab style), and the hide-timeout
-    /// toggle last. 风格 does NOT drill down: tapping it toggles
+    /// 风格， 排序， 布局， 尺寸， 图标样式 (not in tab style), and
+    /// the hide-timeout toggle last. 风格 does NOT drill down: tapping it toggles
     /// the three style rows inline, directly below it in the same
     /// popup (MuYu video f_023/f_026 — an accordion, sibling rows
     /// stay visible; tapping a style applies it and closes the
@@ -1229,10 +1287,6 @@ struct ProxiesView: View {
     private struct ProxiesMoreMenuView: View {
         @EnvironmentObject private var styleStore: ProxyStyleStore
         @Binding var isPresented: Bool
-        /// Scroll-to-selected, tab style only (nil otherwise): the
-        /// ⋯ menu's first row. Supplied by the page because the
-        /// scroll target lives in ProxiesView's @State.
-        var onScrollToSelected: (() -> Void)?
 
         // v0.2.73: every submenu row expands INLINE (accordion)
         // below its own row inside this same card — no drill-down,
@@ -1246,31 +1300,6 @@ struct ProxiesView: View {
 
         var body: some View {
             VStack(spacing: 0) {
-                // Scroll-to-selected (MuYu video build, f_044/f_045):
-                // the ⋯ menu's first row in tab style. The
-                // checked-out MuYu code has it as a separate bar
-                // item instead (proxies.dart iconActions); the video
-                // is the newer build and the user's live reference.
-                // List / card style keep their per-header locate
-                // buttons, so the row is tab-only.
-                if let onScrollToSelected {
-                    Button {
-                        onScrollToSelected()
-                        isPresented = false
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "location.fill")
-                                .font(.system(size: 19, weight: .semibold))
-                                .frame(width: 22)
-                            Text("滚动到已选")
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 12)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
                 // 风格 expands INLINE (v0.2.57, MuYu video
                 // f_023/f_026): the three style rows appear directly
                 // below this row inside the same popup — 标签页 ✓ /
@@ -2104,6 +2133,11 @@ struct ProxiesView: View {
         )
         .equatable()
         .onTapGesture {
+            // v0.2.123 discriminator: node taps use a gesture,
+            // headers a Button — if this line appears while the
+            // header lines stay empty, the blocker is specific
+            // to the header Button path, not the page.
+            ProxyTapDiagnostics.record("node card tapped: \(node.name) in \(group.name)")
             Task {
                 await selectNode(node, in: group)
                 // Picker (dashboard sheet): picking a node also
@@ -2764,41 +2798,31 @@ private struct ListGroupCard<ExpandedContent: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // The collapsed header is a real Button (v0.2.118):
-            // the old .onTapGesture on the header stopped firing
-            // on-device (v0.2.117 — every group card untappable).
-            // The gesture and the 118/119 Button both died the
-            // same way: the card was wrapped in .equatable(), which
-            // froze it in the disabled state it mounted in (see the
-            // struct comment) — v0.2.120 removes the wrapper, so
-            // this Button is rebuilt live on every render.
-            // In expanded state the header holds Buttons (scope /
-            // bolt / magnifier + the triangle), so the header tap
-            // stays gated to collapsed only and the triangle
-            // Button collapses — a Button wrapping those would
-            // fire both.
-            if expanded {
+            // v0.2.123 rebuild (upstream ListHeader, list.dart):
+            // the WHOLE header is ONE Button in BOTH states —
+            // Card.onPressed toggles the unfold set, and the
+            // expanded-state action buttons (locate / bolt /
+            // search + the collapse triangle) are nested Buttons
+            // inside its label, so a tap on one of them runs its
+            // own action while a tap anywhere else on the header
+            // toggles expand/collapse. The old split — collapsed
+            // header a Button, expanded header bare with only the
+            // triangle to collapse — meant an expanded header's
+            // centre did nothing at all, and both halves sat
+            // under the full-page representable layer that is now
+            // removed (see the file-scope note at the top). The
+            // label is an HStack with a Spacer, so the
+            // contentShape goes on the LABEL, not the Button —
+            // the v0.2.18 ToolRow precedent: contentShape on the
+            // Button itself did not extend the hit area, while
+            // the shape on the label HStack makes the whole row
+            // rect tappable (v0.2.121).
+            Button(action: { tapAction() }) {
                 headerContent
                     .padding(6)
-            } else {
-                Button(action: { tapAction() }) {
-                    headerContent
-                        .padding(6)
-                        // v0.2.121: the label is an HStack with a
-                        // Spacer — without a contentShape only the
-                        // rendered glyphs are tappable and the wide
-                        // empty middle of the card is dead (the tap
-                        // never fired on 117/118/119/120 despite the
-                        // Button + de-equatable fixes). The shape
-                        // goes on the LABEL, not the Button — the
-                        // v0.2.18 ToolRow precedent: contentShape on
-                        // the Button itself did not extend the hit
-                        // area, while the shape on the label HStack
-                        // makes the whole row rect tappable.
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             if expanded {
                 expandedContent()
             }
@@ -2806,12 +2830,13 @@ private struct ListGroupCard<ExpandedContent: View>: View {
         .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
     }
 
-    /// The collapsed header's Button action (v0.2.119 FIX 2):
-    /// records the proof line, then toggles the store — the same
-    /// two-line proof as IconGroupCard, so one tap in either
-    /// style must produce both lines in the log export. (The
-    /// expanded triangle Button keeps calling onToggleExpand
-    /// directly; its proof is toggleExpanded's own line.)
+    /// The header Button action (v0.2.119 FIX 2, v0.2.123: now
+    /// the whole header in BOTH states): records the proof line,
+    /// then toggles the store — the same two-line proof as
+    /// IconGroupCard, so one tap in either style must produce both
+    /// lines in the log export. (The expanded triangle Button keeps
+    /// calling onToggleExpand directly; its proof is
+    /// toggleExpanded's own line.)
     private func tapAction() {
         ProxyTapDiagnostics.record("ListGroupCard button fired: \(name) (expanded=\(expanded))")
         onToggleExpand()

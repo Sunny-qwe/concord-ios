@@ -96,6 +96,11 @@ final class LogStore: ObservableObject {
         // "button fired" + "toggled" lines, so an untappable group
         // card ships its proof in the export. Always present.
         sections.append("== 代理组点按诊断 ==\n" + (ProxyTapDiagnostics.lastDiagnosticText() ?? "暂无记录（尚未点按代理组卡片）"))
+        // Service-status sheet open diagnostics (v0.2.123): the four
+        // phases of opening the 服务状态 sheet (tap, sheet state set,
+        // sheet appeared, probeNodeIPs enter/exit), so a freeze ships
+        // its exact phase in the export. Always present.
+        sections.append("== 服务状态打开诊断 ==\n" + (ServiceSheetDiagnostics.lastDiagnosticText() ?? "暂无记录（尚未打开服务状态）"))
         sections.append("== 应用内核心启动诊断 ==\n" + (AppCore.lastBootReportText() ?? "暂无记录（尚未在应用内启动过核心）"))
         sections.append("== 最近一次测速诊断 ==\n" + (AppCore.lastDelayTestReportText() ?? "暂无记录（尚未测速，或本次测速未写入诊断）"))
         // Per-profile delay diagnostics (v0.2.58): the section

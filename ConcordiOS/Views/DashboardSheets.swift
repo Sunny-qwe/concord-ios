@@ -535,7 +535,15 @@ struct ServiceStatusSheet: View {
                 .padding(.bottom, 20)
             }
         }
-        .task { await probeNodeIPs() }
+        // v0.2.123 diagnostic (服务状态 freeze 2026-11-26 08:08):
+        // phase 3 — the sheet actually appeared. If the next
+        // freeze shows the tap + state lines but not this one,
+        // the main thread died during system .sheet presentation
+        // itself; if this line is present, presentation finished
+        // and the freeze is inside the sheet (probeNodeIPs lines
+        // below say where). Logging only.
+        .onAppear { ServiceSheetDiagnostics.record("服务状态 sheet 已出现") }
+        .task { await probeNodeIPs(source: "打开时") }
         .sheet(isPresented: $showManage) {
             ServiceManageSheet()
                 .presentationDetents([.fraction(0.5625), .fraction(0.9)])
@@ -643,7 +651,7 @@ struct ServiceStatusSheet: View {
     private func recheckAll() async {
         guard let proxy = proxyStore.selectedOutbound else { return }
         await trafficStore.serviceProbeStore.probeAll(proxy: proxy, names: trafficStore.orderedServiceNames)
-        await probeNodeIPs()
+        await probeNodeIPs(source: "全部检测")
     }
 
     private func recheckOne(_ service: ConcordServiceItem) async {
@@ -653,28 +661,50 @@ struct ServiceStatusSheet: View {
         // the confirm/backoff machine instead of showing a first
         // failure instantly.
         await trafficStore.serviceProbeStore.evaluate(trafficStore.services)
-        await probeNodeIPs()
+        await probeNodeIPs(source: "单项重测")
     }
 
     /// Probes the egress IP through each distinct exit node
     /// (sequential: usually one or two nodes; a failed probe
     /// leaves the node name in place).
-    private func probeNodeIPs() async {
+    ///
+    /// v0.2.123 diagnostic (服务状态 freeze 2026-11-26 08:08):
+    /// phase 4 — enter/exit + one line per node, recorded
+    /// BEFORE each probeOutboundIp await, so a freeze inside
+    /// one node's probe leaves "正在探测节点 X" as the last
+    /// line with no completion after it. `source` tells the
+    /// appear-probe apart from a bolt/row re-probe. The probe
+    /// itself is unchanged (same calls, same order, same
+    /// fallbacks); only record lines were added.
+    private func probeNodeIPs(source: String) async {
         let nodes = Set(
             trafficStore.services.compactMap { $0.chains?.first }.filter { !$0.isEmpty })
         let pending = nodes.filter { nodeIPs[$0] == nil && !nodeIPPending.contains($0) }
-        guard !pending.isEmpty else { return }
+        guard !pending.isEmpty else {
+            ServiceSheetDiagnostics.record("出口 IP 探测跳过 (\(source), services=\(trafficStore.services.count) 个, 无待探测节点)")
+            return
+        }
+        ServiceSheetDiagnostics.record("开始探测出口 IP (\(source), 待探测节点=\(pending.count) 个: \(pending.sorted().joined(separator: "、")))")
         for node in pending { nodeIPPending.insert(node) }
+        var succeeded = 0
         for node in pending.sorted() {
+            ServiceSheetDiagnostics.record("正在探测节点 \(node) 的出口 IP")
             do {
                 let result = try await client.probeOutboundIp(proxy: node)
                 let ip = result.body.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !ip.isEmpty { nodeIPs[node] = ip }
+                if !ip.isEmpty {
+                    nodeIPs[node] = ip
+                    succeeded += 1
+                    ServiceSheetDiagnostics.record("节点 \(node) 出口 IP: \(ip)")
+                } else {
+                    ServiceSheetDiagnostics.record("节点 \(node) 探测返回空")
+                }
             } catch {
-                // Keep the node name as the fallback.
+                ServiceSheetDiagnostics.record("节点 \(node) 探测失败: \(error.localizedDescription)")
             }
             nodeIPPending.remove(node)
         }
+        ServiceSheetDiagnostics.record("出口 IP 探测完成 (\(source), 成功 \(succeeded)/\(pending.count) 个)")
     }
 }
 

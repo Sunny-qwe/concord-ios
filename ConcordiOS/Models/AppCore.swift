@@ -1006,37 +1006,59 @@ final class AppCore {
     /// Closes the session and clears the pending requests. The
     /// mutation runs on coreQueue (the same queue the callbacks
     /// and the send path use), so it never races them.
+    /// v0.2.132: the close is enqueued ASYNCHRONOUSLY — it used
+    /// to be coreQueue.sync, which parked the calling thread (the
+    /// MainActor at VPN start: startTunnel → AppCore.stop) behind
+    /// whatever coreQueue was doing, and froze the Dashboard
+    /// (main-thread stall, CPU 0%, uptime stuck at 00:00:01 on
+    /// v0.2.131). The in-app core is routinely mid-boot at that
+    /// instant (the 1 s tick reboots it after a session close), so
+    /// the sync wait was a freeze waiting to happen. The caller
+    /// sets session = 0 synchronously first, so no new send can
+    /// race in; the async block closes the captured session id
+    /// (by id, so a session opened afterwards is untouched) and
+    /// only drops the pending requests / subscriptions when no
+    /// new session has started since (session still 0) — a stale
+    /// teardown must not kill a fresh session's in-flight
+    /// hello/init/config.apply.
     private func tearDown() {
-        coreQueue.sync {
-            if session != 0 {
-                concord_ios_close_session(session)
-                session = 0
+        let closingSession = session
+        session = 0
+        coreQueue.async {
+            if closingSession != 0 {
+                concord_ios_close_session(closingSession)
             }
-            for (_, continuation) in pending {
+            // A fresh session may have opened since stop() ran;
+            // only drop this session's state when there is still
+            // no session — otherwise a new session's in-flight
+            // requests and subscriptions would be killed by a
+            // teardown that is no longer theirs.
+            guard self.session == 0 else { return }
+            for (_, continuation) in self.pending {
                 continuation.resume(throwing: AppCoreError.rpcFailed("核心会话已关闭"))
             }
-            pending.removeAll()
-            delayRun = nil
-            delayRunStash.removeAll()
-            logSub = nil
+            self.pending.removeAll()
+            self.delayRun = nil
+            self.delayRunStash.removeAll()
+            self.logSub = nil
             // v0.2.102: same as logSub — the DNS subscription dies
             // with the session, but the captured entries survive
             // (see the logBuffer comment above).
-            dnsSub = nil
+            self.dnsSub = nil
             // v0.2.115: same as logSub/dnsSub — the connections +
             // events subscriptions die with the session, but the
             // captured table / entries survive (the next subscribe
             // replaces the table with a fresh snapshot; the events
             // buffer keeps filling from the new sub).
-            connectionSub = nil
-            eventsSub = nil
+            self.connectionSub = nil
+            self.eventsSub = nil
             // v0.2.49: the captured log entries SURVIVE the
             // teardown (the old code wiped them here): a boot
             // that failed on config.apply still logged the
             // refusal, and the Logs page / export should show
             // those lines instead of an empty list. The buffer
             // stays capped at 500 (see accumulateLogItems).
-            loadedConfigSignature = nil
+            self.loadedConfigSignature = nil
         }
     }
 

@@ -2786,36 +2786,29 @@ private struct DashboardTrafficEffects: View {
                     // v0.2.129: correct the uptime FIRST. The two
                     // refresh() calls below travel over the
                     // app<->extension RPC, which is dead (XPC
-                    // delivery fails), so a hung transport call can
-                    // stall this loop and freeze uptime/speed/
-                    // services even though this is an async .task.
-                    // Uptime must not wait on the refreshes.
+                    // delivery fails), so a hung transport call must
+                    // never stall this loop and freeze uptime/speed/
+                    // services — v0.2.132 runs them fire-and-forget
+                    // for exactly that reason. Uptime must not wait
+                    // on the refreshes.
                     correctUptimeFromFile()
                     guard !Task.isCancelled else { break }
-                    // v0.2.129: each refresh runs in a child task
-                    // with a 5 s timeout — a single hung transport
-                    // call must not block the loop (and the next
-                    // tick) forever. (The RPC layer has its own
-                    // ~10 s timeout; this is the loop-side guard.)
-                    await withTaskGroup(of: Void.self) { group in
-                        group.addTask { await connectionStore.refresh() }
-                        group.addTask {
-                            try? await Task.sleep(nanoseconds: 5_000_000_000)
-                            return
-                        }
-                        _ = await group.next()
-                        group.cancelAll()
-                    }
-                    guard !Task.isCancelled else { break }
-                    await withTaskGroup(of: Void.self) { group in
-                        group.addTask { await dnsStore.refresh() }
-                        group.addTask {
-                            try? await Task.sleep(nanoseconds: 5_000_000_000)
-                            return
-                        }
-                        _ = await group.next()
-                        group.cancelAll()
-                    }
+                    // v0.2.132: the refreshes run in their own tasks
+                    // and this loop NEVER awaits them. v0.2.129 put
+                    // each refresh in a withTaskGroup child with a
+                    // 5 s sleep racing it — but withTaskGroup waits
+                    // for ALL children before its scope exits, and
+                    // cancelAll only requests cancellation, so a
+                    // refresh hung on the dead app<->extension RPC
+                    // still parked this loop (and the uptime
+                    // correction above) for the RPC's whole 10–60 s
+                    // timeout. A hung refresh now lives out its own
+                    // timeout in the background while this loop keeps
+                    // ticking every second; the stores serialize on
+                    // the MainActor and each refresh is a read, so
+                    // overlapping runs are harmless.
+                    Task { await connectionStore.refresh() }
+                    Task { await dnsStore.refresh() }
                 }
             }
             .onChange(of: proxyStore.isRunning) { _, running in

@@ -48,17 +48,6 @@ struct ContentView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var selectedTab: AppTab = .dashboard
-    /// v0.2.128 item 5: the fade transition's opacity. A cross-fade
-    /// (outgoing 1→0 and incoming 0→1 at once) shows BOTH pages
-    /// semi-transparent — the double-exposure in video 1. The fade
-    /// is now sequential: this fades to 0, the tab switches, then
-    /// it fades back to 1, so two pages are never visible at once.
-    @State private var tabFadeOpacity: Double = 1
-    /// v0.2.128 item 5: guards the sequential fade's delayed
-    /// switch — a second tap before the 0.15 s fade-out finishes
-    /// cancels the stale switch (same guard shape as the v0.2.107
-    /// slide parking).
-    @State private var tabFadeToken = 0
     /// The Dashboard stat-cell destination (v0.2.111): owned here,
     /// not in DashboardView — the .dns destination renders as a
     /// custom overlay at this root (above the floating tab bar),
@@ -459,14 +448,7 @@ struct ContentView: View {
                     ForEach(AppTab.allCases, id: \.self) { tab in
                         pageView(for: tab)
                             .frame(width: geo.size.width, height: geo.size.height)
-                            // v0.2.128 item 5: the visible page's
-                            // opacity is the sequential-fade value
-                            // (selectTab drives it 1→0, switches,
-                            // 0→1); hidden pages stay at 0. An opaque
-                            // page background keeps the outgoing page
-                            // from showing through while fading.
-                            .opacity(selectedTab == tab ? tabFadeOpacity : 0)
-                            .background(ConcordTheme.pageBackground)
+                            .opacity(selectedTab == tab ? 1 : 0)
                             .disabled(selectedTab != tab)
                     }
                 }
@@ -475,11 +457,6 @@ struct ContentView: View {
                     ForEach(AppTab.allCases, id: \.self) { tab in
                         pageView(for: tab)
                             .frame(width: geo.size.width)
-                            // v0.2.128 item 5: an opaque background
-                            // per page, so the outgoing page cannot
-                            // show through a gap in the incoming
-                            // page's content during the slide.
-                            .background(ConcordTheme.pageBackground)
                             .disabled(selectedTab != tab)
                     }
                 }
@@ -514,25 +491,8 @@ struct ContentView: View {
     private func selectTab(_ tab: AppTab) {
         guard tab != selectedTab else { return }
         if tabAnimationFade {
-            // v0.2.128 item 5: sequential fade — fade the current
-            // page out (0.15 s), switch the tab with no animation,
-            // then fade the new page in (0.15 s). A cross-fade would
-            // show both pages at once (the double-exposure). The
-            // token guards the delayed switch against a second tap
-            // before the fade-out finishes.
-            tabFadeToken += 1
-            let token = tabFadeToken
-            withAnimation(.easeOut(duration: 0.15)) {
-                tabFadeOpacity = 0
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                guard token == tabFadeToken else { return }
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) { selectedTab = tab }
-                withAnimation(.easeIn(duration: 0.15)) {
-                    tabFadeOpacity = 1
-                }
+            withAnimation(.easeInOut(duration: 0.3)) {
+                selectedTab = tab
             }
             return
         }

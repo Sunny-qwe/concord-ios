@@ -2797,14 +2797,39 @@ private struct DashboardTrafficEffects: View {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     guard !Task.isCancelled else { break }
                     guard TunnelManager.shared.isRunning || AppCore.shared.isRunning else { continue }
-                    await connectionStore.refresh()
-                    await dnsStore.refresh()
-                    // v0.2.128 item 6: correct the uptime from the
-                    // extension's diagnostics file every second, so
-                    // a flap reset (and the ~1 s observation lag)
-                    // heals on its own instead of staying reset
-                    // until a pull-to-refresh.
+                    // v0.2.129: correct the uptime FIRST. The two
+                    // refresh() calls below travel over the
+                    // app<->extension RPC, which is dead (XPC
+                    // delivery fails), so a hung transport call can
+                    // stall this loop and freeze uptime/speed/
+                    // services even though this is an async .task.
+                    // Uptime must not wait on the refreshes.
                     correctUptimeFromFile()
+                    guard !Task.isCancelled else { break }
+                    // v0.2.129: each refresh runs in a child task
+                    // with a 5 s timeout — a single hung transport
+                    // call must not block the loop (and the next
+                    // tick) forever. (The RPC layer has its own
+                    // ~10 s timeout; this is the loop-side guard.)
+                    await withTaskGroup(of: Void.self) { group in
+                        group.addTask { await connectionStore.refresh() }
+                        group.addTask {
+                            try? await Task.sleep(nanoseconds: 5_000_000_000)
+                            return
+                        }
+                        _ = await group.next()
+                        group.cancelAll()
+                    }
+                    guard !Task.isCancelled else { break }
+                    await withTaskGroup(of: Void.self) { group in
+                        group.addTask { await dnsStore.refresh() }
+                        group.addTask {
+                            try? await Task.sleep(nanoseconds: 5_000_000_000)
+                            return
+                        }
+                        _ = await group.next()
+                        group.cancelAll()
+                    }
                 }
             }
             .onChange(of: proxyStore.isRunning) { _, running in

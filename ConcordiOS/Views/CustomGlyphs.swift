@@ -3,12 +3,18 @@ import SwiftUI
 // MARK: - Custom glyphs (v0.2.68, MuYu sheet chrome)
 // SF Symbols has no broom and no delete-sweep glyph, and no gavel,
 // so these are drawn with Paths in a 24x24 box scaled to `size`.
-// All three take the same shape as the video's Material icons:
-// filled silhouettes in `color` (default the label colour).
+// The broom follows upstream FlClash's AppGlyphs.broom (stroked
+// outlines, v0.2.133); delete-sweep and gavel are filled
+// silhouettes in `color` (default the label colour).
 
-/// A broom seen from the side: slanted handle from top-right down
-/// to the centre, brush head (fan of bristles) at bottom-left.
-/// The video's DNS sheet clear button (Flutter cleaning_services).
+/// Upstream FlClash's broom (AppGlyphs.broom, app_glyphs.dart):
+/// three stroked outlines in a 24x24 box at fill 0 — a slanted
+/// handle top-right, a small quad band across the joint, and the
+/// brush head bottom-left. prism_ui GlyphPainter strokes every
+/// shape at Glyph.strokeWidth (1.8) with round caps/joins; the
+/// GlyphVertex third value is a corner radius, not a width, so the
+/// quads' corners are rounded (r=1, 1, 1.5, 1.5) with quadratic
+/// curves through the vertices, as GlyphPolyline._corner does.
 struct BroomIcon: View {
     var size: CGFloat = 20
     var color: Color = Color(.label)
@@ -17,41 +23,63 @@ struct BroomIcon: View {
         GeometryReader { geo in
             let s = geo.size.width / 24
             ZStack {
-                // Handle: top-right down to the brush joint.
+                // Handle: (20.1, 3.9) -> (13.6, 10.4).
                 Path { path in
-                    path.move(to: CGPoint(x: 20.5 * s, y: 1.5 * s))
-                    path.addLine(to: CGPoint(x: 11.5 * s, y: 10.5 * s))
+                    path.move(to: CGPoint(x: 20.1 * s, y: 3.9 * s))
+                    path.addLine(to: CGPoint(x: 13.6 * s, y: 10.4 * s))
                 }
-                .stroke(color, style: StrokeStyle(lineWidth: 2.4 * s, lineCap: .round))
-                // Brush head: four bristle quads fanning out from
-                // the joint, with hairline gaps between them so the
-                // bristles read on any background.
-                Path { path in
-                    bristle(&path, s: s, topX: 10.2, bottomX0: 1.2, bottomX1: 4.6)
-                    bristle(&path, s: s, topX: 11.0, bottomX0: 4.9, bottomX1: 8.3)
-                    bristle(&path, s: s, topX: 11.8, bottomX0: 8.6, bottomX1: 12.0)
-                    bristle(&path, s: s, topX: 12.6, bottomX0: 12.3, bottomX1: 15.4)
-                }
-                .fill(color)
-                // Binding band across the top of the brush.
-                Path { path in
-                    path.move(to: CGPoint(x: 8.6 * s, y: 11.2 * s))
-                    path.addLine(to: CGPoint(x: 13.6 * s, y: 12.4 * s))
-                }
-                .stroke(color, style: StrokeStyle(lineWidth: 2.0 * s, lineCap: .round))
+                .stroke(color, style: StrokeStyle(lineWidth: 1.8 * s, lineCap: .round))
+                // Ferrule band: closed quad, corners r=1, 1, 0, 0.
+                roundedQuad([
+                    (15.44, 12.24, 1), (11.76, 8.56, 1),
+                    (9.78, 10.54, 0), (13.46, 14.22, 0),
+                ], s: s)
+                .stroke(color, style: StrokeStyle(lineWidth: 1.8 * s, lineCap: .round, lineJoin: .round))
+                // Brush head: closed quad, corners r=1, 1, 1.5, 1.5.
+                roundedQuad([
+                    (14.02, 14.78, 1), (9.22, 9.98, 1),
+                    (3.28, 13.09, 1.5), (10.91, 20.72, 1.5),
+                ], s: s)
+                .stroke(color, style: StrokeStyle(lineWidth: 1.8 * s, lineCap: .round, lineJoin: .round))
             }
         }
         .frame(width: size, height: size)
     }
 
-    /// One bristle: a quad from a point near the joint (`topX`,
-    /// y = 12) widening to (`bottomX0`...`bottomX1`, y = 21).
-    private func bristle(_ path: inout Path, s: CGFloat, topX: CGFloat, bottomX0: CGFloat, bottomX1: CGFloat) {
-        path.move(to: CGPoint(x: (topX - 0.7) * s, y: 12.0 * s))
-        path.addLine(to: CGPoint(x: (topX + 0.7) * s, y: 12.0 * s))
-        path.addLine(to: CGPoint(x: bottomX1 * s, y: 21.0 * s))
-        path.addLine(to: CGPoint(x: bottomX0 * s, y: 21.0 * s))
+    /// A closed polyline with per-vertex rounded corners, following
+    /// prism_ui GlyphPolyline._corner: each corner is cut back by
+    /// min(radius, half the adjacent edge) and rounded with a
+    /// quadratic curve through the vertex.
+    private func roundedQuad(_ vertices: [(x: CGFloat, y: CGFloat, r: CGFloat)], s: CGFloat) -> Path {
+        var path = Path()
+        let count = vertices.count
+        guard count > 1 else { return path }
+        func point(_ i: Int) -> CGPoint {
+            let v = vertices[((i % count) + count) % count]
+            return CGPoint(x: v.x * s, y: v.y * s)
+        }
+        func corner(_ i: Int) -> (enter: CGPoint, exit: CGPoint) {
+            let vertex = point(i)
+            let prev = point(i - 1)
+            let next = point(i + 1)
+            let radius = vertices[((i % count) + count) % count].r * s
+            func inset(from: CGPoint, toward: CGPoint) -> CGPoint {
+                let dx = toward.x - from.x
+                let dy = toward.y - from.y
+                let dist = max(hypot(dx, dy), 0.0001)
+                let d = min(radius, dist / 2)
+                return CGPoint(x: from.x + dx / dist * d, y: from.y + dy / dist * d)
+            }
+            return (inset(from: vertex, toward: prev), inset(from: vertex, toward: next))
+        }
+        path.move(to: corner(0).exit)
+        for i in 1...count {
+            let (enter, exit) = corner(i)
+            path.addLine(to: enter)
+            path.addQuadCurve(to: exit, control: point(i))
+        }
         path.closeSubpath()
+        return path
     }
 }
 

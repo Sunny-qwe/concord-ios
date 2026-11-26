@@ -194,6 +194,38 @@ enum TunnelController {
         }
     }
 
+    /// One RSS reading from the tunnel core (GET /memory, v0.2.133).
+    /// The route streams newline-separated JSON once a second
+    /// (`{"inuse": <rss bytes>, "oslimit": 0}`); the first frame is
+    /// always 0 by design (chart-start convention, stream.rs), the
+    /// next frame is the real RSS — the same
+    /// engine.memory_stats().rss the in-app core.stats RPC returns.
+    /// Returns nil when the controller does not answer or no non-zero
+    /// frame arrives in time. The stream is closed as soon as a value
+    /// is read: returning from the loop releases the byte sequence
+    /// and cancels the underlying task (do not hold it open).
+    static func memoryRSS() async -> UInt64? {
+        guard let url = URL(string: "http://\(address)/memory") else { return nil }
+        do {
+            let (bytes, response) = try await makeSession(timeoutSeconds: 5)
+                .bytes(for: authorizedRequest(url: url, timeoutSeconds: 5))
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            var frames = 0
+            for try await line in bytes.lines {
+                frames += 1
+                if frames > 8 { return nil }
+                guard let data = line.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let inuse = (json["inuse"] as? NSNumber)?.uint64Value,
+                      inuse > 0 else { continue }
+                return inuse
+            }
+            return nil
+        } catch {
+            return nil
+        }
+    }
+
     /// The core's unified-delay flag (GET /configs). Nil when the
     /// controller is unreachable or the key is absent — the caller
     /// treats that as "could not read", never as a failure.

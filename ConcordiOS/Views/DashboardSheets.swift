@@ -1853,6 +1853,12 @@ struct MemoryDetailSheet: View {
     @Binding var isReleasing: Bool
     @Binding var releaseMessage: String?
     let onRelease: () async -> Void
+    /// False while the tunnel runs (v0.2.133): the core memory then
+    /// comes from the tunnel controller's /memory stream, and
+    /// core.releaseMemory has NO REST route (JSON-RPC only, against
+    /// the stopped in-app core) — so the broom stays disabled and
+    /// the release cannot be attempted in that state.
+    let canRelease: Bool
 
     private var totalBytes: UInt64 { appBytes + (coreBytes ?? 0) }
 
@@ -1870,8 +1876,8 @@ struct MemoryDetailSheet: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .disabled(isReleasing || coreBytes == nil)
-                .opacity(isReleasing || coreBytes == nil ? 0.4 : 1)
+                .disabled(isReleasing || coreBytes == nil || !canRelease)
+                .opacity(isReleasing || coreBytes == nil || !canRelease ? 0.4 : 1)
                 .accessibilityLabel("释放核心内存")
             }
         ) {

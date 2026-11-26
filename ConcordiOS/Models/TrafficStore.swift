@@ -1787,6 +1787,19 @@ final class TrafficStore: ObservableObject {
 
     @MainActor
     func refreshMemory() async {
+        // VPN on: the in-app core is stopped, so core.stats has
+        // nothing to answer — the tunnel core's memory comes from
+        // its HTTP controller's /memory stream instead (v0.2.133).
+        // The stream's first frame is 0 by design; memoryRSS skips
+        // it and returns the next frame. A failed read keeps the
+        // previous value — a transient miss must not blank a number
+        // the card is showing (the 2 s poll retries it anyway).
+        if TunnelManager.shared.isRunning {
+            if let rss = await TunnelController.memoryRSS() {
+                coreMemoryBytes = rss
+            }
+            return
+        }
         do {
             coreMemoryBytes = try await client.coreStats().rss
         } catch {

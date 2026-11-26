@@ -3430,7 +3430,12 @@ private struct MemoryDetailSheetHost: View {
                 } catch {
                     releaseMessage = "释放失败：\(error.localizedDescription)"
                 }
-            }
+            },
+            // v0.2.133: release works only against the in-app core
+            // (core.releaseMemory is JSON-RPC only, no REST route),
+            // so the broom is disabled while the tunnel runs — the
+            // memory number still comes from the tunnel controller.
+            canRelease: !TunnelManager.shared.isRunning
         )
         .task {
             if let bytes = readAppMemoryBytes() {

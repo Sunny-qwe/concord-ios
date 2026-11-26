@@ -1659,7 +1659,7 @@ final class TrafficStore: ObservableObject {
         config.timeoutIntervalForResource = 5
         let session = URLSession(configuration: config)
         let startedAt = Date()
-        let winner = await withTaskGroup(of: ConcordOutboundIp?.self) { group in
+        let winner = await withTaskGroup(of: ConcordOutboundIp?.self) { group -> ConcordOutboundIp? in
             for urlString in concordOutboundIpUrls.prefix(3) {
                 group.addTask {
                     guard let url = URL(string: urlString) else { return nil }

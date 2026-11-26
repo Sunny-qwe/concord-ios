@@ -206,8 +206,21 @@ private struct SheetActionButton: View {
     /// stays tappable — it is never disabled for loading. A spinner
     /// that cannot be tapped reads as broken; a disabled button
     /// that does nothing reads as broken too.
-    let loading: Bool = false
+    let loading: Bool
     let action: () -> Void
+
+    /// Explicit init: the synthesized memberwise init does NOT
+    /// carry the defaulted `loading` (CI: "extra arguments at
+    /// positions #4, #5"), so the signature is spelled out here
+    /// with `loading` defaulting to false for the existing call
+    /// sites that do not pass it.
+    init(systemImage: String, label: String, disabled: Bool, loading: Bool = false, action: @escaping () -> Void) {
+        self.systemImage = systemImage
+        self.label = label
+        self.disabled = disabled
+        self.loading = loading
+        self.action = action
+    }
 
     var body: some View {
         Button(action: action) {

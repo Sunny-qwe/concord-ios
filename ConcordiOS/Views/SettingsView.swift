@@ -436,21 +436,21 @@ struct SettingsView: View {
             }
 
             // The reference Tools page (IMG_1111) has no rows for
-            // these four pages, so they moved here from ToolsView
-            // to stay reachable: 规则 / 日志 / IP 质量 / 快捷指令.
+            // these three pages, so they moved here from ToolsView
+            // to stay reachable: 规则 / 日志 / 快捷指令.
             // v0.2.68: MITM 拦截记录 joins them — the MITM sections
             // moved to the 进阶配置 MITM card, and this was the
             // only entry point to MitmView.
+            // v0.2.139 (Q-D3): the IP 质量 page is gone — upstream
+            // has no such page, only the per-IP sheet (opened by
+            // tapping an IP on the Dashboard or in the service
+            // sheet). The Tools → 常规 → IP 质量 row goes with it.
             Section("更多工具") {
                 NavigationLink("规则") {
                     RulesView()
                 }
                 NavigationLink("日志") {
                     LogsView()
-                }
-                // v0.2.66: IPQualityView is a pushed page — pass tab-bar clearance through.
-                NavigationLink("IP 质量") {
-                    IPQualityView(applyTabBarClearance: true)
                 }
                 NavigationLink("快捷指令") {
                     ShortcutsView()

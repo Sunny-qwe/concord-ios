@@ -213,8 +213,10 @@ struct DashboardView: View {
     /// Traffic statistics detail sheet (D-M8, v0.2.56 MuYu
     /// TrafficStatisticsView).
     @State private var showTrafficDetail = false
-    /// Outbound-IP sheet (status card, MuYu key_3).
-    @State private var showOutboundIPSheet = false
+    /// IP-quality sheet target (v0.2.139, upstream
+    /// current_outbound.dart:458): tapping the outbound IP text
+    /// opens the per-IP quality sheet for that IP.
+    @State private var ipQualitySelection: IpQualitySheetTarget?
     /// Rule-providers sheet (config card, MuYu key_25).
     @State private var showProvidersSheet = false
     /// Strategy-groups sheet (groups card, v0.2.64): upstream
@@ -739,7 +741,13 @@ struct DashboardView: View {
         }
         .sheet(isPresented: $showMemoryDetail) { memoryDetailSheet }
         .sheet(isPresented: $showTrafficDetail) { trafficDetailSheet }
-        .sheet(isPresented: $showOutboundIPSheet) { outboundIPSheet }
+        .sheet(item: $ipQualitySelection) { target in
+            IPQualityView(ip: target.ip)
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(ConcordTheme.pageBackground)
+                .presentationCornerRadius(28)
+        }
         .sheet(isPresented: $showProvidersSheet) { providersSheetContent }
         .sheet(isPresented: $showGroupsSheet) { groupsSheetContent }
         // The dashboard's consent prompt (fork 0a55a31): the same
@@ -838,25 +846,6 @@ struct DashboardView: View {
             .presentationDragIndicator(.hidden)
             .presentationBackground(ConcordTheme.pageBackground)
             .presentationCornerRadius(28)
-    }
-
-    /// v0.2.56: the status card opens the 出站 IP sheet
-    /// (MuYu key_3). v0.2.69: the egress-IP read and the core
-    /// probe live in the host leaf, which observes TrafficStore.
-    private var outboundIPSheet: some View {
-        OutboundIPSheetHost(
-            hideIp: $settingsStore.hideIp,
-            ipInfo: ipInfo,
-            assessed: assessedIpInfo,
-            ipAsn: ipAsn,
-            isChecking: ipChecking,
-            fetchFailed: trafficStore.outboundIpFailureSettled,
-            fetchIPInfo: fetchIPInfo
-        )
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.hidden)
-        .presentationBackground(ConcordTheme.pageBackground)
-        .presentationCornerRadius(28)
     }
 
     /// v0.2.56: the config card opens the rule-providers
@@ -1285,14 +1274,25 @@ struct DashboardView: View {
                             // v0.2.69: the IP slot observes
                             // TrafficStore itself, so the 1 s tick
                             // re-renders only the slot.
-                            StatusIpSlotView()
+                            // v0.2.139 (Q-D3/Q-M5, upstream
+                            // current_outbound.dart:458): ONLY the
+                            // IP text is tappable, and it opens the
+                            // per-IP quality sheet for that IP. The
+                            // rest of the card has no tap (upstream
+                            // has none either). Disabled while no IP
+                            // is known (failure/skeleton show no IP).
+                            Button {
+                                if let ip = dashboardDisplayIp(coreIp: trafficStore.outboundIp) {
+                                    ipQualitySelection = IpQualitySheetTarget(ip: ip)
+                                }
+                            } label: {
+                                StatusIpSlotView()
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(dashboardDisplayIp(coreIp: trafficStore.outboundIp) == nil)
                             Spacer().frame(height: 4)
                             chipsSlot
                         }
-                        // v0.2.68: the whole status card opens the
-                        // 出站 IP sheet (the in-sheet "查看完整 IP 质量"
-                        // button is gone — the video's sheet has none).
-                        .contentShape(Rectangle())
                     }
                     Spacer().frame(height: 16)
                     HStack(spacing: 24) {
@@ -1344,11 +1344,6 @@ struct DashboardView: View {
         // .concordCard() 本来就没有描边,此处应与之一致。
         .accessibilityLabel("状态")
         .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
-        // v0.2.56: tapping the card (outside the play button and
-        // the clover refresh, which keep their own taps) opens
-        // the 出站 IP sheet (MuYu key_3).
-        .contentShape(Rectangle())
-        .onTapGesture { showOutboundIPSheet = true }
     }
 
     /// Wave fill (_StatusWavePainter colours): v0.2.68 running is
@@ -3440,50 +3435,6 @@ private struct MemoryDetailSheetHost: View {
         .task {
             if let bytes = readAppMemoryBytes() {
                 appMemoryBytes = bytes
-            }
-        }
-    }
-}
-
-/// Host for the 出站 IP sheet (MuYu key_3): the egress-IP read
-/// and the core probe live here, in a view that observes
-/// TrafficStore. The ip-api.com lookup still runs in
-/// DashboardView (fetchIPInfo) and arrives as plain values.
-private struct OutboundIPSheetHost: View {
-    @EnvironmentObject private var trafficStore: TrafficStore
-    @EnvironmentObject private var proxyStore: ProxyStore
-
-    @Binding var hideIp: Bool
-    let ipInfo: IPQualityInfo?
-    let assessed: IPQualityInfo?
-    let ipAsn: String?
-    let isChecking: Bool
-    let fetchFailed: Bool
-    let fetchIPInfo: () async -> Void
-
-    var body: some View {
-        OutboundIPSheet(
-            displayIp: dashboardDisplayIp(coreIp: trafficStore.outboundIp),
-            hideIp: $hideIp,
-            assessed: assessed,
-            ipAsn: ipAsn,
-            isChecking: isChecking,
-            fetchFailed: fetchFailed,
-            onRefresh: {
-                Task {
-                    await fetchIPInfo()
-                    await trafficStore.probe()
-                }
-            }
-        )
-        // v0.2.95 Bug 2: opening the sheet used to show a stale
-        // failure even though the core's outboundIp had never been
-        // (re-)probed since the tunnel connected — probe fresh on
-        // appear while the tunnel runs and the IP is still unknown,
-        // so the sheet can show the core IP instead.
-        .onAppear {
-            if TunnelManager.shared.isRunning, trafficStore.outboundIp == nil {
-                Task { await trafficStore.probe() }
             }
         }
     }

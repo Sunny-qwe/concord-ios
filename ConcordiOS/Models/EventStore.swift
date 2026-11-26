@@ -4,9 +4,18 @@ import Combine
 // MARK: - Event store (core events feed)
 // Backed by Concord events.watch (stream of CoreEvent). The
 // extension accumulates events into the App Group snapshot file
-// (cap 500) because the app only reads it when the Events tab is
-// opened; the file IS the buffer. CoreEvent has no id, so rows are
-// keyed by a content hash (see `key(for:)`).
+// (cap 500); the in-app core keeps its own live buffer. CoreEvent
+// has no id, so rows are keyed by a content hash (see `key(for:)`).
+//
+// v0.2.139: there is no Events page any more (upstream FlClash has
+// none — the Logs/Events segment was deleted). This store now exists
+// only for the script-notification banner (ScriptNotificationBanner,
+// upstream core_manager `_onScriptNotification`): refresh() merges
+// the stream and raises `pendingScriptNotification` for new
+// scriptNotification events. The tab-facing API (filtered,
+// typeFilter, eventTypes, lastUpdated, lastError) is gone with the
+// tab; the events.watch subscribe in AppCore / ConcordClient stays
+// because the banner depends on it.
 //
 // Event kinds (upstream crates/proto/src/types/live.rs CoreEvent):
 // resourceUpdate (provider update, phase updating/updated/failed/
@@ -63,10 +72,6 @@ struct ScriptNotificationItem: Identifiable, Equatable {
 
 final class EventStore: ObservableObject {
     @Published var entries: [StampedCoreEvent] = []
-    @Published var searchText = ""
-    @Published var typeFilter = "全部"
-    @Published var lastError: String?
-    @Published var lastUpdated: Date?
     /// The newest unread script notification to show as a banner,
     /// or nil when there is none (v0.2.86 item 4; upstream mobile
     /// never stacks banners — application.dart
@@ -93,21 +98,6 @@ final class EventStore: ObservableObject {
 
     init(client: ConcordClient = ConcordClient()) {
         self.client = client
-    }
-
-    var eventTypes: [String] {
-        var types = ["全部"]
-        types.append(contentsOf: Set(entries.map { $0.event.type }).sorted())
-        return types
-    }
-
-    var filtered: [StampedCoreEvent] {
-        entries.filter { entry in
-            let typeOK = typeFilter == "全部" || entry.event.type == typeFilter
-            let textOK = searchText.isEmpty
-                || entry.event.summary.localizedCaseInsensitiveContains(searchText)
-            return typeOK && textOK
-        }
     }
 
     /// Content key for merge/dedupe. `change` is excluded (see the
@@ -158,14 +148,13 @@ final class EventStore: ObservableObject {
             // snapshot only. Tunnel up → the extension snapshot, as
             // before. Tunnel down → the in-app core's live
             // events.watch buffer (AppCore boots it on demand; the
-            // Dashboard / Logs lifecycle keeps it running while the
-            // app is in the foreground, like MuYu's startCore at
-            // launch), so the Dashboard 最近请求 count and the
-            // Events page show rows with the VPN off instead of 0.
-            // The merge below is identical for both sources — and
-            // key-based, so an event seen from the in-app core is
-            // never double-counted when the same event later
-            // arrives in the extension snapshot.
+            // Dashboard lifecycle keeps it running while the app is
+            // in the foreground, like MuYu's startCore at launch),
+            // so the script-notification banner still fires with
+            // the VPN off. The merge below is identical for both
+            // sources — and key-based, so an event seen from the
+            // in-app core is never double-counted when the same
+            // event later arrives in the extension snapshot.
             let fresh = try await runEvents(
                 tunnel: { try await self.client.eventEntries() },
                 appCore: {
@@ -201,8 +190,6 @@ final class EventStore: ObservableObject {
             merged.sort { $0.receivedAt < $1.receivedAt }
             if merged.count > 500 { merged.removeFirst(merged.count - 500) }
             entries = merged
-            lastUpdated = Date()
-            lastError = nil
             // Script-notification banner (upstream
             // core_manager.dart `_onScriptNotification`): discard
             // when the text is empty; several arrivals in one
@@ -234,7 +221,10 @@ final class EventStore: ObservableObject {
             }
             eventsBaselineLoaded = true
         } catch {
-            lastError = error.localizedDescription
+            // No error surface any more (v0.2.139: the Events tab
+            // that showed lastError is gone); a failed refresh just
+            // keeps the previous entries, and the next refresh
+            // retries.
         }
     }
 
@@ -242,8 +232,8 @@ final class EventStore: ObservableObject {
     /// or the in-app core (booted on demand) when the VPN is off —
     /// same shape as DnsStore.runDns. The in-app core's live
     /// events.watch buffer is the only live source with the VPN
-    /// off, so the Dashboard 最近请求 count and the Events page
-    /// show rows instead of 0. The ensureStarted call is skipped
+    /// off, so the script-notification banner still fires with the
+    /// VPN off. The ensureStarted call is skipped
     /// when the core is already running: its early-return path
     /// walks the whole provider cache (reads every file to compare
     /// bytes) — pointless work on a hot path. If the tunnel starts

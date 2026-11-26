@@ -6,10 +6,16 @@ import UIKit
 // (no clear button — the rows come from the extension snapshot, so
 // clearing the in-memory list would only fake it). Backed by Concord
 // log.watch (stream of LogEntry) and core.lastWarnings.
+//
+// v0.2.139: upstream has NO Events page at all — the 日志/事件 segment
+// is deleted (user reversal 2026-11-27 ~00:12, "三处都改回上游的样子").
+// This is now the Logs-only page. The EventStore class and the
+// events.watch stream stay for the script-notification banner
+// (ScriptNotificationBanner) and Dashboard refreshes; only the tab
+// UI and its store API are gone.
 
 struct LogsView: View {
     @EnvironmentObject private var logStore: LogStore
-    @EnvironmentObject private var eventStore: EventStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var settingsStore: SettingsStore
@@ -19,7 +25,6 @@ struct LogsView: View {
     @State private var exportedFileName: String?
     @State private var showCopiedAlert = false
     @Environment(\.dismiss) private var dismiss
-    @State private var tab = LogsTab.logs
     /// The log row tapped for its detail sheet (C8).
     @State private var selectedEntry: ConcordLogEntry?
     /// Persisted diagnostics (v0.2.40): AppCore writes the boot
@@ -28,21 +33,12 @@ struct LogsView: View {
     /// the VPN is off and the live list is empty.
     @State private var bootReport: String?
     @State private var delayReport: String?
-    /// Whether the user is currently at the bottom of each list
-    /// (upstream "following": logs.dart wires its auto-scroll
-    /// through a follow-mode list controller, so new rows only pull
-    /// the list down while it is already at the end). Without this,
-    /// every new entry yanked the list to the bottom even while the
-    /// user was reading older rows — the list fought the scroll.
-    /// Tracked by the last row's appear/disappear below.
-    /// v0.2.130: both start OFF, so the page opens at the TOP
-    /// (the first/oldest entry) instead of being yanked to the
-    /// bottom on the first load — the old `= true` made the
-    /// count-change handler scroll to the last row the moment the
-    /// list populated. Following turns on only when the user
-    /// actually scrolls to the last row (its onAppear below).
-    @State private var followingLogs = false
-    @State private var followingEvents = false
+    /// v0.2.139 (L-D6): the one-time scroll that opens the page at
+    /// the newest row. The list itself stays pinned to the bottom
+    /// through `.defaultScrollAnchor(.bottom)` (see below); this
+    /// flag only covers the first population, when the anchor has
+    /// no content change to maintain yet.
+    @State private var didInitialScroll = false
 
     var body: some View {
         // No NavigationStack here on purpose: this page is pushed
@@ -64,7 +60,7 @@ struct LogsView: View {
                 if client.mode == .sample {
                     HStack {
                         SampleDataBadge()
-                        Text(tab == .logs ? "日志为示例数据" : "事件为示例数据")
+                        Text("日志为示例数据")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -85,12 +81,12 @@ struct LogsView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
-                    TextField(tab == .logs ? "搜索日志" : "搜索事件", text: tab == .logs ? $logStore.searchText : $eventStore.searchText)
+                    TextField("搜索日志", text: $logStore.searchText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    if !(tab == .logs ? logStore.searchText : eventStore.searchText).isEmpty {
+                    if !logStore.searchText.isEmpty {
                         Button {
-                            if tab == .logs { logStore.searchText = "" } else { eventStore.searchText = "" }
+                            logStore.searchText = ""
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
@@ -104,80 +100,71 @@ struct LogsView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 4)
 
-                Picker("内容", selection: $tab) {
-                    ForEach(LogsTab.allCases, id: \.self) { tab in
-                        Text(tab.rawValue).tag(tab)
+                // Upstream (logs.dart, mobile): no permanent level
+                // row — the filter lives in the bar menu and only
+                // an ACTIVE filter shows as a removable chip under
+                // the bar (Scaffold keywords strip).
+                if logStore.levelFilter != .all {
+                    HStack {
+                        HStack(spacing: 4) {
+                            Text(logStore.levelFilter.rawValue)
+                            Button { logStore.levelFilter = .all } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .font(.footnote)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Color.secondary.opacity(0.15), in: Capsule())
+                        Spacer()
                     }
+                    .padding(.horizontal)
+                    .padding(.vertical, 4)
                 }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.vertical, 4)
 
-                if tab == .logs {
-                    // Upstream (logs.dart, mobile): no permanent level
-                    // row — the filter lives in the bar menu and only
-                    // an ACTIVE filter shows as a removable chip under
-                    // the bar (Scaffold keywords strip).
-                    if logStore.levelFilter != .all {
-                        HStack {
-                            HStack(spacing: 4) {
-                                Text(logStore.levelFilter.rawValue)
-                                Button { logStore.levelFilter = .all } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .foregroundStyle(.secondary)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            .font(.footnote)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Color.secondary.opacity(0.15), in: Capsule())
-                            Spacer()
+                if !logStore.warnings.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("核心警告（core.lastWarnings）")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        ForEach(logStore.warnings, id: \.message) { warning in
+                            Text(warning.message).font(.caption2).foregroundStyle(.orange)
                         }
-                        .padding(.horizontal)
-                        .padding(.vertical, 4)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // v0.2.111: this card only — radius 20, not the
+                    // global cardRadius 28 (user: 核心警告 card too
+                    // round). Same fill + padding + shadow as
+                    // .concordCard, only the corner radius differs.
+                    .padding(12)
+                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
+                    .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
+                    .padding(.horizontal)
+                    .padding(.vertical, 4)
+                }
 
-                    if !logStore.warnings.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("核心警告（core.lastWarnings）")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            ForEach(logStore.warnings, id: \.message) { warning in
-                                Text(warning.message).font(.caption2).foregroundStyle(.orange)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        // v0.2.111: this card only — radius 20, not the
-                        // global cardRadius 28 (user: 核心警告 card too
-                        // round). Same fill + padding + shadow as
-                        // .concordCard, only the corner radius differs.
-                        .padding(12)
-                        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
-                        .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
-                        .padding(.horizontal)
-                        .padding(.vertical, 4)
+                if logStore.filtered.isEmpty && logStore.vpnDiagnosticEntries.isEmpty {
+                    // The user asked for this order explicitly
+                    // (v0.2.49, IMG_1165): the diagnostic cards
+                    // sit right under the filters and the
+                    // "暂无日志" block goes at the BOTTOM, after
+                    // them — not in the middle of the page.
+                    // (Upstream FlClash logs.dart shows its empty
+                    // state where the list would be, i.e. at the
+                    // top; this order is an intentional deviation
+                    // — the diagnostics are ours-only content and
+                    // the user wants the text at the top.)
+                    ScrollView {
+                        persistedDiagnosticsView
+                        compactEmptyStateView
                     }
-
-                    if logStore.filtered.isEmpty && logStore.vpnDiagnosticEntries.isEmpty {
-                        // The user asked for this order explicitly
-                        // (v0.2.49, IMG_1165): the diagnostic cards
-                        // sit right under the filters and the
-                        // "暂无日志" block goes at the BOTTOM, after
-                        // them — not in the middle of the page.
-                        // (Upstream FlClash logs.dart shows its empty
-                        // state where the list would be, i.e. at the
-                        // top; this order is an intentional deviation
-                        // — the diagnostics are ours-only content and
-                        // the user wants the text at the top.)
-                        ScrollView {
-                            persistedDiagnosticsView
-                            compactEmptyStateView
-                        }
-                        // v0.2.66: tab-bar clearance for pushed pages.
-                        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-                    } else {
-                        ScrollViewReader { proxy in
+                    // v0.2.66: tab-bar clearance for pushed pages.
+                    .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+                } else {
+                    ScrollViewReader { proxy in
+                        ZStack(alignment: .trailing) {
                             List {
                                 // Native iOS VPN diagnostic logs
                                 // (L-M1): the extension's own
@@ -197,100 +184,34 @@ struct LogsView: View {
                             }
                             .listStyle(.insetGrouped)
                             .scrollContentBackground(.hidden)
+                            // v0.2.139 (L-M3): the page provides its
+                            // own floating scrollbar (below), so the
+                            // system indicator is hidden.
+                            .scrollIndicators(.hidden)
+                            // v0.2.139 (L-D6): upstream's `reverse:
+                            // true` — the list is anchored at the
+                            // bottom (newest) and new rows pin it
+                            // there while the user is at the end,
+                            // without a scrollTo on every update
+                            // (SwiftUI's native equivalent of
+                            // FollowEndScrollPhysics). The one-time
+                            // scroll below covers the first
+                            // population, when the anchor has no
+                            // content change to maintain yet.
+                            .defaultScrollAnchor(.bottom)
                             // v0.2.66: tab-bar clearance for pushed pages.
                             .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+                            .onAppear { scrollToNewestOnce(proxy) }
                             .onChange(of: logStore.filtered.count) { _, _ in
-                                if logStore.autoScroll, followingLogs, let last = logStore.filtered.last {
-                                    // v0.2.82 (DNS freeze): never scroll
-                                    // synchronously inside onChange — defer
-                                    // to the next runloop so the current
-                                    // update/layout pass finishes first.
-                                    DispatchQueue.main.async {
-                                        proxy.scrollTo(last.id, anchor: .bottom)
-                                    }
-                                }
+                                scrollToNewestOnce(proxy)
+                            }
+                            // v0.2.139 (L-M3): floating scrollbar
+                            // with a time hint (upstream
+                            // FloatingScrollbar + hintBuilder).
+                            if !logStore.filtered.isEmpty {
+                                LogsFloatingScrollbar(entries: logStore.filtered, proxy: proxy)
                             }
                         }
-                    }
-                } else {
-                    Picker("类型", selection: $eventStore.typeFilter) {
-                        ForEach(eventStore.eventTypes, id: \.self) { type in
-                            Text(type).tag(type)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal)
-                    .padding(.vertical, 4)
-
-                    if eventStore.filtered.isEmpty {
-                        // Same compact treatment as the logs tab:
-                        // a bounded empty state, not a greedy
-                        // ContentUnavailableView.
-                        VStack(spacing: 8) {
-                            Image(systemName: "bolt")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.secondary)
-                            Text("暂无事件")
-                                .font(.headline)
-                            Text("核心事件（提供方更新、测速、致命错误、状态变化）会显示在这里")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 24)
-                    } else {
-                        ScrollViewReader { proxy in
-                            List(eventStore.filtered) { entry in
-                                HStack(alignment: .top, spacing: 8) {
-                                    Text(ConcordFormat.time(entry.receivedAtMillis))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 64, alignment: .leading)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(entry.event.type)
-                                            .font(.caption2)
-                                            .fontWeight(.semibold)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(eventColor(entry.event.type).opacity(0.15), in: Capsule())
-                                            .foregroundStyle(eventColor(entry.event.type))
-                                        Text(entry.event.summary)
-                                            .font(.caption2)
-                                            .lineLimit(3)
-                                    }
-                                }
-                                .id(entry.id)
-                                .onAppear { if entry.id == eventStore.filtered.last?.id { followingEvents = true } }
-                                .onDisappear { if entry.id == eventStore.filtered.last?.id { followingEvents = false } }
-                            }
-                            .listStyle(.insetGrouped)
-                            .scrollContentBackground(.hidden)
-                            // v0.2.66: tab-bar clearance for pushed pages.
-                            .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-                            .onChange(of: eventStore.filtered.count) { _, _ in
-                                if logStore.autoScroll, followingEvents, let last = eventStore.filtered.last {
-                                    // v0.2.82 (DNS freeze): same defer as
-                                    // the logs list above.
-                                    DispatchQueue.main.async {
-                                        proxy.scrollTo(last.id, anchor: .bottom)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if let updated = eventStore.lastUpdated {
-                        Text("上次更新：\(updated.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal)
-                    }
-                    if let error = eventStore.lastError {
-                        Text(error)
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal)
                     }
                 }
             }
@@ -314,72 +235,68 @@ struct LogsView: View {
                     Image(systemName: "chevron.left")
                 }
             }
-                if tab == .logs {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        // Level filter (upstream: the filter lives in
-                        // the bar's overflow menu, not a permanent row;
-                        // a Picker inside a Menu renders checkmarks).
-                        Menu {
-                            Picker("级别", selection: $logStore.levelFilter) {
-                                ForEach(LogLevelFilter.allCases) { level in
+                ToolbarItem(placement: .topBarTrailing) {
+                    // Level filter (upstream: the filter lives in
+                    // the bar's overflow menu, not a permanent row;
+                    // a Picker inside a Menu renders checkmarks).
+                    Menu {
+                        Picker("级别", selection: $logStore.levelFilter) {
+                            ForEach(LogLevelFilter.allCases) { level in
+                                Text(level.rawValue).tag(level)
+                            }
+                        }
+                        // v0.2.86 (item 9): upstream logs.dart
+                        // _buildMenuItems puts the CORE log level
+                        // in the same bar menu as a submenu
+                        // (label = logLevel, subtitle = current
+                        // level, checked row = active option) and
+                        // writes it via patchClashConfig. This
+                        // submenu mirrors it: same label
+                        // ("日志等级", arb/intl_zh.arb:122) and
+                        // same option names (LogLevel raw values
+                        // = Dart enum .name). Unlike the filter
+                        // above (display-only, LogStore), a pick
+                        // here writes SettingsStore.logLevel —
+                        // the .onChange below saves it and
+                        // patches the running core. Upstream
+                        // default is error; ours stays info.
+                        Menu("日志等级") {
+                            Picker("日志等级", selection: $settingsStore.logLevel) {
+                                ForEach(LogLevel.allCases) { level in
                                     Text(level.rawValue).tag(level)
                                 }
                             }
-                            // v0.2.86 (item 9): upstream logs.dart
-                            // _buildMenuItems puts the CORE log level
-                            // in the same bar menu as a submenu
-                            // (label = logLevel, subtitle = current
-                            // level, checked row = active option) and
-                            // writes it via patchClashConfig. This
-                            // submenu mirrors it: same label
-                            // ("日志等级", arb/intl_zh.arb:122) and
-                            // same option names (LogLevel raw values
-                            // = Dart enum .name). Unlike the filter
-                            // above (display-only, LogStore), a pick
-                            // here writes SettingsStore.logLevel —
-                            // the .onChange below saves it and
-                            // patches the running core. Upstream
-                            // default is error; ours stays info.
-                            Menu("日志等级") {
-                                Picker("日志等级", selection: $settingsStore.logLevel) {
-                                    ForEach(LogLevel.allCases) { level in
-                                        Text(level.rawValue).tag(level)
-                                    }
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "line.3.horizontal.decrease.circle")
                         }
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        // Export (v0.2.35): the share icon now offers
-                        // the full bundled export — one .txt file
-                        // (app log + core warnings + app-core boot /
-                        // GeoSeed diagnostic + VPN startup diagnostic)
-                        // written to Documents ("文件" App) with a
-                        // success dialog — or a copy of the same text
-                        // to the clipboard, so the user can paste it
-                        // straight into a message.
-                        Menu {
-                            Button("导出日志文件") { exportLogFile() }
-                            Button("复制日志文本") { copyLogs() }
-                        } label: {
-                            Image(systemName: "square.and.arrow.up")
-                        }
-                    }
-                    // No clear button: the old trash button only
-                    // emptied the in-memory list and the rows came
-                    // back on the next refresh from the extension
-                    // snapshot (audit B27). FlClash has no clear
-                    // button either — only export.
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    // Export (v0.2.35): the share icon now offers
+                    // the full bundled export — one .txt file
+                    // (app log + core warnings + app-core boot /
+                    // GeoSeed diagnostic + VPN startup diagnostic)
+                    // written to Documents ("文件" App) with a
+                    // success dialog — or a copy of the same text
+                    // to the clipboard, so the user can paste it
+                    // straight into a message.
+                    Menu {
+                        Button("导出日志文件") { exportLogFile() }
+                        Button("复制日志文本") { copyLogs() }
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
+                // No clear button: the old trash button only
+                // emptied the in-memory list and the rows came
+                // back on the next refresh from the extension
+                // snapshot (audit B27). FlClash has no clear
+                // button either — only export.
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         Task {
-                            if tab == .logs {
-                                loadPersistedReports()
-                                await logStore.refresh()
-                            } else { await eventStore.refresh() }
+                            loadPersistedReports()
+                            await logStore.refresh()
                         }
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -432,40 +349,37 @@ struct LogsView: View {
                 Text(exportError ?? "未知错误")
             }
             .refreshable {
-                if tab == .logs {
-                    loadPersistedReports()
-                    await logStore.refresh()
-                } else { await eventStore.refresh() }
+                loadPersistedReports()
+                await logStore.refresh()
             }
-            // Live feed (audit B26/B35): poll the active tab every
-            // 1 s like FlClash, only while this page is visible.
-            // The old `guard TunnelManager.isRunning` stopped all
+            // Live feed (audit B26/B35): poll every 1 s like
+            // FlClash, only while this page is visible. The old
+            // `guard TunnelManager.isRunning` stopped all
             // polling with the VPN off — but the app core runs (and
             // logs) without the tunnel, so LogStore.refresh() now
             // reads the app core's log.watch buffer when it is up
-            // and no-ops when neither core runs (Issue 2). The
-            // events tab still only polls while the tunnel runs —
-            // its stream is extension-only. The task restarts when
-            // the tab changes (id: tab) and is cancelled when the
-            // page disappears. New rows auto-scroll via the onChange
-            // handlers on each list.
-            .task(id: tab) {
+            // and no-ops when neither core runs (Issue 2).
+            .task {
                 loadPersistedReports()
-                if tab == .logs {
-                    if logStore.entries.isEmpty { await logStore.refresh() }
-                } else if eventStore.entries.isEmpty {
-                    await eventStore.refresh()
-                }
+                if logStore.entries.isEmpty { await logStore.refresh() }
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     guard !Task.isCancelled else { break }
-                    if tab == .logs {
-                        await logStore.refresh()
-                    } else if TunnelManager.shared.isRunning {
-                        await eventStore.refresh()
-                    }
+                    await logStore.refresh()
                 }
             }
+    }
+
+    /// Opens the page at the newest row, once: the first time the
+    /// list is populated (or on appear when it already holds rows).
+    /// Deferred to the next runloop (v0.2.82: never scroll
+    /// synchronously inside onChange/layout).
+    private func scrollToNewestOnce(_ proxy: ScrollViewProxy) {
+        guard !didInitialScroll, let last = logStore.filtered.last else { return }
+        didInitialScroll = true
+        DispatchQueue.main.async {
+            proxy.scrollTo(last.id, anchor: .bottom)
+        }
     }
 
     /// Reads the persisted diagnostics AppCore wrote to disk
@@ -616,8 +530,6 @@ struct LogsView: View {
             selectedEntry.wrappedValue = entry
         }
         .id(entry.id)
-        .onAppear { if entry.id == logStore.filtered.last?.id { followingLogs = true } }
-        .onDisappear { if entry.id == logStore.filtered.last?.id { followingLogs = false } }
     }
 
     /// Parsed route body (L-M2, upstream logs.dart _LogBody):
@@ -686,22 +598,121 @@ struct LogsView: View {
         default: return .green
         }
     }
-
-    private func eventColor(_ type: String) -> Color {
-        switch type {
-        case "fatal": return .red
-        case "resourceUpdate": return .blue
-        case "delay": return .green
-        case "stateChanged": return .orange
-        case "dialerLoop": return .purple
-        default: return .secondary
-        }
-    }
 }
 
-enum LogsTab: String, CaseIterable {
-    case logs = "日志"
-    case events = "事件"
+/// Floating scrollbar with a time hint (upstream logs.dart
+/// FloatingScrollbar + hintBuilder, and record_feed.dart
+/// `recordAtFraction`: the hint is the date-time of the log at the
+/// dragged fraction of the list; dragging scrubs the list there).
+/// SwiftUI's List exposes no scroll offset on iOS 17
+/// (`.onScrollGeometryChange` is iOS 18+), so the thumb does NOT
+/// track manual list scrolling — it rests at the last scrub
+/// position (initially the bottom = newest). Tapping the track
+/// jumps the list to that fraction, like upstream's scrollbar.
+private struct LogsFloatingScrollbar: View {
+    let entries: [ConcordLogEntry]
+    let proxy: ScrollViewProxy
+
+    /// Thumb position, 0 = top (oldest) … 1 = bottom (newest).
+    @State private var fraction: CGFloat = 1
+    @State private var hint: String?
+    @State private var scrubbing = false
+    @State private var hideToken = 0
+    @State private var lastScrubScroll = Date.distantPast
+
+    private static let thumbHeight: CGFloat = 56
+    private static let stripWidth: CGFloat = 28
+
+    /// The log at the current fraction (upstream recordAtFraction).
+    private var hintEntry: ConcordLogEntry? {
+        guard !entries.isEmpty else { return nil }
+        let index = Int((fraction * CGFloat(entries.count - 1)).rounded())
+        return entries[max(0, min(entries.count - 1, index))]
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let height = geo.size.height
+            let thumbY = fraction * max(0, height - Self.thumbHeight)
+            ZStack(alignment: .trailing) {
+                // Track: transparent hit strip at the trailing edge.
+                // minimumDistance 0, so a tap on the track jumps
+                // the list to that fraction; a drag scrubs it.
+                Color.clear
+                    .frame(width: Self.stripWidth)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                scrubbing = true
+                                let y = value.location.y - Self.thumbHeight / 2
+                                fraction = min(1, max(0, y / max(1, height - Self.thumbHeight)))
+                                hint = hintEntry.map { Self.fullDateTime($0.time) }
+                                scrub(to: hintEntry, force: false)
+                            }
+                            .onEnded { _ in
+                                scrub(to: hintEntry, force: true)
+                                let token = hideToken + 1
+                                hideToken = token
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                                    if hideToken == token {
+                                        scrubbing = false
+                                        hint = nil
+                                    }
+                                }
+                            }
+                    )
+                // Thumb + hint pill. Hit-testing off: the track
+                // above owns the touches in this strip.
+                VStack(alignment: .trailing, spacing: 0) {
+                    Spacer().frame(height: thumbY)
+                    HStack(spacing: 8) {
+                        if scrubbing, let hint {
+                            Text(hint)
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(Color.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        RoundedRectangle(cornerRadius: 2.5)
+                            .fill(Color.secondary.opacity(scrubbing ? 0.9 : 0.55))
+                            .frame(width: 5, height: Self.thumbHeight)
+                    }
+                    .padding(.trailing, (Self.stripWidth - 5) / 2)
+                    Spacer()
+                }
+                .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// Scrolls to the entry at the current fraction, throttled
+    /// while scrubbing (v0.2.82: never scroll synchronously inside
+    /// a gesture/layout pass — defer to the next runloop).
+    private func scrub(to entry: ConcordLogEntry?, force: Bool) {
+        guard let entry else { return }
+        let now = Date()
+        guard force || now.timeIntervalSince(lastScrubScroll) > 0.1 else { return }
+        lastScrubScroll = now
+        DispatchQueue.main.async {
+            proxy.scrollTo(entry.id, anchor: .top)
+        }
+    }
+
+    /// Full date-time for the hint ("2026-11-26 23:15:29"):
+    /// DateFormatter setup is expensive, so one instance serves
+    /// every call (main thread only — all callers are view code).
+    private static let fullDateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
+
+    private static func fullDateTime(_ epochMillis: Int64) -> String {
+        fullDateTimeFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(epochMillis) / 1000))
+    }
 }
 
 /// One log row, full text selectable, with a copy button (C8):

@@ -19,7 +19,6 @@ final class LogStore: ObservableObject {
     @Published var entries: [ConcordLogEntry] = []
     @Published var levelFilter: LogLevelFilter = .all
     @Published var searchText = ""
-    @Published var autoScroll = true
     @Published var warnings: [ConcordWarning] = []
     @Published var lastError: String?
     /// Connection diagnostics for the export (LogStore does not own

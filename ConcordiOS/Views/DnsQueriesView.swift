@@ -2,7 +2,11 @@ import SwiftUI
 
 // DnsQueriesView — moved out of SettingsView.swift in v0.2.68 (no behaviour change).
 // The Dashboard stats sheet and the Tools > DNS查询 page share this view; the sheet
-// presents it in records-only mode, the Tools page with the manual query + filters.
+// presents it in records-only mode, the Tools page with the filters + follow toggle.
+// v0.2.139 (C19-c1 + Q5): the manual query, Fake-IP flush, refresh + sample badge,
+// inline error surfaces and folding are gone (upstream has none of them); the
+// filters live in the toolbar filter menu and the active ones show as removable
+// chips above the list.
 
 /// DNS capsule fill (v0.2.82): neutral grey measured from the MuYu
 /// video DNS sheet (#B8B8B8, dominant fill tone in f_014). The video's
@@ -14,16 +18,17 @@ fileprivate let dnsCapsuleFill = Color(red: 184/255, green: 184/255, blue: 184/2
 
 // MARK: - DNS queries (FlClash: DnsQueriesView, lib/views/dns_queries.dart)
 
-/// Record-list filter: all, failed only, cache hits, live lookups.
+/// Record-list filter (upstream dns_queries.dart DnsStatus):
+/// all / failed only / cache hits. No "live" option — upstream
+/// has no such status (a non-cached record is simply a record).
 private enum DnsRecordFilter: String, CaseIterable {
-    case all, errors, cached, live
+    case all, errors, cached
 
     var title: String {
         switch self {
         case .all: return "全部"
         case .errors: return "错误"
         case .cached: return "缓存命中"
-        case .live: return "实时查询"
         }
     }
 
@@ -32,23 +37,8 @@ private enum DnsRecordFilter: String, CaseIterable {
         case .all: return true
         case .errors: return DnsErrorRow.isFailed(entry)
         case .cached: return entry.cached == true
-        case .live: return entry.cached != true
         }
     }
-}
-
-/// One displayed DNS row after folding (C10): the newest entry of
-/// a run of identical consecutive rows, plus how many it stands for.
-/// v0.2.111: the identity is "\(entry.id)-\(entry.seq)" — entry.id
-/// alone ("\(time)-\(domain)-\(type)") is NOT unique (same-ms
-/// same-domain+type queries share it) and ForEach with duplicate
-/// ids is undefined behaviour in SwiftUI. seq is assigned once at
-/// first sight by DnsStore and preserved across merges, so the
-/// identity is unique and stable for the same logical entry.
-private struct FoldedDnsEntry: Identifiable {
-    var id: String { "\(entry.id)-\(entry.seq)" }
-    let entry: ConcordDnsEntry
-    let count: Int
 }
 
 struct DnsQueriesView: View {
@@ -105,8 +95,6 @@ struct DnsQueriesView: View {
     @EnvironmentObject private var dnsStore: DnsStore
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var client: ConcordClient
-    @State private var queryName = ""
-    @State private var queryType = "A"
     @State private var selectedEntry: ConcordDnsEntry?
     @State private var recordFilter: DnsRecordFilter = .all
     /// Record-type facet (FlClash dns_queries.dart: the type facet
@@ -142,9 +130,11 @@ struct DnsQueriesView: View {
     /// release velocity to onSheetDragChanged/onSheetDragEnded,
     /// and recognises simultaneously with the scroll view's own
     /// pan recognizer — the list still scrolls a little while
-    /// the sheet grows, and pull-to-refresh still works (no
-    /// .scrollDisabled). It also works with zero rows, where a
-    /// scroll-position-driven approach could never fire.
+    /// the sheet grows (no .scrollDisabled). v0.2.139: the
+    /// pull-to-refresh the mechanism used to coexist with is
+    /// gone (Q5 — upstream has none here). It also works with
+    /// zero rows, where a scroll-position-driven approach could
+    /// never fire.
 
     /// v0.2.103: the v0.2.101 sheet-presentation machinery is
     /// gone — sheetPresented (0.6s .onAppear gate), sheetAtTop
@@ -166,28 +156,40 @@ struct DnsQueriesView: View {
             .filter { selectedRcode == nil || $0.rcode == selectedRcode }
     }
 
-    /// Consecutive identical rows folded for display only (C10):
-    /// repeated queries flood the list. The stored entries are
-    /// untouched — only the rows shown are grouped, newest first.
-    /// One row + a ×N badge stands for N identical consecutive rows.
-    private var foldedEntries: [FoldedDnsEntry] {
-        var folded: [FoldedDnsEntry] = []
-        for entry in visibleEntries {
-            if let last = folded.last, Self.sameQuery(last.entry, entry) {
-                folded[folded.count - 1] = FoldedDnsEntry(entry: last.entry, count: last.count + 1)
-            } else {
-                folded.append(FoldedDnsEntry(entry: entry, count: 1))
-            }
-        }
-        return folded
+    /// Consecutive identical rows are NOT folded (v0.2.139, Q5):
+    /// upstream shows every record. Rows identify by `seq` —
+    /// assigned once at first sight by DnsStore and preserved
+    /// across merges; `ConcordDnsEntry.id` alone
+    /// ("\(time)-\(domain)-\(type)") is NOT unique (same-ms
+    /// same-domain+type queries share it) and ForEach with
+    /// duplicate ids is undefined behaviour in SwiftUI.
+    /// One active filter shown as a removable chip above the
+    /// list (upstream requests.dart: active filters as keyword
+    /// chips under the bar).
+    private struct ActiveDnsFilter: Identifiable {
+        enum Kind { case status, type, initiator, rcode }
+        let kind: Kind
+        let label: String
+        var id: String { "\(kind)-\(label)" }
     }
 
-    /// Two rows are the same query when everything the row shows
-    /// matches (time and delay excluded — each query has its own).
-    private static func sameQuery(_ a: ConcordDnsEntry, _ b: ConcordDnsEntry) -> Bool {
-        a.domain == b.domain && a.type == b.type && a.initiator == b.initiator
-            && a.upstream == b.upstream && a.cached == b.cached
-            && a.answers == b.answers && a.rcode == b.rcode && a.error == b.error
+    /// The active filters, in menu order (status, type,
+    /// initiator, rcode).
+    private var activeFilters: [ActiveDnsFilter] {
+        var filters: [ActiveDnsFilter] = []
+        if recordFilter != .all {
+            filters.append(ActiveDnsFilter(kind: .status, label: recordFilter.title))
+        }
+        if let type = selectedType {
+            filters.append(ActiveDnsFilter(kind: .type, label: type))
+        }
+        if let initiator = selectedInitiator {
+            filters.append(ActiveDnsFilter(kind: .initiator, label: initiator))
+        }
+        if let rcode = selectedRcode {
+            filters.append(ActiveDnsFilter(kind: .rcode, label: rcode))
+        }
+        return filters
     }
 
     private var availableTypes: [String] {
@@ -215,7 +217,7 @@ struct DnsQueriesView: View {
     /// runloop lets the current update/layout pass finish first.
     private func scrollToNewest(_ proxy: ScrollViewProxy) {
         guard mode == .page else { return }
-        if let id = foldedEntries.first?.id {
+        if let id = visibleEntries.first?.seq {
             DispatchQueue.main.async {
                 withAnimation { proxy.scrollTo(id, anchor: .top) }
             }
@@ -307,7 +309,7 @@ struct DnsQueriesView: View {
     /// The sheet's records-only list (v0.2.68; rebuilt v0.2.102):
     /// no manual query, no cache / Fake-IP buttons, no filter
     /// segment, no follow toggle + hint, no facet menus — just
-    /// the folded records, with bottom clearance for the floating
+    /// the records, with bottom clearance for the floating
     /// search bar.
     ///
     /// v0.2.102: this was a List (.insetGrouped +
@@ -342,25 +344,12 @@ struct DnsQueriesView: View {
                     }
                 )
                 .frame(height: 0)
-                if client.mode == .sample {
-                    HStack {
-                        SampleDataBadge()
-                        Text("DNS 记录为示例数据")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
-                }
-                if foldedEntries.isEmpty {
+                if visibleEntries.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(dnsStore.filtered.isEmpty ? "暂无 DNS 查询记录" : "没有符合筛选的记录")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        if let error = dnsStore.lastError, dnsStore.filtered.isEmpty {
-                            Text(error).font(.caption2).foregroundStyle(.red)
-                        } else if dnsStore.filtered.isEmpty, client.mode == .live, !TunnelManager.shared.isRunning {
+                        if dnsStore.filtered.isEmpty, client.mode == .live, !TunnelManager.shared.isRunning {
                             // v0.2.103: the sheet does no appear
                             // refresh at all (no .task in sheet
                             // mode), so lastError is never set here
@@ -374,12 +363,11 @@ struct DnsQueriesView: View {
                     .padding(12)
                     .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
                 } else {
-                    ForEach(foldedEntries) { folded in
-                        dnsSheetRow(folded)
+                    ForEach(visibleEntries, id: \.seq) { entry in
+                        dnsSheetRow(entry)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(12)
                             .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
-                            .id(folded.id)
                     }
                 }
             }
@@ -390,13 +378,12 @@ struct DnsQueriesView: View {
     }
 
     /// One DNS row in the video's layout (v0.2.68): line 1 time +
-    /// type capsule + ×N fold badge after the capsule + latency
-    /// at the right; line 2 domain bold; line 3 bare answer IPs;
-    /// line 4 initiator capsule + 缓存 capsule when cached + the
-    /// bare upstream URL. No keyword chips in sheet mode.
-    private func dnsSheetRow(_ folded: FoldedDnsEntry) -> some View {
-        let entry = folded.entry
-        return Button {
+    /// type capsule + latency at the right; line 2 domain bold;
+    /// line 3 bare answer IPs; line 4 initiator capsule + 缓存
+    /// capsule when cached + the bare upstream URL. No keyword
+    /// chips in sheet mode.
+    private func dnsSheetRow(_ entry: ConcordDnsEntry) -> some View {
+        Button {
             selectedEntry = entry
         } label: {
             VStack(alignment: .leading, spacing: 2) {
@@ -409,14 +396,6 @@ struct DnsQueriesView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(dnsCapsuleFill, in: Capsule())
-                    if folded.count > 1 {
-                        Text("×\(folded.count)")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(dnsCapsuleFill, in: Capsule())
-                    }
                     Spacer()
                     Text("\(entry.delay) ms")
                         .font(.caption2)
@@ -478,16 +457,17 @@ struct DnsQueriesView: View {
         // v0.2.103: the sheet and page branches have SEPARATE
         // modifier stacks. The sheet branch is structurally
         // identical to the Connections sheet (ZStack + floating
-        // search + nested .sheet(item:) + .refreshable, detents
-        // [9/16, 0.9] set by the Dashboard) — NO ScrollViewReader,
-        // NO .task refresh, NO .onChange, NO .onAppear timer.
-        // Those were the suspects in the presentation-time
-        // layout/state feedback loop that froze the app on the
-        // DNS tap (v0.2.102 watchdog proof: main-thread stall
-        // starting at the tap). The sheet just displays whatever
-        // dnsStore.entries holds (the Dashboard refreshes it);
-        // pull-to-refresh still loads. Page mode (Tools → DNS)
-        // never froze and keeps everything exactly as-is.
+        // search + nested .sheet(item:), detents [9/16, 0.9] set
+        // by the Dashboard) — NO ScrollViewReader, NO .task
+        // refresh, NO .onChange, NO .onAppear timer, NO
+        // .refreshable (v0.2.139, Q5: upstream has no
+        // pull-to-refresh here). Those were the suspects in the
+        // presentation-time layout/state feedback loop that froze
+        // the app on the DNS tap (v0.2.102 watchdog proof:
+        // main-thread stall starting at the tap). The sheet just
+        // displays whatever dnsStore.entries holds (the Dashboard
+        // refreshes it). Page mode (Tools → DNS) never froze and
+        // keeps its .task appear-refresh (the data load).
         Group {
             if mode == .sheet {
                 ZStack(alignment: .bottom) {
@@ -498,11 +478,6 @@ struct DnsQueriesView: View {
                     .background(ConcordTheme.pageBackground)
                     DnsFloatingSearchBar(text: $dnsStore.searchText, prompt: "搜索域名或上游")
                 }
-                // v0.2.111: pull-to-refresh inside the sheet is a
-                // user-initiated refresh — force: true publishes
-                // immediately instead of deferring to the publish
-                // suspension that is on while the sheet is open.
-                .refreshable { await dnsStore.refresh(force: true) }
                 .sheet(item: $selectedEntry) { entry in
                     DnsEntryDetailView(entry: entry)
                         // Upstream _showDnsQueryDetail → showSheet, snap
@@ -527,26 +502,71 @@ struct DnsQueriesView: View {
                                 }
                             }
                             ToolbarItem(placement: .topBarTrailing) {
-                                Button { Task { await dnsStore.refresh() } } label: {
-                                    Image(systemName: "arrow.clockwise")
+                                // Filter menu (v0.2.139, C19-c1 —
+                                // upstream dns_queries.dart
+                                // optionMenuItems): status + type +
+                                // initiator + rcode facets. The
+                                // active ones show as removable
+                                // chips above the list.
+                                Menu {
+                                    Picker("筛选", selection: $recordFilter) {
+                                        ForEach(DnsRecordFilter.allCases, id: \.self) { filter in
+                                            Text(filter.title).tag(filter)
+                                        }
+                                    }
+                                    Picker("记录类型", selection: $selectedType) {
+                                        Text("全部").tag(nil as String?)
+                                        ForEach(availableTypes, id: \.self) { type in
+                                            Text(type).tag(type as String?)
+                                        }
+                                    }
+                                    Picker("发起方", selection: $selectedInitiator) {
+                                        Text("全部").tag(nil as String?)
+                                        ForEach(availableInitiators, id: \.self) { initiator in
+                                            Text(initiator).tag(initiator as String?)
+                                        }
+                                    }
+                                    Picker("返回码", selection: $selectedRcode) {
+                                        Text("全部").tag(nil as String?)
+                                        ForEach(availableRcodes, id: \.self) { rcode in
+                                            Text(rcode).tag(rcode as String?)
+                                        }
+                                    }
+                                } label: {
+                                    Image(systemName: "line.3.horizontal.decrease.circle")
                                 }
+                                .accessibilityLabel("筛选")
+                            }
+                            ToolbarItem(placement: .topBarTrailing) {
+                                // ⋯ menu (v0.2.139, Q5 — upstream
+                                // requests.dart: the DNS segment's
+                                // app-bar menu has exactly one
+                                // item, clearDnsCache).
+                                Menu {
+                                    Button("清除 DNS 缓存") {
+                                        Task { await dnsStore.clearCache() }
+                                    }
+                                } label: {
+                                    Image(systemName: "ellipsis.circle")
+                                }
+                                .accessibilityLabel("更多操作")
                             }
                         }
-                        .refreshable { await dnsStore.refresh() }
                         .task {
                             // v0.2.82 (DNS freeze): with the VPN off in live mode
                             // the refresh can never succeed (dns.watch reads the
                             // extension snapshot only) — so skip it on appear and
-                            // let the sheet open with zero store work. Pull-to-
-                            // refresh and the toolbar button still load when the
-                            // tunnel is up. Sample mode always refreshes
-                            // (built-in sample data, no tunnel needed).
+                            // let the page open with zero store work. Sample mode
+                            // always refreshes (built-in sample data, no tunnel
+                            // needed). v0.2.139: this appear-refresh is now the
+                            // page's only load — pull-to-refresh and the toolbar
+                            // refresh button are gone (upstream has neither).
                             if dnsStore.entries.isEmpty
                                 && (TunnelManager.shared.isRunning || client.mode == .sample) {
                                 await dnsStore.refresh()
                             }
                         }
-                        .onChange(of: foldedEntries.first?.id) { old, _ in
+                        .onChange(of: visibleEntries.first?.seq) { old, _ in
                             // v0.2.82 (DNS freeze): skip the initial population
                             // (nil -> first id) — the list is already at the top;
                             // only follow when a genuinely newer record arrives
@@ -568,198 +588,116 @@ struct DnsQueriesView: View {
         }
     }
 
-    /// The pushed page's full list (manual query, cache actions,
-    /// filter segment, follow toggle, facet menus, records).
+    /// The pushed page's full list (records + follow toggle).
+    /// v0.2.139 (C19-c1 + Q5): the manual query, Fake-IP flush,
+    /// refresh + sample badge, inline error surfaces and folding
+    /// are gone; the filters live in the toolbar filter menu and
+    /// the active ones show as removable chips pinned above the
+    /// list (upstream requests.dart: active filters as keyword
+    /// chips under the bar).
     private func pageList(proxy: ScrollViewProxy) -> some View {
-        List {
-            if client.mode == .sample {
-                HStack {
-                    SampleDataBadge()
-                    Text("DNS 记录为示例数据")
+        VStack(spacing: 0) {
+            if !activeFilters.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(activeFilters) { filter in
+                            Button {
+                                switch filter.kind {
+                                case .status: recordFilter = .all
+                                case .type: selectedType = nil
+                                case .initiator: selectedInitiator = nil
+                                case .rcode: selectedRcode = nil
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(filter.label)
+                                        .font(.caption.weight(.semibold))
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 9, weight: .bold))
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(ConcordTheme.cardBackground, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                }
+            }
+            List {
+                Section("查询记录（dns.watch）") {
+                    Toggle("跟随最新", isOn: $followEnd)
+                        .onChange(of: followEnd) { _, on in
+                            if on { scrollToNewest(proxy) }
+                        }
+                    Text("打开后新记录出现时回到顶部；向下翻看旧记录时请先关闭。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                }
-                .listRowBackground(Color.clear)
-            }
-            Section("手动查询（dns.query）") {
-                HStack {
-                    TextField("域名，如 www.google.com", text: $queryName)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                    Picker("类型", selection: $queryType) {
-                        Text("A").tag("A")
-                        Text("AAAA").tag("AAAA")
-                        Text("MX").tag("MX")
-                        Text("TXT").tag("TXT")
-                        Text("CNAME").tag("CNAME")
-                    }
-                    .pickerStyle(.menu)
-                }
-                Button("查询") {
-                    Task { await dnsStore.query(name: queryName, qtype: queryType) }
-                }
-                .disabled(queryName.trimmingCharacters(in: .whitespaces).isEmpty)
-                if let result = dnsStore.queriedResult {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("返回码 \(result.rcode) · 应答 \(result.answers.count) 条")
+                    if visibleEntries.isEmpty {
+                        Text(dnsStore.filtered.isEmpty ? "暂无 DNS 查询记录" : "没有符合筛选的记录")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        ForEach(result.answers, id: \.data) { record in
-                            Text("\(record.name) → \(record.data)（TTL \(record.ttl)）")
+                        if dnsStore.filtered.isEmpty, client.mode == .live, !TunnelManager.shared.isRunning {
+                            // v0.2.82: the appear refresh is skipped with
+                            // the VPN off (see .task above), so lastError
+                            // is never set — same reason, statically.
+                            Text("VPN 隧道未运行：请先在仪表盘启动 VPN，再查看实时数据")
                                 .font(.caption2)
+                                .foregroundStyle(.red)
                         }
-                        if !result.authorities.isEmpty {
-                            Text("权威记录 \(result.authorities.count) 条")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                if let error = dnsStore.queryError {
-                    Text(error).font(.caption2).foregroundStyle(.red)
-                }
-            }
-            Section {
-                Button("清除 DNS 缓存（dns.clearCache）") {
-                    Task { await dnsStore.clearCache() }
-                }
-                Button("清除 Fake-IP 映射（dns.flushFakeIp）") {
-                    Task { await dnsStore.flushFakeIp() }
-                }
-                if let message = dnsStore.lastActionMessage {
-                    Text(message).font(.caption2).foregroundStyle(.green)
-                }
-                // Failures of the actions above (clear cache /
-                // clear Fake-IP, or a VPN-off attempt) only wrote
-                // lastError — render it here so the failure is
-                // visible with its real reason (audit B16).
-                if let error = dnsStore.lastError {
-                    Text(error).font(.caption2).foregroundStyle(.red)
-                }
-            }
-            Section("查询记录（dns.watch）") {
-                Picker("筛选", selection: $recordFilter) {
-                    ForEach(DnsRecordFilter.allCases, id: \.self) { filter in
-                        Text(filter.title).tag(filter)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Toggle("跟随最新", isOn: $followEnd)
-                    .onChange(of: followEnd) { _, on in
-                        if on { scrollToNewest(proxy) }
-                    }
-                Text("打开后新记录出现时回到顶部；向下翻看旧记录时请先关闭。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Text("记录类型")
-                    Spacer()
-                    Picker("记录类型", selection: $selectedType) {
-                        Text("全部").tag(nil as String?)
-                        ForEach(availableTypes, id: \.self) { type in
-                            Text(type).tag(type as String?)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-                HStack {
-                    Text("发起方")
-                    Spacer()
-                    Picker("发起方", selection: $selectedInitiator) {
-                        Text("全部").tag(nil as String?)
-                        ForEach(availableInitiators, id: \.self) { initiator in
-                            Text(initiator).tag(initiator as String?)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-                HStack {
-                    Text("返回码")
-                    Spacer()
-                    Picker("返回码", selection: $selectedRcode) {
-                        Text("全部").tag(nil as String?)
-                        ForEach(availableRcodes, id: \.self) { rcode in
-                            Text(rcode).tag(rcode as String?)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-                if visibleEntries.isEmpty {
-                    Text(dnsStore.filtered.isEmpty ? "暂无 DNS 查询记录" : "没有符合筛选的记录")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    // A failed refresh (e.g. VPN off) only wrote
-                    // lastError — show the real reason instead of a
-                    // bare "暂无记录" (audit B16).
-                    if let error = dnsStore.lastError, dnsStore.filtered.isEmpty {
-                        Text(error).font(.caption2).foregroundStyle(.red)
-                    } else if dnsStore.filtered.isEmpty, client.mode == .live, !TunnelManager.shared.isRunning {
-                        // v0.2.82: the appear refresh is skipped with
-                        // the VPN off (see .task above), so lastError
-                        // is never set — same reason, statically.
-                        Text("VPN 隧道未运行：请先在仪表盘启动 VPN，再查看实时数据")
-                            .font(.caption2).foregroundStyle(.red)
-                    }
-                } else {
-                    ForEach(foldedEntries) { folded in
-                        let entry = folded.entry
-                        Button {
-                            selectedEntry = entry
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
-                                    Text(entry.domain).font(.footnote)
-                                    if folded.count > 1 {
-                                        Text("×\(folded.count)")
+                    } else {
+                        ForEach(visibleEntries, id: \.seq) { entry in
+                            Button {
+                                selectedEntry = entry
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack {
+                                        Text(entry.domain).font(.footnote)
+                                        Spacer()
+                                        Text(entry.type)
                                             .font(.caption2)
-                                            .fontWeight(.semibold)
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 2)
                                             .background(dnsCapsuleFill, in: Capsule())
                                     }
-                                    Spacer()
-                                    Text(entry.type)
+                                    Text("上游 \(entry.upstream) · \(entry.delay) ms · \(entry.cached == true ? "缓存命中" : "实时查询")\(entry.initiator.isEmpty ? "" : " · 发起方 \(entry.initiator)")")
                                         .font(.caption2)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(dnsCapsuleFill, in: Capsule())
-                                }
-                                Text("上游 \(entry.upstream) · \(entry.delay) ms · \(entry.cached == true ? "缓存命中" : "实时查询")\(entry.initiator.isEmpty ? "" : " · 发起方 \(entry.initiator)")")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                Text("应答：\(entry.answers.joined(separator: ", "))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                // Keyword chips (FlClash _DnsKeyword):
-                                // tapping one filters the list by it.
-                                HStack(spacing: 6) {
-                                    DnsKeywordChip(label: entry.type, isError: false) {
-                                        toggleSearch(entry.type)
-                                    }
-                                    if let rcode = entry.rcode, !rcode.isEmpty {
-                                        DnsKeywordChip(label: rcode, isError: DnsErrorRow.isFailed(entry)) {
-                                            toggleSearch(rcode)
+                                        .foregroundStyle(.secondary)
+                                    Text("应答：\(entry.answers.joined(separator: ", "))")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    // Keyword chips (FlClash _DnsKeyword):
+                                    // tapping one filters the list by it.
+                                    HStack(spacing: 6) {
+                                        DnsKeywordChip(label: entry.type, isError: false) {
+                                            toggleSearch(entry.type)
+                                        }
+                                        if let rcode = entry.rcode, !rcode.isEmpty {
+                                            DnsKeywordChip(label: rcode, isError: DnsErrorRow.isFailed(entry)) {
+                                                toggleSearch(rcode)
+                                            }
                                         }
                                     }
+                                    if let error = entry.error {
+                                        DnsErrorRow(error: error)
+                                    }
+                                    Text(ConcordFormat.time(entry.time))
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
                                 }
-                                if let error = entry.error {
-                                    DnsErrorRow(error: error)
-                                }
-                                Text(ConcordFormat.time(entry.time))
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
                             }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
+            // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+            .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+            .scrollContentBackground(.hidden)
+            .font(.footnote.weight(.semibold))
         }
-        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
     }
 
     /// Tapping a keyword chip filters by it; tapping it again clears.

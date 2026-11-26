@@ -399,140 +399,6 @@ struct SheetInfoRow: View {
 // from Settings. The refresh button re-runs the probe plus the
 // enrichment lookup. hideIp masks the address like the card does.
 
-struct OutboundIPSheet: View {
-    let displayIp: String?
-    /// Bound to SettingsStore.hideIp (the sheet's 其他 toggle
-    /// writes the same setting the status card and the IP-quality
-    /// page read); saved on change.
-    @Binding var hideIp: Bool
-    /// The assessed lookup (nil while no lookup has answered).
-    let assessed: IPQualityInfo?
-    /// The bare "AS<n>" token (parsed from the lookup's `as`
-    /// field) when no org/ISP answered.
-    let ipAsn: String?
-    let isChecking: Bool
-    let fetchFailed: Bool
-    let onRefresh: () -> Void
-
-    @EnvironmentObject private var settingsStore: SettingsStore
-
-    private var maskedIp: String? {
-        guard let ip = displayIp else { return nil }
-        return hideIp ? "*****" : ip
-    }
-
-    var body: some View {
-        DashboardBottomSheet(
-            title: "出站 IP",
-            // v0.2.68: ONE action renders as its own independent
-            // circle (like the ✕), not inside the shared capsule.
-            singleAction: true,
-            actions: {
-                SheetActionButton(systemImage: "arrow.clockwise", label: "刷新", disabled: isChecking, action: onRefresh)
-            }
-        ) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("依赖第三方api，仅供参考")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    if let assessed {
-                        Text("基础信息")
-                            .font(.headline)
-                        VStack(spacing: 0) {
-                            infoRow(label: "IP 地址", value: maskedIp ?? "—")
-                            Divider().padding(.leading, 0)
-                            // v0.2.68: bare level, no "（推断）" suffix.
-                            infoRow(label: "等级", value: assessed.qualityLevel?.label ?? "—")
-                            Divider()
-                            // v0.2.68: label is "类型", not "IP 类型".
-                            infoRow(label: "类型", value: assessed.qualityType?.label ?? "—")
-                            // v0.2.68: NO 命中标记 row — no data source
-                            // for it in our code (IPQualityInfo has no
-                            // hit/marker field); it is omitted, not faked.
-                            // The video's extra rows (国家/城市/组织/
-                            // 运营商/时区） are also gone — that detail
-                            // lives on the IP-quality page.
-                        }
-                        .padding(16)
-                        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-                        Text("网络")
-                            .font(.headline)
-                        VStack(spacing: 0) {
-                            infoRow(label: "组织", value: assessed.org ?? assessed.isp ?? "—")
-                            Divider()
-                            infoRow(label: "ASN", value: assessed.asn ?? ipAsn ?? "—")
-                            Divider()
-                            // The lookup the status card actually runs
-                            // (DashboardView.fetchIPInfo).
-                            infoRow(label: "采用来源", value: "ip-api.com")
-                        }
-                        .padding(16)
-                        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-                    } else if displayIp != nil {
-                        // v0.2.95 Bug 2: the third-party lookup failed
-                        // but the core's outboundIp IS known — show
-                        // the exit IP instead of hiding it behind
-                        // "查询失败". Geo / level need the lookup, so
-                        // only the IP row is shown, with a footnote
-                        // saying so.
-                        Text("基础信息")
-                            .font(.headline)
-                        VStack(spacing: 0) {
-                            infoRow(label: "IP 地址", value: maskedIp ?? "—")
-                        }
-                        .padding(16)
-                        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-                        Text("地理位置与等级需第三方查询，当前查询失败，仅显示出口 IP。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    } else if isChecking {
-                        ProgressView("正在查询…")
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.top, 24)
-                    } else if fetchFailed {
-                        VStack(spacing: 8) {
-                            Text("查询失败")
-                                .font(.subheadline.weight(.semibold))
-                            Text("第三方查询未返回结果，请检查网络后重试。")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                            Button("重试", action: onRefresh)
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.top, 24)
-                    } else {
-                        Text("暂无出站 IP：启动 VPN 后查看出口 IP，也可点右上角刷新重新检测出口 IP。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 8)
-                    }
-                    Text("其他")
-                        .font(.headline)
-                    VStack(spacing: 0) {
-                        Toggle("隐藏 IP", isOn: $hideIp)
-                            .font(.subheadline)
-                            .padding(.vertical, 10)
-                    }
-                    .padding(.horizontal, 16)
-                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 20)
-            }
-        }
-        .onChange(of: hideIp) { _, _ in settingsStore.save() }
-    }
-
-    private func infoRow(label: String, value: String) -> some View {
-        SheetInfoRow(label: label, value: value.isEmpty ? "—" : value)
-            .padding(.vertical, 10)
-    }
-}
-
 // MARK: - Service status sheet (services card)
 //
 // MuYu key_7: "服务状态" — one row per service: brand tile
@@ -565,6 +431,11 @@ struct ServiceStatusSheet: View {
     @State private var nodeIPs: [String: String] = [:]
     @State private var nodeIPPending: Set<String> = []
     @State private var showManage = false
+    /// IP-quality sheet target (v0.2.139, upstream
+    /// service_status.dart:498): tapping a service row's
+    /// address line opens the per-IP quality sheet — only when
+    /// the line is a real IP.
+    @State private var ipQualitySelection: IpQualitySheetTarget?
 
     /// v0.2.124 (services=0): the proxy a services probe runs
     /// through. Every probe call site used to gate on
@@ -699,67 +570,108 @@ struct ServiceStatusSheet: View {
                 .presentationBackground(ConcordTheme.pageBackground)
                 .presentationCornerRadius(28)
         }
+        .sheet(item: $ipQualitySelection) { target in
+            IPQualityView(ip: target.ip)
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(ConcordTheme.pageBackground)
+                .presentationCornerRadius(28)
+        }
     }
 
     private func serviceRow(_ service: ConcordServiceItem) -> some View {
-        Button {
-            Task { await recheckOne(service) }
-        } label: {
-            HStack(spacing: 12) {
-                ZStack(alignment: .bottomTrailing) {
-                    PackTileImage(
-                        name: service.name,
-                        fallback: serviceTileText(service.name),
-                        fontSize: service.name.lowercased() == "github" ? 13 : 20
-                    )
+        HStack(spacing: 12) {
+            ZStack(alignment: .bottomTrailing) {
+                PackTileImage(
+                    name: service.name,
+                    fallback: serviceTileText(service.name),
+                    fontSize: service.name.lowercased() == "github" ? 13 : 20
+                )
+                .foregroundStyle(Color(.label))
+                .frame(width: 48, height: 48)
+                .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 12))
+                .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                Circle()
+                    .fill(dashboardServiceStatusColor(service.status))
+                    .frame(width: 12, height: 12)
+                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    .offset(x: 2, y: 2)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(serviceDisplayName(service.name))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color(.label))
-                    .frame(width: 48, height: 48)
-                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 12))
-                    .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    Circle()
-                        .fill(dashboardServiceStatusColor(service.status))
-                        .frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                        .offset(x: 2, y: 2)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(serviceDisplayName(service.name))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color(.label))
-                        .lineLimit(1)
-                    HStack(spacing: 4) {
-                        if let flag = flagEmoji(countryCode: service.region) {
-                            Text(flag)
+                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if let flag = flagEmoji(countryCode: service.region) {
+                        Text(flag)
+                    }
+                    // v0.2.139 (Q-D3/Q-M5, upstream
+                    // service_status.dart:498): the address line
+                    // is tappable only when it is a real IP —
+                    // tapping it opens the per-IP quality sheet
+                    // for that IP. The node-name fallback and
+                    // the "—" are plain text (not tappable, like
+                    // upstream). Per the v0.2.128 lesson, a
+                    // Button inside the row's onTapGesture area
+                    // does NOT trigger the row's gesture — only
+                    // its own action.
+                    if let ip = serviceIp(for: service) {
+                        Button {
+                            ipQualitySelection = IpQualitySheetTarget(ip: ip)
+                        } label: {
+                            Text(ip)
+                                .lineLimit(1)
                         }
+                        .buttonStyle(.plain)
+                    } else {
                         Text(nodeLine(for: service))
                             .lineLimit(1)
                     }
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Text(trailingText(for: service))
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(trailingColor(for: service))
-                    .multilineTextAlignment(.trailing)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .contentShape(Rectangle())
-            // v0.2.128 item 10c: the row itself is a rounded card
-            // (cardBackground — pure white under default blue, ~5%
-            // accent tint under a non-default theme; radius 16,
-            // the DNS sheet's row radius).
-            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
+            Spacer()
+            Text(trailingText(for: service))
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(trailingColor(for: service))
+                .multilineTextAlignment(.trailing)
         }
-        .buttonStyle(.plain)
-        .disabled(trafficStore.isProbingServices)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        // v0.2.128 item 10c: the row itself is a rounded card
+        // (cardBackground — pure white under default blue, ~5%
+        // accent tint under a non-default theme; radius 16,
+        // the DNS sheet's row radius).
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
+        // Row tap re-checks that one service — as a plain
+        // gesture now (the row is no longer a Button), so a
+        // tap during a sweep is a no-op instead of a disabled
+        // row (upstream's row is never disabled either).
+        .onTapGesture {
+            guard !trafficStore.isProbingServices else { return }
+            Task { await recheckOne(service) }
+        }
     }
 
     private func serviceTileText(_ name: String) -> String {
         if name.lowercased() == "github" { return "GH" }
         return String(name.prefix(1)).uppercased()
+    }
+
+    /// The service row's real IP, if the second line shows one
+    /// (upstream service_status.dart:498: the address line is
+    /// tappable only when `address != null`): the service's own
+    /// `ip`, else the probed egress IP through its exit node.
+    /// Nil while pending or when the probe failed — the row then
+    /// shows the node name (not tappable).
+    private func serviceIp(for service: ConcordServiceItem) -> String? {
+        if let ip = service.ip, !ip.isEmpty { return ip }
+        guard let node = service.chains?.first, !node.isEmpty else { return nil }
+        return nodeIPs[node]
     }
 
     /// Second line: the address the service itself saw the

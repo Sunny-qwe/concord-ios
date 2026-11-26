@@ -1,11 +1,15 @@
 import SwiftUI
 
-// MARK: - IP quality (Tools -> IP 质量)
-// Shows the CURRENT egress IP's quality: address, country, city,
-// ISP, ASN and timezone.
+// MARK: - IP quality sheet (FlClash: lib/features/ip_quality/ip_quality_sheet.dart)
+// Upstream's per-IP sheet: opened for one specific IP (showIpQualitySheet),
+// titled 出站 IP, with a refresh action, the detection tip, 基本信息
+// (IP + 等级/类型/命中标记）, 网络 （组织/ASN/采用来源）, 各来源 on total
+// failure, and 其他 (hide IP). No geography, no VPN-vs-direct header,
+// no query latency, no cache age, no explanatory footer, no ad-hoc
+// IP field — the sheet answers one question about one IP.
 //
-// FlClash (lib/common/ip_quality.dart + lib/providers/ip_quality.dart)
-// asks several sources in waves — the tightest-quota sources last,
+// Lookup (lib/common/ip_quality.dart + lib/providers/ip_quality.dart):
+// several sources in waves — the tightest-quota sources last,
 // a 1 s hedge between waves, 8 s per source — caches the answer
 // per IP for up to 3 days, and cools down 5 minutes after a total
 // failure. Same here:
@@ -17,14 +21,12 @@ import SwiftUI
 //
 // The first source that answers wins; the rest are cancelled.
 // ip-api.com is the only source that returns every displayed field
-// (country, city, ISP, ASN, timezone) in one shape, so it is the
-// primary display source — the others fill what they have and show
-// "—" for the rest.
+// in one shape, so it is the primary display source — the others
+// fill what they have and show "—" for the rest.
 //
 // URLSession follows the system's default route, so when the VPN is
 // on the answer IS the proxy egress IP, and when it is off it is the
-// phone's direct IP. The page says which one it is, in the header
-// and next to the result — the two must never be confused.
+// phone's direct IP.
 //
 // The cache is keyed by the resolved IP and whether the VPN was on
 // (the egress IP changes when the VPN toggles). Automatic fetches
@@ -256,39 +258,38 @@ private struct CachedIPQuality: Codable {
     let targetIp: String?
 }
 
+/// The IP this sheet was opened for (upstream showIpQualitySheet is
+/// always opened for one IP); nil checks the caller's current egress IP.
+struct IpQualitySheetTarget: Identifiable {
+    let ip: String
+    var id: String { ip }
+}
+
 struct IPQualityView: View {
     @EnvironmentObject private var tunnelManager: TunnelManager
     @EnvironmentObject private var settingsStore: SettingsStore
+    @Environment(\.dismiss) private var dismiss
 
     /// A specific IP to check (upstream showIpQualitySheet is always
     /// opened for one IP); nil checks the caller's current egress IP.
     @State private var explicitIp: String?
-    @State private var ipFieldText: String
     @State private var failures: [IPQualityFailure] = []
 
-    /// Whether the pushed (Settings) presentation should leave room
-    /// for the floating tab bar. Sheets (e.g. from Dashboard) keep the
-    /// default false so no dead space is added there.
-    /// v0.2.66: tab-bar clearance for pushed pages.
-    let applyTabBarClearance: Bool
-
-    init(ip: String? = nil, applyTabBarClearance: Bool = false) {
-        self.applyTabBarClearance = applyTabBarClearance
+    init(ip: String? = nil) {
         let cleaned = ip?.trimmingCharacters(in: .whitespacesAndNewlines)
         _explicitIp = State(initialValue: cleaned?.isEmpty == true ? nil : cleaned)
-        _ipFieldText = State(initialValue: cleaned ?? "")
     }
 
     @State private var info: IPQualityInfo?
     @State private var sourceName: String?
-    @State private var fromCache = false
-    @State private var cacheAge: String?
-    @State private var latencyMs: Int?
     @State private var errorMessage: String?
     @State private var isLoading = false
-    @State private var fetchedViaVPN: Bool?
 
     private var isViaVPN: Bool { tunnelManager.isRunning }
+
+    /// Total failure: no answer and not loading (upstream
+    /// `_IpQualityDetail.failed`: quality == null && !isLoading).
+    private var failed: Bool { info == nil && !isLoading }
 
     /// 8 s per source, like FlClash's lookup timeout (interface B3:
     /// the old fetch had no explicit timeout at all).
@@ -314,166 +315,146 @@ struct IPQualityView: View {
     ]
 
     var body: some View {
-        List {
-            Section {
-                HStack(spacing: 12) {
-                    BlobIcon(
-                        systemName: isViaVPN ? "shield.lefthalf.filled" : "house.fill",
-                        iconColor: .white,
-                        blobColor: isViaVPN ? ConcordTheme.accent : .gray,
-                        size: 56)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(explicitIp != nil ? "指定 IP" : (isViaVPN ? "代理出口 IP" : "本机直连 IP"))
-                            .font(.caption.weight(.semibold))
-                        Text(explicitIp != nil
-                             ? "正在查询 \(explicitIp!) 的 IP 质量。"
-                             : (isViaVPN
-                             ? "VPN 正在运行：下面是代理出口的 IP 质量。"
-                             : "VPN 未运行：下面是你手机直连网络的 IP 质量，不是代理出口。开启 VPN 后再刷新，看到的才是代理出口。"))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.vertical, 4)
-                Button {
-                    Task { await fetch(forceRefresh: true) }
-                } label: {
-                    Label(isLoading ? "查询中…" : "刷新", systemImage: "arrow.clockwise")
-                }
-                .disabled(isLoading)
-                // Hide-IP switch (upstream ip_quality_sheet ends
-                // with one); the dashboard's status card masks the
-                // IP the same way.
-                Toggle("隐藏 IP", isOn: $settingsStore.hideIp)
-                    .onChange(of: settingsStore.hideIp) { _, _ in settingsStore.save() }
-            }
-
-            Section("指定 IP") {
-                HStack {
-                    TextField("输入要查询的 IP（如 1.2.3.4）", text: $ipFieldText)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.decimalPad)
-                    Button("查询") {
-                        let cleaned = ipFieldText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        explicitIp = cleaned.isEmpty ? nil : cleaned
-                        Task { await fetch(forceRefresh: true) }
-                    }
-                    .disabled(isLoading)
-                }
-                if explicitIp == nil {
-                    Text("留空查询当前出口 IP；输入一个 IP 可查询任意 IP 的质量（上游的 IP 质量表总是针对某个具体 IP 打开）。")
-                        .font(.caption2)
+        NavigationStack {
+            List {
+                // Detection tip (upstream ip_quality_sheet: the tip
+                // sits at the top of the sheet, above the sections;
+                // l10n_zh detectionTip, verbatim).
+                Section {
+                    Text("依赖第三方api，仅供参考")
+                        .font(.body)
                         .foregroundStyle(.secondary)
                 }
-            }
+                .listRowBackground(Color.clear)
 
-            if isLoading && info == nil {
-                // Skeleton rows while loading (upstream
-                // ip_quality_sheet lays out the quality/network rows
-                // as skeletons so the page keeps its height).
-                Section("质量") {
-                    skeletonRow("质量等级", width: 40)
-                    skeletonRow("IP 类型", width: 64)
-                    skeletonRow("标志", width: 40)
-                }
-                Section("网络归属") {
-                    skeletonRow("组织", width: 120)
-                    skeletonRow("ASN", width: 56)
-                    skeletonRow("数据来源", width: 72)
-                }
-            }
-
-            if let errorMessage {
-                Section {
-                    Text(errorMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-            }
-
-            // Per-source failure breakdown (upstream
-            // ip_quality_sheet: on total failure every source is
-            // listed with its status).
-            if info == nil, !failures.isEmpty {
-                Section("查询源") {
-                    ForEach(failures) { failure in
-                        LabeledContent(failure.source, value: failure.status.rawValue)
-                    }
-                }
-            }
-
-            if let info, info.status == "success" {
-                Section("IP 地址") {
-                    LabeledContent("IP", value: settingsStore.hideIp ? "*****" : (info.query ?? "—"))
-                    if let latencyMs {
-                        LabeledContent("查询延迟", value: "\(latencyMs) ms")
-                    }
-                    if let fetchedViaVPN {
-                        LabeledContent("查询时 VPN", value: fetchedViaVPN ? "开启（代理出口）" : "关闭（本机直连）")
-                    }
-                    if let sourceName {
-                        LabeledContent("数据来源", value: sourceName + (fromCache ? "（缓存\(cacheAge ?? "")）" : ""))
-                    }
-                    if let lat = info.lat, let lon = info.lon {
-                        LabeledContent("经纬度", value: "\(String(format: "%.4f", lat)), \(String(format: "%.4f", lon))")
-                    }
-                }
-                // The page's actual point upstream (Q-M1/Q-M2): IP
-                // type, quality level and Tor/abuser/VPN/proxy
-                // flags — derived from the answering source's
-                // type/flag fields, not from geography.
-                Section("质量") {
-                    if info.qualityType == nil {
-                        LabeledContent("IP 类型", value: "类型查询失败")
+                // 基本信息 (upstream _IpQualityDetail): the IP row,
+                // then the quality rows — or the failed type row on
+                // total failure, skeletons while loading.
+                Section("基本信息") {
+                    LabeledContent("IP 地址", value: settingsStore.hideIp ? "*****" : (explicitIp ?? info?.query ?? "—"))
+                    if failed {
+                        LabeledContent("类型", value: "类型查询失败")
                             .foregroundStyle(.red)
+                    } else if let info {
+                        qualityRows(info)
                     } else {
-                        if let level = info.qualityLevel {
-                            LabeledContent("质量等级", value: level.label + (info.typeInferred ? "（推断）" : ""))
-                                .foregroundStyle(level.color)
-                        }
-                        LabeledContent("IP 类型", value: info.qualityType!.label + (info.typeInferred ? "（推断）" : ""))
-                        let flags = [
-                            info.isTor ? "Tor" : nil,
-                            info.isAbuser ? "滥用记录" : nil,
-                            info.isVpn ? "VPN" : nil,
-                            info.isProxy ? "代理" : nil,
-                        ].compactMap { $0 }
-                        LabeledContent("标志", value: flags.isEmpty ? "无" : flags.joined(separator: " · "))
+                        skeletonRow("等级", width: 40)
+                        skeletonRow("类型", width: 64)
+                        skeletonRow("命中标记", width: 40)
                     }
                 }
-                Section("地理位置") {
-                    LabeledContent("国家", value: [info.country, info.countryCode.map { "(\($0))" }].compactMap { $0 }.joined(separator: " "))
-                    LabeledContent("城市", value: [info.regionName, info.city].compactMap { $0 }.joined(separator: " · ").isEmpty ? "—" : [info.regionName, info.city].compactMap { $0 }.joined(separator: " · "))
-                    LabeledContent("时区", value: info.timezone ?? "—")
+
+                // The failure-cooldown message has no other surface:
+                // on total failure the 各来源 section below says
+                // why (per source), so this shows only when there
+                // are no per-source failures to list.
+                if let errorMessage, failures.isEmpty {
+                    Section {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
                 }
-                Section("网络归属") {
-                    LabeledContent("运营商", value: info.isp ?? "—")
-                    LabeledContent("组织", value: info.org ?? "—")
-                    LabeledContent("ASN", value: info.asn ?? "—")
+
+                // 网络 (upstream _networkRows): organisation, ASN,
+                // source — skeletons while loading; omitted entirely
+                // on total failure, like upstream.
+                if !failed {
+                    Section("网络") {
+                        if let info {
+                            LabeledContent("组织", value: info.org ?? "—")
+                            LabeledContent("ASN", value: info.asn ?? "—")
+                            LabeledContent("采用来源", value: sourceName ?? "—")
+                        } else {
+                            skeletonRow("组织", width: 120)
+                            skeletonRow("ASN", width: 56)
+                            skeletonRow("采用来源", width: 72)
+                        }
+                    }
                 }
-            } else if info != nil {
-                Section {
-                    Text("查询服务返回失败：\(info?.message ?? "未知错误")")
-                        .font(.footnote)
-                        .foregroundStyle(.red)
+
+                // Per-source failure breakdown (upstream
+                // ip_quality_sheet: on total failure every source is
+                // listed with its status).
+                if failed, !failures.isEmpty {
+                    Section("各来源") {
+                        ForEach(failures) { failure in
+                            LabeledContent(failure.source, value: failure.status.rawValue)
+                        }
+                    }
+                }
+
+                // 其他 (upstream: the sheet ends with the hide-IP
+                // switch row).
+                Section("其他") {
+                    Toggle("隐藏 IP", isOn: $settingsStore.hideIp)
+                        .onChange(of: settingsStore.hideIp) { _, _ in settingsStore.save() }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .font(.footnote.weight(.semibold))
+            .background(ConcordTheme.pageBackground)
+            .navigationTitle("出站 IP")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    // Refresh (upstream _IpQualitySheet: the app-bar
+                    // refresh action, with a loading state).
+                    if isLoading {
+                        ProgressView()
+                    } else {
+                        Button {
+                            Task { await fetch(forceRefresh: true) }
+                        } label: {
+                            Label("重新查询", systemImage: "arrow.clockwise")
+                        }
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            .task { await fetch() }
+        }
+    }
 
-            Section {
-                Text("多源查询（ident.me、ip-api.com、ipquery.io、iplocate.io、ipapi.is、proxycheck.io，配额最紧的源最后问），每个源 8 秒超时；同一出口 IP 的结果缓存 3 天，全部失败后 5 分钟内不再自动重试（点「刷新」可立即重试）。它只判断出口 IP 的类型（住宅 / 移动网络 / 商业 / 机房）与质量等级，并标注 Tor、VPN、代理、滥用标志——判断依赖第三方 API，仅供参考；不做测速、不判断节点能不能解锁流媒体。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+    /// The sheet's actual point (upstream _qualityRows): IP type,
+    /// quality level and Tor/abuser/VPN/proxy flags — derived from
+    /// the answering source's type/flag fields, not from geography.
+    /// Flags render as chips (upstream MetaChip) or 无.
+    @ViewBuilder
+    private func qualityRows(_ info: IPQualityInfo) -> some View {
+        if info.qualityType == nil {
+            LabeledContent("类型", value: "类型查询失败")
+                .foregroundStyle(.red)
+        } else {
+            if let level = info.qualityLevel {
+                LabeledContent("等级", value: level.label)
+                    .foregroundStyle(level.color)
+            }
+            LabeledContent("类型", value: info.qualityType!.label)
+            let flags = [
+                info.isTor ? "Tor" : nil,
+                info.isAbuser ? "滥用记录" : nil,
+                info.isVpn ? "VPN" : nil,
+                info.isProxy ? "代理" : nil,
+            ].compactMap { $0 }
+            if flags.isEmpty {
+                LabeledContent("命中标记", value: "无")
+            } else {
+                LabeledContent("命中标记") {
+                    HStack(spacing: 6) {
+                        ForEach(flags, id: \.self) { flag in
+                            Text(flag)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                        }
+                    }
+                }
             }
         }
-        // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, applyTabBarClearance ? ConcordTheme.tabBarClearance : 0)
-        .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
-        .background(ConcordTheme.pageBackground)
-        .navigationTitle("IP 质量")
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await fetch() }
     }
 
     /// A skeleton row while the lookup runs (upstream SkeletonText):
@@ -495,7 +476,6 @@ struct IPQualityView: View {
         isLoading = true
         errorMessage = nil
         failures = []
-        let started = Date()
         defer { isLoading = false }
         let viaVPN = isViaVPN
         let targetIp = explicitIp
@@ -508,10 +488,6 @@ struct IPQualityView: View {
            Date().timeIntervalSince(cached.checkedAt) < Self.cacheMaxAge {
             info = cached.info
             sourceName = cached.source
-            fromCache = true
-            cacheAge = Self.ageString(since: cached.checkedAt)
-            fetchedViaVPN = cached.viaVPN
-            latencyMs = nil
             return
         }
         // 2. Failure cooldown (automatic fetches only): a total
@@ -523,13 +499,9 @@ struct IPQualityView: View {
             return
         }
         // 3. Network: FlClash's waves.
-        fromCache = false
-        cacheAge = nil
         let result = await lookupWaves(targetIp: targetIp)
         failures = result.failures
         if let (answer, source) = result.answer {
-            latencyMs = Int(Date().timeIntervalSince(started) * 1000)
-            fetchedViaVPN = viaVPN
             info = answer
             sourceName = source
             Self.saveCache(CachedIPQuality(checkedAt: Date(), viaVPN: viaVPN, source: source, info: answer, targetIp: targetIp))
@@ -655,14 +627,6 @@ struct IPQualityView: View {
 
     private static func clearFailure() {
         UserDefaults.standard.removeObject(forKey: failedAtKey)
-    }
-
-    private static func ageString(since date: Date) -> String {
-        let seconds = Int(Date().timeIntervalSince(date))
-        if seconds < 60 { return "刚刚" }
-        if seconds < 3600 { return "\(seconds / 60) 分钟前" }
-        if seconds < 86400 { return "\(seconds / 3600) 小时前" }
-        return "\(seconds / 86400) 天前"
     }
 
     private enum WaveOutcome {

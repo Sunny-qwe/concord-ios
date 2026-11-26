@@ -528,9 +528,13 @@ struct ServiceStatusSheet: View {
     /// custom-overlay presentation (ContentView root — the system
     /// .sheet path froze, see the overlay note). Nil = the old
     /// system-sheet presentation (dismiss() + no drag gesture).
-    let onClose: (() -> Void)? = nil
-    let onDragChanged: ((CGFloat) -> Void)? = nil
-    let onDragEnded: ((CGFloat, CGFloat) -> Void)? = nil
+    /// NOTE: no `= nil` defaults here — a `let` with a default is
+    /// already initialized and cannot be assigned again in init
+    /// (CI: "immutable value may only be initialized once"); the
+    /// defaults live on the explicit init's parameters below.
+    let onClose: (() -> Void)?
+    let onDragChanged: ((CGFloat) -> Void)?
+    let onDragEnded: ((CGFloat, CGFloat) -> Void)?
 
     @State private var nodeIPs: [String: String] = [:]
     @State private var nodeIPPending: Set<String> = []

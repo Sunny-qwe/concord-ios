@@ -27,12 +27,20 @@ import NetworkExtension
 ///     never claim otherwise.
 ///
 /// This is a DIFFERENT mechanism from the tun.loopback-address
-/// address list on the same page (LoopbackView): that list is a
+/// address list on the deleted Tools → 回环保护 page: that list is a
 /// config override sent to the core with config.apply, and the
-/// core ignores it too (see the header comment there). This
+/// core ignores it too (same TunConfig::from_map note as above). This
 /// switch is an NE interface setting, persisted in tunnel.json
 /// under the key `loopback-device` (kebab-case, like the other
 /// tunnel.json keys) and read by the extension at VPN start.
+///
+/// v0.2.136: the Tools → 回环保护 page that wrote this key is
+/// deleted (upstream has no such page), so nothing writes it ON
+/// anymore, and a Settings save drops a stale key — missing reads
+/// as OFF, so this helper is effectively inert for new installs.
+/// It is left in place deliberately: removing it means touching
+/// bootCore's VPN-start path (PacketTunnelProvider.swift:884) and
+/// TunnelSettings, for no user-visible gain.
 ///
 /// Pure helper: no I/O, no provider state. The coordinator hooks
 /// it into PacketTunnelProvider.bootCore after the IPv4 settings

@@ -28,6 +28,13 @@ struct NetworkSettingsView: View {
         overrideStore.setValue(scope: nil, section: .tun, key: "route-address", value: .array(addresses.map(JSONValue.string)))
     }
 
+    /// FlClash's local-network-protection defaults (moved here
+    /// from LocalNetworkView in v0.2.136 — M4: the Tools →
+    /// 本地网络设置 row moves to Advanced → 网络）: these three
+    /// CIDRs in routeExcludeAddress keep local services
+    /// (AirDrop, LAN devices) out of the tunnel.
+    static let protectionCIDRs = ["127.0.0.0/8", "10.7.0.0/24", "::1/128"]
+
     var body: some View {
         List {
             Section("TUN") {
@@ -93,6 +100,26 @@ struct NetworkSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("路由") {
+                // M4 (v0.2.136): the 本地网络保护 toggle, moved
+                // from the deleted Tools → 本地网络设置 page — it
+                // only manipulates routeExcludeAddress, which this
+                // section already edits.
+                Toggle("本地网络保护", isOn: Binding(
+                    get: { Self.protectionCIDRs.allSatisfy { settingsStore.routeExcludeAddress.contains($0) } },
+                    set: { on in
+                        if on {
+                            for cidr in Self.protectionCIDRs where !settingsStore.routeExcludeAddress.contains(cidr) {
+                                settingsStore.routeExcludeAddress.append(cidr)
+                            }
+                        } else {
+                            settingsStore.routeExcludeAddress.removeAll { Self.protectionCIDRs.contains($0) }
+                        }
+                        settingsStore.save()
+                    }
+                ))
+                Text("开启后 127.0.0.0/8、10.7.0.0/24、::1/128 不走隧道，本地服务（隔空投送、局域网设备等）不受影响。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Toggle("绕过私有路由", isOn: $settingsStore.bypassPrivateRoute)
                 Text("开启后 10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、169.254.0.0/16 不走隧道。")
                     .font(.footnote)
@@ -206,11 +233,12 @@ struct NetworkSettingsView: View {
 }
 
 /// The bypass-domain list editor (FlClash network.dart
-/// BypassDomainItem, in VpnSections and in LocalNetwork's
-/// system-proxy section). Shared by NetworkSettingsView and
-/// LocalNetworkView: the list lives in SettingsStore.bypassDomain
-/// and is written to tunnel.json (only passed to the VPN setup
-/// while the system-proxy switch is on).
+/// BypassDomainItem, in VpnSections and in the Network page's
+/// system-proxy section). The list lives in
+/// SettingsStore.bypassDomain and is written to tunnel.json (only
+/// passed to the VPN setup while the system-proxy switch is on).
+/// (v0.2.136: the second user, LocalNetworkView, was deleted with
+/// the Tools → 本地网络设置 page — the editor now lives only here.)
 struct BypassDomainEditorView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @State private var newDomain = ""

@@ -229,6 +229,13 @@ struct AboutView: View {
     /// A-M6: the 5-tap developer-mode count resets when taps are
     /// more than 1 s apart (upstream _logoTapTimer).
     @State private var lastLogoTap: Date?
+    /// A-M5 (v0.2.136): upstream shows a success banner on
+    /// entering developer mode (about.dart onEnterDeveloperMode →
+    /// dialogs.showBanner(developerModeEnableTip, success)). The
+    /// token supersedes a stale auto-hide when the banner is
+    /// re-triggered before the previous hide fires.
+    @State private var showDevModeBanner = false
+    @State private var devModeBannerToken = 0
     @State private var releaseResult: UpdateChecker.ReleaseResult?
     @State private var isCheckingUpdate = false
     /// v0.2.68 (MuYu): the update result is a MODAL dialog, not a
@@ -294,11 +301,20 @@ struct AboutView: View {
                         }
                         lastLogoTap = now
                         if logoTaps >= 5 {
-                            // v0.2.68: the 5-tap trigger stays, but
-                            // silently — no toast, no hint line.
+                            // v0.2.136 (A-M5): upstream shows a
+                            // success banner here, not silence
+                            // (about.dart: dialogs.showBanner
+                            // (developerModeEnableTip, success)).
                             settingsStore.developerMode = true
                             settingsStore.save()
                             logoTaps = 0
+                            devModeBannerToken += 1
+                            let token = devModeBannerToken
+                            showDevModeBanner = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                guard token == self.devModeBannerToken else { return }
+                                self.showDevModeBanner = false
+                            }
                         }
                     } label: {
                         // A-M1: upstream hero logo is 96pt with a
@@ -342,7 +358,10 @@ struct AboutView: View {
                             .background(ConcordTheme.cardBackground, in: Capsule())
                             .shadow(color: .black.opacity(0.06), radius: 2, x: 0, y: 1)
                     }
-                    Text("基于 chen08209/concord 核心的 iOS 代理客户端，界面参照 FlClash。")
+                    // A-D5 (v0.2.136): upstream uses the localised
+                    // desc string (about.dart _AboutHero), not a
+                    // hardcoded sentence.
+                    Text("about.desc".l10n)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -360,24 +379,12 @@ struct AboutView: View {
                 .frame(maxWidth: .infinity)
                 .listRowBackground(Color.clear)
             }
-            // v0.2.86 Item 17: update channel (FlClash
-            // AppSettingProps.updateChannel; rs.1 has the setting +
-            // labels but no channel-picker UI in source, so this
-            // segmented picker follows our Settings style). The
-            // manual check above reads this channel; the automatic
-            // check tracks the latest commit (UpdateChecker.check)
-            // and has no channel to follow.
-            Section("更新渠道") {
-                Picker("更新渠道", selection: $settingsStore.updateChannel) {
-                    ForEach(UpdateChannel.allCases) { channel in
-                        Text(channel.label).tag(channel)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text("正式版只提示正式发布的版本；预览版还会提示测试版。仓库目前尚未发布过预览版，选预览版时仍会显示最新正式版。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            // v0.2.136 (D4): the update-channel picker is deleted —
+            // upstream about.dart has the updateChannel SETTING
+            // (checkForUpdate reads it, above) but no channel-picker
+            // UI anywhere in source; the About page's only update
+            // item is the auto-check toggle. The stored setting
+            // stays, defaulting to stable.
             Section("更多") {
                 aboutLink(
                     title: "项目主页",
@@ -415,6 +422,25 @@ struct AboutView: View {
                 updateDialog
             }
         }
+        // A-M5 (v0.2.136): the developer-mode success banner —
+        // a transient top toast, auto-hidden after 2 s.
+        .overlay(alignment: .top) {
+            if showDevModeBanner {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text("developerModeEnableTip".l10n)
+                        .font(.footnote.weight(.semibold))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 12))
+                .shadow(radius: 8)
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.25), value: showDevModeBanner)
     }
 
     /// The update-result modal dialog (MuYu f_069): dimmed

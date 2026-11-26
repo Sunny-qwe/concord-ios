@@ -48,6 +48,14 @@ struct ContentView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var selectedTab: AppTab = .dashboard
+    /// Sequential fade state (v0.2.136, re-do of v0.2.128): the
+    /// fade is two 0.15 s steps — current page out, switch with no
+    /// animation, new page in — so the two pages are never visible
+    /// at once (a cross-fade shows both mid-transition: the double
+    /// exposure). fadeToken supersedes a stale fade when the user
+    /// taps a second tab mid-transition.
+    @State private var fadeOpacity = 1.0
+    @State private var fadeToken = 0
     /// The Dashboard stat-cell destination (v0.2.111): owned here,
     /// not in DashboardView — the .dns destination renders as a
     /// custom overlay at this root (above the floating tab bar),
@@ -71,9 +79,12 @@ struct ContentView: View {
     @AppStorage("ConcordiOS.geoAutoUpdate") private var geoAutoUpdate = true
     @AppStorage("ConcordiOS.geoAutoUpdateHours") private var geoAutoUpdateHours = 24.0
     /// Tab animation (upstream home.dart tabAnimation: slide/fade).
-    /// Slide is the default 0.3 s ease-out PageView; fade cross-fades
-    /// the pages instead. The picker lives in ThemePickerView and
-    /// writes themeStore.tabAnimation — read it directly here. (An
+    /// Slide is the default 0.3 s ease-out PageView; fade is a
+    /// SEQUENTIAL fade (0.15 s out, switch, 0.15 s in — v0.2.136,
+    /// re-do of v0.2.128), never a cross-fade: fading both pages
+    /// at once shows both mid-transition (the double exposure).
+    /// The picker lives in ThemePickerView and writes
+    /// themeStore.tabAnimation — read it directly here. (An
     /// earlier @AppStorage bool in this spot was never written by
     /// anything, so the fade setting did nothing; v0.2.54 wires it
     /// to the theme store.) The fade duration/curve are upstream
@@ -439,16 +450,27 @@ struct ContentView: View {
     /// page slides in with a 0.3 s ease-out (FlClash kTabScrollDuration
     /// = 300 ms, Curves.easeOut), and off-screen pages are disabled
     /// (FlClash TickerMode / ExcludeFocus on inactive pages). With
-    /// the fade animation on, the pages stack and cross-fade instead
+    /// the fade animation on, the pages stack and fade SEQUENTIALLY
+    /// (out, switch, in — see selectTab), never cross-fading
     /// (upstream tabAnimation == fade).
     private var slidingTabView: some View {
         GeometryReader { geo in
             if tabAnimationFade {
+                // v0.2.136 (re-do of v0.2.128): NO per-page
+                // .background here. The container's own background
+                // (below, after .clipped()) already paints the
+                // status-bar strip edge-to-edge, and a background
+                // placed AFTER .opacity escapes the fade — the
+                // hidden pages would keep a fully opaque background
+                // and the topmost one (Tools, last in ForEach
+                // order) would cover the incoming page. The opacity
+                // applies to the whole page subtree, so the fade
+                // below is the only per-page modifier needed.
                 ZStack {
                     ForEach(AppTab.allCases, id: \.self) { tab in
                         pageView(for: tab)
                             .frame(width: geo.size.width, height: geo.size.height)
-                            .opacity(selectedTab == tab ? 1 : 0)
+                            .opacity(selectedTab == tab ? fadeOpacity : 0)
                             .disabled(selectedTab != tab)
                     }
                 }
@@ -483,7 +505,8 @@ struct ContentView: View {
     /// animation) on the adjacent page so no intermediate page
     /// flashes past, then slides to the target — the async hop lets
     /// the parked frame paint before the slide starts. A fade needs
-    /// no parking: pages cross-fade in place. v0.2.107: the async
+    /// no parking: the pages fade sequentially in place (out 0.15 s,
+    /// switch with no animation, in 0.15 s). v0.2.107: the async
     /// hop is guarded — it only completes the slide while the
     /// selection is still the parked page, so a second tap before
     /// it fires cannot be overwritten by the stale block (that
@@ -491,8 +514,42 @@ struct ContentView: View {
     private func selectTab(_ tab: AppTab) {
         guard tab != selectedTab else { return }
         if tabAnimationFade {
-            withAnimation(.easeInOut(duration: 0.3)) {
-                selectedTab = tab
+            // v0.2.136 (re-do of v0.2.128): sequential fade. The
+            // old cross-fade animated both pages at once, so
+            // mid-transition both were half-visible — the double
+            // exposure. Here the current page fades out first
+            // (fadeOpacity is shared: it is 1 for the selected
+            // page, 0 for the rest), the switch happens with no
+            // animation while everything is invisible, then the
+            // new page fades in. The token guard supersedes a
+            // stale fade when the user taps a second tab before
+            // the first fade's switch fires; the fade-mode guard
+            // drops the pending switch if the user changed the
+            // animation to slide mid-fade (a no-animation switch
+            // would jump the slide offset instead).
+            fadeToken += 1
+            let token = fadeToken
+            withAnimation(.easeInOut(duration: 0.15)) {
+                fadeOpacity = 0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                guard token == self.fadeToken else { return }
+                guard self.tabAnimationFade else {
+                    // The user switched to slide mid-fade: the
+                    // slide branch ignores fadeOpacity, but restore
+                    // it so a later switch back to fade does not
+                    // start with an invisible page. (A superseded
+                    // fade — token mismatch above — must NOT restore:
+                    // the newer fade owns fadeOpacity.)
+                    self.fadeOpacity = 1
+                    return
+                }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { self.selectedTab = tab }
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    self.fadeOpacity = 1
+                }
             }
             return
         }

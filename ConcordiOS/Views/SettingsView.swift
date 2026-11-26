@@ -413,15 +413,10 @@ struct SettingsView: View {
                 }
             }
 
-            Section("settings.appIcon".l10n) {
-                NavigationLink("切换 App 图标") {
-                    AppIconPickerView()
-                }
-                Text("在 App 内切换主屏幕图标（默认 / 墨黑 / 曜青 / 雪白），用的是系统公开接口。切换失败时页面会显示完整错误信息。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
+            // v0.2.136 (D1): the App 图标 section is deleted —
+            // upstream has no alternate-icon switching (rs.1: only
+            // an unused app_icon plugin); the icon now changes at
+            // install time in SideKite.
             Section("settings.theme".l10n) {
                 NavigationLink("外观与主题色") {
                     ThemePickerView()

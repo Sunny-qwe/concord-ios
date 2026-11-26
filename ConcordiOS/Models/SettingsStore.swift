@@ -842,18 +842,11 @@ final class SettingsStore: ObservableObject {
             "system-proxy": systemProxy,
             "bypass-domain": systemProxy ? bypassDomain : [],
         ]
-        // E6: preserve the Loopback 10.7.0.1 switch ("loopback-device",
-        // written by LoopbackView's own read-modify-write). This dict
-        // is built fresh from this store's fields and has no such
-        // field, so without this a Settings save would drop the
-        // switch. Missing file/key means OFF (the extension treats
-        // a missing key as OFF).
-        if let url = ConfigStore.sharedFileURL(name: ConfigStore.tunnelSettingsFileName),
-           let data = try? Data(contentsOf: url),
-           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let loopbackDevice = existing["loopback-device"] as? Bool {
-            tunnel["loopback-device"] = loopbackDevice
-        }
+        // v0.2.136 (D2): the Loopback page is deleted, so its
+        // "loopback-device" switch is gone with it — no longer
+        // preserved here. A Settings save now drops the stale key
+        // from tunnel.json; the extension treats a missing key as
+        // OFF.
         writeSharedJSON(tunnel, name: ConfigStore.tunnelSettingsFileName, onlyIfMissing: onlyIfMissing)
         // mitm.json uses the core's RawConfig keys verbatim, so the
         // extension can pass it as the "mitm" overlay value unchanged.

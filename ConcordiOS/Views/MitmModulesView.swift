@@ -1225,7 +1225,7 @@ struct MitmModuleDetailView: View {
                 // (upstream MitmNetworkChange.replacedBy,
                 // providers/mitm.dart:492 — the LAST replacer).
                 if !content.network.isEmpty {
-                    Section("网络设置") {
+                    Section {
                         ForEach(Array(networkChanges(of: content.network).enumerated()), id: \.offset) { _, change in
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(change.title)
@@ -1235,6 +1235,8 @@ struct MitmModuleDetailView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                    } header: {
+                        Text("网络设置")
                     } footer: {
                         Text("启用时会覆盖下列网络设置。")
                             .font(.footnote)

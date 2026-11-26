@@ -1,0 +1,84 @@
+From e2fb43e0000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: rebase <rebase@local>
+Date: Thu, 26 Nov 2026 12:22:23 +0000
+Subject: [PATCH 10/10] controller: add GET /services backed by the core prober
+
+---
+ crates/controller/src/routes.rs | 43 +++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 41 insertions(+), 2 deletions(-)
+
+diff --git a/crates/controller/src/routes.rs b/crates/controller/src/routes.rs
+index b45e652..507f78b 100644
+--- a/crates/controller/src/routes.rs
++++ b/crates/controller/src/routes.rs
+@@ -7,7 +7,7 @@ use concord_proto::types::{
+     ConfigPatchParams, ConnectionCloseParams, CoreEvent, DelayRunEvent, DelayRunParams,
+     DelayTestParams, DnsQueryParams, Empty, EventsWatchParams, GeoUpdateParams, ProviderKind,
+     ProviderNameParams, ProxySelectParams, ProxyStatesParams, ResourceKind, ResourcePhase,
+-    TunPatch,
++    ServicesParams, TunPatch,
+ };
+ use concord_proto::{ApiError, ErrorData, MAX_MESSAGE};
+ use futures_util::StreamExt;
+@@ -50,6 +50,7 @@ impl Routes {
+                 stream::respond(request, values, self.stop.clone())
+             }
+             (&Method::GET, ["logs"]) => self.logs(request).await,
++            (&Method::GET, ["services"]) => self.services(&request).await,
+             (_, ["configs", ..]) => self.configs(request, &method, &path[1..]).await,
+             (_, ["proxies", rest @ ..]) => self.proxies(request, &method, rest).await,
+             (&Method::GET, ["group", rest @ ..]) => self.groups(request, rest).await,
+@@ -75,7 +76,7 @@ impl Routes {
+             (
+                 _,
+                 []
+-                | ["version" | "traffic" | "memory" | "logs" | "rules" | "group"]
++                | ["version" | "traffic" | "memory" | "logs" | "rules" | "group" | "services"]
+                 | ["group", _]
+                 | ["group", _, "delay"]
+                 | ["rules", "disable"]
+@@ -96,6 +97,44 @@ impl Routes {
+         stream::respond(request, values, self.stop.clone())
+     }
+ 
++    /// Service availability through the core's own prober
++    /// (`probe.services`): each check is pinned to `proxy`, exactly
++    /// like FlClash's `checkServices` — an empty `proxy` lets the
++    /// core route by its rules, an empty `names` runs every check,
++    /// and an absent `timeout` keeps the core's 10 s default
++    /// (services.rs `DEFAULT_PROBE_TIMEOUT`, concurrency 4, sweep
++    /// budget 6x). The answer is the RPC result's own JSON
++    /// (`{"items": [...]}`), so a host that already decodes
++    /// `probe.services` reads this route with no model change.
++    async fn services(&self, request: &Request<Incoming>) -> Response<Body> {
++        let proxy = query(request.uri(), "proxy").unwrap_or_default();
++        let names = query(request.uri(), "names")
++            .map(|names| {
++                names
++                    .split(',')
++                    .map(|name| name.to_owned())
++                    .filter(|name| !name.is_empty())
++                    .collect()
++            })
++            .unwrap_or_default();
++        let timeout = match query(request.uri(), "timeout") {
++            None => None,
++            Some(text) => match text.parse::<u64>() {
++                Ok(timeout) => Some(timeout),
++                Err(_) => return bad_request(),
++            },
++        };
++        let params = ServicesParams {
++            proxy,
++            names,
++            timeout,
++        };
++        match self.control.probe_services(params).await {
++            Ok(list) => json(&list),
++            Err(err) => error(StatusCode::BAD_GATEWAY, &err.message),
++        }
++    }
++
+     async fn catalog(&self) -> Option<Catalog> {
+         let groups = self.control.proxy_groups(Empty {}).await.ok()?;
+         let states = self

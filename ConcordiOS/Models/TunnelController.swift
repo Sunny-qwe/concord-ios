@@ -25,6 +25,8 @@ import Foundation
 ///   DELETE /proxies/{group} -> 204 (routes.rs `unfix`: clears
 ///        a URLTest/Fallback pin)
 ///   GET  /configs                          -> {"unified-delay": bool, ...}
+///   GET  /services?proxy=&names=&timeout= (ms, optional)
+///        -> 200 {"items": [...]} (probe.services result, v0.2.135)
 /// PATCH /configs does NOT map unified-delay (patch_params omits it),
 /// so the delay test only READS it here; the tunnel startup patch
 /// already applied the setting through JSON-RPC config.patch.
@@ -139,6 +141,45 @@ enum TunnelController {
             return -1
         case 503:
             return -2
+        case 401:
+            throw TunnelControllerError.unauthorized
+        default:
+            throw TunnelControllerError.httpStatus(http.statusCode)
+        }
+    }
+
+    /// Service availability through the tunnel core's own prober
+    /// (GET /services, v0.2.135, patch 10): the core pins each
+    /// check to `proxy`, exactly like upstream FlClash's
+    /// checkServices. The answer is the probe.services result's
+    /// own JSON, so it decodes with the existing ConcordServiceList.
+    /// Throws on transport errors and on any non-200 status — the
+    /// caller falls back to the app-side probe (ServiceProbeLocal).
+    /// The core's sweep budget is 6 x the 10 s request timeout
+    /// (services.rs SWEEP_BUDGET_FACTOR), so a full sweep can take
+    /// up to 60 s; the session timeout allows that plus a margin.
+    static func probeServices(proxy: String, names: [String]) async throws -> [ConcordServiceItem] {
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "127.0.0.1"
+        components.port = 9090
+        components.path = "/services"
+        components.queryItems = [
+            URLQueryItem(name: "proxy", value: proxy),
+            URLQueryItem(name: "names", value: names.joined(separator: ",")),
+        ]
+        guard let requestURL = components.url else {
+            throw TunnelControllerError.badURL
+        }
+        let requestTimeout: TimeInterval = 90
+        let (data, response) = try await makeSession(timeoutSeconds: requestTimeout)
+            .data(for: authorizedRequest(url: requestURL, timeoutSeconds: requestTimeout))
+        guard let http = response as? HTTPURLResponse else {
+            throw TunnelControllerError.badResponse
+        }
+        switch http.statusCode {
+        case 200:
+            return try JSONDecoder().decode(ConcordServiceList.self, from: data).items
         case 401:
             throw TunnelControllerError.unauthorized
         default:

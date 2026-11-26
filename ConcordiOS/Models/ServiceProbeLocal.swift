@@ -2,6 +2,14 @@ import Foundation
 
 // MARK: - App-side service probe (v0.2.127)
 //
+// v0.2.135: now the FALLBACK, not the primary path. The tunnel
+// core's own prober answers GET /services on the controller
+// (patch 10) and the in-app core answers probe.services over RPC,
+// both pinned to the selected outbound; this file's URLSession
+// probe routes by the rules instead, which is why the sheet sat
+// at 6 项异常 on 130–134. It stays because a controller/RPC
+// failure still needs a probe that works through the mixed proxy.
+//
 // The service sheet (服务状态) opens but stays empty because
 // probe.services is a unary JSON-RPC method that can only travel
 // via the app→extension RPC channel, and that channel is dead

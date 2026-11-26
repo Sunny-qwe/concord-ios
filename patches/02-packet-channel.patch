@@ -1,7 +1,7 @@
-From 5001c12ed50c93a855a9335f1dbbb08feacb7aee Mon Sep 17 00:00:00 2001
+From 011f1ab1ee55aea725a2f3542867195ffe0d9cc8 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Wed, 25 Nov 2026 07:29:10 +0000
-Subject: [PATCH 2/8] ios: promote FakeDevice to a production packet-channel
+Date: Thu, 26 Nov 2026 17:12:24 +0000
+Subject: [PATCH 02/10] ios: promote FakeDevice to a production packet-channel
 
 ---
  crates/api/Cargo.toml           |   1 +
@@ -149,10 +149,10 @@ index 6bf951b..04d7dca 100644
          self.engine.shutdown().await;
          self.configured.store(false, Ordering::SeqCst);
 diff --git a/crates/api/src/control/tun.rs b/crates/api/src/control/tun.rs
-index ba2bbcd..7c53ade 100644
+index d13f064..7d87bed 100644
 --- a/crates/api/src/control/tun.rs
 +++ b/crates/api/src/control/tun.rs
-@@ -63,6 +63,35 @@ impl Control {
+@@ -60,6 +60,35 @@ impl Control {
                      ));
                  }
              }
@@ -189,7 +189,7 @@ index ba2bbcd..7c53ade 100644
          self.refresh();
          Ok(Empty {})
 diff --git a/crates/api/src/lib.rs b/crates/api/src/lib.rs
-index 9880329..2f2e8b0 100644
+index 2aea5a4..cc77aac 100644
 --- a/crates/api/src/lib.rs
 +++ b/crates/api/src/lib.rs
 @@ -2,6 +2,7 @@
@@ -206,8 +206,8 @@ index 9880329..2f2e8b0 100644
  pub use bus::EventBus;
 +pub use channels::PacketChannels;
  pub use concord_common::Origin;
+ pub use concord_common::options::is_tun_stack;
  pub use concord_common::sync;
- pub use concord_engine::ControllerCors;
 diff --git a/crates/engine/src/engine/tun.rs b/crates/engine/src/engine/tun.rs
 index f9f31cd..f05dd2a 100644
 --- a/crates/engine/src/engine/tun.rs
@@ -384,10 +384,10 @@ index fdaabde..4c87a42 100644
  pub use callback::{Deliver, Release};
  pub use hub::{Hub, Receiver, hub, install, set_notice};
 diff --git a/crates/proto/src/types/live.rs b/crates/proto/src/types/live.rs
-index 7efa09b..ddf3c71 100644
+index 34c02c5..412d588 100644
 --- a/crates/proto/src/types/live.rs
 +++ b/crates/proto/src/types/live.rs
-@@ -415,8 +415,8 @@ pub enum EngineState {
+@@ -418,8 +418,8 @@ pub enum EngineState {
      Failed,
  }
  
@@ -398,7 +398,7 @@ index 7efa09b..ddf3c71 100644
  #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
  #[serde(tag = "kind", rename_all = "snake_case")]
  pub enum TunSource {
-@@ -427,6 +427,14 @@ pub enum TunSource {
+@@ -430,6 +430,14 @@ pub enum TunSource {
      Inherited {
          handle: u64,
      },
@@ -727,10 +727,10 @@ index 4a701e1..0874cda 100644
      let Some(handler) = deps.dns.clone() else {
          return Ok(None);
 diff --git a/schema/api.json b/schema/api.json
-index e7d566a..2305174 100644
+index 8d89815..8489c50 100644
 --- a/schema/api.json
 +++ b/schema/api.json
-@@ -4613,9 +4613,28 @@
+@@ -4596,9 +4596,28 @@
              "kind",
              "handle"
            ]

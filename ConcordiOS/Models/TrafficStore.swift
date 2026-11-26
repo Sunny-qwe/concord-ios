@@ -1645,46 +1645,63 @@ final class TrafficStore: ObservableObject {
     /// dead app→extension RPC channel (log-confirmed: every
     /// sendProviderMessage returns nil while connected) with the
     /// same egress lookup by another transport: race the first 3
-    /// ip-info sources, 5 s each, return the first that parses.
-    /// The 5 s per-source timeout keeps a cold proxy from
+    /// ip-info sources, 3 s each, return the first that parses.
+    /// v0.2.131: the race is two transports, not one — the local
+    /// proxy AND a direct fetch. When the tunnel is up the app's
+    /// own traffic goes through it and exits via the node, so the
+    /// direct fetch returns the same egress IP without waiting
+    /// for the extension's local proxy to be ready (~20 s after
+    /// tunnel start on-device, 16:32:27–46). The first parseable
+    /// candidate wins, either transport; a later local-proxy
+    /// success overwrites, so the proxy stays authoritative.
+    /// The 3 s per-source timeout keeps a cold proxy from
     /// stalling the probe longer than the RPC path's 6 s.
     private func probeOutboundIpViaLocalProxy() async throws -> ConcordOutboundIp {
         let proxyConfig: [AnyHashable: Any] = [
             "HTTPEnable": 1, "HTTPProxy": "127.0.0.1", "HTTPPort": 17890,
             "HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 17890,
         ]
-        let config = URLSessionConfiguration.ephemeral
-        config.connectionProxyDictionary = proxyConfig
-        config.timeoutIntervalForRequest = 5
-        config.timeoutIntervalForResource = 5
-        let session = URLSession(configuration: config)
+        let proxySessionConfig = URLSessionConfiguration.ephemeral
+        proxySessionConfig.connectionProxyDictionary = proxyConfig
+        proxySessionConfig.timeoutIntervalForRequest = 3
+        proxySessionConfig.timeoutIntervalForResource = 3
+        let proxySession = URLSession(configuration: proxySessionConfig)
+        // Direct (no proxy): goes through the VPN tunnel, not
+        // through the core's local proxy — see the header comment.
+        let directSessionConfig = URLSessionConfiguration.ephemeral
+        directSessionConfig.connectionProxyDictionary = [:]
+        directSessionConfig.timeoutIntervalForRequest = 3
+        directSessionConfig.timeoutIntervalForResource = 3
+        let directSession = URLSession(configuration: directSessionConfig)
         let startedAt = Date()
-        let winner = await withTaskGroup(of: ConcordOutboundIp?.self) { group -> ConcordOutboundIp? in
-            for urlString in concordOutboundIpUrls.prefix(3) {
-                group.addTask {
-                    guard let url = URL(string: urlString) else { return nil }
-                    guard let (data, response) = try? await session.data(for: URLRequest(url: url, timeoutInterval: 5)),
-                          (response as? HTTPURLResponse)?.statusCode == 200,
-                          let body = String(data: data, encoding: .utf8), !body.isEmpty else { return nil }
-                    let candidate = ConcordOutboundIp(url: urlString, body: body,
-                        delay: Int64(Date().timeIntervalSince(startedAt) * 1000),
-                        chains: [], error: nil, epoch: 0, version: 0)
-                    if parseOutboundIp(candidate) == nil { return nil }
-                    return candidate
+        let winner = await withTaskGroup(of: (ConcordOutboundIp, String)?.self) { group -> (ConcordOutboundIp, String)? in
+            for (session, label) in [(proxySession, "local-proxy"), (directSession, "direct")] {
+                for urlString in concordOutboundIpUrls.prefix(3) {
+                    group.addTask {
+                        guard let url = URL(string: urlString) else { return nil }
+                        guard let (data, response) = try? await session.data(for: URLRequest(url: url, timeoutInterval: 3)),
+                              (response as? HTTPURLResponse)?.statusCode == 200,
+                              let body = String(data: data, encoding: .utf8), !body.isEmpty else { return nil }
+                        let candidate = ConcordOutboundIp(url: urlString, body: body,
+                            delay: Int64(Date().timeIntervalSince(startedAt) * 1000),
+                            chains: [], error: nil, epoch: 0, version: 0)
+                        if parseOutboundIp(candidate) == nil { return nil }
+                        return (candidate, label)
+                    }
                 }
             }
-            for await candidate in group {
-                if let candidate {
+            for await result in group {
+                if let result {
                     group.cancelAll()
-                    return candidate
+                    return result
                 }
             }
             return nil
         }
-        guard let winner else {
-            throw NSError(domain: "ConcordiOS", code: -2, userInfo: [NSLocalizedDescriptionKey: "local-proxy: no ip-info source answered via 127.0.0.1:17890"])
+        guard let (winner, label) = winner else {
+            throw NSError(domain: "ConcordiOS", code: -2, userInfo: [NSLocalizedDescriptionKey: "no ip-info source answered (local-proxy 127.0.0.1:17890 + direct through tunnel)"])
         }
-        IPLookupDiagnostics.record("local-proxy: \(winner.url) ok (\(winner.delay) ms)")
+        IPLookupDiagnostics.record("\(label): \(winner.url) ok (\(winner.delay) ms)")
         return winner
     }
 
@@ -1746,8 +1763,12 @@ final class TrafficStore: ObservableObject {
     /// attempt per 10 s, which still left the card red at 7 s
     /// uptime on-device (the first probe at connect had failed and
     /// the retry was not due yet), so v0.2.95 retries every 3 s
-    /// for the first 20 attempts, then every 10 s. The in-flight
-    /// guard in probe() keeps a 6 s timeout attempt from
+    /// for the first 20 attempts, then every 10 s. v0.2.131
+    /// tightens the first phase to every 1 s: the probe itself
+    /// now usually lands in ~1 s (direct-through-tunnel race),
+    /// and a 1 s retry means the badge updates within ~1 s of
+    /// the proxy/probe becoming ready instead of up to 3 s late.
+    /// The in-flight guard in probe() keeps a 6 s timeout attempt from
     /// overlapping itself. Called from the 1 s tick (Dashboard-only
     /// work).
     @MainActor
@@ -1757,7 +1778,7 @@ final class TrafficStore: ObservableObject {
         // until a fresh result lands, instead of going quiet.
         guard outboundIp == nil || outboundIpIsStale,
               !isProbingOutboundIp else { return }
-        let interval: TimeInterval = outboundIpProbeAttempts < 20 ? 3 : 10
+        let interval: TimeInterval = outboundIpProbeAttempts < 20 ? 1 : 10
         if let last = lastOutboundIpProbeAt,
            Date().timeIntervalSince(last) < interval { return }
         outboundIpProbeAttempts += 1

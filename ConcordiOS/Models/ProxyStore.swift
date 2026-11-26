@@ -851,8 +851,25 @@ final class ProxyStore: ObservableObject {
             .store(in: &cancellables)
     }
 
+    /// The outbound the dashboard probes / services check through.
+    /// v0.2.131: GLOBAL is the mode selector — in rule mode its
+    /// pick is the mode itself ("DIRECT"), NOT the node carrying
+    /// traffic. Prefer the first Selector group with a real node
+    /// pick (the subscription group the user actually tapped a
+    /// node in, e.g. 良心云 -> 日本高速05); only when no Selector
+    /// has a real pick fall back to the old GLOBAL-first logic.
+    /// Without this the service probe's proxy was DIRECT even
+    /// with a node selected and the VPN on (on-device 16:34).
     var selectedOutbound: String? {
-        groups.first { $0.name == "GLOBAL" }?.selectedNodeName
+        if let picked = groups.first(where: {
+            $0.type == "select"
+                && $0.selectedNodeName != nil
+                && $0.selectedNodeName != "DIRECT"
+                && $0.selectedNodeName != "REJECT"
+        })?.selectedNodeName {
+            return picked
+        }
+        return groups.first { $0.name == "GLOBAL" }?.selectedNodeName
             ?? groups.first?.selectedNodeName
     }
 
@@ -895,7 +912,18 @@ final class ProxyStore: ObservableObject {
             // (v0.2.40 title-delay fix); the parsed result is
             // applied back on the main actor below.
             if client.mode == .live, TunnelManager.shared.isRunning, !groups.isEmpty {
-                lastError = error.localizedDescription
+                // v0.2.131: the dead app->extension RPC (code 4,
+                // TunnelError.noReply) is NOT a user-facing error
+                // here — the tunnel is up and working, the groups
+                // are already displayed, and a foreground-return
+                // refresh failing over the dead channel must not
+                // paint red "扩展未回复" text on the Dashboard.
+                // Only a genuine (non-noReply) error surfaces.
+                if case TunnelError.noReply = error {
+                    lastError = nil
+                } else {
+                    lastError = error.localizedDescription
+                }
                 return
             }
             if let profile = activeProfile {
@@ -1132,8 +1160,7 @@ final class ProxyStore: ObservableObject {
                 continue
             }
             do {
-                let result = try await client.proxySelect(group: groupName, proxy: proxy)
-                if result.changed { changed = true }
+                if try await selectProxy(group: groupName, proxy: proxy) { changed = true }
             } catch {
                 if rollbackGroups.contains(groupName) {
                     rollbackFailedSelection(profileID: profileID, group: groupName, error: error)
@@ -1264,6 +1291,25 @@ final class ProxyStore: ObservableObject {
         }
     }
 
+    /// Select a proxy in a group through the channel that works
+    /// for the current state (v0.2.131). VPN on: the tunnel core's
+    /// HTTP controller (127.0.0.1:9090) — the app->extension RPC
+    /// is dead, so `client.proxySelect` always failed with the VPN
+    /// on and every tap rolled back to 自动选择. VPN off: the
+    /// in-app core's RPC, which works. Returns whether the core
+    /// applied a change (the controller's 204 counts as changed).
+    /// Note: the controller's select rejects Smart groups (400),
+    /// which the RPC accepts — but the RPC is dead with VPN on
+    /// anyway, so Smart selection with VPN on was already
+    /// impossible; no regression.
+    private func selectProxy(group: String, proxy: String) async throws -> Bool {
+        if isRunning {
+            try await TunnelController.selectProxy(group: group, proxy: proxy)
+            return true
+        }
+        return try await client.proxySelect(group: group, proxy: proxy).changed
+    }
+
     @MainActor
     private func applySelect(group: ProxyGroup, proxy: String, profileID: UUID? = nil) async -> String? {
         // The selected outbound the dashboard probes through may
@@ -1288,8 +1334,8 @@ final class ProxyStore: ObservableObject {
         }
         applyLocalPick(group: group, proxy: proxy)
         do {
-            let result = try await client.proxySelect(group: group.name, proxy: proxy)
-            if result.changed {
+            let changed = try await selectProxy(group: group.name, proxy: proxy)
+            if changed {
                 // Pass the active profile so the post-apply refresh
                 // can prefer the pending pick over a stale snapshot
                 // (fetchCoreGroups, v0.2.95 Bug 1) — a bare

@@ -19,6 +19,11 @@ import Foundation
 ///   GET  /version                          -> {"version": ...}
 ///   GET  /proxies/{name}/delay?url=&timeout= (ms, i16)
 ///        -> 200 {"delay": N} / 504 timeout / 503 failure
+///   PUT  /proxies/{group} {"name": "<proxy>"} -> 204 (routes.rs
+///        `select`: the group must be a Selector or have a fixed
+///        pin — covers Selector + URLTest + Fallback)
+///   DELETE /proxies/{group} -> 204 (routes.rs `unfix`: clears
+///        a URLTest/Fallback pin)
 ///   GET  /configs                          -> {"unified-delay": bool, ...}
 /// PATCH /configs does NOT map unified-delay (patch_params omits it),
 /// so the delay test only READS it here; the tunnel startup patch
@@ -134,6 +139,54 @@ enum TunnelController {
             return -1
         case 503:
             return -2
+        case 401:
+            throw TunnelControllerError.unauthorized
+        default:
+            throw TunnelControllerError.httpStatus(http.statusCode)
+        }
+    }
+
+    /// Select a proxy in a group through the controller (PUT
+    /// /proxies/{group}). Returns on HTTP 204. An empty proxy
+    /// clears a URLTest/Fallback pin (DELETE /proxies/{group}).
+    /// Throws on transport errors and on any non-204 status.
+    /// v0.2.131: the node tap's proxy.select cannot travel over
+    /// the dead app->extension RPC when the VPN is on, so the
+    /// tap always failed and rolled back to 自动选择 — this is
+    /// the working channel for it, the same controller the
+    /// VPN-on delay test already uses.
+    static func selectProxy(group: String, proxy: String) async throws {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        let encodedName = group.addingPercentEncoding(withAllowedCharacters: allowed) ?? group
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "127.0.0.1"
+        components.port = 9090
+        // percentEncodedPath (not .path): the name is already
+        // percent-encoded above, and .path would encode the `%`
+        // again, so the core would look up a group whose name
+        // contains a literal "%20" (same as delayTest).
+        components.percentEncodedPath = "/proxies/\(encodedName)"
+        guard let requestURL = components.url else {
+            throw TunnelControllerError.badURL
+        }
+        var request = authorizedRequest(url: requestURL, timeoutSeconds: 10)
+        if proxy.isEmpty {
+            request.httpMethod = "DELETE"
+        } else {
+            request.httpMethod = "PUT"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: ["name": proxy])
+        }
+        let (_, response) = try await makeSession(timeoutSeconds: 10)
+            .data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw TunnelControllerError.badResponse
+        }
+        switch http.statusCode {
+        case 204:
+            return
         case 401:
             throw TunnelControllerError.unauthorized
         default:

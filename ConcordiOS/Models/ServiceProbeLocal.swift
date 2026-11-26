@@ -20,8 +20,10 @@ import Foundation
 // The checkers below are a faithful port of the pinned core
 // (crates/engine/src/probe/services.rs + rules.rs + fetch.rs +
 // region.rs, core 33904ff): same 13 services in the same order,
-// same URLs, same per-request timeout (10 s), same concurrency
-// (4), same retry-once-on-timeout inside a 60 s sweep budget,
+// same URLs, same retry-once-on-timeout inside a sweep budget
+// (v0.2.131: per-request timeout 5 s not the core's 10 s, and
+// concurrency 8 not 4 — the core's values made a full sweep take
+// 57.5 s on-device; the service definitions are unchanged),
 // same body caps (16 KiB small / 512 KiB HTML / 8 MiB scan with
 // early termination), same status mapping (200–299 available;
 // 401/403/429/451 restricted; else unavailable), same region
@@ -103,13 +105,22 @@ enum ServiceProbeLocal {
     /// Kept in step with `browserUa` in FlClash
     /// lib/common/constant.dart (core BROWSER_USER_AGENT).
     private static let browserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    /// Core DEFAULT_PROBE_TIMEOUT: 10 s per request.
-    private static let requestTimeout: TimeInterval = 10
-    /// Core CHECK_CONCURRENCY: 4 checks at a time.
-    private static let checkConcurrency = 4
+    /// Core DEFAULT_PROBE_TIMEOUT: 10 s per request. v0.2.131
+    /// uses 5 s instead: the checks that answer do so in ~1 s,
+    /// and a 10 s timeout let each failing service (SSL -1200 /
+    /// CFNetwork 310) burn 10 s + a 10 s retry, so a full sweep
+    /// took 57.5 s on-device. 5 s bounds a failing service at
+    /// 10 s total without touching the 13 service definitions.
+    private static let requestTimeout: TimeInterval = 5
+    /// Core CHECK_CONCURRENCY: 4 checks at a time. v0.2.131 uses
+    /// 8: with several services failing, 4-wide left the sweep
+    /// bound by the sum of the slow checks; 8-wide bounds it by
+    /// the slowest single check.
+    private static let checkConcurrency = 8
     /// Core SWEEP_BUDGET_FACTOR (6) x request timeout: the whole
     /// sweep must not start new checks past this deadline.
-    private static let sweepBudget: TimeInterval = 60
+    /// 6 x 5 s = 30 s (was 60 s at the core's 10 s timeout).
+    private static let sweepBudget: TimeInterval = 30
     /// Core HTML_MAX_BODY / SMALL_MAX_BODY / SCAN_MAX_BODY.
     private static let htmlMaxBody = 512 * 1024
     private static let smallMaxBody = 16 * 1024

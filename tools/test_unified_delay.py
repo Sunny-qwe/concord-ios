@@ -26,9 +26,15 @@ app = read('ConcordiOS/Models/AppCore.swift')
 tunnel = read('PacketTunnel/PacketTunnelProvider.swift')
 proxy = read('ConcordiOS/Models/ProxyStore.swift')
 # These methods must continue to use error-propagating writes before readback.
+# v0.2.128: the extension RPC is dead, so the VPN-on path no longer writes
+# via client.setUnifiedDelay (and the controller cannot SET unified-delay —
+# PATCH /configs does not map it). The tunnel-start config.patch applies the
+# setting; this function only reads it back from the controller (GET /configs)
+# on the VPN-on path. The VPN-off path still writes via AppCore first.
 diagnostic = block(proxy, 'private func unifiedDelayDiagnosticLine(')
 assert 'try await AppCore.shared.setUnifiedDelay(enabled)' in diagnostic
-assert 'try await client.setUnifiedDelay(enabled)' in diagnostic
+assert 'try await client.setUnifiedDelay(enabled)' not in diagnostic
+assert 'TunnelController.unifiedDelay()' in diagnostic
 assert 'guard let actual = general.unifiedDelay' in diagnostic
 assert 'actual == enabled' in diagnostic
 assert 'encoder.keyEncodingStrategy = .convertToSnakeCase' in client

@@ -201,10 +201,6 @@ struct DashboardView: View {
     /// changes and on the 1 s tick — the channel still avoids
     /// *extra* subscriptions from gestures.
     @State private var trafficActions = DashboardTrafficActions()
-    @State private var servicesExpanded = false
-    /// Service management sheet (D-M3): reorder + enable/disable
-    /// the probe-service targets.
-    @State private var showServiceManageSheet = false
     /// Stat-cell destination sheet (D-M6): live / recent
     /// connections, or the DNS queries page. v0.2.111 / v0.2.113:
     /// owned by ContentView, not here — all three destinations
@@ -746,7 +742,6 @@ struct DashboardView: View {
         .sheet(isPresented: $showOutboundIPSheet) { outboundIPSheet }
         .sheet(isPresented: $showProvidersSheet) { providersSheetContent }
         .sheet(isPresented: $showGroupsSheet) { groupsSheetContent }
-        .sheet(isPresented: $showServiceManageSheet) { serviceManageSheet }
         // The dashboard's consent prompt (fork 0a55a31): the same
         // prompt the modules page uses, asked over the dashboard
         // for each module that awaits an answer in turn; an answer
@@ -899,15 +894,6 @@ struct DashboardView: View {
     /// system nav bar; each content view renders its own
     /// MuYu header (handle + ✕ + title + actions) and a
     /// bottom floating search bar.
-
-    /// D-M3: manage the probe-service targets (order + enabled).
-    private var serviceManageSheet: some View {
-        ServiceManageSheet()
-            .presentationDetents([.fraction(0.5625), .fraction(0.9)])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(ConcordTheme.pageBackground)
-            .presentationCornerRadius(28)
-    }
 
     // MARK: - Modules awaiting consent (fork 2d31f10 + 0a55a31)
 
@@ -1529,13 +1515,15 @@ struct DashboardView: View {
 
     /// The VPN card plus its banners (D5): the disconnect / crash-loop
     /// / TUN-restart banners live HERE, on the main VPN card, where
-    /// they are always visible — not inside the Services card's
-    /// collapsed "expanded" section, where the disconnect banner used
-    /// to hide and the crash-loop banner had no reader at all.
+    /// they are always visible — not inside the Services card, whose
+    /// inline "expanded" section (v0.2.130: removed) used to hide
+    /// the disconnect banner and leave the crash-loop banner with
+    /// no reader at all.
     private var vpnCardSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             vpnCard
-            // Unexpected disconnect (moved from expandedServices):
+            // Unexpected disconnect (moved out of the Services card's
+            // removed inline section in v0.2.130):
             // the tunnel dropped without the user asking (system
             // kill, core stall, failed start). One tap reconnects
             // via the same path as the play button; the flag clears
@@ -1712,7 +1700,6 @@ struct DashboardView: View {
     // tick, so the card had to move out with the rest.
     private var servicesCard: some View {
         ServicesCardView(
-            expanded: $servicesExpanded,
             onOpenServiceSheet: {
                 // v0.2.124: the 服务状态 sheet is now a custom
                 // overlay at the ContentView root (statsDestination
@@ -1727,8 +1714,7 @@ struct DashboardView: View {
                 MainThreadWatchdog.noteAction("statsDestination set to .services")
                 statsDestination = .services
                 ServiceSheetDiagnostics.record("服务状态 overlay 目标已置 .services")
-            },
-            onManageServices: { showServiceManageSheet = true }
+            }
         )
     }
 
@@ -3207,33 +3193,31 @@ private struct TrafficCardContent: View {
     }
 }
 
-/// Service status card: the title + verdict badge open the 服务状态
-/// sheet (MuYu key_7); the chevron keeps the inline expand
-/// (engine / TUN / DNS details). Its data changes on probe, not
-/// every second — but any read in DashboardView would subscribe
-/// that view to the store and re-render the dashboard on the 1 s
-/// tick, so the whole card lives here. The expanded section's
-/// tunnel-status row duplicates DashboardView.tunnelStatusText
-/// (same switch, same strings) because this leaf owns its own
-/// TunnelManager observation.
+/// Service status card (summary only): the title + verdict badge
+/// and the whole card open the 服务状态 bottom sheet (MuYu
+/// key_7), like DNS 查询 — v0.2.130 removed the chevron's inline
+/// expand (the full service list + 检测/全部检测/管理服务 +
+/// engine / TUN / DNS details lived inline on the Dashboard;
+/// video f_020). The list and buttons already live in the bottom
+/// sheet (ServiceStatusSheet); the engine / TUN / DNS rows are
+/// dropped — the tunnel state is on the VPN card, engine faults
+/// have their own badge, and TUN / DNS are settings. Its data
+/// changes on probe, not every second — but any read in
+/// DashboardView would subscribe that view to the store and
+/// re-render the dashboard on the 1 s tick, so the whole card
+/// lives here.
 private struct ServicesCardView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
-    @EnvironmentObject private var proxyStore: ProxyStore
-    @EnvironmentObject private var settingsStore: SettingsStore
-    @EnvironmentObject private var tunnelManager: TunnelManager
-    @EnvironmentObject private var client: ConcordClient
-    @ObservedObject private var onDemandStore = OnDemandStore.shared
 
-    @Binding var expanded: Bool
     let onOpenServiceSheet: () -> Void
-    let onManageServices: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 // v0.2.56: the title + badge open the 服务状态
-                // sheet (MuYu key_7); the chevron keeps the inline
-                // expand (engine / TUN / DNS details).
+                // sheet (MuYu key_7). v0.2.130: the chevron no
+                // longer expands inline — it is just the "opens a
+                // sheet" indicator, like the other cards.
                 Button { onOpenServiceSheet() } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "target")
@@ -3248,14 +3232,9 @@ private struct ServicesCardView: View {
                 }
                 .buttonStyle(.plain)
                 Spacer()
-                Button { withAnimation { expanded.toggle() } } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(expanded ? "收起服务详情" : "展开服务详情")
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
             }
             // D-M3: the card shows the first two *enabled* services
             // (TrafficStore.enabledServiceNames), not a hardcoded
@@ -3273,18 +3252,13 @@ private struct ServicesCardView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            if expanded {
-                expandedServices
-            }
         }
         .concordCard()
         // v0.2.64: the whole card opens the 服务状态 sheet —
-        // tapping anywhere in the row must show the drawer, not
-        // just the title/chevron. When expanded, taps stay
-        // inside the expanded details (the chevron collapses);
-        // the title Button keeps opening the sheet too.
+        // tapping anywhere on the card shows the drawer, not
+        // just the title/chevron.
         .contentShape(Rectangle())
-        .onTapGesture { if !expanded { onOpenServiceSheet() } }
+        .onTapGesture { onOpenServiceSheet() }
     }
 
     private func service(named name: String) -> ConcordServiceItem? {
@@ -3339,190 +3313,6 @@ private struct ServicesCardView: View {
         return String(name.prefix(1)).uppercased()
     }
 
-    /// probe.services status strings are part of the core's contract
-    /// (upstream crates/engine/src/probe/services.rs).
-    private func serviceStatusLabel(_ status: String) -> String {
-        switch status {
-        case "available": return "可用"
-        case "unavailable": return "不可用"
-        case "restricted": return "受限"
-        case "disallowed-isp": return "运营商限制"
-        case "blocked": return "被墙"
-        case "unsupported-region": return "地区不支持"
-        case "originals-only": return "仅自制剧"
-        case "coming-soon": return "即将推出"
-        case "timeout": return "超时"
-        case "failed": return "失败"
-        case "": return "未判断"
-        default: return status
-        }
-    }
-
-    private func serviceStatusColor(_ status: String) -> Color {
-        switch status {
-        case "available": return .green
-        case "blocked", "failed", "timeout", "unavailable": return .red
-        default: return .orange
-        }
-    }
-
-    /// v0.2.86 item 16: a failed/timeout status is only shown as
-    /// failed once ServiceProbeStore confirms it (1 s confirm
-    /// re-probe); until then the row reads "检测中" in secondary
-    /// grey. Verdicts (blocked/restricted/…) are shown as-is.
-    private func serviceRowStatusLabel(_ service: ConcordServiceItem) -> String {
-        if ServiceProbeStore.isFailure(service),
-           !trafficStore.serviceProbeStore.confirmedFailures.contains(service.name) {
-            return "检测中"
-        }
-        return serviceStatusLabel(service.status)
-    }
-
-    private func serviceRowStatusColor(_ service: ConcordServiceItem) -> Color {
-        if ServiceProbeStore.isFailure(service),
-           !trafficStore.serviceProbeStore.confirmedFailures.contains(service.name) {
-            return .secondary
-        }
-        return serviceStatusColor(service.status)
-    }
-
-    /// engine.state values (upstream crates/proto EngineStatus):
-    /// created / initialized / configured / running / failed.
-    private func engineStateLabel(_ state: String) -> String {
-        switch state {
-        case "created": return "已创建"
-        case "initialized": return "已初始化"
-        case "configured": return "已配置"
-        case "running": return "运行中"
-        case "failed": return "启动失败"
-        default: return state
-        }
-    }
-
-    /// v0.2.115: MuYu _vpnSubtitle parity — a failed start
-    /// appends the reason (proxyStore.startError is set only
-    /// when a start attempt fails and cleared on success/stop).
-    /// Kept in sync with DashboardView.tunnelStatusText.
-    private var tunnelStatusText: String {
-        switch tunnelManager.status {
-        case .connected: return "已连接"
-        case .connecting: return "连接中"
-        case .disconnecting: return "断开中"
-        case .disconnected:
-            if let startError = proxyStore.startError, !startError.isEmpty {
-                return "已断开: \(startError)"
-            }
-            return "已断开"
-        case .reasserting: return "重新协商"
-        case .invalid: return "未配置"
-        @unknown default: return "未知"
-        }
-    }
-
-    private var expandedServices: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Divider()
-            if trafficStore.isProbingServices {
-                ProgressView()
-            }
-            if let error = trafficStore.servicesError {
-                Text(error).font(.caption2).foregroundStyle(.red)
-            }
-            if trafficStore.services.isEmpty {
-                Text("通过当前出站检测 Google / GitHub / YouTube 等服务的可用性（probe.services）。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                // D-M3: each row shows region + proxy chains + status
-                // + delay (ConcordServiceItem carries all four).
-                ForEach(trafficStore.services) { service in
-                    HStack {
-                        Text(service.name).font(.footnote)
-                        Spacer()
-                        if let chains = service.chains, !chains.isEmpty {
-                            Text(chains.joined(separator: " → "))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        if let region = service.region, !region.isEmpty {
-                            Text(region).font(.caption2).foregroundStyle(.secondary)
-                        }
-                        Text(service.delay.map { "\($0) ms" } ?? "—").font(.caption2)
-                        Text(serviceRowStatusLabel(service))
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(serviceRowStatusColor(service))
-                    }
-                }
-            }
-            HStack(spacing: 8) {
-                Button("检测") {
-                    Task {
-                        if let proxy = proxyStore.selectedOutbound {
-                            await trafficStore.serviceProbeStore.probeAll(proxy: proxy)
-                        }
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(ConcordTheme.accent)
-                .controlSize(.small)
-                .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
-                // D-M3: 全部检测 probes every registry service,
-                // including ones disabled in 管理服务 (检测 only
-                // probes the enabled ones).
-                Button("全部检测") {
-                    Task {
-                        if let proxy = proxyStore.selectedOutbound {
-                            await trafficStore.serviceProbeStore.probeAll(proxy: proxy, names: trafficStore.orderedServiceNames)
-                        }
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(trafficStore.isProbingServices || proxyStore.selectedOutbound == nil)
-                Spacer()
-                Button("管理服务") { onManageServices() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-            }
-            Divider()
-            LabeledContent("引擎", value: trafficStore.engineStatus.map { engineStateLabel($0.state) } ?? (proxyStore.isRunning ? "已启动" : "已停止"))
-                .font(.footnote.weight(.semibold))
-            if let engine = trafficStore.engineStatus,
-               let faults = engine.faults, !faults.isEmpty {
-                ForEach(faults, id: \.service) { fault in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("启动失败：\(fault.service)").font(.footnote)
-                        Text("\(fault.reason)：\(fault.message)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            } else if let error = trafficStore.engineStatusError {
-                Text(error).font(.caption2).foregroundStyle(.red)
-            }
-            LabeledContent("VPN 隧道", value: tunnelStatusText)
-                .font(.footnote.weight(.semibold))
-            // D5: the unexpected-disconnect banner used to live here,
-            // inside this collapsed section — it now lives on the main
-            // VPN card (vpnCardSection), always visible.
-            if onDemandStore.enabled {
-                Text("按需连接已开启：断网或切换网络后系统会自动重连。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            LabeledContent("TUN", value: settingsStore.tunEnabled ? "已启用（\(settingsStore.tunStack)）" : "未启用")
-                .font(.footnote.weight(.semibold))
-            LabeledContent("DNS", value: settingsStore.dnsEnabled ? "已启用" : "未启用")
-                .font(.footnote.weight(.semibold))
-            Text(client.mode == .live
-                 ? "数据面：PacketTunnel 扩展内的 Lumen 核心经 packet-channel 桥接转发流量；静态库构建与真机数据面尚未验证（见 README）。"
-                 : "示例模式：VPN 开关只切换界面状态，不转发流量。切到实时核心并启动 VPN 后由扩展转发流量。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
 }
 
 /// Memory card (FlClash memory_info.dart): app RSS (this process,

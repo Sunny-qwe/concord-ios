@@ -192,7 +192,13 @@ enum ServiceProbeLocal {
         let failed = items.filter { $0.status == "timeout" || $0.status == "failed" }.count
         let elapsed = Int(Date().timeIntervalSince(sweepStartedAt) * 1000)
         ServiceProbeDiagnostics.record("service-probe: sweep done via local-proxy (proxy \(proxy)): \(available)/\(items.count) available, \(failed) failed/timeout, \(elapsed) ms")
-        if failed == items.count {
+        if items.count > 1, failed == items.count {
+            // v0.2.130: only a multi-service sweep failing as a
+            // whole points at the proxy itself — a single-service
+            // confirm sweep (1/1) failing is just that service
+            // failing, and logging "proxy may be unreachable" for
+            // it misleads the next diagnosis (disney 1/1, 59.7 s,
+            // 15:48:26).
             // Every check failed at the transport level — almost
             // certainly the local proxy itself (the tunnel core
             // not listening on 17890 yet; on-device 13:29 the IP

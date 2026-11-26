@@ -1839,17 +1839,34 @@ final class TrafficStore: ObservableObject {
             services = try await probeServicesThroughCore(proxy: proxy, names: names ?? enabledServiceNames)
             servicesError = nil
         } catch {
-            servicesError = error.localizedDescription
+            // v0.2.130: a cancelled probe (sheet closed, tunnel
+            // state changed mid-sweep) is not a failure — don't
+            // surface it as a sheet error.
+            if !(error is CancellationError) {
+                servicesError = error.localizedDescription
+            }
         }
     }
 
     /// Runs one service probe against the tunnel core when it is
     /// up, or the in-app core (booted on demand) when the VPN is
     /// off (v0.2.89 Dashboard auto-check — MuYu probes services
-    /// on entry even with the VPN off; the tunnel core is gone
-    /// then, so the in-app core is the fallback, like the delay
-    /// test and DnsStore.runDns). If the tunnel starts while
-    /// AppCore is booting, AppCore refuses to run alongside it
+    /// on entry even with the VPN off). Both cores are probed
+    /// through the same channel — the local mixed proxy
+    /// 127.0.0.1:17890 (ServiceProbeLocal), which the tunnel core
+    /// serves while the VPN is up and the in-app core serves
+    /// while it is off (same fixed ports). The in-app core's own
+    /// probe.services RPC is NOT used: log-confirmed 15:46:19-43
+    /// it dials DIRECT for the checks, so foreign services time
+    /// out from China and the sheet sticks at "检测中" (12
+    /// services in video f_020); and a tunnel start mid-probe
+    /// kills the AppCore session, surfacing "核心会话已关闭" in
+    /// the sheet (video f_015). The local-proxy path routes by
+    /// the core's rules through the selected node instead
+    /// (log-confirmed 15:47:33: local-proxy checks went "using
+    /// 良心云[🇸🇬新加坡高速05]"), the same path that worked
+    /// on-device in 127. If the tunnel starts while AppCore is
+    /// booting, AppCore refuses to run alongside it
     /// (AppCoreError.tunnelRunning) — the tunnel core is used
     /// instead, not reported as a failure.
     private func probeServicesThroughCore(proxy: String, names: [String]) async throws -> [ConcordServiceItem] {
@@ -1864,7 +1881,7 @@ final class TrafficStore: ObservableObject {
             }
             throw error
         }
-        return try await AppCore.shared.probeServices(proxy: proxy, names: names)
+        return try await ServiceProbeLocal.probeServices(proxy: proxy, names: names)
     }
 
     /// The tunnel-up service probe (v0.2.127): the app→extension

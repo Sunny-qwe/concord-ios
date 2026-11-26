@@ -35,8 +35,14 @@ struct LogsView: View {
     /// every new entry yanked the list to the bottom even while the
     /// user was reading older rows — the list fought the scroll.
     /// Tracked by the last row's appear/disappear below.
-    @State private var followingLogs = true
-    @State private var followingEvents = true
+    /// v0.2.130: both start OFF, so the page opens at the TOP
+    /// (the first/oldest entry) instead of being yanked to the
+    /// bottom on the first load — the old `= true` made the
+    /// count-change handler scroll to the last row the moment the
+    /// list populated. Following turns on only when the user
+    /// actually scrolls to the last row (its onAppear below).
+    @State private var followingLogs = false
+    @State private var followingEvents = false
 
     var body: some View {
         // No NavigationStack here on purpose: this page is pushed

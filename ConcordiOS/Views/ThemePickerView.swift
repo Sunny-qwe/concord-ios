@@ -94,7 +94,12 @@ struct ThemePickerView: View {
                             .tint(.blue)
                     }
                 }
-                .concordCard()
+                // v0.2.130: no .concordCard() here — the List's
+                // Section already paints the rounded card
+                // background, and the inner card nested a second,
+                // smaller rounded background inside it (IMG_1365).
+                // The preview content sits directly on the single
+                // section background now.
             }
             Section("外观") {
                 ForEach(ThemeAppearance.allCases) { appearance in

@@ -1,26 +1,46 @@
 From e2fb43e0000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Thu, 26 Nov 2026 10:00:00 +0000
-Subject: [PATCH 9/9] ios: read resident memory on iOS via proc_pidinfo
+Date: Thu, 26 Nov 2026 11:20:02 +0000
+Subject: [PATCH 9/9] platform: read resident memory on iOS via Mach task_info
 
 ---
- crates/platform/src/mem.rs | 3 ++-
- 1 file changed, 2 insertions(+), 1 deletion(-)
+ crates/platform/src/mem.rs | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
 
 diff --git a/crates/platform/src/mem.rs b/crates/platform/src/mem.rs
-index 14f72b1..7f6a1f4 100644
+index 14f72b1..7398e2b 100644
 --- a/crates/platform/src/mem.rs
 +++ b/crates/platform/src/mem.rs
-@@ -15,7 +15,7 @@ pub fn resident_memory() -> u64 {
-         .unwrap_or(0)
+@@ -32,6 +32,28 @@ pub fn resident_memory() -> u64 {
+     }
  }
  
--#[cfg(target_os = "macos")]
-+#[cfg(any(target_os = "macos", target_os = "ios"))]
++#[cfg(target_os = "ios")]
++#[allow(deprecated)] // libc::mach_task_self is deprecated in favour of the `mach2` crate.
++pub fn resident_memory() -> u64 {
++    // SAFETY: all-zero is a valid `mach_task_basic_info`, and the kernel fills at most
++    // `count` words of it; `task_info` reports success only when it filled the struct.
++    unsafe {
++        let mut info: libc::mach_task_basic_info = std::mem::zeroed();
++        let mut count = libc::MACH_TASK_BASIC_INFO_COUNT;
++        let ret = libc::task_info(
++            libc::mach_task_self(),
++            libc::MACH_TASK_BASIC_INFO,
++            &mut info as *mut _ as libc::task_info_t,
++            &mut count,
++        );
++        if ret == libc::KERN_SUCCESS {
++            info.resident_size
++        } else {
++            0
++        }
++    }
++}
++
+ #[cfg(windows)]
  pub fn resident_memory() -> u64 {
-     let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
-     // SAFETY: all-zero is a valid `proc_taskinfo`, and the kernel fills at most `size` bytes.
-@@ -56,6 +56,7 @@ pub fn resident_memory() -> u64 {
+     use windows_sys::Win32::System::ProcessStatus::{
+@@ -56,6 +78,7 @@ pub fn resident_memory() -> u64 {
      target_os = "linux",
      target_os = "android",
      target_os = "macos",
@@ -28,5 +48,3 @@ index 14f72b1..7f6a1f4 100644
      windows
  )))]
  pub fn resident_memory() -> u64 {
--- 
-2.47.0

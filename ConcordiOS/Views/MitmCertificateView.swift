@@ -2,11 +2,15 @@ import SwiftUI
 import Security
 
 // MARK: - MITM certificate settings (FlClash: Tools -> MITM证书设置)
-// The certificate side of MITM: CA status, generate, validate,
-// issue a leaf certificate, share the CA PEM. The CA itself must
-// be installed and trusted by the user in iOS Settings — the app
-// cannot install a trusted CA. The exchange log lives in MitmView
-// (reachable from 常规）.
+// The certificate side of MITM: CA status, generate / delete,
+// share the CA PEM. The CA itself must be installed and trusted
+// by the user in iOS Settings — the app cannot install a trusted
+// CA. The exchange log lives in MitmView (reachable from 常规）.
+// v0.2.137: the "校验 MITM 配置" / "保存并应用" buttons and the
+// "签发叶证书" section are gone (upstream mitm.dart has neither —
+// it writes config live and has no leaf-issuance UI); the
+// validate / apply / issue functions stay in SettingsStore as
+// dead code, harmless.
 //
 // Trust check (FlClash: lib/common/mitm_trust.dart
 // IOSMitmTrustStore.check): the core signs a leaf for
@@ -21,10 +25,10 @@ import Security
 struct MitmCertificateView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @Environment(\.scenePhase) private var scenePhase
-    @State private var issueHost = ""
     @State private var trustResult: MitmTrustResult?
     @State private var isCheckingTrust = false
     @State private var showRegenerateConfirm = false
+    @State private var showDeleteCAConfirm = false
     @State private var regenerateNote: String?
     @State private var showExportCAConfirm = false
     @State private var caExportMessage: String?
@@ -68,18 +72,6 @@ struct MitmCertificateView: View {
                 .disabled(isCheckingTrust || !settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
             }
             mitmConfigSection
-            Section("签发叶证书") {
-                TextField("主机名，如 example.com", text: $issueHost)
-                    .autocapitalization(.none)
-                    .disableAutocorrection(true)
-                Button("签发") {
-                    Task { await settingsStore.issueMitmCertificate(host: issueHost) }
-                }
-                .disabled(issueHost.trimmingCharacters(in: .whitespaces).isEmpty)
-                if let pem = settingsStore.mitmIssuedPem {
-                    ShareLink("分享叶证书（PEM）", item: pem)
-                }
-            }
             if let message = settingsStore.mitmStatusMessage {
                 Section {
                     Text(message)
@@ -171,12 +163,9 @@ struct MitmCertificateView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Button("刷新 CA 状态") {
-                Task { await settingsStore.refreshMitmStatus() }
-            }
             Button("生成 CA 证书") {
                 Task {
-                    if await generateCertificate() {
+                    if await settingsStore.ensureMitmCertificate() {
                         installHint = "CA 已生成：下一步点「安装描述文件」，按系统提示装好，再去「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任。"
                     }
                 }
@@ -194,7 +183,7 @@ struct MitmCertificateView: View {
                     Task {
                         // Only claim a new CA when generation
                         // actually succeeded (Item C rule 2).
-                        if await generateCertificate() {
+                        if await settingsStore.ensureMitmCertificate() {
                             regenerateNote = "已生成新的 CA 证书。旧 CA 还留在 iPhone「设置 → 通用 → VPN 与设备管理」里，请先删掉旧的，再安装并完全信任新的 CA，否则 HTTPS 解密会失败。"
                         }
                     }
@@ -202,6 +191,23 @@ struct MitmCertificateView: View {
                 Button("取消", role: .cancel) {}
             } message: {
                 Text("旧 CA 会失效，所有用旧 CA 解密过的配置都要换新 CA。生成后需要重新安装并信任新 CA。")
+            }
+            // FlClash mitm.dart:125-150 (_remove): tapping the
+            // certificate offers deletion with a confirm; the
+            // installed profile must also be removed by hand in
+            // iOS Settings. The core has no remove-CA RPC, so this
+            // deletes the CA files from both homes (the proven
+            // AppCore.deleteOldCAFiles path) and clears the
+            // stored fingerprint / certificate state.
+            Button("删除 CA 证书", role: .destructive) {
+                showDeleteCAConfirm = true
+            }
+            .disabled(!settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
+            .alert("删除 CA 证书吗？", isPresented: $showDeleteCAConfirm) {
+                Button("删除", role: .destructive) { deleteCA() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("删除后，MITM 将无法解密 HTTPS，直到重新生成 CA 并安装信任。已装在 iPhone 里的旧描述文件也要手动删除（设置 → 通用 → VPN 与设备管理）。")
             }
             if let regenerateNote {
                 Text(regenerateNote)
@@ -216,10 +222,13 @@ struct MitmCertificateView: View {
         }
     }
 
-    /// The "MITM 配置" section: restart tip, the enable /
-    /// decrypt toggles, trusted-fingerprint field, hostname
-    /// link, validate, issue list and save. Extracted so the
-    /// main `body` stays small enough for the type checker.
+    /// The "MITM 配置" section: restart tip, the enable toggle,
+    /// trusted-fingerprint field and hostname link. Extracted so
+    /// the main `body` stays small enough for the type checker.
+    /// v0.2.137: no "解密 TLS" toggle (upstream has none — enable
+    /// IS HTTPS decryption; the core mapping is upstream's formula
+    /// in SettingsStore.mitmConfig) and no validate / apply
+    /// buttons (upstream writes config live).
     @ViewBuilder
     private var mitmConfigSection: some View {
         Section("MITM 配置") {
@@ -243,17 +252,12 @@ struct MitmCertificateView: View {
                     .accessibilityLabel("不再提示")
                 }
             }
-            Toggle("启用 MITM", isOn: $settingsStore.mitmEnabled)
-                // Save on change, like the settings page's copy
-                // of this pair (audit B37): without this the
-                // switch silently reverted on leaving the page
-                // unless "保存并应用" was tapped.
-                .onChange(of: settingsStore.mitmEnabled) { _, _ in
-                    settingsStore.save()
-                    showRestartTipIfNeeded()
-                }
-            Toggle("解密 TLS", isOn: $settingsStore.mitmDecryptTls)
-                .onChange(of: settingsStore.mitmDecryptTls) { _, _ in settingsStore.save() }
+            // FlClash MitmEnableItem (mitm.dart:538-581): enabling
+            // asks for confirmation and auto-generates a CA when
+            // none exists; disabling needs no confirm. The shared
+            // toggle is also used by the Advanced Config MITM card,
+            // so neither toggle can bypass the flow.
+            MitmEnableToggle(onEnabled: showRestartTipIfNeeded)
             // v0.2.68 (MuYu): the trusted-server-certificate
             // fingerprint input moved here from the 常规 MITM
             // 选项 section — the 选项 page (MitmOptionsView)
@@ -275,19 +279,6 @@ struct MitmCertificateView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-            }
-            Button("校验 MITM 配置") {
-                Task { await settingsStore.validateMitmConfig() }
-            }
-            if !settingsStore.mitmIssues.isEmpty {
-                ForEach(settingsStore.mitmIssues, id: \.self) { issue in
-                    Text(issue)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-            }
-            Button("保存并应用") {
-                Task { await settingsStore.applyMitmSettings() }
             }
         }
     }
@@ -372,85 +363,28 @@ struct MitmCertificateView: View {
     /// mitm.generateCertificate runs there — the FlClash behaviour
     /// ("证书没有开启 VPN 也是可以生成证书"). A boot/generation
     /// failure writes the REAL AppCore error into
-    /// mitmStatusMessage: never the old "VPN 隧道未运行" message,
-    /// and never a success for a failed generation (the return
-    /// value gates the regenerate note). Returns true only when
-    /// the core actually returned a CA certificate.
-    @MainActor
-    private func generateCertificate() async -> Bool {
-        guard settingsStore.client.mode == .live,
-              !TunnelManager.shared.isRunning else {
-            await settingsStore.generateMitmCertificate()
-            return settingsStore.mitmStatusMessage?.hasPrefix("CA 已生成") == true
-        }
-        var deletion: AppCore.OldCADeletion?
-        do {
-            try await AppCore.shared.ensureStarted()
-            // Fork ac90aebb: delete the old CA from BOTH homes
-            // before regenerating. AFTER ensureStarted on purpose:
-            // its healCAFiles would copy a surviving old CA from
-            // one home back into a just-cleaned other home. The
-            // core overwrites this home on its own; the deletion is
-            // what lets the sync below fill the tunnel home with
-            // the fresh CA instead of leaving the old one there.
-            let result = AppCore.deleteOldCAFiles()
-            deletion = result
-            let cert = try await AppCore.shared.mitmGenerateCertificate()
-            settingsStore.mitmCertificate = cert.certificate
-            if let info = cert.certificate {
-                // A successful MITM call proves the in-app core has
-                // the mitm capability, so the regenerate / trust-
-                // check buttons (gated on mitmAvailable) become
-                // usable without a tunnel-core refresh; the next
-                // tunnel-core refresh re-reads the real value.
-                settingsStore.mitmAvailable = true
-                settingsStore.mitmCaFingerprint = info.fingerprint
-                // The CA was generated in the app core's own home;
-                // the tunnel core reads its CA from the App Group
-                // container instead, so sync the files there — or
-                // the next VPN start would generate a DIFFERENT CA
-                // that does not match the one the user installs and
-                // trusts. A failed / skipped sync is reported
-                // honestly in the message; generation still counts
-                // as a success (return true) because the CA itself
-                // exists, but the message must NOT claim the tunnel
-                // will use it.
-                var message = "CA 已生成：\(info.subject)，指纹 \(info.fingerprint)"
-                do {
-                    switch try AppCore.shared.syncGeneratedCAToTunnel() {
-                    case .synced:
-                        message += "，已同步到隧道"
-                    case .tunnelAlreadyHadCA:
-                        message += "。注意：隧道里已有另一份 CA，未覆盖——下次启动 VPN 时隧道仍会使用旧 CA；如需隧道使用新 CA，请在 VPN 开启时重新生成一次"
-                    case .nothingToSync:
-                        message += "。注意：本机找不到刚生成的 CA 文件，未能同步到隧道——下次启动 VPN 时隧道可能会生成另一份 CA，请在 VPN 开启时重新生成一次"
-                    }
-                } catch {
-                    message += "。注意：CA 未能同步到隧道（\(error.localizedDescription)）——下次启动 VPN 时隧道可能会生成另一份 CA，请在 VPN 开启时重新生成一次"
-                }
-                if let deletion, deletion.hasFailures {
-                    message += "。注意：旧 CA 文件未能完全删除（\(deletion.failures.joined(separator: "；"))），隧道或应用内可能仍留有旧 CA，请重试或检查后重新生成"
-                }
-                settingsStore.mitmStatusMessage = message
-                settingsStore.save()
-                return true
-            }
-            settingsStore.mitmStatusMessage = "生成后仍无 CA 证书返回"
-            return false
-        } catch {
-            // The tunnel started between the guard above and the
-            // boot: use the tunnel core instead of reporting a
-            // delay-test-worded error.
-            if case AppCoreError.tunnelRunning = error {
-                await settingsStore.generateMitmCertificate()
-                return settingsStore.mitmStatusMessage?.hasPrefix("CA 已生成") == true
-            }
-            var message = "生成 CA 失败：\(error.localizedDescription)"
-            if let deletion, !deletion.deleted.isEmpty {
-                message += "（旧 CA 文件已先删除，重新生成一次即可恢复）"
-            }
-            settingsStore.mitmStatusMessage = message
-            return false
+    /// Deletes the CA (upstream mitm.dart:125-150 _remove). The
+    /// core has no remove-CA RPC, so this deletes the CA files
+    /// from both homes (the proven AppCore.deleteOldCAFiles path)
+    /// and clears the stored fingerprint / certificate state.
+    /// No refreshMitmStatus here on purpose: the core caches the
+    /// CA in memory (authority.current), so a refresh would report
+    /// the deleted CA as still present until the core restarts.
+    /// The files are gone; the next tunnel / app restart reports
+    /// no CA, and a running tunnel keeps using the in-memory old
+    /// CA until it restarts — the message says so.
+    private func deleteCA() {
+        let deletion = AppCore.deleteOldCAFiles()
+        settingsStore.mitmCertificate = nil
+        settingsStore.mitmCaFingerprint = ""
+        settingsStore.mitmIssuedPem = nil
+        settingsStore.save()
+        if deletion.hasFailures {
+            settingsStore.mitmStatusMessage = "CA 证书删除失败：\(deletion.failures.joined(separator: "；"))，请重试"
+        } else if deletion.deleted.isEmpty {
+            settingsStore.mitmStatusMessage = "本机没有可删除的 CA 证书文件"
+        } else {
+            settingsStore.mitmStatusMessage = "CA 证书已删除。正在运行的隧道仍会使用内存中的旧 CA，直到重启；重启后请先生成新 CA，并在「设置 → 通用 → VPN 与设备管理」里删掉旧描述文件、重新安装并完全信任新 CA，否则 HTTPS 解密会失败。"
         }
     }
 
@@ -588,7 +522,8 @@ private func mitmDerData(fromPEM pem: String) -> Data? {
 // MARK: - MITM hostname list editor (FlClash: _MitmHostnameView,
 // lib/views/config/mitm.dart:682-760)
 // One hostname per row: in-place edit, swipe delete, drag reorder,
-// per-line validation, plus a bulk quick-edit (one per line).
+// per-line validation, multi-select delete, plus a bulk quick-edit
+// (one per line, upstream onQuickEdit).
 // Stored as the comma-joined string in SettingsStore.mitmHostnames,
 // exactly as the MITM section read it before.
 
@@ -601,6 +536,10 @@ struct MitmHostnameEditorView: View {
     @State private var showBulkEdit = false
     @State private var bulkText = ""
     @State private var searchText = ""
+    /// Multi-select delete (upstream ListEditorPage): indices into
+    /// `hostnames` of the rows currently selected.
+    @State private var isSelecting = false
+    @State private var selectedIndices: Set<Int> = []
 
     /// The rows the search shows, as indices into `hostnames`.
     private var visibleIndices: [Int] {
@@ -618,7 +557,13 @@ struct MitmHostnameEditorView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(visibleIndices, id: \.self) { index in
-                    HostnameRowView(hostnames: $hostnames, index: index)
+                    HostnameRowView(
+                        hostnames: $hostnames,
+                        index: index,
+                        isSelecting: isSelecting,
+                        isSelected: selectedIndices.contains(index),
+                        onToggleSelect: { toggleSelection(index) }
+                    )
                 }
                 .onDelete { offsets in
                     // Offsets are positions in the visible list;
@@ -631,7 +576,10 @@ struct MitmHostnameEditorView: View {
                 .onMove { from, to in
                     // A filtered move would reorder the visible
                     // subset, not the list — only move unfiltered.
-                    guard searchText.isEmpty else { return }
+                    // No moving while selecting either: a move
+                    // shifts indices and would corrupt the
+                    // selection.
+                    guard searchText.isEmpty, !isSelecting else { return }
                     hostnames.move(fromOffsets: from, toOffset: to)
                     save()
                 }
@@ -645,20 +593,41 @@ struct MitmHostnameEditorView: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
-                // Ours-only extra (no equivalent in the video):
-                // bulk edit stays reachable here.
+                // Upstream onQuickEdit (mitm.dart:715): bulk edit
+                // is part of upstream's hostname editor, not an
+                // ours-only extra.
                 Section {
                     Button("批量编辑（每行一个）") {
                         bulkText = hostnames.joined(separator: "\n")
                         showBulkEdit = true
                     }
+                    .disabled(isSelecting)
                 }
             }
             // v0.2.68 (MuYu): the search is a BOTTOM floating pill,
-            // not a top .searchable.
-            bottomSearchPill
+            // not a top .searchable. While selecting (upstream
+            // ListEditorPage multi-select), the pill is replaced by
+            // the delete bar.
+            if isSelecting {
+                Button(role: .destructive) {
+                    deleteSelected()
+                } label: {
+                    HStack {
+                        Image(systemName: "trash")
+                        Text("删除所选 (\(selectedIndices.count))")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .disabled(selectedIndices.isEmpty)
                 .padding(.horizontal, 16)
                 .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+            } else {
+                bottomSearchPill
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+            }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
@@ -666,6 +635,17 @@ struct MitmHostnameEditorView: View {
         .navigationTitle("主机名")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(isSelecting ? "完成" : "选择") {
+                    if isSelecting {
+                        isSelecting = false
+                        selectedIndices.removeAll()
+                    } else {
+                        isSelecting = true
+                    }
+                }
+                .disabled(hostnames.isEmpty)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     newHostname = ""
@@ -675,6 +655,7 @@ struct MitmHostnameEditorView: View {
                     Image(systemName: "plus.circle")
                 }
                 .accessibilityLabel("添加主机名")
+                .disabled(isSelecting)
             }
         }
         .onAppear {
@@ -683,7 +664,19 @@ struct MitmHostnameEditorView: View {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
         }
-        .onChange(of: hostnames) { _, _ in save() }
+        .onChange(of: hostnames) { _, _ in
+            save()
+            // A structural change (add / swipe-delete / bulk edit /
+            // reorder) shifts indices — drop the selection rather
+            // than risk deleting the wrong rows. (Selection
+            // toggling itself never touches `hostnames`.)
+            if !selectedIndices.isEmpty {
+                selectedIndices.removeAll()
+            }
+            if hostnames.isEmpty {
+                isSelecting = false
+            }
+        }
         // Upstream _handleAddOrUpdate → showListEntryDialog
         // (mitm.dart:692): adding a hostname is a dialog, not a
         // sheet. A failed add writes addError, which the list
@@ -766,6 +759,30 @@ struct MitmHostnameEditorView: View {
         save()
     }
 
+    /// Multi-select delete (upstream ListEditorPage): toggle one
+    /// row's selection. Indices, not values — two identical
+    /// entries stay distinguishable.
+    private func toggleSelection(_ index: Int) {
+        if selectedIndices.contains(index) {
+            selectedIndices.remove(index)
+        } else {
+            selectedIndices.insert(index)
+        }
+    }
+
+    /// Deletes the selected rows (highest index first, so earlier
+    /// indices stay valid) and leaves selection mode.
+    private func deleteSelected() {
+        guard !selectedIndices.isEmpty else { return }
+        for index in selectedIndices.sorted(by: >) {
+            guard hostnames.indices.contains(index) else { continue }
+            hostnames.remove(at: index)
+        }
+        selectedIndices.removeAll()
+        isSelecting = false
+        save()
+    }
+
     private func save() {
         settingsStore.mitmHostnames = hostnames.joined(separator: ", ")
         settingsStore.save()
@@ -809,6 +826,13 @@ struct MitmHostnameEditorView: View {
 private struct HostnameRowView: View {
     @Binding var hostnames: [String]
     let index: Int
+    /// Multi-select delete (upstream ListEditorPage): when
+    /// selecting, the row shows a checkmark and the whole row
+    /// toggles selection — the exclude radio and the text field
+    /// are inert, so a tap can never edit while selecting.
+    var isSelecting = false
+    var isSelected = false
+    var onToggleSelect: (() -> Void)? = nil
 
     private var isExcluded: Bool { hostnames[index].hasPrefix("-") }
 
@@ -817,29 +841,47 @@ private struct HostnameRowView: View {
     }
 
     var body: some View {
-        HStack {
-            Button {
-                if isExcluded {
-                    hostnames[index] = displayName
-                } else {
-                    hostnames[index] = "-" + hostnames[index]
+        if isSelecting {
+            Button(action: { onToggleSelect?() }) {
+                HStack {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isSelected ? ConcordTheme.accent : .secondary)
+                    Text(displayName)
+                        .foregroundStyle(MitmHostnameEditorView.isValidHostname(hostnames[index]) ? Color.primary : Color.red)
+                    Spacer()
+                    if !MitmHostnameEditorView.isValidHostname(hostnames[index]) {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundStyle(.red)
+                    }
                 }
-            } label: {
-                Image(systemName: isExcluded ? "circle" : "circle.fill")
-                    .foregroundStyle(isExcluded ? .secondary : ConcordTheme.accent)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isExcluded ? "排除，不解密 \(displayName)" : "解密 \(displayName)")
-            TextField("域名，如 *.example.com", text: Binding(
-                get: { displayName },
-                set: { hostnames[index] = isExcluded ? "-" + $0 : $0 }
-            ))
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .foregroundStyle(MitmHostnameEditorView.isValidHostname(hostnames[index]) ? Color.primary : Color.red)
-            if !MitmHostnameEditorView.isValidHostname(hostnames[index]) {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.red)
+            .accessibilityLabel(isSelected ? "取消选择 \(displayName)" : "选择 \(displayName)")
+        } else {
+            HStack {
+                Button {
+                    if isExcluded {
+                        hostnames[index] = displayName
+                    } else {
+                        hostnames[index] = "-" + hostnames[index]
+                    }
+                } label: {
+                    Image(systemName: isExcluded ? "circle" : "circle.fill")
+                        .foregroundStyle(isExcluded ? .secondary : ConcordTheme.accent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isExcluded ? "排除，不解密 \(displayName)" : "解密 \(displayName)")
+                TextField("域名，如 *.example.com", text: Binding(
+                    get: { displayName },
+                    set: { hostnames[index] = isExcluded ? "-" + $0 : $0 }
+                ))
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .foregroundStyle(MitmHostnameEditorView.isValidHostname(hostnames[index]) ? Color.primary : Color.red)
+                if !MitmHostnameEditorView.isValidHostname(hostnames[index]) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(.red)
+                }
             }
         }
     }
@@ -847,12 +889,14 @@ private struct HostnameRowView: View {
 
 // MARK: - MITM options (MuYu 选项 page, v0.2.68)
 // An independent page reached from 进阶配置 → MITM → 选项:
-//   card 1: 抓包 status row (tap toggles) + 重启隧道 row
+//   card 1: 抓包 status row (tap toggles) + 保留条数 picker +
+//   重启隧道 row
 //   card 2: CA card (FlClash CA, trust status, regenerate)
 //   card 3: the four toggles in the video's order
 // The video has no "解密 TLS" toggle and no trusted-fingerprint
-// input here — 解密 TLS stays on the certificate page, and the
-// fingerprint input moved to the certificate page too.
+// input here — the fingerprint input lives on the certificate
+// page, and the 解密 TLS toggle is gone entirely in v0.2.137
+// (upstream has no such toggle; enable IS HTTPS decryption).
 // Labels renamed to the video's wording: 跳过服务器证书验证
 // (was 跳过服务端证书验证）, HTTP/2 (was 启用 HTTP/2（h2)),
 // 本机未信任时也解密 (was 解密不受信任的证书）.
@@ -899,6 +943,17 @@ struct MitmOptionsView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!settingsStore.mitmAvailable)
+                // FlClash clash_config.dart:2264-2272: the capture
+                // limit is a picker — desktop [500..20000], default
+                // 2000. v0.2.137 restores it (the value was fixed at
+                // 64 with no UI since the picker was removed).
+                Picker("保留条数", selection: $settingsStore.mitmCaptureEntries) {
+                    ForEach([500, 1000, 2000, 5000, 10000, 20000], id: \.self) { value in
+                        Text("\(value) 条").tag(value)
+                    }
+                }
+                .disabled(!settingsStore.mitmAvailable)
+                .onChange(of: settingsStore.mitmCaptureEntries) { _, _ in settingsStore.save() }
                 Button(isRestartingVpn ? "重启中…" : "重启隧道") {
                     Task { await restartVpn() }
                 }
@@ -1018,6 +1073,53 @@ struct MitmOptionsView: View {
             restartMessage = "隧道已重启，MITM 改动已生效。"
         } catch {
             restartMessage = "重启隧道失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+// MARK: - Shared MITM enable toggle (FlClash MitmEnableItem, mitm.dart:538-581)
+// Enabling MITM asks for confirmation with mitmEnableTip, and
+// auto-generates a CA when none exists; disabling needs no
+// confirm. Used by the certificate page ("MITM 配置" section) and
+// the Advanced Config MITM card, so neither toggle can bypass the
+// flow. v0.2.137.
+//
+// The confirm reads the live CA first: mitmCertificate is only
+// populated when a MITM page refreshed it, and generating over an
+// installed-but-unread CA would destroy it (ensureMitmCertificate
+// deletes the old CA before regenerating).
+struct MitmEnableToggle: View {
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @State private var showEnableConfirm = false
+    var onEnabled: (() -> Void)? = nil
+
+    var body: some View {
+        Toggle("HTTPS 解密", isOn: Binding(
+            get: { settingsStore.mitmEnabled },
+            set: { on in
+                if on {
+                    showEnableConfirm = true
+                } else {
+                    settingsStore.mitmEnabled = false
+                    settingsStore.save()
+                }
+            }
+        ))
+        .alert("HTTPS 解密", isPresented: $showEnableConfirm) {
+            Button("开启") {
+                Task {
+                    await settingsStore.refreshMitmStatus()
+                    if settingsStore.mitmCertificate == nil {
+                        guard await settingsStore.ensureMitmCertificate() else { return }
+                    }
+                    settingsStore.mitmEnabled = true
+                    settingsStore.save()
+                    onEnabled?()
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("开启后，FlClash 能读取发往被解密主机的全部内容，包括 Cookie 和密码。请只为需要改写的主机开启。")
         }
     }
 }

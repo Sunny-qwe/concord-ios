@@ -63,9 +63,12 @@ struct AdvancedConfigView: View {
                         .font(.system(size: 18, weight: .regular))
                         .foregroundStyle(ConcordTheme.accent)
                         .frame(width: 24)
-                    Toggle("HTTPS 解密", isOn: $settingsStore.mitmEnabled)
+                    // FlClash MitmEnableItem (mitm.dart:538-581):
+                    // enabling asks for confirmation and
+                    // auto-generates a CA when none exists — the
+                    // shared toggle, same as the certificate page.
+                    MitmEnableToggle()
                         .disabled(!settingsStore.mitmAvailable)
-                        .onChange(of: settingsStore.mitmEnabled) { _, _ in settingsStore.save() }
                 }
                 NavigationLink {
                     MitmModulesView().concordNavBarBackground()

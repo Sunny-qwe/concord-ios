@@ -108,10 +108,6 @@ struct RulesView: View {
                                     Task { await ruleStore.updateProvider(provider) }
                                 }
                                 .tint(ConcordTheme.accent)
-                                Button("健康检查") {
-                                    Task { await ruleStore.healthCheckProvider(provider) }
-                                }
-                                .tint(ConcordTheme.accent)
                                 Button("重新编译") {
                                     Task { await ruleStore.compileRuleSet(provider) }
                                 }
@@ -394,20 +390,6 @@ struct ProviderDetailView: View {
                     LabeledContent("已下载", value: ByteCountFormatter.string(fromByteCount: subscription.download, countStyle: .file))
                     LabeledContent("总量", value: ByteCountFormatter.string(fromByteCount: subscription.total, countStyle: .file))
                     LabeledContent("到期", value: Date(timeIntervalSince1970: TimeInterval(subscription.expire)).formatted(date: .abbreviated, time: .shortened))
-                }
-            }
-            Section {
-                Button("健康检查（provider.healthCheck）") {
-                    Task { await ruleStore.healthCheckProvider(provider) }
-                }
-                // Tools B16: the old copy promised a result on
-                // refresh, but the core never returns provider
-                // health state, so no refresh can show one.
-                Text("健康检查已触发，但核心不返回提供方健康状态，无法显示结果")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if let message = ruleStore.providerActionMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }

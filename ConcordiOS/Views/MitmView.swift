@@ -66,23 +66,6 @@ struct MitmView: View {
                 .listRowBackground(Color.clear)
             }
 
-            Section("模块") {
-                NavigationLink {
-                    MitmModulesView().concordNavBarBackground()
-                } label: {
-                    HStack {
-                        Text("MITM 模块")
-                        Spacer()
-                        Text("Surge / Loon / QX")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Text("模块把规则、重写、脚本和解密域名打包在一起，整体开关。MITM 拦截本身就是为模块服务的：模块里的重写和脚本要靠它才能改 HTTPS 请求的内容。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("运行脚本（mitm.runScript）") {
                 TextField("脚本名", text: $mitmStore.scriptName)
                     .textInputAutocapitalization(.never)
@@ -175,7 +158,9 @@ struct MitmView: View {
                             .foregroundStyle(.secondary)
                     }
                     if allExchanges.isEmpty && allCapturing == true {
-                        Text("正在捕获，暂无拦截记录：产生 HTTPS 流量后会出现在这里。")
+                        Text(captureHasNoHost
+                             ? "在“主机名”中添加主机后才会记录。"
+                             : "正在捕获，暂无拦截记录：产生 HTTPS 流量后会出现在这里。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -279,21 +264,33 @@ struct MitmView: View {
         }
     }
 
-    /// The capture switch lives in Settings (常规 MITM 区的
-    /// "捕获拦截记录", mitm.json `capture`): when capturing is off
-    /// this page would otherwise be a dead end (audit B46). The
-    /// toggle saves on change, exactly like the settings page's
-    /// copy; it takes effect at the next VPN start (or the next
-    /// config.apply while running).
+    /// Upstream httpCaptureHasNoHost (http_capture.dart:11):
+    /// capture records nothing when no module is enabled AND
+    /// every hostname is "-" prefixed (or there are none — an
+    /// empty list satisfies `every` upstream too). Shown as the
+    /// live list's empty description (requests.dart:782-789).
+    private var captureHasNoHost: Bool {
+        guard !moduleStore.modules.contains(where: \.enabled) else { return false }
+        let hostnames = settingsStore.mitmHostnames
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return hostnames.allSatisfy { $0.hasPrefix("-") }
+    }
+
+    /// The capture switch lives in the MITM options page
+    /// (进阶配置 → MITM → 选项， the "抓包" status row,
+    /// mitm.json `capture`): when capturing is off this page would
+    /// otherwise be a dead end (audit B46). v0.2.137: the in-page
+    /// toggle is gone (upstream's capture control lives only on
+    /// the capture settings page) — the banner only explains where
+    /// to turn it on.
     private var captureOffBanner: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("MITM 捕获未开启：拦截记录不会保存。")
                 .font(.caption2)
                 .foregroundStyle(.orange)
-            Toggle("捕获拦截记录", isOn: $settingsStore.mitmCapture)
-                .font(.footnote)
-                .onChange(of: settingsStore.mitmCapture) { _, _ in settingsStore.save() }
-            Text("开启后下次启动 VPN（或重新应用配置）生效；最多保留 \(settingsStore.mitmCaptureEntries) 条。")
+            Text("在「进阶配置 → MITM → 选项」里点「抓包」开启；开启后下次启动 VPN（或重新应用配置）生效；最多保留 \(settingsStore.mitmCaptureEntries) 条。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

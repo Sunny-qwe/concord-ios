@@ -32,23 +32,20 @@ struct MitmModulesView: View {
     @State private var urlText = ""
     /// v0.2.85 (upstream mitm_modules.dart:160,189): no import
     /// sheet — URL import is an input dialog, file import is the
-    /// system file picker. Paste import stays a sheet (ours-only),
-    /// blank module is a page push (EditorPage).
+    /// system file picker; blank module is a page push (EditorPage).
+    /// v0.2.137: the paste-import sheet is gone too (upstream has
+    /// URL / file / editor only).
     @State private var showImportURLDialog = false
     @State private var showImportFilePicker = false
-    @State private var showPasteImport = false
     @State private var showBlankEditorPage = false
     @State private var consentModule: MitmModule?
     @State private var showConsentAlert = false
     @State private var deleteModule: MitmModule?
     @State private var showDeleteConfirm = false
     /// Live per-module status from the core (mitm.moduleStatus),
-    /// keyed by module name. Refreshed on appear, on pull-to-refresh,
-    /// when the VPN comes up, and after a re-fetch.
+    /// keyed by module name. Refreshed on appear, on pull-to-refresh
+    /// and when the VPN comes up.
     @State private var statusByName: [String: ConcordMitmModuleStatus] = [:]
-    /// Why no status could be fetched yet (gate not met: sample mode,
-    /// VPN off, MITM off). Shown briefly inside an expanded row.
-    @State private var statusNote: String?
     /// The last status-fetch failure, shown briefly inside an
     /// expanded row — status is advisory, never a banner.
     @State private var statusError: String?
@@ -57,10 +54,6 @@ struct MitmModulesView: View {
     /// so detail navigation is programmatic instead of a
     /// NavigationLink inside the row.
     @State private var detailModule: MitmModule?
-    /// Modules currently re-fetching their remote files.
-    @State private var refetchingNames: Set<String> = []
-    /// Per-module re-fetch failure, shown inline in the expanded row.
-    @State private var refetchErrorByName: [String: String] = [:]
     /// MuYu's restart tip (showMitmRestartTip): a module was
     /// switched while the VPN runs with MITM on — the change is
     /// re-applied live, but restarting the tunnel is the sure path.
@@ -73,7 +66,7 @@ struct MitmModulesView: View {
     /// sentence ("核心未运行，请在核心启动后重试"); anything else is
     /// the store's lastError. Ticked by the store's
     /// coreUnavailableCount, so add/edit/update failures from the
-    /// editor and paste sheets — which have no list display slot —
+    /// editor sheet — which has no list display slot —
     /// still surface here.
     @State private var listErrorTitle = ""
     @State private var listErrorMessage = ""
@@ -126,10 +119,10 @@ struct MitmModulesView: View {
                 Task { await refreshStatus() }
             } else {
                 // The status belongs to the running core — once the
-                // VPN stops it is stale, so drop it and say so.
+                // VPN stops it is stale, so drop it (the expanded
+                // row falls back to "暂无状态").
                 statusByName = [:]
                 statusError = nil
-                statusNote = "启动 VPN 后可以看到模块实时状态"
             }
         }
         .onChange(of: settingsStore.mitmEnabled) { _, enabled in
@@ -138,7 +131,6 @@ struct MitmModulesView: View {
             } else {
                 statusByName = [:]
                 statusError = nil
-                statusNote = "打开 MITM 后可以看到模块实时状态"
             }
         }
         .navigationDestination(item: $detailModule) { module in
@@ -218,10 +210,6 @@ struct MitmModulesView: View {
                 moduleStore.lastError = "选择文件失败：\(error.localizedDescription)"
             }
         }
-        // Paste import is ours-only: it stays a sheet.
-        .sheet(isPresented: $showPasteImport) {
-            MitmModulePasteImportView(onImported: { saved in offerConsent(saved) })
-        }
         // Upstream openMitmModuleEditor(module: null) pushes
         // EditorPage (module_editor.dart:48) — a full page push,
         // not a sheet.
@@ -236,9 +224,7 @@ struct MitmModulesView: View {
         // The consent prompt (fork `answerMitmModule`): what turning
         // the module on asks about — unreadable file, scripts,
         // skipped verification, limited clients. Cancelling records
-        // the decline, so the module stops awaiting consent; the
-        // "待确认" badge in its row is the same prompt, and the
-        // row's × dismisses it without asking.
+        // the decline, so the module stops awaiting consent.
         .alert(listConsentTitle, isPresented: $showConsentAlert) {
             Button("取消", role: .cancel) {
                 if let module = consentModule {
@@ -320,11 +306,8 @@ struct MitmModulesView: View {
         MitmModuleRow(
             module: module,
             status: statusByName[module.name],
-            statusNote: statusNote,
             statusError: statusError,
             isLoadingStatus: isLoadingStatus,
-            isRefetching: refetchingNames.contains(module.name),
-            refetchError: refetchErrorByName[module.name],
             onToggle: { on in toggle(module, on: on) },
             onMoveUp: { Task { await moduleStore.moveUp(module) } },
             onMoveDown: { Task { await moduleStore.moveDown(module) } },
@@ -332,15 +315,7 @@ struct MitmModulesView: View {
                 deleteModule = module
                 showDeleteConfirm = true
             },
-            onAwaitingConsent: {
-                consentModule = module
-                showConsentAlert = true
-            },
-            onDismissAwaiting: {
-                Task { await moduleStore.answerConsent(module, agreed: false) }
-            },
             onShowDetail: { detailModule = module },
-            onRefetch: { Task { await refetch(module) } },
             onExpand: { Task { await refreshStatusIfNeeded() } },
             onUpdate: { Task { await updateModule(module) } },
             onEditUrl: {
@@ -427,7 +402,6 @@ struct MitmModulesView: View {
                     showImportURLDialog = true
                 }
                 Button("从文件导入") { showImportFilePicker = true }
-                Button("粘贴模块文本导入") { showPasteImport = true }
                 Button("新建空白模块") { showBlankEditorPage = true }
             } label: {
                 Image(systemName: "plus.circle")
@@ -447,8 +421,8 @@ struct MitmModulesView: View {
 
     /// Offers the consent prompt for a module that awaits it (fork
     /// `offerMitmModule`): fresh imports, editor saves and updates
-    /// land here; anything else stays on the persistent "待确认"
-    /// badge in the row and the dashboard card.
+    /// land here; anything else is asked when the module is enabled
+    /// via its toggle.
     private func offerConsent(_ module: MitmModule?) {
         guard let module, moduleStore.awaitsConsent(module) else { return }
         consentModule = module
@@ -496,28 +470,24 @@ struct MitmModulesView: View {
     /// handler is gated by mitm_enabled() in the core, and the sample
     /// transport would answer with sample data — so this only calls
     /// when the client is live, the VPN is up and MITM is on.
-    /// Otherwise it records an honest note for the expanded rows
-    /// instead of failing loudly.
+    /// Otherwise it clears the status (the expanded row falls back
+    /// to "暂无状态") instead of failing loudly.
     private func refreshStatus() async {
         guard client.mode == .live else {
             statusByName = [:]
             statusError = nil
-            statusNote = "示例数据模式下没有实时状态"
             return
         }
         guard tunnelManager.isRunning else {
             statusByName = [:]
             statusError = nil
-            statusNote = "启动 VPN 后可以看到模块实时状态"
             return
         }
         guard settingsStore.mitmEnabled else {
             statusByName = [:]
             statusError = nil
-            statusNote = "打开 MITM 后可以看到模块实时状态"
             return
         }
-        statusNote = nil
         isLoadingStatus = true
         defer { isLoadingStatus = false }
         do {
@@ -538,22 +508,6 @@ struct MitmModulesView: View {
     private func refreshStatusIfNeeded() async {
         guard statusByName.isEmpty, !isLoadingStatus else { return }
         await refreshStatus()
-    }
-
-    /// Re-fetches one module's remote files (mitm.fetchModule) and
-    /// then re-reads the status, so the expanded row shows the fresh
-    /// state. A failure is recorded per module and shown inline in
-    /// its expanded row.
-    private func refetch(_ module: MitmModule) async {
-        refetchingNames.insert(module.name)
-        refetchErrorByName[module.name] = nil
-        defer { refetchingNames.remove(module.name) }
-        do {
-            try await client.mitmFetchModule(name: module.name)
-            await refreshStatus()
-        } catch {
-            refetchErrorByName[module.name] = error.localizedDescription
-        }
     }
 
     /// Imports every URL on its own line, skipping ones already
@@ -610,28 +564,16 @@ private struct MitmModuleRow: View {
     /// Live status for this module from mitm.moduleStatus, matched
     /// by name; nil when the core has no entry for it.
     let status: ConcordMitmModuleStatus?
-    /// Why no status could be fetched (sample mode / VPN off /
-    /// MITM off); shown briefly inside the expanded row.
-    let statusNote: String?
     /// The last status-fetch failure, shown briefly in the row.
     let statusError: String?
     let isLoadingStatus: Bool
-    let isRefetching: Bool
-    /// The last re-fetch failure for this module, shown inline.
-    let refetchError: String?
     let onToggle: (Bool) -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onDelete: () -> Void
-    /// Tapping the "待确认" badge opens the consent prompt for
-    /// this module; the × next to it declines without asking.
-    let onAwaitingConsent: () -> Void
-    let onDismissAwaiting: () -> Void
     /// Opens the module detail page (the row tap itself now expands
     /// the row in place instead of navigating).
     let onShowDetail: () -> Void
-    /// Re-fetches this module's remote files (mitm.fetchModule).
-    let onRefetch: () -> Void
     /// Called when the row expands, so the list can load the status
     /// if it has none yet.
     let onExpand: () -> Void
@@ -647,16 +589,12 @@ private struct MitmModuleRow: View {
     /// status for this module.
     @State private var isExpanded = false
 
-    private var content: MitmModuleContent? {
-        moduleStore.parsedContent(for: module)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // v0.2.68 (MuYu): collapsed row = name + "远程"/"本地"
-            // subtitle + toggle on the RIGHT. Badges (链接 / N 脚本 /
-            // 待确认 / N 跳过）, sort arrows, description and update
-            // time move into the expanded detail below.
+            // subtitle + toggle on the RIGHT. Sort arrows,
+            // description and update time move into the expanded
+            // detail below.
             HStack(spacing: 10) {
                 Button(action: toggleExpand) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -709,53 +647,18 @@ private struct MitmModuleRow: View {
         Button("删除", role: .destructive, action: onDelete)
     }
 
-    /// The expanded detail: the old collapsed-row badges and
-    /// sort arrows, the description / update time, and the core's
-    /// live status (kept per the 2026-11-20 user decision).
+    /// The expanded detail: the sort arrows, the description /
+    /// update time, and the core's live status (kept per the
+    /// 2026-11-20 user decision).
     private var expandedDetail: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                if module.url != nil {
-                    Text("链接")
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Color.blue.opacity(0.12), in: Capsule())
-                }
-                if let content, content.declaredScripts > 0 {
-                    Text("\(content.declaredScripts) 脚本")
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Color.orange.opacity(0.14), in: Capsule())
-                        .foregroundStyle(.orange)
-                }
-                // Fork 2d31f10: the module awaits consent — off,
-                // never answered, asking about something. Tapping
-                // opens the consent prompt; the × declines it.
-                if moduleStore.awaitsConsent(module) {
-                    Button("待确认", action: onAwaitingConsent)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Color.orange.opacity(0.14), in: Capsule())
-                        .foregroundStyle(.orange)
-                        .buttonStyle(.plain)
-                    Button(action: onDismissAwaiting) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 9, weight: .bold))
-                    }
-                    .foregroundStyle(.secondary)
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("不再询问此模块")
-                }
-                if let content, !content.skipped.isEmpty {
-                    Text("\(content.skipped.count) 跳过")
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(Color.gray.opacity(0.14), in: Capsule())
-                }
+                // v0.2.137: the badges are gone (链接 / N 脚本 /
+                // 待确认 / N 跳过 — ours-only; upstream's row shows
+                // only the sort arrows here). Consent is not
+                // stranded: enabling via the toggle asks first, and
+                // offerConsent fires after import / update / URL
+                // change.
                 Spacer()
                 Button(action: onMoveUp) {
                     Image(systemName: "chevron.up").font(.footnote.weight(.semibold))
@@ -786,9 +689,9 @@ private struct MitmModuleRow: View {
     }
 
     /// The expanded area: the core's live status for this module,
-    /// or an honest note when there is none. The re-fetch and
-    /// detail actions live here too — the row tap is expansion now,
-    /// so the detail page is one tap away from the expanded row.
+    /// or an honest note when there is none. The detail action
+    /// lives here too — the row tap is expansion now, so the detail
+    /// page is one tap away from the expanded row.
     private var statusArea: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let status {
@@ -799,23 +702,14 @@ private struct MitmModuleRow: View {
             } else if let statusError {
                 Text("拉取状态失败：\(statusError)")
                     .font(.caption2).foregroundStyle(.red)
-            } else if let statusNote {
-                Text(statusNote)
-                    .font(.caption2).foregroundStyle(.secondary)
             } else {
                 Text("暂无状态")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             HStack(spacing: 16) {
-                Button(isRefetching ? "拉取中…" : "重新拉取", action: onRefetch)
-                    .disabled(isRefetching)
                 Button("详情", action: onShowDetail)
             }
             .font(.caption2)
-            if let refetchError {
-                Text("重新拉取失败：\(refetchError)")
-                    .font(.caption2).foregroundStyle(.red)
-            }
         }
     }
 
@@ -1324,6 +1218,30 @@ struct MitmModuleDetailView: View {
                     )
                 }
 
+                // FlClash mitm_modules.dart:803: the network
+                // changes this module asks for (from its parsed
+                // content), with the upstream risk footer. A later
+                // ENABLED module that replaces a change is named
+                // (upstream MitmNetworkChange.replacedBy,
+                // providers/mitm.dart:492 — the LAST replacer).
+                if !content.network.isEmpty {
+                    Section("网络设置") {
+                        ForEach(Array(networkChanges(of: content.network).enumerated()), id: \.offset) { _, change in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(change.title)
+                                    .font(.footnote.weight(.semibold))
+                                Text(change.subtitle)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    } footer: {
+                        Text("启用时会覆盖下列网络设置。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 // FlClash mitm_modules.dart:55-76: run one script
                 // line when the module is enabled and MITM is on.
                 if !content.script.isEmpty {
@@ -1375,6 +1293,87 @@ struct MitmModuleDetailView: View {
                 }
             }
         }
+    }
+
+    /// Upstream mitmModuleNetworkChanges (providers/mitm.dart:492)
+    /// + mitmNetworkChangeTitle / mitmNetworkChangeValue
+    /// (module_editor.dart:19-55): the module's network changes as
+    /// title / subtitle rows. A change is "replaced" by the LAST
+    /// later ENABLED module whose network replaces it
+    /// (MitmNetworkChange.replacedBy, mitm_network.dart:237).
+    /// `overridesYours` is NOT computed: it needs the profile's DNS
+    /// overrides mapped onto these keys, which is too risky for
+    /// this batch — the footer warning covers it.
+    private func networkChanges(of network: MitmModuleNetwork) -> [(title: String, subtitle: String)] {
+        var rows: [(title: String, subtitle: String)] = []
+        // The later ENABLED modules, in list order, with their
+        // parsed networks (Swift parse — the core parse exists only
+        // for the shown module).
+        var later: [(name: String, network: MitmModuleNetwork)] = []
+        if let module {
+            var pastSelf = false
+            for other in moduleStore.modules {
+                if other.id == module.id { pastSelf = true; continue }
+                guard pastSelf, other.enabled else { continue }
+                guard let parsed = moduleStore.parsedContent(for: other), !parsed.network.isEmpty else { continue }
+                later.append((name: other.name, network: parsed.network))
+            }
+        }
+        func replacedBy(key: String, domain: String? = nil) -> String? {
+            var found: String?
+            for other in later {
+                let replaces: Bool
+                if let domain {
+                    let entries = key == "nameserver-policy" ? other.network.nameserverPolicy : other.network.hosts
+                    replaces = entries.contains(where: { $0.domain == domain })
+                } else {
+                    replaces = other.network.editOf(key)?.replace == true
+                }
+                if replaces { found = other.name }
+            }
+            return found
+        }
+        func subtitle(value: String, key: String, domain: String? = nil) -> String {
+            if let name = replacedBy(key: key, domain: domain) {
+                return "\(value)\n已被模块 \(name) 覆盖"
+            }
+            return value
+        }
+        func editValue(_ edit: MitmListEdit) -> String {
+            if edit.replace {
+                return "替换为 \(edit.values.joined(separator: ", "))"
+            }
+            var parts: [String] = []
+            if !edit.before.isEmpty {
+                parts.append("在前面添加 \(edit.before.joined(separator: ", "))")
+            }
+            if !edit.after.isEmpty {
+                parts.append("添加 \(edit.after.joined(separator: ", "))")
+            }
+            return parts.joined(separator: "\n")
+        }
+        func addEdit(title: String, key: String, edit: MitmListEdit?) {
+            guard let edit else { return }
+            rows.append((title: title, subtitle: subtitle(value: editValue(edit), key: key)))
+        }
+        addEdit(title: "Nameserver", key: "dns-server", edit: network.nameserver)
+        addEdit(title: "Default Nameserver", key: "default-nameserver", edit: network.defaultNameserver)
+        addEdit(title: "Fake-IP过滤", key: "fake-ip-filter", edit: network.fakeIpFilter)
+        for entry in network.nameserverPolicy {
+            let value = "\(entry.domain) → \(entry.values.joined(separator: ", "))"
+            rows.append((title: "Nameserver Policy", subtitle: subtitle(value: value, key: "nameserver-policy", domain: entry.domain)))
+        }
+        for entry in network.hosts {
+            let value = "\(entry.domain) → \(entry.values.joined(separator: ", "))"
+            rows.append((title: "Hosts", subtitle: subtitle(value: value, key: "hosts", domain: entry.domain)))
+        }
+        if !network.routeAddress.isEmpty {
+            let value = "添加 \(network.routeAddress.joined(separator: ", "))"
+            rows.append((title: "路由地址", subtitle: subtitle(value: value, key: "route-address")))
+        }
+        addEdit(title: "排除路由地址", key: "route-exclude-address", edit: network.routeExcludeAddress)
+        addEdit(title: "排除域名", key: "bypass-domain", edit: network.bypassDomain)
+        return rows
     }
 
     /// The merged-config validation issues (grouped by list), as its
@@ -1872,62 +1871,6 @@ struct MitmModuleSkippedView: View {
 }
 
 // MARK: - Paste import
-
-private struct MitmModulePasteImportView: View {
-    /// Called with the saved module after a successful import, so
-    /// the list can offer the consent prompt when it awaits it.
-    var onImported: ((MitmModule?) -> Void)? = nil
-
-    @EnvironmentObject private var moduleStore: MitmModuleStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var text = ""
-    @State private var fileName = ""
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    TextField("名字（可选，默认从内容里读）", text: $fileName)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                }
-                Section("模块文本") {
-                    TextEditor(text: $text)
-                        .frame(minHeight: 320)
-                        .font(.system(.body, design: .monospaced))
-                        .autocapitalization(.none)
-                        .autocorrectionDisabled()
-                }
-                Section {
-                    Button("导入") {
-                        Task {
-                            let imported = await moduleStore.addFromText(text, fileName: fileName.isEmpty ? nil : fileName)
-                            if moduleStore.lastError == nil {
-                                dismiss()
-                                onImported?(imported)
-                            }
-                        }
-                    }
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || moduleStore.isBusy)
-                    if let error = moduleStore.lastError {
-                        Text(error).font(.caption2).foregroundStyle(.red)
-                    }
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle("粘贴模块文本")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("取消") { dismiss() }
-                }
-            }
-        }
-    }
-}
 
 // MARK: - Text editor (new blank / edit existing)
 //

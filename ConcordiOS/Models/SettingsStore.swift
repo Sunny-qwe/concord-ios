@@ -276,7 +276,7 @@ final class SettingsStore: ObservableObject {
     @Published var mitmCapture: Bool = false
     /// How many exchanges to keep (FlClash iOS options 16/32/64;
     /// the iOS core limit is 64 entries / 1 MB).
-    @Published var mitmCaptureEntries: Int = 64
+    @Published var mitmCaptureEntries: Int = 2000
     @Published var mitmCaFingerprint: String = ""
     @Published var mitmCertificate: ConcordCertificateInfo?
     @Published var mitmStatusMessage: String?
@@ -302,8 +302,11 @@ final class SettingsStore: ObservableObject {
     /// and this computed property is the single reader, so the
     /// formula below and the shared mitm.json always agree.
     /// FlClash: 'decrypt-tls' = decryptUntrusted || trustedFingerprint
-    /// != null (clash_config.dart:2322-2323); ours adds the local
-    /// decrypt-TLS switch to the same OR.
+    /// != null (clash_config.dart:2305) — the trusted fingerprint is
+    /// the app CA's own fingerprint, synced on every CA read, so a
+    /// CA on disk means decryption is on. v0.2.137: the local
+    /// decrypt-TLS switch is gone (upstream has no such toggle), so
+    /// the formula is upstream's exactly — no mitmDecryptTls term.
     private var mitmH2: Bool { UserDefaults.standard.bool(forKey: "ConcordiOS.mitmH2") }
     private var mitmDecryptUntrusted: Bool { UserDefaults.standard.bool(forKey: "ConcordiOS.mitmDecryptUntrusted") }
     var mitmConfig: MitmConfig {
@@ -314,7 +317,7 @@ final class SettingsStore: ObservableObject {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty },
             skipServerCertVerify: mitmSkipServerCertVerify,
-            decryptTls: mitmDecryptTls || mitmDecryptUntrusted || !trusted.isEmpty,
+            decryptTls: mitmDecryptUntrusted || !mitmCaFingerprint.isEmpty || !trusted.isEmpty,
             caFingerprint: trusted.isEmpty ? mitmCaFingerprint : trusted,
             h2: mitmH2,
             autoQuicBlock: mitmAutoQuicBlock,
@@ -461,7 +464,7 @@ final class SettingsStore: ObservableObject {
 
         // The MITM fields are new: decode them leniently so settings
         // saved before they existed still load.
-        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, updateChannel: String = "stable", openLogs: Bool = false, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftncsi.com", "www.msftncsi.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 64, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict", keepAliveIdle: Int = 0, keepAliveInterval: Int = 0, disableKeepAlive: Bool = false, includeAllNetworks: Bool = false, excludeLocalNetworks: Bool = true, excludeAPNs: Bool = true, excludeCellularServices: Bool = true, enforceRoutes: Bool = false, excludeDeviceCommunication: Bool = true, onlyStatisticsProxy: Bool = false, appendSystemDns: Bool = false, systemProxy: Bool = false, bypassDomain: [String] = [], unifiedDelayMigrated: Bool = false) {
+        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, updateChannel: String = "stable", openLogs: Bool = false, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftncsi.com", "www.msftncsi.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 2000, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict", keepAliveIdle: Int = 0, keepAliveInterval: Int = 0, disableKeepAlive: Bool = false, includeAllNetworks: Bool = false, excludeLocalNetworks: Bool = true, excludeAPNs: Bool = true, excludeCellularServices: Bool = true, enforceRoutes: Bool = false, excludeDeviceCommunication: Bool = true, onlyStatisticsProxy: Bool = false, appendSystemDns: Bool = false, systemProxy: Bool = false, bypassDomain: [String] = [], unifiedDelayMigrated: Bool = false) {
             self.mode = mode
             self.logLevel = logLevel
             self.mixedPort = mixedPort
@@ -587,7 +590,14 @@ final class SettingsStore: ObservableObject {
             mitmAutoQuicBlock = try c.decodeIfPresent(Bool.self, forKey: .mitmAutoQuicBlock) ?? true
             mitmTrustedFingerprint = try c.decodeIfPresent(String.self, forKey: .mitmTrustedFingerprint) ?? ""
             mitmCapture = try c.decodeIfPresent(Bool.self, forKey: .mitmCapture) ?? false
-            mitmCaptureEntries = try c.decodeIfPresent(Int.self, forKey: .mitmCaptureEntries) ?? 64
+            // v0.2.137: the capture limit is a picker again
+            // (upstream desktop [500..20000], default 2000).
+            // Pre-137 blobs hold 16/32/64 (the old fixed values,
+            // never offered by the picker) — map those to the
+            // upstream default instead of showing a picker with
+            // nothing selected.
+            let storedCaptureEntries = try c.decodeIfPresent(Int.self, forKey: .mitmCaptureEntries) ?? 2000
+            mitmCaptureEntries = [500, 1000, 2000, 5000, 10000, 20000].contains(storedCaptureEntries) ? storedCaptureEntries : 2000
             autoRun = try c.decodeIfPresent(Bool.self, forKey: .autoRun) ?? false
             autoCloseConnections = try c.decodeIfPresent(Bool.self, forKey: .autoCloseConnections) ?? false
             checkCertificate = try c.decodeIfPresent(Bool.self, forKey: .checkCertificate) ?? true
@@ -1527,6 +1537,96 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: MITM (mitm.* RPC; see ConcordClient.swift)
+
+    /// Generates a CA certificate via whichever core is live and
+    /// syncs it to the tunnel home — the shared generate path for
+    /// the certificate page buttons and the MITM enable confirm
+    /// (upstream MitmEnableItem auto-generates when no CA exists,
+    /// mitm.dart:561-563). Moved from MitmCertificateView in
+    /// v0.2.137 so both enable toggles can use it.
+    ///
+    /// Updates mitmCertificate / mitmCaFingerprint /
+    /// mitmStatusMessage: never the old "VPN 隧道未运行" message,
+    /// and never a success for a failed generation (the return
+    /// value gates the regenerate note). Returns true only when
+    /// the core actually returned a CA certificate.
+    @MainActor
+    func ensureMitmCertificate() async -> Bool {
+        guard client.mode == .live,
+              !TunnelManager.shared.isRunning else {
+            await generateMitmCertificate()
+            return mitmStatusMessage?.hasPrefix("CA 已生成") == true
+        }
+        var deletion: AppCore.OldCADeletion?
+        do {
+            try await AppCore.shared.ensureStarted()
+            // Fork ac90aebb: delete the old CA from BOTH homes
+            // before regenerating. AFTER ensureStarted on purpose:
+            // its healCAFiles would copy a surviving old CA from
+            // one home back into a just-cleaned other home. The
+            // core overwrites this home on its own; the deletion is
+            // what lets the sync below fill the tunnel home with
+            // the fresh CA instead of leaving the old one there.
+            let result = AppCore.deleteOldCAFiles()
+            deletion = result
+            let cert = try await AppCore.shared.mitmGenerateCertificate()
+            mitmCertificate = cert.certificate
+            if let info = cert.certificate {
+                // A successful MITM call proves the in-app core has
+                // the mitm capability, so the regenerate / trust-
+                // check buttons (gated on mitmAvailable) become
+                // usable without a tunnel-core refresh; the next
+                // tunnel-core refresh re-reads the real value.
+                mitmAvailable = true
+                mitmCaFingerprint = info.fingerprint
+                // The CA was generated in the app core's own home;
+                // the tunnel core reads its CA from the App Group
+                // container instead, so sync the files there — or
+                // the next VPN start would generate a DIFFERENT CA
+                // that does not match the one the user installs and
+                // trusts. A failed / skipped sync is reported
+                // honestly in the message; generation still counts
+                // as a success (return true) because the CA itself
+                // exists, but the message must NOT claim the tunnel
+                // will use it.
+                var message = "CA 已生成：\(info.subject)，指纹 \(info.fingerprint)"
+                do {
+                    switch try AppCore.shared.syncGeneratedCAToTunnel() {
+                    case .synced:
+                        message += "，已同步到隧道"
+                    case .tunnelAlreadyHadCA:
+                        message += "。注意：隧道里已有另一份 CA，未覆盖——下次启动 VPN 时隧道仍会使用旧 CA；如需隧道使用新 CA，请在 VPN 开启时重新生成一次"
+                    case .nothingToSync:
+                        message += "。注意：本机找不到刚生成的 CA 文件，未能同步到隧道——下次启动 VPN 时隧道可能会生成另一份 CA，请在 VPN 开启时重新生成一次"
+                    }
+                } catch {
+                    message += "。注意：CA 未能同步到隧道（\(error.localizedDescription)）——下次启动 VPN 时隧道可能会生成另一份 CA，请在 VPN 开启时重新生成一次"
+                }
+                if let deletion, deletion.hasFailures {
+                    message += "。注意：旧 CA 文件未能完全删除（\(deletion.failures.joined(separator: "；"))），隧道或应用内可能仍留有旧 CA，请重试或检查后重新生成"
+                }
+                mitmStatusMessage = message
+                save()
+                return true
+            }
+            mitmStatusMessage = "生成后仍无 CA 证书返回"
+            return false
+        } catch {
+            // The tunnel started between the guard above and the
+            // boot: use the tunnel core instead of reporting a
+            // delay-test-worded error.
+            if case AppCoreError.tunnelRunning = error {
+                await generateMitmCertificate()
+                return mitmStatusMessage?.hasPrefix("CA 已生成") == true
+            }
+            var message = "生成 CA 失败：\(error.localizedDescription)"
+            if let deletion, !deletion.deleted.isEmpty {
+                message += "（旧 CA 文件已先删除，重新生成一次即可恢复）"
+            }
+            mitmStatusMessage = message
+            return false
+        }
+    }
 
     /// Reads core.capabilities (features.mitm) and mitm.certificate
     /// into the UI. Call when the Settings page appears in live mode.

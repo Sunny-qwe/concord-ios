@@ -663,7 +663,53 @@ struct ConnectionsView: View {
     /// (upstream recordGroupings).
     @ViewBuilder
     private func connectionList(_ list: [LiveConnection], isLive: Bool) -> some View {
-        if connectionStore.groupBy == .none {
+        if sheetChrome {
+            // v0.2.128 item 1: the sheet's list was a SwiftUI List
+            // (.insetGrouped), whose section top inset left a large
+            // blank area between the filter pills and the first row
+            // (IMG_1356). The DNS sheet was converted to ScrollView
+            // + LazyVStack for exactly this class of List-in-sheet
+            // layout problem (v0.2.102) — this mirrors it: no top
+            // padding, one rounded card per row, the zero-height
+            // drag bridge first. Live rows lose swipe-to-disconnect
+            // here (a List feature); the detail sheet's disconnect
+            // button keeps the function.
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    SheetListDragPan(
+                        onChanged: { if let onSheetDragChanged { onSheetDragChanged($0) } },
+                        onEnded: { translation, velocity in
+                            if let onSheetDragEnded { onSheetDragEnded(translation, velocity) }
+                        }
+                    )
+                    .frame(height: 0)
+                    if connectionStore.groupBy == .none {
+                        // Flat list with per-minute separator rows
+                        // (upstream RecordMinuteList): after each
+                        // minute's records, a footnote row `HH:mm  N`
+                        // (today) or `MM-DD HH:mm  N`. Minute
+                        // separators are not shown while grouped.
+                        ForEach(Array(connectionStore.minuteGroups(list).enumerated()), id: \.offset) { item in
+                            ForEach(item.element.rows) { connection in
+                                connectionCardButton(connection, isLive: isLive)
+                            }
+                            minuteSeparatorRow(item.element)
+                        }
+                    } else {
+                        ForEach(connectionStore.grouped(list, by: connectionStore.groupBy), id: \.key) { group in
+                            Text("\(group.key)（\(group.rows.count)）")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            ForEach(group.rows) { connection in
+                                connectionCardButton(connection, isLive: isLive)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 76)
+            }
+        } else if connectionStore.groupBy == .none {
             // Flat list with per-minute separator rows (upstream
             // RecordMinuteList): after each minute's records, a
             // footnote row `HH:mm  N` (today) or `MM-DD HH:mm  N`.
@@ -714,6 +760,22 @@ struct ConnectionsView: View {
                 }
             }
         }
+    }
+
+    /// One row as a rounded card (sheet mode, v0.2.128 item 1):
+    /// the same Button (tap → detail) as connectionRowButton,
+    /// but the row is a card (cardBackground, radius 16 — the DNS
+    /// sheet's row radius) and there are no swipe actions (a List
+    /// feature). The detail sheet's disconnect button keeps the
+    /// disconnect function for live rows.
+    private func connectionCardButton(_ connection: LiveConnection, isLive: Bool) -> some View {
+        Button { detail = connection; detailIsLive = isLive } label: {
+            connectionRow(connection, isLive: isLive)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
     }
 
     /// Per-minute separator row (upstream RecordMinuteHeader,

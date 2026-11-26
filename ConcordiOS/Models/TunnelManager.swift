@@ -950,7 +950,19 @@ final class TunnelManager: ObservableObject {
     ///   fresh record is this run's). Residual edge: a stop/start
     ///   within 30 s can still pass the previous run's record —
     ///   the diagnostics file carries no run id to match against.
-    func readTunnelStartedAt(notBefore: Date? = nil) -> Date? {
+    /// One tunnel run as the extension recorded it (v0.2.128 item
+    /// 6): the start time plus the run's startupId. The startupId
+    /// is the run id the v0.2.118 comment said the file lacked —
+    /// the extension has written it all along (writeVPNDiagnostics),
+    /// it just was never read. Matching it disambiguates a stale
+    /// previous-run record from the current run's, so a stop/start
+    /// within 30 s no longer passes the old record.
+    struct TunnelRun {
+        let startedAt: Date
+        let startupId: String?
+    }
+
+    func readTunnelRun(notBefore: Date? = nil) -> TunnelRun? {
         guard let container = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
               let data = try? Data(contentsOf: container.appendingPathComponent("vpn-diagnostics.json")),
@@ -960,7 +972,11 @@ final class TunnelManager: ObservableObject {
               Date().timeIntervalSince1970 * 1000 - Double(updatedMs) < 180_000 else { return nil }
         let started = Date(timeIntervalSince1970: TimeInterval(startedMs) / 1000)
         if let notBefore, started < notBefore.addingTimeInterval(-30) { return nil }
-        return started
+        return TunnelRun(startedAt: started, startupId: json["startupId"] as? String)
+    }
+
+    func readTunnelStartedAt(notBefore: Date? = nil) -> Date? {
+        readTunnelRun(notBefore: notBefore)?.startedAt
     }
 
     /// Reads the extension's tun-restart-needed.json (config B1):

@@ -169,7 +169,14 @@ enum ConcordTheme {
     /// upstream's 21pt and the last row still clears it by 12pt.
     /// It is a TOTAL bottom padding/margin, not an addition: each
     /// page replaces its old 12/16pt bottom value with this.
-    static let tabBarClearance: CGFloat = 95
+    /// v0.2.128 item 8: 95 was 1pt SHORT — the tab bar top is
+    /// 96pt above the screen bottom (62pt pill + 34pt bottom
+    /// margin) and slidingTabView ignores the bottom safe area,
+    /// so page content runs to the screen bottom and the last
+    /// Proxies row overlapped the tab bar by 1pt. 112 = 96 + a
+    /// 16pt gap, fixing every page at once (all Proxies grids
+    /// and the Dashboard already pad by this value).
+    static let tabBarClearance: CGFloat = 112
     /// Soft card shadow.
     static let cardShadow = Color.black.opacity(0.05)
 }

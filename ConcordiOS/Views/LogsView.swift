@@ -569,35 +569,46 @@ struct LogsView: View {
     /// L-D3: the level pill is tappable and adds a level filter,
     /// like upstream (logs.dart:256-259); tapping the rest of the
     /// row opens the detail sheet.
+    ///
+    /// v0.2.128 item 4: the row was a Button containing a nested
+    /// Button (the level pill). A Button inside a Button makes the
+    /// List mis-measure the cell height, so multi-line rows
+    /// overlapped and the text garbled (video 1). The row is now
+    /// a plain HStack with an onTapGesture (detail) and the pill
+    /// is the only Button (level filter).
     private func logRow(_ entry: ConcordLogEntry, selectedEntry: Binding<ConcordLogEntry?>) -> some View {
-        Button {
-            selectedEntry.wrappedValue = entry
-        } label: {
-            HStack(alignment: .top, spacing: 8) {
-                Text(ConcordFormat.time(entry.time))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 64, alignment: .leading)
-                Button {
-                    // "WARN" and "WARNING" are the same level.
-                    let level = entry.level.uppercased() == "WARN" ? "WARNING" : entry.level.uppercased()
-                    if let filter = LogLevelFilter(rawValue: level) {
-                        logStore.levelFilter = filter
-                    }
-                } label: {
-                    Text(entry.level.uppercased())
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(levelColor(entry.level).opacity(0.15), in: Capsule())
-                        .foregroundStyle(levelColor(entry.level))
+        HStack(alignment: .top, spacing: 8) {
+            Text(ConcordFormat.time(entry.time))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .leading)
+            Button {
+                // "WARN" and "WARNING" are the same level.
+                let level = entry.level.uppercased() == "WARN" ? "WARNING" : entry.level.uppercased()
+                if let filter = LogLevelFilter(rawValue: level) {
+                    logStore.levelFilter = filter
                 }
-                .buttonStyle(.plain)
-                logBody(entry)
+            } label: {
+                Text(entry.level.uppercased())
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(levelColor(entry.level).opacity(0.15), in: Capsule())
+                    .foregroundStyle(levelColor(entry.level))
             }
+            .buttonStyle(.plain)
+            // v0.2.128 item 4: the body takes its ideal height, so
+            // the List cannot compress a multi-line row into a
+            // single-line cell (the overlap in video 1). The width
+            // stays flexible so the text wraps to the row.
+            logBody(entry)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedEntry.wrappedValue = entry
+        }
         .id(entry.id)
         .onAppear { if entry.id == logStore.filtered.last?.id { followingLogs = true } }
         .onDisappear { if entry.id == logStore.filtered.last?.id { followingLogs = false } }
@@ -611,7 +622,7 @@ struct LogsView: View {
     private func logBody(_ entry: ConcordLogEntry) -> some View {
         let payload = LogPayload.parse(entry.text)
         if let route = payload.route {
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(route.destination)
                     .font(.caption2)
                     .fontWeight(.semibold)
@@ -647,7 +658,7 @@ struct LogsView: View {
                 }
             }
         } else {
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(payload.message)
                     .font(.caption2)
                     .lineLimit(3)

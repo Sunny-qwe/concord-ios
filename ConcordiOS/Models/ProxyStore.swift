@@ -1625,7 +1625,18 @@ final class ProxyStore: ObservableObject {
         guard client.mode == .live else { return }
         switch TunnelManager.shared.status {
         case .connected:
-            _ = try await client.configGeneral()
+            // v0.2.128 item 2: the extension RPC is dead, so the
+            // backend check cannot ask it (configGeneral). The core's
+            // HTTP controller on 127.0.0.1:9090 is the working
+            // channel — a 200 from /version means the tunnel core
+            // answers. A failed check throws here and the caller
+            // shows it as the banner, naming the controller instead
+            // of the dead RPC.
+            if await TunnelController.isReachable() {
+                return
+            }
+            throw NSError(domain: "DelayBackend", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "隧道核心的控制器没有响应（127.0.0.1:9090），请确认 VPN 已连接且核心已启动"])
         case .disconnected, .invalid:
             break
         default:
@@ -1642,22 +1653,27 @@ final class ProxyStore: ObservableObject {
         }
         let enabled = settings.unifiedDelay
         let switchText = enabled ? "开" : "关"
-        do {
-            if useAppCore {
-                try await AppCore.shared.setUnifiedDelay(enabled)
-            } else {
-                try await client.setUnifiedDelay(enabled)
+        // v0.2.128 item 2: the extension RPC is dead. On the VPN-on
+        // path the tunnel-start patch already applied the setting
+        // through JSON-RPC config.patch, and the controller cannot
+        // SET unified-delay (PATCH /configs does not map it) — so
+        // there is nothing to write here; the live value is read
+        // back from the controller (GET /configs) below.
+        if !useAppCore {
+            guard let actual = await TunnelController.unifiedDelay() else {
+                return "统一延迟测试：设置开关\(switchText)，控制器没有响应，无法确认是否生效"
             }
+            let coreText = actual ? "开" : "关"
+            let verification = actual == enabled ? "（已校验）" : "（不一致，设置未生效）"
+            return "统一延迟测试：设置开关\(switchText)，测速核心实际值\(coreText)\(verification)"
+        }
+        do {
+            try await AppCore.shared.setUnifiedDelay(enabled)
         } catch {
             return "统一延迟测试：设置开关\(switchText)，写入失败（\(error.localizedDescription)）"
         }
         do {
-            let general: ConcordGeneralState
-            if useAppCore {
-                general = try await AppCore.shared.configGeneral()
-            } else {
-                general = try await client.configGeneral()
-            }
+            let general = try await AppCore.shared.configGeneral()
             guard let actual = general.unifiedDelay else {
                 return "统一延迟测试：设置开关\(switchText)，核心响应缺少 unifiedDelay，无法确认是否生效"
             }
@@ -1703,7 +1719,15 @@ final class ProxyStore: ObservableObject {
                     if useAppCore {
                         result = try await AppCore.shared.delayTest(proxy: proxyName, url: testUrl, timeout: timeoutMs)
                     } else {
-                        result = try await client.delayTest(proxy: proxyName, url: testUrl, timeout: timeoutMs)
+                        // v0.2.128 item 2: the extension RPC is dead,
+                        // so the VPN-on delay test goes through the
+                        // core's HTTP controller on 127.0.0.1:9090
+                        // (TunnelController) instead of
+                        // client.delayTest. The controller returns the
+                        // same -1/-2 codes (504/503), so the outcome
+                        // mapping below is unchanged.
+                        let value = try await TunnelController.delayTest(proxy: proxyName, url: testUrl, timeoutMs: Int(timeoutMs))
+                        result = ConcordDelayResult(name: proxyName, url: testUrl, value: value)
                     }
                     outcome = .value(target, result.value)
                 } catch {

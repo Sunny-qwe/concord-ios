@@ -234,6 +234,15 @@ struct DashboardView: View {
     /// session (tunnel already up at launch) and the file is
     /// accepted as before (D4).
     @State private var tunnelStartObservedAt: Date?
+    /// v0.2.128 item 6: the startupId of the tunnel run the
+    /// uptime belongs to (the extension's per-run UUID in
+    /// vpn-diagnostics.json). Deliberately NOT cleared on stop —
+    /// a flap (brief disconnect/reconnect) keeps the same run id,
+    /// so the periodic correction can match the file's record to
+    /// this run and restore the true start time instead of the
+    /// Date() reset. A genuine restart writes a new id, which
+    /// the correction recognises as a different run.
+    @State private var tunnelStartupId: String?
     @State private var subscription: ConcordSubscriptionInfo?
     /// Last-known IP lookup, restored on launch so the status card
     /// is never empty (v0.2.115, MuYu parity) and refreshed in the
@@ -250,6 +259,13 @@ struct DashboardView: View {
     @State private var ipEnrichmentFailed = false
     @State private var morphProgress: CGFloat = 0
     @State private var ipChecking = false
+    /// v0.2.128 item 3: the clover's own refresh flag. fetchIPInfo
+    /// sets ipChecking only during the enrichment — and returns
+    /// early (without setting it) when there is no probed IP yet —
+    /// so a tap whose probe is still running showed no spinner at
+    /// all. This flag covers the whole tap (enrichment + probe),
+    /// and the badge spins while either flag is set.
+    @State private var cloverRefreshing = false
     /// In-flight guard for the egress-IP geo enrichment (v0.2.101
     /// issue 1b): .task, onChange(isRunning), pull-to-refresh and
     /// the manual re-fetch taps all funnel through fetchIPInfo();
@@ -538,17 +554,20 @@ struct DashboardView: View {
         guard !ipFetchInFlight else { return }
         ipFetchInFlight = true
         defer { ipFetchInFlight = false }
-        // v0.2.101 issue 1b: the first query after connect used to
+        // v0.2.128 item 7: the first query after connect used to
         // run in the instant the tunnel came up, when the app
         // process's DNS/routing is not yet stable — the lookup
         // fast-fails and the card stays without geo until a manual
-        // re-fetch. Wait until 4 s after the tunnel started
-        // before querying (no delay when the tunnel has been up
-        // for a while, or its start time is unknown).
+        // re-fetch. The lookup now goes through the core's local
+        // proxy (fetchIPInfoFromIpApi), whose routing is stable as
+        // soon as the tunnel is up, so only a 1 s settle remains
+        // (was 4 s) — the proxy only needs the core to be listening
+        // on 17890. No delay when the tunnel has been up for a
+        // while, or its start time is unknown.
         if proxyStore.isRunning, let started = tunnelStartedAt {
             let elapsed = Date().timeIntervalSince(started)
-            if elapsed < 4 {
-                try? await Task.sleep(nanoseconds: UInt64((4 - elapsed) * 1_000_000_000))
+            if elapsed < 1 {
+                try? await Task.sleep(nanoseconds: UInt64((1 - elapsed) * 1_000_000_000))
                 if Task.isCancelled { return }
             }
         }
@@ -558,6 +577,17 @@ struct DashboardView: View {
         // used to hang this lookup forever (URLSession.shared
         // defaults: 60 s request / 7 days resource). 10 s, then
         // the lookup fails instead of hanging.
+        // v0.2.128 item 7: one automatic retry 2 s after a failure
+        // (a transient proxy/DNS miss right after connect), so the
+        // enrichment self-heals instead of skeletoning until a
+        // manual re-fetch. The retry only runs for the same IP —
+        // a fresh probe in between owns the enrichment.
+        if await fetchIPInfoFromIpApi(for: ip) {
+            return
+        }
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        if Task.isCancelled { return }
+        guard trafficStore.outboundIp == ip else { return }
         _ = await fetchIPInfoFromIpApi(for: ip)
     }
 
@@ -587,6 +617,11 @@ struct DashboardView: View {
             IPLookupDiagnostics.record("ip-api.com: status \(decoded.status ?? "?")")
             return false
         }
+        // v0.2.128 item 7: a successful enrichment clears the
+        // failure flag — the proxy-first lookup below can fail
+        // once (setting the flag) and succeed on the direct
+        // fallback, and the flag must not stay stale afterwards.
+        ipEnrichmentFailed = false
         setIpInfo(decoded, asn: (try? JSONDecoder().decode(IPApiAsField.self, from: data))?.asNumber)
         return true
     }
@@ -597,11 +632,29 @@ struct DashboardView: View {
     /// proxy egress's country/org instead of the phone's direct IP.
     /// This is now the ONLY ip-api.com path: the no-arg caller-IP
     /// variant is deleted (the IP comes only from the core probe).
+    ///
+    /// v0.2.128 item 7: the lookup goes through the core's local
+    /// mixed proxy first (ServiceProbeLocal.makeProxySession) —
+    /// the core's DNS/routing is stable as soon as the tunnel is
+    /// up, so the enrichment answers immediately instead of
+    /// waiting for the app process's own routing to settle. When
+    /// the VPN is off there is no core on 17890, so the proxy
+    /// attempt fails fast and the direct lookup runs instead.
     private func fetchIPInfoFromIpApi(for ip: String) async -> Bool {
         guard let url = URL(string: "http://ip-api.com/json/\(ip)?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting") else { return false }
+        if await fetchIpApi(url: url, session: ServiceProbeLocal.makeProxySession()) {
+            return true
+        }
+        return await fetchIpApi(url: url, session: URLSession.shared)
+    }
+
+    /// One ip-api.com attempt on the given session. False when the
+    /// transport fails, the status is not 200, or the answer does
+    /// not decode / reports a non-success status.
+    private func fetchIpApi(url: URL, session: URLSession) async -> Bool {
         do {
             let request = URLRequest(url: url, timeoutInterval: 10)
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? -1
                 ipEnrichmentFailed = true
@@ -755,6 +808,7 @@ struct DashboardView: View {
         DashboardTrafficEffects(
             tunnelStartedAt: $tunnelStartedAt,
             tunnelStartObservedAt: $tunnelStartObservedAt,
+            tunnelStartupId: $tunnelStartupId,
             morphProgress: $morphProgress,
             ipInfo: $ipInfo,
             ipAsn: $ipAsn,
@@ -1225,7 +1279,7 @@ struct DashboardView: View {
                             // ipInfo stays as the instant-on-launch
                             // fallback.
                             countryCode: trafficStore.outboundIpInfo?.countryCode ?? ipInfo?.countryCode,
-                            checking: ipChecking,
+                            checking: ipChecking || cloverRefreshing,
                             // D-D9: the clover refresh re-probes the
                             // egress IP through the core as well as
                             // the ip-api.com lookup, so the status
@@ -1234,6 +1288,8 @@ struct DashboardView: View {
                             // non-subscribing action channel.
                             onRefresh: {
                                 Task {
+                                    cloverRefreshing = true
+                                    defer { cloverRefreshing = false }
                                     await fetchIPInfo()
                                     await trafficActions.probe()
                                 }
@@ -2606,6 +2662,12 @@ private struct DashboardTrafficEffects: View {
     /// run start — see the DashboardView state comment. Written on
     /// the running=false→true transition, cleared on stop.
     @Binding var tunnelStartObservedAt: Date?
+    /// v0.2.128 item 6: the startupId of the tunnel run the
+    /// uptime belongs to — see the DashboardView state comment.
+    /// Deliberately not cleared on stop (a flap keeps the same
+    /// run id, so the correction below can match the file's
+    /// record to this run).
+    @Binding var tunnelStartupId: String?
     @Binding var morphProgress: CGFloat
     @Binding var ipInfo: IPQualityInfo?
     @Binding var ipAsn: String?
@@ -2737,6 +2799,12 @@ private struct DashboardTrafficEffects: View {
                     guard TunnelManager.shared.isRunning || AppCore.shared.isRunning else { continue }
                     await connectionStore.refresh()
                     await dnsStore.refresh()
+                    // v0.2.128 item 6: correct the uptime from the
+                    // extension's diagnostics file every second, so
+                    // a flap reset (and the ~1 s observation lag)
+                    // heals on its own instead of staying reset
+                    // until a pull-to-refresh.
+                    correctUptimeFromFile()
                 }
             }
             .onChange(of: proxyStore.isRunning) { _, running in
@@ -2841,6 +2909,44 @@ private struct DashboardTrafficEffects: View {
                     }
                 }
             }
+    }
+
+    /// v0.2.128 item 6: corrects the uptime from the extension's
+    /// diagnostics file. The running=false→true transition sets
+    /// tunnelStartedAt to Date() (the app-observed time), which is
+    /// ~1 s late and resets to 0 on every isRunning flap (a brief
+    /// disconnect/reconnect) — the 00:00:16 → 00:00:09 → 00:00:01
+    /// jumps in the video. The file's startedAt is the TRUE start
+    /// time (set once by the extension, never moves). This adopts
+    /// it when it is EARLIER than the app-observed value (a flap
+    /// reset or the observation lag) — never later (a later value
+    /// would shrink the uptime). The startupId disambiguates a
+    /// stale previous-run record from the current run's, closing
+    /// the residual 30 s edge the v0.2.118 comment noted: a record
+    /// from a DIFFERENT run is adopted outright (the tunnel
+    /// genuinely restarted), while a same-run record is only
+    /// adopted when earlier.
+    private func correctUptimeFromFile() {
+        guard proxyStore.isRunning, let current = tunnelStartedAt else { return }
+        guard let run = tunnelManager.readTunnelRun(notBefore: tunnelStartObservedAt) else { return }
+        // A record from a DIFFERENT run (the extension restarted
+        // without the app observing a transition): adopt it
+        // outright — the tunnel genuinely restarted, so the uptime
+        // resets to the new run's start.
+        if let currentId = tunnelStartupId,
+           let runId = run.startupId, runId != currentId {
+            tunnelStartupId = runId
+            tunnelStartedAt = run.startedAt
+            return
+        }
+        // Same run (or no id to match): the file's startedAt is the
+        // TRUE start. Adopt it when EARLIER than the app-observed
+        // value. Record the run id so a later restart is recognised
+        // as a different run.
+        tunnelStartupId = run.startupId ?? tunnelStartupId
+        if run.startedAt < current {
+            tunnelStartedAt = run.startedAt
+        }
     }
 }
 

@@ -201,15 +201,28 @@ private struct SheetActionButton: View {
     let systemImage: String
     let label: String
     let disabled: Bool
+    /// v0.2.128 item 10a (upstream _CheckAllButton): while a probe
+    /// runs the button shows a spinner instead of its glyph, but
+    /// stays tappable — it is never disabled for loading. A spinner
+    /// that cannot be tapped reads as broken; a disabled button
+    /// that does nothing reads as broken too.
+    let loading: Bool = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color(.label))
-                .frame(width: 34, height: 34)
-                .contentShape(Circle())
+            if loading {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .frame(width: 34, height: 34)
+                    .contentShape(Circle())
+            } else {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color(.label))
+                    .frame(width: 34, height: 34)
+                    .contentShape(Circle())
+            }
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -554,10 +567,6 @@ struct ServiceStatusSheet: View {
         proxyStore.selectedOutbound ?? "DIRECT"
     }
 
-    private var canProbe: Bool {
-        !trafficStore.isProbingServices
-    }
-
     /// v0.2.124 diagnostic: body-evaluation counter. If the
     /// overlay still freezes, the ring buffer settles whether the
     /// SwiftUI body is re-evaluating in a loop (count explodes to
@@ -598,7 +607,15 @@ struct ServiceStatusSheet: View {
             onDragEnded: onDragEnded,
             actions: {
                 SheetActionsPill {
-                    SheetActionButton(systemImage: "bolt.fill", label: "全部检测", disabled: !canProbe) {
+                    // v0.2.128 item 10a (upstream _CheckAllButton):
+                    // the bolt is NEVER disabled — it shows a spinner
+                    // while a sweep runs and stays tappable, so the
+                    // user can always re-run the probe. A tap during
+                    // a sweep is a no-op inside probeServices (its
+                    // isProbingServices guard), but the spinner shows
+                    // a probe is already in flight; a tap when idle
+                    // starts a fresh sweep at once.
+                    SheetActionButton(systemImage: "bolt.fill", label: "全部检测", disabled: false, loading: trafficStore.isProbingServices) {
                         Task { await recheckAll() }
                     }
                     SheetActionButton(systemImage: "slider.horizontal.3", label: "管理服务", disabled: false) {
@@ -615,12 +632,19 @@ struct ServiceStatusSheet: View {
                             .foregroundStyle(.secondary)
                             .padding(16)
                     } else {
-                        ForEach(trafficStore.services) { service in
-                            serviceRow(service)
-                            if service.id != trafficStore.services.last?.id {
-                                Divider().padding(.leading, 76)
+                        // v0.2.128 item 10c (upstream _ServiceRow /
+                        // SliverPrismList): each row is its own
+                        // rounded card (cardBackground, radius 16 —
+                        // the DNS sheet's row radius), not a flat
+                        // list row with a divider. The dividers are
+                        // gone; the 8pt gaps between cards are the
+                        // separation.
+                        VStack(spacing: 8) {
+                            ForEach(trafficStore.services) { service in
+                                serviceRow(service)
                             }
                         }
+                        .padding(.horizontal, 16)
                     }
                     if trafficStore.servicesHeld {
                         Text("检测结果已暂停：VPN 刚启动，等待下次检测刷新。")
@@ -710,6 +734,11 @@ struct ServiceStatusSheet: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
             .contentShape(Rectangle())
+            // v0.2.128 item 10c: the row itself is a rounded card
+            // (cardBackground — pure white under default blue, ~5%
+            // accent tint under a non-default theme; radius 16,
+            // the DNS sheet's row radius).
+            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
         .disabled(trafficStore.isProbingServices)

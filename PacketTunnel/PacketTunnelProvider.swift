@@ -811,6 +811,34 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         }
 
+        // v0.2.128 item 2: enable the core's HTTP controller on the
+        // loopback (127.0.0.1:9090) so the app can run the VPN-on
+        // delay test over plain HTTP. The app<->extension JSON-RPC
+        // channel is dead (TunnelError code 4), so delay.test cannot
+        // travel over it; the controller is the working channel.
+        // bins/ios spawns concord_controller::serve, and the host
+        // owns the controller, so the profile's external-controller
+        // is ignored — the address + secret must arrive here via
+        // config.patch (api.json ConfigPatchParams:
+        // externalController, secret; camelCase via the dto! macro).
+        // The secret is the dedicated random one in the App Group
+        // file tunnel-controller.json (NOT SettingsStore's
+        // externalControllerSecret — that key belongs to the user's
+        // own controller and must not be overwritten). Failure here
+        // must not fail the tunnel: the delay test then falls back
+        // to the old RPC path and surfaces its error.
+        do {
+            let secret = tunnelControllerSecret()
+            _ = try await sendCoreRequest(
+                method: "config.patch",
+                params: ["externalController": "127.0.0.1:9090", "secret": secret],
+                timeoutSeconds: 15)
+            appendStartupStep("tunnel controller: ok (127.0.0.1:9090)")
+        } catch {
+            Self.log.error("tunnel controller config.patch failed: \(error.localizedDescription, privacy: .public)")
+            appendStartupStep("tunnel controller: failed: \(error)")
+        }
+
         // Trial v0.2.93: real-utun-fd data plane (MuYu's path), NOT the
         // packet channel (Option B). The packet-channel bridge (patch 02
         // ChannelDevice + Swift pump) does not deliver packets to the
@@ -2647,6 +2675,29 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return nil
         }
         return json
+    }
+
+    /// The controller secret shared with the app (v0.2.128 item 2):
+    /// read tunnel-controller.json from the App Group container,
+    /// generate a random one and write it when the file is missing
+    /// or holds no secret — the app runs the same ensure step, so
+    /// whichever side runs first creates it.
+    private func tunnelControllerSecret() -> String {
+        let fileName = "tunnel-controller.json"
+        if let existing = readSharedJSON(name: fileName),
+           let secret = existing["secret"] as? String, !secret.isEmpty {
+            return secret
+        }
+        let generated = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        if let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID) {
+            let file = container.appendingPathComponent(fileName)
+            if let data = try? JSONSerialization.data(withJSONObject: ["secret": generated]) {
+                try? data.write(to: file, options: .atomic)
+            }
+        }
+        return generated
     }
 
     // MARK: - Override framework (OverrideStore / overrides.json)

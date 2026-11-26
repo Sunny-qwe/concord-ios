@@ -133,6 +133,20 @@ enum ServiceProbeLocal {
         "HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 17890,
     ]
 
+    /// A URLSession that routes through the core's local mixed
+    /// proxy — the same channel the service probe uses. v0.2.128
+    /// item 7: the enrichment lookup (ip-api.com) goes through
+    /// the core instead of the app process's own (not-yet-stable)
+    /// routing, so it answers as soon as the tunnel is up and
+    /// does not need the 4 s settle wait.
+    static func makeProxySession(timeoutSeconds: TimeInterval = 10) -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = proxyDictionary
+        config.timeoutIntervalForRequest = timeoutSeconds
+        config.timeoutIntervalForResource = timeoutSeconds
+        return URLSession(configuration: config)
+    }
+
     // MARK: - Entry point
 
     /// Runs the 13 service checks (or the requested subset)

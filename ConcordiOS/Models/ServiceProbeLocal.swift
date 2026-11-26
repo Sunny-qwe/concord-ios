@@ -698,7 +698,10 @@ enum ServiceProbeLocal {
         for byte in text.utf8 {
             switch byte {
             case 65...90, 97...122, 48...57, 45, 95, 46, 126:
-                escaped.append(Character(UnicodeScalar(UInt32(byte))))
+                // UnicodeScalar(UInt8) is non-failable: every
+                // byte 0...255 is a valid scalar (the UInt32
+                // spelling is failable and does not compile here).
+                escaped.append(Character(UnicodeScalar(byte)))
             case 32:
                 escaped.append("+")
             default:

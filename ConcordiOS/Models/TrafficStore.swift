@@ -1669,7 +1669,8 @@ final class TrafficStore: ObservableObject {
                     let candidate = ConcordOutboundIp(url: urlString, body: body,
                         delay: Int64(Date().timeIntervalSince(startedAt) * 1000),
                         chains: [], error: nil, epoch: 0, version: 0)
-                    return parseOutboundIp(candidate) == nil ? nil : candidate
+                    if parseOutboundIp(candidate) == nil { return nil }
+                    return candidate
                 }
             }
             for await candidate in group {

@@ -38,7 +38,6 @@ enum ToolsDestination: Hashable {
     case dns
     case resources
     case logs
-    case language
     case theme
     case iconSets
     case backup
@@ -65,7 +64,11 @@ extension Notification.Name {
 }
 
 struct ToolsView: View {
-    @AppStorage("ConcordiOS.appLanguage") private var appLanguage = ""
+    // T-D1 (v0.2.138): the language picker is an inline Menu row
+    // in the Settings section below, bound to this manager — the
+    // pushed LanguageView page and its restart requirement are
+    // gone (upstream tools.dart:148-175 ListItem.options).
+    @EnvironmentObject private var localization: LocalizationManager
     @EnvironmentObject private var settingsStore: SettingsStore
     /// Programmatic navigation path. The rows used to be
     /// NavigationLinks; on the user's device (v0.2.15) every row was
@@ -77,19 +80,6 @@ struct ToolsView: View {
     /// destinations render from one .navigationDestination — the
     /// NavigationLink tap handling is bypassed entirely.
     @State private var navPath: [ToolsDestination] = []
-
-    private var languageDisplayName: String {
-        switch appLanguage {
-        case "zh-Hans": return "简体中文"
-        case "en": return "English"
-        case "es": return "Español"
-        case "fr": return "Français"
-        case "ja": return "日本語"
-        case "ko": return "한국어"
-        case "ru": return "Русский"
-        default: return "默认"
-        }
-    }
 
     var body: some View {
         NavigationStack(path: $navPath) {
@@ -119,29 +109,35 @@ struct ToolsView: View {
                         }
                     }
                     toolSection(header: "tools.section.settings".l10n) {
-                        Button { navPath.append(.language) } label: {
-                            HStack(spacing: 14) {
-                                Image(systemName: "character.bubble")
-                                    .font(.system(size: 18, weight: .regular))
-                                    .foregroundStyle(Color(.label))
-                                    .frame(width: 24, height: 24)
-                                Text("tools.language".l10n)
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(Color(.label))
-                                Spacer()
-                                Text(languageDisplayName)
-                                    .font(.footnote)
-                                    .foregroundStyle(Color(.label))
-                                Image(systemName: "chevron.up.chevron.down")
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
+                        // T-D1 (v0.2.138): inline language row —
+                        // upstream tools.dart:148-175
+                        // ListItem<Locale?>.options. A Menu picker:
+                        // picking a language switches the app's
+                        // localised strings immediately (no restart,
+                        // no separate page); only the ~50 .l10n keys
+                        // switch, the rest of the app stays Chinese.
+                        HStack(spacing: 14) {
+                            Image(systemName: "character.bubble")
+                                .font(.system(size: 18, weight: .regular))
+                                .foregroundStyle(Color(.label))
+                                .frame(width: 24, height: 24)
+                            Text("tools.language".l10n)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(Color(.label))
+                            Spacer()
+                            Picker("", selection: $localization.language) {
+                                ForEach(LocalizationManager.supportedLanguages, id: \.code) { language in
+                                    Text(language.name).tag(language.code)
+                                }
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 16)
-                            .contentShape(Rectangle())
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .font(.footnote)
+                            .tint(Color(.label))
                         }
-                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 16)
                         Divider().padding(.leading, 54)
                         ToolRow(icon: "paintbrush", title: "tools.theme".l10n) { navPath.append(.theme) }
                         Divider().padding(.leading, 54)
@@ -188,7 +184,6 @@ struct ToolsView: View {
                 case .dns: DnsQueriesView()
                 case .resources: ResourcesView()
                 case .logs: LogsView()
-                case .language: LanguageView()
                 case .theme: ThemePickerView()
                 case .iconSets: IconSetsView()
                 case .backup: BackupView()
@@ -298,74 +293,6 @@ private struct ToolGlyphRow<Icon: View>: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Language (real picker)
-//
-// FlClash's supported locales: en, es, fr, ja, ko, ru, zh-CN.
-// The choice is persisted and applied via the standard
-// AppleLanguages mechanism, which iOS reads at launch, so a
-// restart is required before it takes effect. The primary
-// interface strings (tab bar, Tools titles, common buttons —
-// Localizable.xcstrings) follow the choice after restart; the
-// rest of the app's strings are still hardcoded Chinese.
-private struct LanguageView: View {
-    @AppStorage("ConcordiOS.appLanguage") private var appLanguage = ""
-    @State private var showRestartAlert = false
-
-    private var displayName: String {
-        switch appLanguage {
-        case "zh-Hans": return "简体中文"
-        case "en": return "English"
-        case "es": return "Español"
-        case "fr": return "Français"
-        case "ja": return "日本語"
-        case "ko": return "한국어"
-        case "ru": return "Русский"
-        default: return "默认"
-        }
-    }
-
-    var body: some View {
-        List {
-            Section {
-                Picker("语言", selection: $appLanguage) {
-                    Text("默认（跟随系统）").tag("")
-                    Text("简体中文").tag("zh-Hans")
-                    Text("English").tag("en")
-                    Text("Español").tag("es")
-                    Text("Français").tag("fr")
-                    Text("日本語").tag("ja")
-                    Text("한국어").tag("ko")
-                    Text("Русский").tag("ru")
-                }
-                .pickerStyle(.inline)
-            } footer: {
-                Text("切换语言后需要重启应用才会生效。重启后底部标签栏、工具页标题与常用按钮会按所选语言显示；页面内的其他文字仍为中文（只本地化了主要界面文字）。")
-                    .font(.footnote)
-            }
-        }
-        // v0.2.66: tab-bar clearance for pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
-        .background(ConcordTheme.pageBackground)
-        .navigationTitle("语言")
-        .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: appLanguage) { _, code in
-            if code.isEmpty {
-                UserDefaults.standard.removeObject(forKey: "AppleLanguages")
-            } else {
-                UserDefaults.standard.set([code], forKey: "AppleLanguages")
-            }
-            showRestartAlert = true
-        }
-        .alert("需要重启应用", isPresented: $showRestartAlert) {
-            Button("common.ok".l10n, role: .cancel) {}
-        } message: {
-            Text("语言已设为\(displayName)，重启应用后生效。")
-        }
     }
 }
 

@@ -113,6 +113,9 @@ struct ConcordiOSApp: App {
                 .environmentObject(themeStore)
                 .environmentObject(fontStore)
                 .environmentObject(proxyStyleStore)
+                // T-D1 (v0.2.138): the picked app language — the
+                // Tools picker and ContentView's remount read it.
+                .environmentObject(LocalizationManager.shared)
                 .environmentObject(TunnelManager.shared)
                 .environment(\.font, fontStore.rootFont)
                 .onOpenURL { url in

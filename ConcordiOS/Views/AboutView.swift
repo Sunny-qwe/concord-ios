@@ -385,6 +385,18 @@ struct AboutView: View {
             // UI anywhere in source; the About page's only update
             // item is the auto-check toggle. The stored setting
             // stays, defaulting to stable.
+            // v0.2.138 (user decision 2026-11-26): the
+            // contributor section is GONE — no original-developer
+            // info, no contributor rows. The app's author is the
+            // user themself: name + GitHub only, no email or other
+            // contact detail.
+            Section("开发者") {
+                aboutLink(
+                    title: "樹小沢",
+                    urlString: "https://github.com/Sunny-qwe",
+                    icon: "person"
+                )
+            }
             Section("更多") {
                 aboutLink(
                     title: "项目主页",
@@ -401,15 +413,6 @@ struct AboutView: View {
                     urlString: "https://t.me/FlClash",
                     icon: "paperplane"
                 )
-            }
-            Section("其他贡献者") {
-                // A-M2: one row per contributor — an initial circle,
-                // the name, and the role — instead of one line of
-                // comma-separated text. Real photos would need
-                // GitHub avatar assets we do not have (flagged as
-                // unmatchable, v0.2.68).
-                contributorRow(initial: "J", name: "June2", role: "FlClash 应用图标设计")
-                contributorRow(initial: "A", name: "Arue", role: "FlClash 应用图标设计")
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages.
@@ -487,14 +490,19 @@ struct AboutView: View {
     /// v0.2.68 (MuYu): NEUTRAL gray rounded-square tiles, not
     /// accent/colored ones; external-link glyph is
     /// arrow.up.right.square.
+    /// S1 (v0.2.138, upstream stable v0.9.5 _GlyphBadge /
+    /// rs.1 _LinkBadge, about.dart:261): the badge is a 40x40
+    /// raised-surface tile with a 20pt glyph in the
+    /// onSurfaceVariant colour — the 28x28 footnote tile was the
+    /// old size.
     private func aboutLink(title: String, urlString: String, icon: String) -> some View {
         Link(destination: URL(string: urlString)!) {
             HStack(spacing: 12) {
                 Image(systemName: icon)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color(.label))
-                    .frame(width: 28, height: 28)
-                    .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 8))
+                    .font(.system(size: 20))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 40, height: 40)
+                    .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
                         .font(.footnote)
@@ -508,23 +516,6 @@ struct AboutView: View {
                 Image(systemName: "arrow.up.right.square")
                     .font(.footnote)
                     .foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    private func contributorRow(initial: String, name: String, role: String) -> some View {
-        HStack(spacing: 12) {
-            Text(initial)
-                .font(.footnote.bold())
-                .foregroundStyle(.white)
-                .frame(width: 32, height: 32)
-                .background(ConcordTheme.accent, in: Circle())
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .font(.footnote)
-                Text(role)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
     }

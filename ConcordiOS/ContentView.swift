@@ -46,6 +46,17 @@ struct ContentView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var themeStore: ThemeStore
+    // T-D1 (v0.2.138): the picked app language. The root Group
+    // below is re-identified on every language change, so the
+    // whole tab container (pages + floating tab bar) remounts
+    // and re-renders in the new language — the SwiftUI
+    // equivalent of upstream's whole-app rebuild on a locale
+    // change (tools.dart: the locale provider rebuilds the app).
+    // ContentView's own @State (selectedTab, fade state, stats
+    // destination) survives: it lives in this struct, above the
+    // re-identified Group. The pages' own @State resets, as it
+    // does upstream.
+    @EnvironmentObject private var localization: LocalizationManager
 
     @State private var selectedTab: AppTab = .dashboard
     /// Sequential fade state (v0.2.136, re-do of v0.2.128): the
@@ -201,6 +212,9 @@ struct ContentView: View {
                 }
             }
         }
+        // T-D1 (v0.2.138): remount the tab container on a language
+        // change — see the localization property above.
+        .id(localization.language)
         .preferredColorScheme(themeStore.colorScheme)
         .environment(\.dynamicTypeSize, themeStore.dynamicTypeSize ?? .large)
         .task {

@@ -10,8 +10,16 @@ import SwiftUI
 struct DeveloperView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var logStore: LogStore
+    // V-D4/V-D5 (v0.2.138): the prune and clear scans need the
+    // live profile ids, the core's provider list, and the client
+    // for profile.clearEffect.
+    @EnvironmentObject private var profileStore: ProfileStore
+    @EnvironmentObject private var ruleStore: RuleStore
+    @EnvironmentObject private var client: ConcordClient
     @State private var message: String?
     @State private var showingClearConfirm = false
+    /// V-M1 (v0.2.138): the live-status test sheet.
+    @State private var showLiveStatusTest = false
     /// V-D1: the message test shows one banner per banner level
     /// (upstream developer.dart loops BannerLevel.values). The
     /// levels come from prism_ui, which is absent from both
@@ -65,15 +73,25 @@ struct DeveloperView: View {
                     Task { await runDownloadTest() }
                 }
                 .disabled(isDownloadTesting)
+                // V-M1 (v0.2.138): upstream's live-status preview
+                // (views/developer.dart liveStatusTest ->
+                // showLiveStatusPreview, views/dashboard/widgets/
+                // live_status.dart:66). Ours has no core/update/
+                // consent cards, so the preview opens the warnings
+                // deck with upstream's five sample warnings — the
+                // one live-status card this app has.
+                Button("实时状态卡片测试") {
+                    showLiveStatusTest = true
+                }
             }
             Section("数据") {
                 Button("清理缓存") {
-                    pruneCache()
+                    Task { await pruneCache() }
                 }
                 Button("清除全部数据", role: .destructive) {
                     showingClearConfirm = true
                 }
-                Text("清除全部数据会删掉 App Group 容器里的所有文件（订阅、配置、设置、MITM 模块）和保存的偏好，之后请重启应用。")
+                Text("将删除所有配置、设置和本地数据，随后关闭应用。重新打开即可从头开始。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -90,11 +108,23 @@ struct DeveloperView: View {
         .font(.footnote.weight(.semibold))
         .navigationTitle("开发者模式")
         .navigationBarTitleDisplayMode(.inline)
-        .alert("清除全部数据？", isPresented: $showingClearConfirm) {
-            Button("清除", role: .destructive) { clearAllData() }
+        .alert("确定要清除所有数据？", isPresented: $showingClearConfirm) {
+            Button("清除", role: .destructive) { Task { await clearAllData() } }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("订阅、配置、设置、主题、MITM 模块都会被删除，此操作不可撤销。")
+            Text("将删除所有配置、设置和本地数据，随后关闭应用。重新打开即可从头开始。")
+        }
+        // V-M1 (v0.2.138): the live-status preview sheet — the
+        // same chrome as the Dashboard warnings sheet
+        // (DashboardWarningsPill).
+        .sheet(isPresented: $showLiveStatusTest) {
+            ConfigWarningsDeck(warnings: Self.sampleLiveStatusWarnings)
+                .concordCard()
+                .padding()
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                .presentationDragIndicator(.hidden)
+                .presentationBackground(ConcordTheme.pageBackground)
+                .presentationCornerRadius(28)
         }
     }
 
@@ -162,13 +192,61 @@ struct DeveloperView: View {
         }
     }
 
-    private func pruneCache() {
+    /// V-D4 (v0.2.138): prune scope matches upstream's
+    /// shakingStore (lib/providers/actions/store.dart:10):
+    /// delete ORPHAN files — profile YAMLs with no profile,
+    /// provider files with no provider, script files with no
+    /// registered script. The live sets come from the app's own
+    /// stores; a directory whose live list cannot be read is
+    /// SKIPPED, never emptied on a guess (upstream's lists leave
+    /// out rows they cannot read, and the tables may not hold an
+    /// optimistic write yet). Files are matched by stem:
+    /// profiles/<uuid>.yaml, providers/<name>.yaml and
+    /// providers/proxies/<name>.yaml (a provider file may also be
+    /// extensionless — ProfileStore's candidate list), and
+    /// mitm/scripts/<id>.js. Anything else — the scripts.json
+    /// registry, subdirectories — is left alone. The generated
+    /// cache (snapshots + preflight.yaml) is still deleted: it is
+    /// regenerated on demand.
+    private func pruneCache() async {
         guard let container = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID) else {
             message = "App Group 容器不可用"
             return
         }
         var removed = 0
+        var skipped: [String] = []
+
+        // Live profiles: ProfileStore loads synchronously from
+        // UserDefaults at launch, so its ids are always available.
+        let liveProfiles = Set(profileStore.profiles.map { $0.id.uuidString })
+        removed += shakeDirectory(container.appendingPathComponent("profiles"),
+                                  extensions: ["yaml"], liveStems: liveProfiles)
+
+        // Live providers: the list comes from the core, so refresh
+        // first. If the list is still empty afterwards, the
+        // providers dirs are SKIPPED — an empty list after a
+        // failed refresh proves nothing, and emptying them would
+        // delete live files.
+        await ruleStore.refresh()
+        if !ruleStore.providers.isEmpty {
+            let liveProviders = Set(ruleStore.providers.map { $0.name })
+            removed += shakeDirectory(container.appendingPathComponent("providers"),
+                                      extensions: ["yaml", ""], liveStems: liveProviders)
+            removed += shakeDirectory(container.appendingPathComponent("providers/proxies"),
+                                      extensions: ["yaml", ""], liveStems: liveProviders)
+        } else {
+            skipped.append("提供方")
+        }
+
+        // Live scripts: MitmScriptStore loads its registry
+        // synchronously from scripts.json at init.
+        let liveScripts = Set(MitmScriptStore().scripts.map { $0.id })
+        removed += shakeDirectory(container.appendingPathComponent("mitm/scripts"),
+                                  extensions: ["js"], liveStems: liveScripts)
+
+        // Generated cache, regenerated on demand (kept from the
+        // old prune: snapshots + preflight.yaml).
         for name in ["snapshots", "preflight.yaml"] {
             let url = container.appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: url.path) {
@@ -176,22 +254,119 @@ struct DeveloperView: View {
                 removed += 1
             }
         }
-        message = removed > 0 ? "已清理缓存（\(removed) 项）" : "没有可清理的缓存"
+
+        if skipped.isEmpty {
+            message = removed > 0 ? "已清理缓存（\(removed) 项）" : "没有可清理的缓存"
+        } else {
+            message = "已清理缓存（\(removed) 项）；\(skipped.joined(separator: "、"))未刷新，跳过"
+        }
     }
 
-    private func clearAllData() {
-        for key in ["ConcordiOS.profiles.v1", "ConcordiOS.settings.v1", "ConcordiOS.theme.v1", "ConcordiOS.mode.v1", UpdateChecker.lastSeenHeadKey] {
-            UserDefaults.standard.removeObject(forKey: key)
+    /// Delete files in `dir` whose name stem is not in
+    /// `liveStems`, keeping only the given extensions. A missing
+    /// dir is a no-op; subdirectories are never deleted.
+    private func shakeDirectory(_ dir: URL, extensions: [String], liveStems: Set<String>) -> Int {
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return 0 }
+        var removed = 0
+        for name in names {
+            let url = dir.appendingPathComponent(name)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { continue }
+            let ext = (name as NSString).pathExtension
+            guard extensions.contains(ext) else { continue }
+            let stem = (name as NSString).deletingPathExtension
+            guard !liveStems.contains(stem) else { continue }
+            if (try? fm.removeItem(at: url)) != nil { removed += 1 }
         }
+        return removed
+    }
+
+    /// V-D5 (v0.2.138): clear scope matches upstream's
+    /// handleClear (lib/providers/actions/store.dart:39) +
+    /// clearAppData (lib/common/app_data.dart:7): clearEffect per
+    /// profile (the core's per-profile downloads, best-effort),
+    /// clear ALL preferences, delete the profile files, then EXIT
+    /// the app (upstream handleExit) — the old "请重启应用" note
+    /// is gone. Upstream keeps scripts / provider files / MITM
+    /// module files: only their RECORDS are cleared (the profiles
+    /// dir + the modules/scripts registries), the orphaned files
+    /// are left for the next prune — so the whole App Group
+    /// container is NOT deleted any more.
+    private func clearAllData() async {
+        // 1. clearEffect per numeric core-side profile id,
+        // best-effort (upstream: try/catch per profile, warn and
+        // continue). Our profiles are UUIDs and the app never
+        // learns numeric core ids, so ids are discovered by
+        // scanning the core homes' profiles/providers/ dirs —
+        // usually empty, in which case nothing is called.
+        for id in coreProfileIds() {
+            try? await client.profileClearEffect(profileId: id)
+        }
+        // 2. All preferences (upstream clearPreferences): every
+        // ConcordiOS.* key, plus AppleLanguages (the language
+        // choice resets to the system language with the rest).
+        let defaults = UserDefaults.standard
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("ConcordiOS.") {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.removeObject(forKey: "AppleLanguages")
+        // 3. The record files: the profiles dir, the MITM modules
+        // registry and the scripts registry (the app's equivalents
+        // of upstream's deleted Drift tables). Script .js files,
+        // provider .yaml files and MITM module files stay as
+        // orphans until the next prune, exactly like upstream.
         if let container = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
-           let contents = try? FileManager.default.contentsOfDirectory(atPath: container.path) {
-            for item in contents {
-                try? FileManager.default.removeItem(at: container.appendingPathComponent(item))
+            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID) {
+            let fm = FileManager.default
+            try? fm.removeItem(at: container.appendingPathComponent("profiles"))
+            try? fm.removeItem(at: container.appendingPathComponent("mitm-modules/modules.json"))
+            try? fm.removeItem(at: container.appendingPathComponent("mitm/scripts/scripts.json"))
+        }
+        // 4. Stop the tunnel first — a running tunnel would keep
+        // proxying on the deleted config — then exit, like
+        // upstream's handleExit (which closes the window and the
+        // core).
+        await TunnelManager.shared.stop()
+        exit(0)
+    }
+
+    /// Numeric core-side profile ids, from the core homes'
+    /// profiles/providers/ dirs (upstream's clearEffect takes the
+    /// profile's numeric id; ours are UUIDs, so the ids are only
+    /// discoverable from the core's own download dirs).
+    private func coreProfileIds() -> [Int64] {
+        let fm = FileManager.default
+        var homes: [URL] = []
+        if let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            homes.append(support.appendingPathComponent("ConcordAppCore", isDirectory: true))
+        }
+        if let container = fm.containerURL(forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID) {
+            homes.append(container)
+        }
+        var ids: [Int64] = []
+        for home in homes {
+            let dir = home.appendingPathComponent("profiles/providers", isDirectory: true)
+            guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { continue }
+            for name in names {
+                if let id = Int64(name) { ids.append(id) }
             }
         }
-        message = "已清除全部数据，请重启应用"
+        return ids
     }
+
+    /// V-M1 (v0.2.138): upstream's five sample warnings for the
+    /// live-status preview (views/dashboard/widgets/live_status
+    /// .dart:96-115), verbatim — the core's real warnings are in
+    /// English too, so the mock matches what the deck shows in
+    /// production.
+    private static let sampleLiveStatusWarnings: [ConcordWarning] = [
+        ConcordWarning(level: "warning", code: nil, path: "mixed-port", message: "The mixed-port is the same as the socks-port"),
+        ConcordWarning(level: "warning", code: nil, path: "mixed-port", message: "The mixed-port is the same as the redir-port"),
+        ConcordWarning(level: "warning", code: nil, path: "mixed-port", message: "The mixed-port is the same as the tproxy-port"),
+        ConcordWarning(level: "warning", code: nil, path: "proxy-groups/Netflix", message: "The current proxy group has no available proxies"),
+        ConcordWarning(level: "warning", code: nil, path: "rules", message: "There are currently no rules matching any proxy group"),
+    ]
 }
 
 /// One banner shown by the message test (V-D1).

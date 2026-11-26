@@ -3161,9 +3161,13 @@ private struct DelayText: View {
     var body: some View {
         Group {
             if testing {
+                // S2 (v0.2.138, upstream stable v0.9.5 card.dart):
+                // the indicator slot is the footnote text height
+                // (13pt), not caption2 — the spinner renders at
+                // ~13pt (20pt default x 0.65).
                 ProgressView()
-                    .frame(width: 12, height: 12)
-                    .scaleEffect(0.7)
+                    .frame(width: 13, height: 13)
+                    .scaleEffect(0.65)
             } else if let ms = latencyMs {
                 if ms > 0 {
                     Text("\(ms) ms")
@@ -3177,7 +3181,10 @@ private struct DelayText: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .font(.caption2)
+        // S2 (v0.2.138, upstream stable v0.9.5 card.dart): the
+        // delay indicator (bolt / spinner / text) is footnote
+        // (13pt), not caption2 (11pt) — rounder/larger.
+        .font(.footnote)
         .fontWeight(.semibold)
     }
 }

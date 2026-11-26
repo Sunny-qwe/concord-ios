@@ -572,6 +572,19 @@ struct ServiceStatusSheet: View {
         }
     }
 
+    /// v0.2.124: explicit initializer. The memberwise initializer
+    /// is not usable here — the @EnvironmentObject / @State
+    /// properties leave the struct with only a zero-argument
+    /// init (CI: "argument passed to call that takes no
+    /// arguments" at the overlay's ServiceStatusSheet(onClose:)
+    /// call), so the overlay parameters get their own init.
+    /// The environment objects and @State keep their defaults.
+    init(onClose: (() -> Void)? = nil, onDragChanged: ((CGFloat) -> Void)? = nil, onDragEnded: ((CGFloat, CGFloat) -> Void)? = nil) {
+        self.onClose = onClose
+        self.onDragChanged = onDragChanged
+        self.onDragEnded = onDragEnded
+    }
+
     var body: some View {
         Self.noteBodyEvaluation()
         return DashboardBottomSheet(

@@ -318,6 +318,7 @@ private struct DisclaimerView: View {
     @State private var restateTyped = ""
     @State private var disagreeMessage: String?
     private static var terms: [(String, String)] {
+        [
         ("disclaimer.terms.nature.title".l10n, "disclaimer.terms.nature.body".l10n),
         ("disclaimer.terms.usage.title".l10n, "disclaimer.terms.usage.body".l10n),
         ("disclaimer.terms.responsibility.title".l10n, "disclaimer.terms.responsibility.body".l10n),
@@ -328,6 +329,7 @@ private struct DisclaimerView: View {
         ("disclaimer.terms.license.title".l10n, "disclaimer.terms.license.body".l10n),
         ("disclaimer.terms.changes.title".l10n, "disclaimer.terms.changes.body".l10n),
         ("disclaimer.terms.relation.title".l10n, "disclaimer.terms.relation.body".l10n),
+        ]
     }
 
     var body: some View {

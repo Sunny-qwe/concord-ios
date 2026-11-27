@@ -1,17 +1,18 @@
-From e2fb43e0000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 0c746fe7a22b40d22ccffe1e6a1e780dff93dbb6 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Thu, 26 Nov 2026 12:22:23 +0000
+Date: Fri, 27 Nov 2026 02:08:05 +0000
 Subject: [PATCH 10/10] controller: add GET /services backed by the core prober
+ 382aeab)
 
 ---
- crates/controller/src/routes.rs | 43 +++++++++++++++++++++++++++++++++++++++--
+ crates/controller/src/routes.rs | 43 +++++++++++++++++++++++++++++++--
  1 file changed, 41 insertions(+), 2 deletions(-)
 
 diff --git a/crates/controller/src/routes.rs b/crates/controller/src/routes.rs
-index b45e652..507f78b 100644
+index 96b4be1..fb58a6b 100644
 --- a/crates/controller/src/routes.rs
 +++ b/crates/controller/src/routes.rs
-@@ -7,7 +7,7 @@ use concord_proto::types::{
+@@ -8,7 +8,7 @@ use concord_proto::types::{
      ConfigPatchParams, ConnectionCloseParams, CoreEvent, DelayRunEvent, DelayRunParams,
      DelayTestParams, DnsQueryParams, Empty, EventsWatchParams, GeoUpdateParams, ProviderKind,
      ProviderNameParams, ProxySelectParams, ProxyStatesParams, ResourceKind, ResourcePhase,
@@ -21,7 +22,7 @@ index b45e652..507f78b 100644
  use concord_proto::{ApiError, ErrorData, MAX_MESSAGE};
  use futures_util::StreamExt;
 @@ -50,6 +50,7 @@ impl Routes {
-                 stream::respond(request, values, self.stop.clone())
+                 stream::respond(request, values, &self.sessions)
              }
              (&Method::GET, ["logs"]) => self.logs(request).await,
 +            (&Method::GET, ["services"]) => self.services(&request).await,
@@ -38,7 +39,7 @@ index b45e652..507f78b 100644
                  | ["group", _, "delay"]
                  | ["rules", "disable"]
 @@ -96,6 +97,44 @@ impl Routes {
-         stream::respond(request, values, self.stop.clone())
+         stream::respond(request, values, &self.sessions)
      }
  
 +    /// Service availability through the core's own prober
@@ -82,3 +83,6 @@ index b45e652..507f78b 100644
      async fn catalog(&self) -> Option<Catalog> {
          let groups = self.control.proxy_groups(Empty {}).await.ok()?;
          let states = self
+-- 
+2.43.0
+

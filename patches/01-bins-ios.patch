@@ -1,20 +1,20 @@
-From f344696b575be23e211d58d67928ea3d6d2cf9e9 Mon Sep 17 00:00:00 2001
+From 6f2941c930dc2616b64a5b3a4f5fef98b1d8b360 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Wed, 25 Nov 2026 07:29:10 +0000
-Subject: [PATCH 1/8] ios: add bins/ios staticlib crate
+Date: Fri, 27 Nov 2026 02:06:54 +0000
+Subject: [PATCH 01/10] ios: add bins/ios staticlib crate
 
 ---
  Cargo.toml               |   1 +
- bins/ios/Cargo.toml      |  37 ++++++++++
+ bins/ios/Cargo.toml      |  38 +++++++++++
  bins/ios/README.md       |  50 ++++++++++++++
  bins/ios/concord_ios.h   | 116 +++++++++++++++++++++++++++++++
  bins/ios/src/abi.rs      |  46 +++++++++++++
  bins/ios/src/bridge.rs   | 144 +++++++++++++++++++++++++++++++++++++++
- bins/ios/src/core.rs     |  78 +++++++++++++++++++++
+ bins/ios/src/core.rs     |  87 +++++++++++++++++++++++
  bins/ios/src/lib.rs      |  38 +++++++++++
  bins/ios/src/log.rs      |  12 ++++
  bins/ios/src/platform.rs |  68 ++++++++++++++++++
- 10 files changed, 590 insertions(+)
+ 10 files changed, 600 insertions(+)
  create mode 100644 bins/ios/Cargo.toml
  create mode 100644 bins/ios/README.md
  create mode 100644 bins/ios/concord_ios.h
@@ -26,7 +26,7 @@ Subject: [PATCH 1/8] ios: add bins/ios staticlib crate
  create mode 100644 bins/ios/src/platform.rs
 
 diff --git a/Cargo.toml b/Cargo.toml
-index ecf08b7..3127a16 100644
+index 7b08007..36f83e4 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -27,6 +27,7 @@ members = [
@@ -39,10 +39,10 @@ index ecf08b7..3127a16 100644
      "xtask",
 diff --git a/bins/ios/Cargo.toml b/bins/ios/Cargo.toml
 new file mode 100644
-index 0000000..314a63c
+index 0000000..aeec34c
 --- /dev/null
 +++ b/bins/ios/Cargo.toml
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,38 @@
 +[package]
 +name = "concord-ios"
 +version.workspace = true
@@ -69,6 +69,7 @@ index 0000000..314a63c
 +arc-swap = { workspace = true }
 +async-trait = { workspace = true }
 +tokio = { workspace = true, features = ["full"] }
++tokio-util = { workspace = true }
 +tracing = { workspace = true, features = ["release_max_level_debug"] }
 +# Never called here: it caps the `log` records that dependencies such as rustls compile in.
 +log = { workspace = true, features = ["release_max_level_debug"] }
@@ -462,10 +463,10 @@ index 0000000..594ba1e
 +fn _unused(_: *mut c_void) {}
 diff --git a/bins/ios/src/core.rs b/bins/ios/src/core.rs
 new file mode 100644
-index 0000000..288ad52
+index 0000000..b7444df
 --- /dev/null
 +++ b/bins/ios/src/core.rs
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,87 @@
 +use std::sync::Arc;
 +
 +use concord_api::{Control, ControlOptions, EventBus};
@@ -473,6 +474,7 @@ index 0000000..288ad52
 +use concord_ffi::Hub;
 +use concord_rpc::Server;
 +use tokio::runtime::{Builder, Runtime};
++use tokio_util::sync::CancellationToken;
 +
 +use crate::platform::IosPlatform;
 +
@@ -526,7 +528,15 @@ index 0000000..288ad52
 +            },
 +        );
 +        let server = Arc::new(Server::new(control.clone()));
-+        runtime.spawn(concord_controller::serve(control.clone()));
++        // f74d2b9: `serve` now takes a stop token and returns once it is
++        // cancelled and every session has ended. iOS mirrors Android here:
++        // a fresh token that is never cancelled — the Core lives for the
++        // process lifetime and stops via the engine/FFI path, not by
++        // cancelling the controller task.
++        runtime.spawn(concord_controller::serve(
++            control.clone(),
++            CancellationToken::new(),
++        ));
 +        drop(entered);
 +        let hub = Hub::new(runtime.handle().clone(), server);
 +        Ok(Core {

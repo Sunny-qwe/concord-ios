@@ -1,6 +1,6 @@
-From 011f1ab1ee55aea725a2f3542867195ffe0d9cc8 Mon Sep 17 00:00:00 2001
+From 4cefb90c82e4c0204ad5a73acc33d1ed44b62963 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Thu, 26 Nov 2026 17:12:24 +0000
+Date: Fri, 27 Nov 2026 02:06:54 +0000
 Subject: [PATCH 02/10] ios: promote FakeDevice to a production packet-channel
 
 ---
@@ -23,7 +23,7 @@ Subject: [PATCH 02/10] ios: promote FakeDevice to a production packet-channel
  create mode 100644 crates/tun/src/channel.rs
 
 diff --git a/crates/api/Cargo.toml b/crates/api/Cargo.toml
-index d143629..dc3f43b 100644
+index 4a191e9..2854999 100644
 --- a/crates/api/Cargo.toml
 +++ b/crates/api/Cargo.toml
 @@ -19,6 +19,7 @@ debug = []
@@ -32,8 +32,8 @@ index d143629..dc3f43b 100644
  concord-proto = { workspace = true }
 +concord-tun = { workspace = true }
  tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+ tokio-util = { workspace = true }
  futures-util = { workspace = true }
- base64 = { workspace = true }
 diff --git a/crates/api/src/channels.rs b/crates/api/src/channels.rs
 new file mode 100644
 index 0000000..185103c
@@ -149,7 +149,7 @@ index 6bf951b..04d7dca 100644
          self.engine.shutdown().await;
          self.configured.store(false, Ordering::SeqCst);
 diff --git a/crates/api/src/control/tun.rs b/crates/api/src/control/tun.rs
-index d13f064..7d87bed 100644
+index a5b93f5..6067601 100644
 --- a/crates/api/src/control/tun.rs
 +++ b/crates/api/src/control/tun.rs
 @@ -60,6 +60,35 @@ impl Control {
@@ -189,7 +189,7 @@ index d13f064..7d87bed 100644
          self.refresh();
          Ok(Empty {})
 diff --git a/crates/api/src/lib.rs b/crates/api/src/lib.rs
-index 2aea5a4..cc77aac 100644
+index 50f678f..e533dbe 100644
 --- a/crates/api/src/lib.rs
 +++ b/crates/api/src/lib.rs
 @@ -2,6 +2,7 @@
@@ -206,8 +206,8 @@ index 2aea5a4..cc77aac 100644
  pub use bus::EventBus;
 +pub use channels::PacketChannels;
  pub use concord_common::Origin;
- pub use concord_common::options::is_tun_stack;
- pub use concord_common::sync;
+ pub use concord_engine::ControllerCors;
+ pub use control::{Control, ControlOptions, ControllerSettings, Reload, valid_status_ranges};
 diff --git a/crates/engine/src/engine/tun.rs b/crates/engine/src/engine/tun.rs
 index f9f31cd..f05dd2a 100644
 --- a/crates/engine/src/engine/tun.rs
@@ -264,10 +264,10 @@ index f9f31cd..f05dd2a 100644
          {
              let mut slot = self.tun.lock().await;
 diff --git a/crates/ffi/src/abi.rs b/crates/ffi/src/abi.rs
-index 06d33c3..4ae4534 100644
+index 6ac9835..cb2ddeb 100644
 --- a/crates/ffi/src/abi.rs
 +++ b/crates/ffi/src/abi.rs
-@@ -82,3 +82,59 @@ pub extern "C" fn concord_adopt_fd(fd: i32) -> u64 {
+@@ -88,3 +88,59 @@ pub extern "C" fn concord_adopt_fd(fd: i32) -> u64 {
      let fd = unsafe { OwnedFd::from_raw_fd(fd) };
      guarded(move || hub().map_or(0, |hub| hub.adopt_fd(fd)))
  }
@@ -328,7 +328,7 @@ index 06d33c3..4ae4534 100644
 +    });
 +}
 diff --git a/crates/ffi/src/hub.rs b/crates/ffi/src/hub.rs
-index 3909abe..fc9a5a2 100644
+index 1add971..b43c611 100644
 --- a/crates/ffi/src/hub.rs
 +++ b/crates/ffi/src/hub.rs
 @@ -126,6 +126,36 @@ impl Hub {

@@ -1,7 +1,7 @@
-From abc210e18c0dbc1bc5cd1e59970392fb1e2f66ed Mon Sep 17 00:00:00 2001
+From 7b9b36c44a103ef20e5b37472f964635078642cf Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Wed, 25 Nov 2026 07:29:10 +0000
-Subject: [PATCH 5/8] ios: enable rquickjs bindgen for iOS
+Date: Fri, 27 Nov 2026 02:07:37 +0000
+Subject: [PATCH 05/10] ios: enable rquickjs bindgen for iOS
 
 ---
  crates/mitm/Cargo.toml | 11 +++++++++++

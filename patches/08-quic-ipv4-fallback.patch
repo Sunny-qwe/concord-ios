@@ -1,7 +1,7 @@
-From 865b58768053c1f471a204ba27491fd3ae582060 Mon Sep 17 00:00:00 2001
+From f29c1e3218ed65377b7d91c3107dbaecc0373571 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Wed, 25 Nov 2026 07:29:10 +0000
-Subject: [PATCH 8/8] dns: try every resolved address for a QUIC upstream
+Date: Fri, 27 Nov 2026 02:07:38 +0000
+Subject: [PATCH 08/10] dns: try every resolved address for a QUIC upstream
 
 ---
  crates/dns/src/dialer.rs | 16 ++++++++--------

@@ -1,7 +1,7 @@
-From e2fb43e0000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 32dbf89fe82264259a5edc500b16cda85d0baf01 Mon Sep 17 00:00:00 2001
 From: rebase <rebase@local>
-Date: Thu, 26 Nov 2026 11:20:02 +0000
-Subject: [PATCH 9/9] platform: read resident memory on iOS via Mach task_info
+Date: Fri, 27 Nov 2026 02:07:38 +0000
+Subject: [PATCH 09/10] platform: read resident memory on iOS via Mach task_info
 
 ---
  crates/platform/src/mem.rs | 23 +++++++++++++++++++++++
@@ -48,3 +48,6 @@ index 14f72b1..7398e2b 100644
      windows
  )))]
  pub fn resident_memory() -> u64 {
+-- 
+2.43.0
+

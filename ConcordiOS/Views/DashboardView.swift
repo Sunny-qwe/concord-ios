@@ -2719,6 +2719,24 @@ private struct DashboardTrafficEffects: View {
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     guard !Task.isCancelled else { break }
+                    // v0.2.150 (power-saving, upstream
+                    // ActivePollingMixin: polls only while foregrounded
+                    // AND page-active): the Dashboard stats row is
+                    // invisible on other tabs, and all four tabs stay
+                    // mounted — without this gate the loop spent 2
+                    // RPCs/s (connection.watch + dns.watch)
+                    // refreshing numbers nobody sees. The 1 s sleep
+                    // keeps running so the loop resumes within 1 s of
+                    // returning; catch-up is covered by
+                    // ConnectionStore.refresh()'s finished-diff +
+                    // ended list. The foreground half reads
+                    // TunnelManager.shared.isAppForeground — a live
+                    // value ContentView maintains from scenePhase —
+                    // NOT a captured scenePhase: a .task closure
+                    // captures the View struct by value at creation,
+                    // so a scenePhase read inside it would stay
+                    // frozen at its launch-time value forever.
+                    guard !trafficStore.liveTickPaused, TunnelManager.shared.isAppForeground else { continue }
                     guard TunnelManager.shared.isRunning || AppCore.shared.isRunning else { continue }
                     // v0.2.129: correct the uptime FIRST. The two
                     // refresh() calls below travel over the
@@ -3495,7 +3513,18 @@ private struct MemoryCardView: View {
                 try? await Task.sleep(for: .seconds(2))
                 // FlClash memory_info.dart pauses card polling while
                 // the detail sheet is open (the sheet reads on its own).
-                if !isDetailOpen {
+                // v0.2.150 (power-saving, upstream ActivePollingMixin):
+                // the card is only visible on the Dashboard tab, and
+                // all four tabs stay mounted — without this gate the
+                // loop spent a Mach read + an HTTP GET /memory every
+                // 2 s refreshing a number nobody sees, on any tab and
+                // while backgrounded. Resumes within 2 s of returning.
+                // Foreground reads TunnelManager.shared.isAppForeground
+                // (live, maintained by ContentView from scenePhase),
+                // not a captured scenePhase — a .task closure captures
+                // the View struct by value, so that would stay frozen
+                // at its launch-time value.
+                if !isDetailOpen && !trafficStore.liveTickPaused && TunnelManager.shared.isAppForeground {
                     await refreshMemorySnapshot()
                 }
             }

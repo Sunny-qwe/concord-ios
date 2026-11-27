@@ -1564,6 +1564,16 @@ final class TrafficStore: ObservableObject {
     /// test_delay / delay.run.poll and is unaffected.
     @MainActor
     func refreshNodeSpeeds() async {
+        // v0.2.150 (power-saving): in live mode the client only talks
+        // to the extension (ExtensionConcordTransport) — with the
+        // tunnel down, connection.watch throws past its 10 s max-age,
+        // so every 1 s tick burned a failed IPC for a map the catch
+        // below keeps unchanged anyway. Skip the call; the Proxies
+        // rows show zero while stopped (SelectedNodeSpeedsView gates
+        // on running), and the split attribution / rule hits only run
+        // on a successful sample, exactly as before. Sample mode keeps
+        // its mock answer.
+        guard client.mode == .sample || TunnelManager.shared.isRunning else { return }
         do {
             let snapshot = try await client.connectionSnapshot()
             let now = Date()

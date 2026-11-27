@@ -1424,12 +1424,6 @@ extension ConcordRouteHit {
 /// The answer to route.check (upstream crates/proto RouteCheckResult).
 /// `held[i]` says route i still leaves where it did; `epoch` and
 /// `version` are the stamp the answers were checked against.
-struct ConcordRouteCheckResult: Codable {
-    let epoch: UInt64
-    let version: UInt64
-    let held: [Bool]
-}
-
 struct ConcordServiceItem: Codable, Identifiable {
     var id: String { name }
     let name: String
@@ -1521,12 +1515,6 @@ struct ConcordDecodedLinks: Codable {
 /// serializes it (serde `default`, no skip), and a `let` with a
 /// default is excluded from the memberwise initializer on this
 /// toolchain (see run #69).
-struct ConcordRouteStamp: Codable {
-    let epoch: UInt64
-    let version: UInt64
-    let running: Bool
-}
-
 /// One core event (events.watch). A `oneOf` in the schema — decoded
 /// here as one struct with the fields of every variant; only the
 /// fields of the event's `type` are set.
@@ -2293,17 +2281,6 @@ final class ConcordClient: ObservableObject {
         return try await call(method: "validate.filters", params: ValidateFiltersParams(filters: filters), resultType: ConcordIssueList.self).issues
     }
 
-    /// Re-validates previously probed routes (route.check). Each route
-    /// is one probe answer's hits (see ConcordRouteHit); `held[i]`
-    /// says route i still leaves where it did, against the returned
-    /// epoch/version stamp. A route.check is not a URL tester — the
-    /// hits must come from an earlier probe (probe.services /
-    /// probe.outboundIp record them).
-    func routeCheck(routes: [[ConcordRouteHit]]) async throws -> ConcordRouteCheckResult {
-        struct RouteCheckParams: Encodable { let routes: [[ConcordRouteHit]] }
-        return try await call(method: "route.check", params: RouteCheckParams(routes: routes), resultType: ConcordRouteCheckResult.self)
-    }
-
     /// Raises the MITM memory-pressure level (core.setPressure).
     /// Levels are 0 (none) … 3 (relay); the core clamps to 0…3 and
     /// only ever raises — the level lifts itself after a hold
@@ -2535,12 +2512,6 @@ final class ConcordClient: ObservableObject {
     // MARK: Route / events / engine streams (batch 2)
     // Like the other streams these read the snapshot files the
     // extension writes (route.json / events.json / engine.json).
-
-    /// The latest routing stamp (route.watch). Latest-policy: the
-    /// extension rewrites the file only when the stamp moves.
-    func routeSnapshot() async throws -> ConcordRouteStamp {
-        try await call(method: "route.watch", resultType: ConcordRouteStamp.self)
-    }
 
     /// The buffered core events (events.watch). The extension
     /// accumulates events into the snapshot file (cap 500) because

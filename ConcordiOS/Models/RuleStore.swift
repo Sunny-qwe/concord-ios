@@ -24,17 +24,9 @@ final class RuleStore: ObservableObject {
     /// check, plus a one-line summary for the Rules page.
     @Published var filterIssues: [ConcordIssue] = []
     @Published var filterCheckMessage: String?
-    /// Route re-check (route.check): the last answer, the service name
-    /// of each route (aligned with `held`), and a summary line.
-    @Published var routeCheckResult: ConcordRouteCheckResult?
-    @Published var routeCheckLabels: [String] = []
-    @Published var routeCheckMessage: String?
     /// One provider's full detail (provider.get), incl.
     /// `subscriptionInfo` when it is a subscription.
     @Published var providerDetail: ConcordProviderInfo?
-    /// The latest routing stamp (route.watch).
-    @Published var routeStamp: ConcordRouteStamp?
-    @Published var routeStampMessage: String?
 
     let client: ConcordClient
 
@@ -150,32 +142,6 @@ final class RuleStore: ObservableObject {
         }
     }
 
-    /// Re-validates probed routes (route.check). Each route is one
-    /// probe answer's hits — `labels[i]` names the route (a service
-    /// name) and `held[i]` says whether it still leaves where it did,
-    /// against the returned epoch/version stamp. A route.check is not
-    /// a URL tester: the hits must come from an earlier probe, so the
-    /// caller passes the services probe.services just returned.
-    @MainActor
-    func routeCheck(routes: [[ConcordRouteHit]], labels: [String]) async {
-        guard !routes.isEmpty else {
-            routeCheckMessage = "暂无可复核的路由：先在仪表盘运行服务检测（probe.services），探测会记录路由命中"
-            return
-        }
-        do {
-            routeCheckResult = try await client.routeCheck(routes: routes)
-            routeCheckLabels = labels
-            if let result = routeCheckResult {
-                let held = result.held.filter { $0 }.count
-                routeCheckMessage = "已复核 \(result.held.count) 条路由：\(held) 条仍有效，\(result.held.count - held) 条已变化（epoch \(result.epoch) / version \(result.version)）"
-            }
-            lastError = nil
-        } catch {
-            routeCheckMessage = nil
-            lastError = error.localizedDescription
-        }
-    }
-
     /// Fetches one provider's full detail (provider.get). Unlike
     /// provider.list, the result carries `subscriptionInfo` when the
     /// provider is a subscription.
@@ -226,21 +192,6 @@ final class RuleStore: ObservableObject {
             lastError = nil
         } catch {
             lastError = error.localizedDescription
-        }
-    }
-
-    /// Reads the latest routing stamp (route.watch). Latest-policy:
-    /// the extension rewrites the snapshot only when the stamp
-    /// moves, so any file is the last known stamp.
-    @MainActor
-    func refreshRouteStamp() async {
-        do {
-            routeStamp = try await client.routeSnapshot()
-            routeStampMessage = nil
-            lastError = nil
-        } catch {
-            routeStamp = nil
-            routeStampMessage = "读取路由状态失败：\(error.localizedDescription)"
         }
     }
 }

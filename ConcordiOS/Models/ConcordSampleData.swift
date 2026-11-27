@@ -35,8 +35,6 @@ enum ConcordSampleData {
             result = AnyEncodable(ConcordIssueList(issues: []))
         case "validate.filters":
             result = AnyEncodable(ConcordIssueList(issues: []))
-        case "route.check":
-            result = AnyEncodable(ConcordRouteCheckResult(epoch: 1, version: 1, held: [true]))
         case "config.decrypt":
             result = AnyEncodable(ConcordTextResult(
                 text: "# 示例解密配置（config.decrypt）\nmode: rule\nproxies: []\nproxy-groups: []\nrules: []\n",
@@ -167,8 +165,6 @@ enum ConcordSampleData {
                 subscriptionInfo: ConcordSubscriptionInfo(upload: 123_456_789, download: 9_876_543_210, total: 107_374_182_400, expire: 1796064000)))
         case "provider.sideLoad", "provider.healthCheck", "network.update":
             result = AnyEncodable(EmptyResultJSON())
-        case "route.watch":
-            result = AnyEncodable(ConcordRouteStamp(epoch: 5, version: 2, running: true))
         case "events.watch":
             result = AnyEncodable(ConcordEventSnapshot(entries: [
                 ConcordCoreEvent(type: "resourceUpdate", kind: "proxyProvider", name: "airport", phase: "updated", error: nil, url: nil, value: nil, message: nil, seq: nil, origin: nil, change: nil),

@@ -8,17 +8,7 @@ import SwiftUI
 
 struct RulesView: View {
     @EnvironmentObject private var ruleStore: RuleStore
-    @EnvironmentObject private var trafficStore: TrafficStore
-    @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var client: ConcordClient
-    /// Filter expressions to validate, one per line (validate.filters).
-    @State private var filterText = ""
-    @State private var filterExtractMessage: String?
-    /// Rule-set dump page (upstream EditorPage, providers.dart:
-    /// 226-243) — local state fed from the store once the async
-    /// dump lands, then the store values are cleared so a later
-    /// EditProviderView dump cannot re-trip this page.
-    @State private var dumpDestination: RuleSetDumpDestination?
     /// Provider-detail page (upstream EditorPage) — local state,
     /// not the shared ruleStore.providerDetail (same P2
     /// cross-trigger as ProvidersView: EditProviderView's detail
@@ -28,19 +18,6 @@ struct RulesView: View {
     /// so the item form cannot be used.
     @State private var detailProvider: ConcordProviderInfo?
     @State private var showDetailPage = false
-
-    /// The non-empty filter lines from the editor.
-    private var filterLines: [String] {
-        filterText.split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
-
-    /// Services whose last probe.services answer recorded route hits
-    /// (route.check re-validates those hits).
-    private var routedServices: [ConcordServiceItem] {
-        trafficStore.services.filter { !($0.hits ?? []).isEmpty }
-    }
 
     var body: some View {
         // No NavigationStack here on purpose: this page is pushed
@@ -66,11 +43,11 @@ struct RulesView: View {
                         ForEach(ruleStore.ruleProviders) { provider in
                             Button {
                                 Task {
-                                    await ruleStore.dumpRuleSet(provider)
-                                    if let name = ruleStore.dumpedRuleSetName {
-                                        dumpDestination = RuleSetDumpDestination(name: name, text: ruleStore.dumpedRuleSetText ?? "")
-                                        ruleStore.dumpedRuleSetName = nil
-                                        ruleStore.dumpedRuleSetText = nil
+                                    await ruleStore.loadProviderDetail(provider)
+                                    if let detail = ruleStore.providerDetail {
+                                        detailProvider = detail
+                                        ruleStore.providerDetail = nil
+                                        showDetailPage = true
                                     }
                                 }
                             } label: {
@@ -120,121 +97,6 @@ struct RulesView: View {
                     }
                 }
 
-                Section("过滤表达式校验（validate.filters）") {
-                    TextEditor(text: $filterText)
-                        .frame(minHeight: 64)
-                        .font(.system(.caption, design: .monospaced))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .scrollContentBackground(.hidden)
-                        .padding(8)
-                        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
-                    Text("每行一条过滤表达式：代理组 filter: 用的反引号分隔正则列表，例如 (?i)港|hk 或 hk`jp。空行会被忽略。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    HStack {
-                        Button("从当前配置提取") {
-                            Task {
-                                switch await profileStore.extractActiveProfileFilters() {
-                                case .success(let pairs):
-                                    if pairs.isEmpty {
-                                        filterExtractMessage = "当前配置里没有带 filter 的代理组"
-                                    } else {
-                                        filterText = pairs.map { $0.filter }.joined(separator: "\n")
-                                        filterExtractMessage = "已提取 \(pairs.count) 条（组：\(pairs.map { $0.group }.joined(separator: "、"))）"
-                                    }
-                                case .failure(let error):
-                                    filterExtractMessage = "提取失败：\(error.localizedDescription)"
-                                }
-                            }
-                        }
-                        Button("校验") {
-                            Task { await ruleStore.validateFilters(filterLines) }
-                        }
-                        .disabled(filterLines.isEmpty)
-                    }
-                    if let message = filterExtractMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    if let message = ruleStore.filterCheckMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    if !ruleStore.filterIssues.isEmpty {
-                        ForEach(ruleStore.filterIssues, id: \.message) { issue in
-                            Text("第 \(issue.index.map { "\($0 + 1)" } ?? "？") 条：\(issue.message)")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                }
-
-                Section("路由复核（route.check）") {
-                    if routedServices.isEmpty {
-                        Text("暂无可复核的路由：先在仪表盘运行服务检测（probe.services），探测会记录路由命中；之后回来点「重新验证」。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(routedServices) { service in
-                            HStack {
-                                Text(service.name)
-                                Spacer()
-                                Text("\(service.hits?.count ?? 0) 条命中")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        Button("重新验证这些路由") {
-                            Task {
-                                await ruleStore.routeCheck(
-                                    routes: routedServices.map { $0.hits ?? [] },
-                                    labels: routedServices.map { $0.name })
-                            }
-                        }
-                    }
-                    if let result = ruleStore.routeCheckResult {
-                        ForEach(Array(zip(ruleStore.routeCheckLabels, result.held).enumerated()), id: \.offset) { item in
-                            let (label, held) = item.element
-                            HStack {
-                                Text(label)
-                                Spacer()
-                                Text(held ? "仍有效" : "已变化")
-                                    .font(.caption2)
-                                    .foregroundStyle(held ? .green : .orange)
-                            }
-                        }
-                        Text("epoch \(result.epoch) / version \(result.version)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let message = ruleStore.routeCheckMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Text("route.check 不是测网址的工具：它复核的是上一次探测记录的路由命中（host → 代理 → 出口），看配置变化后这些路由是否还走原来的出口。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("路由状态（route.watch）") {
-                    if let stamp = ruleStore.routeStamp {
-                        LabeledContent("epoch", value: "\(stamp.epoch)")
-                        LabeledContent("version", value: "\(stamp.version)")
-                        LabeledContent("监听器", value: stamp.running ? "运行中" : "未运行")
-                    } else {
-                        Text("尚未读取路由状态")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Button("刷新路由状态") {
-                        Task { await ruleStore.refreshRouteStamp() }
-                    }
-                    if let message = ruleStore.routeStampMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Text("路由表每次变化时 epoch / version 都会推进；监听器状态表示路由监听是否在运行。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
                 Section("生效规则（rule.list，按匹配顺序）") {
                     Picker("类型", selection: $ruleStore.typeFilter) {
                         ForEach(ruleStore.ruleTypes, id: \.self) { type in
@@ -273,17 +135,6 @@ struct RulesView: View {
                         }
                     }
                 }
-
-                Section {
-                    if let updated = ruleStore.lastUpdated {
-                        Text("上次更新：\(updated.formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let error = ruleStore.lastError {
-                        Text(error).font(.caption2).foregroundStyle(.red)
-                    }
-                }
             }
         // v0.2.66: tab-bar clearance for pushed pages
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
@@ -304,16 +155,6 @@ struct RulesView: View {
             .refreshable { await ruleStore.refresh() }
             .task {
                 if ruleStore.rules.isEmpty { await ruleStore.refresh() }
-                await ruleStore.refreshRouteStamp()
-            }
-            // Rule-set dump and provider detail are pushed pages
-            // (upstream EditorPage), not sheets — nothing here
-            // observes the shared store values for presentation any
-            // more, so another view's dump/detail load cannot
-            // present anything on this page.
-            .navigationDestination(item: $dumpDestination) { destination in
-                RuleSetDumpView(name: destination.name, text: destination.text)
-                    .concordNavBarBackground()
             }
             .navigationDestination(isPresented: $showDetailPage) {
                 if let detail = detailProvider {
@@ -324,43 +165,12 @@ struct RulesView: View {
     }
 }
 
-/// One dumped rule set, as a page-push destination.
-private struct RuleSetDumpDestination: Identifiable, Hashable {
-    let name: String
-    let text: String
-    var id: String { name }
-}
-
-// Dumped rules of one rule-set provider (ruleSet.dump). A pushed
-// page (upstream EditorPage) — no own NavigationStack, no 完成
-// button; the stack's back button dismisses it.
-struct RuleSetDumpView: View {
-    let name: String
-    let text: String
-
-    var body: some View {
-        ScrollView {
-            Text(text.isEmpty ? "该规则集没有可显示的规则" : text)
-                .font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding()
-        }
-        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .background(ConcordTheme.pageBackground)
-        .navigationTitle(name)
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
 // One provider's full detail (provider.get). Unlike provider.list,
 // the result carries `subscriptionInfo` when the provider is a
 // subscription. A pushed page (upstream EditorPage) — no own
 // NavigationStack, no 完成 button.
 struct ProviderDetailView: View {
     let provider: ConcordProviderInfo
-    @EnvironmentObject private var ruleStore: RuleStore
 
     var body: some View {
         List {
@@ -383,14 +193,6 @@ struct ProviderDetailView: View {
             }
             if let format = provider.format {
                 LabeledContent("格式", value: format)
-            }
-            if let subscription = provider.subscriptionInfo {
-                Section("订阅流量") {
-                    LabeledContent("已上传", value: ByteCountFormatter.string(fromByteCount: subscription.upload, countStyle: .file))
-                    LabeledContent("已下载", value: ByteCountFormatter.string(fromByteCount: subscription.download, countStyle: .file))
-                    LabeledContent("总量", value: ByteCountFormatter.string(fromByteCount: subscription.total, countStyle: .file))
-                    LabeledContent("到期", value: Date(timeIntervalSince1970: TimeInterval(subscription.expire)).formatted(date: .abbreviated, time: .shortened))
-                }
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.

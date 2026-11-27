@@ -2,14 +2,15 @@ import SwiftUI
 import UIKit
 
 // MARK: - MITM capture (FlClash: MITM requests page)
-// Two real functions, both backed by ConcordClient:
-//   * run a named MITM script (mitm.runScript) and show its result;
-//   * list the captured exchanges of one connection (mitm.exchanges),
-//     open one (mitm.exchange) and read its request/response body
-//     (mitm.body).
-// There is no list-scripts API, so the script name is typed in. The
-// connection id comes from the Connections page (tap a connection ->
-// "MITM 拦截记录") or is typed in here.
+// One connection's captured exchanges (upstream
+// lib/features/connection/mitm_exchanges.dart MitmExchangesView):
+// the page is pushed from a connection, never opened standalone.
+// Rows show path + query only (upstream `exchangePathOf`); tapping
+// one opens the detail (mitm.exchange) and reads its request /
+// response body (mitm.body). The cross-connection search below is
+// mitm.query (upstream RequestsView's http segment). Scripts run
+// only from a module's script lines — there is no run-script box
+// here (upstream mitm_modules.dart:42-56).
 // The exchange context menu (copy / export / add-rule) is
 // MitmExchangeMenuButtons at the bottom of this file (upstream
 // lib/features/connection/mitm_exchange_menu.dart).
@@ -39,19 +40,14 @@ struct MitmView: View {
     /// share, add-rule editor) — one model for this page's rows.
     @StateObject private var menuModel = MitmExchangeMenuModel()
 
-    let initialConnectionId: UInt64?
-    @State private var connectionIdText: String
+    /// The one connection this page shows (upstream
+    /// MitmExchangesView(trackerInfo)). The page is pushed from a
+    /// connection; there is no standalone entry point.
+    let connectionId: UInt64
     @State private var detailSummary: MitmExchangeSummary?
-    /// Live all-connections feed (audit B45): merged exchanges from
-    /// every live connection, polled while this page is visible.
-    @State private var allExchanges: [MitmExchangeSummary] = []
-    /// nil = no live connections yet (unknown); false = capture off.
-    @State private var allCapturing: Bool?
-    @State private var liveListError: String?
 
-    init(initialConnectionId: UInt64? = nil) {
-        self.initialConnectionId = initialConnectionId
-        _connectionIdText = State(initialValue: initialConnectionId.map(String.init) ?? "")
+    init(connectionId: UInt64) {
+        self.connectionId = connectionId
     }
 
     var body: some View {
@@ -64,26 +60,6 @@ struct MitmView: View {
                         .foregroundStyle(.secondary)
                 }
                 .listRowBackground(Color.clear)
-            }
-
-            Section("运行脚本（mitm.runScript）") {
-                TextField("脚本名", text: $mitmStore.scriptName)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button("运行脚本") {
-                    Task { await mitmStore.runScript() }
-                }
-                .disabled(mitmStore.isRunningScript || mitmStore.scriptName.trimmingCharacters(in: .whitespaces).isEmpty)
-                if let message = mitmStore.scriptMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
-                }
-                if let result = mitmStore.scriptResult {
-                    JSONValueView(value: result)
-                        .frame(minHeight: 60)
-                }
-                Text("脚本是核心里的 MITM 脚本（按名字运行）。没有列出脚本的接口，名字就是脚本文件名。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
 
             // Cross-connection search (mitm.query, upstream
@@ -137,56 +113,10 @@ struct MitmView: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Live all-connections list (audit B45): FlClash's MITM
-            // page lists the captured requests live. mitm.exchanges
-            // is per connection, so this polls connection.watch and
-            // merges every live connection's exchanges (newest
-            // first), 1 s while the page is visible.
-            if initialConnectionId == nil {
-                Section("实时拦截（全部连接）") {
-                    if allCapturing == false {
-                        captureOffBanner
-                    }
-                    if allCapturing == true {
-                        Text("正在捕获 · \(allExchanges.count) 条")
-                            .font(.caption2)
-                            .foregroundStyle(.green)
-                    }
-                    if let liveListError {
-                        Text(liveListError)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if allExchanges.isEmpty && allCapturing == true {
-                        Text(captureHasNoHost
-                             ? "在“主机名”中添加主机后才会记录。"
-                             : "正在捕获，暂无拦截记录：产生 HTTPS 流量后会出现在这里。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(allExchanges) { exchange in
-                        Button { detailSummary = exchange } label: {
-                            exchangeRow(exchange)
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            MitmExchangeMenuButtons(summary: exchange, model: menuModel)
-                        }
-                    }
-                }
-            }
-
-            Section("拦截记录（mitm.exchanges）") {
-                HStack {
-                    TextField("连接 ID", text: $connectionIdText)
-                        .keyboardType(.numberPad)
-                    Button("加载") {
-                        if let id = UInt64(connectionIdText) {
-                            Task { await mitmStore.loadExchanges(connection: id) }
-                        }
-                    }
-                    .disabled(UInt64(connectionIdText) == nil)
-                }
+            // This connection's exchanges (upstream MitmExchangesView):
+            // one connection at a time, newest first — no
+            // all-connections feed, no connection-id field.
+            Section {
                 if mitmStore.isLoadingExchanges {
                     ProgressView()
                 }
@@ -197,13 +127,6 @@ struct MitmView: View {
                 }
                 if let message = mitmStore.exchangesMessage {
                     Text(message).font(.caption2).foregroundStyle(.secondary)
-                }
-                // Upstream `missing`: this connection began before
-                // capture started, so requests from before `since`
-                // are not in this list (see MitmStore).
-                if mitmStore.exchangesMissingNotice {
-                    Text("抓包开启前发出或已被清除的请求不在列表中。")
-                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 // Capture off (audit B46): the switch lives on the
                 // settings page — offer it right here instead of a
@@ -220,6 +143,14 @@ struct MitmView: View {
                         MitmExchangeMenuButtons(summary: exchange, model: menuModel)
                     }
                 }
+            } footer: {
+                // Upstream `missing`: this connection began before
+                // capture started, so requests from before `since`
+                // are not in this list (see MitmStore).
+                if mitmStore.exchangesMissingNotice {
+                    Text("抓包开启前发出或已被清除的请求不在列表中。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
@@ -233,10 +164,9 @@ struct MitmView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { Task { if let id = UInt64(connectionIdText) { await mitmStore.loadExchanges(connection: id) } } } label: {
+                Button { Task { await mitmStore.loadExchanges(connection: connectionId) } } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .disabled(UInt64(connectionIdText) == nil)
             }
         }
         .sheet(item: $detailSummary) { summary in
@@ -248,34 +178,16 @@ struct MitmView: View {
                 .presentationDragIndicator(.visible)
         }
         .task {
-            if let id = initialConnectionId {
-                await mitmStore.loadExchanges(connection: id)
-            } else {
-                // Live all-connections feed: poll every 1 s while
-                // this page is visible; the task is cancelled when
-                // the page disappears.
-                await pollAllExchanges()
-                while !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    guard !Task.isCancelled else { break }
-                    await pollAllExchanges()
-                }
+            await mitmStore.loadExchanges(connection: connectionId)
+            // Upstream mitmExchangesProvider: re-fetch every 2 s
+            // until the connection closed and nothing is pending;
+            // the task is cancelled when the page disappears.
+            while !Task.isCancelled && !mitmStore.exchangesSettled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, !mitmStore.exchangesSettled else { break }
+                await mitmStore.loadExchanges(connection: connectionId, quiet: true)
             }
         }
-    }
-
-    /// Upstream httpCaptureHasNoHost (http_capture.dart:11):
-    /// capture records nothing when no module is enabled AND
-    /// every hostname is "-" prefixed (or there are none — an
-    /// empty list satisfies `every` upstream too). Shown as the
-    /// live list's empty description (requests.dart:782-789).
-    private var captureHasNoHost: Bool {
-        guard !moduleStore.modules.contains(where: \.enabled) else { return false }
-        let hostnames = settingsStore.mitmHostnames
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        return hostnames.allSatisfy { $0.hasPrefix("-") }
     }
 
     /// The capture switch lives in the MITM options page
@@ -296,102 +208,83 @@ struct MitmView: View {
         }
     }
 
-    /// One exchange row, shared by the live list and the
-    /// per-connection list.
+    /// One captured exchange (upstream MitmExchangesView's
+    /// _MitmExchangeItem): the title is path + query only
+    /// (`exchangePathOf`); the subtitle is the method plus the
+    /// outcome — status (red ≥400, green 2xx), error, pending, or
+    /// response size + duration + rewrite mark. No time column.
     private func exchangeRow(_ exchange: MitmExchangeSummary) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text(ConcordFormat.time(rfc3339: exchange.start))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .frame(width: 64, alignment: .leading)
+        HStack {
             VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(exchange.method)
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.blue.opacity(0.12), in: Capsule())
-                    Text(exchange.url)
-                        .font(.footnote)
-                        .lineLimit(1)
-                    Spacer()
-                    if exchange.pending ?? false {
-                        Text("进行中").font(.caption2).foregroundStyle(.orange)
-                    } else {
-                        Text("\(exchange.status)")
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(exchange.status >= 400 ? .red : .green)
-                    }
-                }
-                Text("↑ \(ConcordFormat.bytes(exchange.requestSize)) · ↓ \(ConcordFormat.bytes(exchange.responseSize)) · \(exchange.duration) ms\(exchangeRowMeta(exchange))")
+                Text(exchangePathOf(exchange.url))
+                    .font(.footnote)
+                    .lineLimit(1)
+                exchangeSubtitle(exchange)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                if let error = exchange.error, !error.isEmpty {
-                    Text(error).font(.caption2).foregroundStyle(.red)
-                }
+                    .lineLimit(1)
             }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.tertiary)
         }
     }
 
-    /// Kind + app for an exchange row (upstream 0c9788f
-    /// MitmExchangeSummary): the response kind and the process
-    /// behind the connection, when the core reports them.
-    private func exchangeRowMeta(_ exchange: MitmExchangeSummary) -> String {
-        var parts: [String] = []
-        if let kind = exchange.kind, !kind.isEmpty { parts.append(kind) }
-        if let app = exchange.app?.process, !app.isEmpty { parts.append(app) }
-        if exchange.rewritten == true { parts.append("已改写") }
-        return parts.isEmpty ? "" : " · " + parts.joined(separator: " · ")
+    /// The subtitle of one exchange row: method, then the outcome
+    /// parts upstream joins with " · ".
+    private func exchangeSubtitle(_ exchange: MitmExchangeSummary) -> Text {
+        var text = Text(exchange.method)
+        if exchange.status != 0 {
+            text = text + Text(" · ") + Text("\(exchange.status)")
+                .foregroundStyle(exchange.status >= 400 ? .red : (exchange.status >= 200 && exchange.status < 300 ? .green : .secondary))
+        }
+        if let error = exchange.error, !error.isEmpty {
+            text = text + Text(" · ") + Text(error).foregroundStyle(.red)
+        } else if exchange.pending ?? false {
+            text = text + Text(" · ") + Text("进行中")
+        } else {
+            text = text + Text(" · ↓ \(ConcordFormat.bytes(exchange.responseSize))")
+            text = text + Text(" · \(httpMillisText(exchange.duration))")
+            if let mark = exchangeMark(exchange) {
+                text = text + Text(" · \(mark)")
+            }
+        }
+        return text
     }
 
-    /// Merges every live connection's exchanges into allExchanges.
-    /// mitm.exchanges is per connection and the core only captures
-    /// while options.mitmCapture is on, so `capturing` is true when
-    /// any connection reports it. Capped at 20 connections per
-    /// poll; the calls run concurrently.
-    private func pollAllExchanges() async {
-        guard client.mode == .sample || TunnelManager.shared.isRunning else {
-            liveListError = "VPN 未运行：启动 VPN 后这里会实时列出解密的请求"
-            return
-        }
-        do {
-            let snapshot = try await client.connectionSnapshot()
-            let ids = Array(snapshot.connections.prefix(20).map(\.id))
-            guard !ids.isEmpty else {
-                allCapturing = nil
-                allExchanges = []
-                liveListError = nil
-                return
-            }
-            var capturing = false
-            var merged: [Int64: MitmExchangeSummary] = [:]
-            let client = self.client
-            await withTaskGroup(of: MitmExchangeList?.self) { group in
-                for id in ids {
-                    group.addTask {
-                        do {
-                            return try await client.mitmExchanges(connection: id).result
-                        } catch {
-                            return nil
-                        }
-                    }
+    /// The rewrite mark upstream appends to a finished exchange
+    /// (`exchangeMark`): the answer label, or the first action kind's
+    /// label, plus how many other actions there are.
+    private func exchangeMark(_ exchange: MitmExchangeSummary) -> String? {
+        if let answer = exchange.answer {
+            let answerKind: String = {
+                switch answer {
+                case .reject, .redirect: return "url-rewrite"
+                case .mapLocal: return "map-local"
+                case .script: return "script"
                 }
-                for await list in group {
-                    guard let list else { continue }
-                    if list.capturing { capturing = true }
-                    for exchange in list.exchanges {
-                        merged[exchange.exchangeId] = exchange
-                    }
-                }
-            }
-            allCapturing = capturing
-            allExchanges = merged.values.sorted { $0.start > $1.start }
-            liveListError = nil
-        } catch {
-            liveListError = "读取拦截记录失败：\(error.localizedDescription)"
+            }()
+            let others = (exchange.actionKinds ?? []).filter { $0 != answerKind }.count
+            return others > 0 ? "\(answer.label) +\(others)" : answer.label
         }
+        guard let kinds = exchange.actionKinds, !kinds.isEmpty else { return nil }
+        let label = MitmExchangeAction.kindLabel(for: kinds[0])
+        return kinds.count > 1 ? "\(label) +\(kinds.count - 1)" : label
+    }
+
+    /// The row title: path + query only (upstream `exchangePathOf`).
+    /// No authority → the whole URL.
+    private func exchangePathOf(_ url: String) -> String {
+        guard let parsed = URL(string: url), parsed.host != nil else { return url }
+        let path = parsed.path.isEmpty ? "/" : parsed.path
+        if let query = parsed.query { return "\(path)?\(query)" }
+        return path
+    }
+
+    /// The duration as upstream shows it (`httpMillisText`).
+    private func httpMillisText(_ millis: Int64) -> String {
+        millis < 1000 ? "\(millis) ms" : String(format: "%.1f s", Double(millis) / 1000)
     }
 }
 
@@ -587,6 +480,13 @@ struct MitmExchangeDetailView: View {
             }
             .task {
                 await mitmStore.loadExchangeDetail(summary)
+                // Upstream mitmExchange provider: re-fetch every 2 s
+                // while the exchange is still pending.
+                while !Task.isCancelled, mitmStore.exchangeDetailTyped?.pending == true {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    guard !Task.isCancelled else { break }
+                    await mitmStore.loadExchangeDetail(summary)
+                }
             }
             .mitmExchangeMenuOverlays(menuModel, moduleStore: moduleStore)
         }

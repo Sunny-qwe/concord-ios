@@ -964,7 +964,7 @@ struct ConnectionDetailView: View {
                 .padding(.horizontal)
                 .padding(.vertical, 4)
                 if tab == .http && showHttpTab {
-                    MitmView(initialConnectionId: connection.id)
+                    MitmView(connectionId: connection.id)
                 } else if tab == .timeline {
                     ConnectionTimelineView(
                         connection: connection,
@@ -1196,7 +1196,7 @@ struct ConnectionDetailView: View {
                     }
                 }
                 NavigationLink("MITM 拦截记录（mitm.exchanges）") {
-                    MitmView(initialConnectionId: connection.id)
+                    MitmView(connectionId: connection.id)
                 }
                 Text("断开调用 connection.close；拦截记录调用 mitm.exchanges，需要 MITM 已开启并正在捕获。")
                     .font(.caption2)

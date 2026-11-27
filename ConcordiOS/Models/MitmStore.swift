@@ -2,27 +2,35 @@ import Foundation
 import Combine
 
 // MARK: - MITM capture store (FlClash: MITM requests page)
-// Backed by Concord mitm.runScript / mitm.exchanges / mitm.exchange /
-// mitm.body (upstream crates/mitm/src/capture.rs). The exchange list
-// is per connection: mitm.exchanges takes a connection id from
+// Backed by Concord mitm.exchanges / mitm.exchange / mitm.body
+// (upstream crates/mitm/src/capture.rs). The exchange list is per
+// connection: mitm.exchanges takes a connection id from
 // connection.watch and returns {capturing, since, exchanges: [...]}.
-// A script run takes a script name (there is no list-scripts API) and
-// returns open JSON.
+// Scripts run only from a module's script lines (upstream
+// mitm_modules.dart:42-56) — there is no run-script box here any
+// more (v0.2.143: the capture page's box is gone; module lines run
+// via MitmModulesView, which calls client.mitmRunScript directly).
 //
 // In `.sample` mode the client answers from the built-in sample
 // exchanges; the view labels them as sample data, as everywhere else.
 
 final class MitmStore: ObservableObject {
-    @Published var scriptName = ""
-    @Published var scriptResult: JSONValue?
-    @Published var scriptMessage: String?
-    @Published var isRunningScript = false
-
     @Published var connectionId: UInt64?
     @Published var capturing = false
     @Published var exchanges: [MitmExchangeSummary] = []
     @Published var isLoadingExchanges = false
     @Published var exchangesMessage: String?
+    /// The connection had closed when its list was taken, so the
+    /// list is whole (upstream 646f8c9 MitmExchangeList.closed).
+    /// The view's 2 s refresh stops once this is true and no
+    /// exchange is still pending (upstream mitmExchangesProvider).
+    @Published var exchangesClosed = false
+
+    /// The list is settled (whole) once the connection closed and
+    /// nothing is still pending — the view stops refreshing then.
+    var exchangesSettled: Bool {
+        exchangesClosed && !exchanges.contains { $0.pending ?? false }
+    }
 
     @Published var selectedExchange: MitmExchangeSummary?
     @Published var exchangeDetail: JSONValue?
@@ -78,27 +86,6 @@ final class MitmStore: ObservableObject {
         self.client = client
     }
 
-    /// Runs one named MITM script (mitm.runScript) and keeps its open
-    /// JSON result for display.
-    @MainActor
-    func runScript() async {
-        let name = scriptName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else {
-            scriptMessage = "请输入脚本名"
-            return
-        }
-        isRunningScript = true
-        defer { isRunningScript = false }
-        do {
-            let output = try await client.mitmRunScript(name: name).result
-            scriptResult = ConcordSampleData.jsonValue(output)
-            scriptMessage = "脚本 \(name) 已运行"
-        } catch {
-            scriptResult = nil
-            scriptMessage = "运行失败：\(error.localizedDescription)"
-        }
-    }
-
     /// Runs a cross-connection capture query (mitm.query). An empty
     /// search text matches everything. `loadMore: true` pages with
     /// the last answer's `next` cursor and appends; otherwise the
@@ -147,15 +134,18 @@ final class MitmStore: ObservableObject {
     }
 
     /// Loads the captured exchanges of one connection (mitm.exchanges).
+    /// `quiet` skips the loading spinner: the view's 2 s refresh uses
+    /// it so the list does not flash a spinner on every poll.
     @MainActor
-    func loadExchanges(connection: UInt64) async {
+    func loadExchanges(connection: UInt64, quiet: Bool = false) async {
         connectionId = connection
-        isLoadingExchanges = true
-        defer { isLoadingExchanges = false }
+        if !quiet { isLoadingExchanges = true }
+        defer { if !quiet { isLoadingExchanges = false } }
         do {
             let list = try await client.mitmExchanges(connection: connection).result
             capturing = list.capturing
             exchanges = list.exchanges
+            exchangesClosed = list.closed ?? false
             exchangesSince = list.since
             exchangesMessage = list.exchanges.isEmpty
                 ? (list.capturing ? "正在捕获，暂无拦截记录" : "MITM 捕获未开启（config.apply 的 options.mitmCapture）")
@@ -173,6 +163,7 @@ final class MitmStore: ObservableObject {
             }
         } catch {
             exchanges = []
+            exchangesClosed = false
             exchangesMessage = "读取拦截记录失败：\(error.localizedDescription)"
         }
     }

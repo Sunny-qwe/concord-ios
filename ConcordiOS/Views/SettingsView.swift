@@ -24,9 +24,11 @@ struct SettingsView: View {
     /// of on every body evaluation.
     @State private var hostsSummaryCache: String = Self.readHostsSummary()
     // FlClash general/port_form.dart: HTTP / redir / tproxy ports
-    // (0 = disabled, otherwise 1024–49151, no conflicts). These
-    // live in @AppStorage until the SettingsStore owner wires them
-    // into general.json / mitm.json (see the v0.2.32 handoff).
+    // (0 = disabled, otherwise 1024–49151, no conflicts).
+    // SettingsStore writes them into the shared general-overlay.json
+    // (RawConfig kebab-case keys, as FlClash writes rawConfig) and
+    // PacketTunnelProvider.buildApplyOverlay merges every key into
+    // every config.apply overlay — boot and live re-apply (C1-c5).
     @AppStorage("ConcordiOS.httpPort") private var httpPort = 0
     @AppStorage("ConcordiOS.redirPort") private var redirPort = 0
     @AppStorage("ConcordiOS.tproxyPort") private var tproxyPort = 0
@@ -1067,7 +1069,7 @@ struct ResourcesView: View {
                 Button("更新 GeoSite（GEOSITE）") {
                     Task { await ruleStore.geoUpdate(kind: "GEOSITE") }
                 }
-                Text("concord 的 geo.update 只支持 MMDB、ASN、GEOSITE 三种，没有 GEOIP。更新在后台进行，完成后文件会出现在容器里。")
+                Text("concord 的 geo.update 支持 MMDB、ASN、GEOSITE 三种（上游 FlClash 的 GeoResource 也是这三种）。更新在后台进行，完成后文件会出现在容器里。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Text("自定义下载地址：下面填的地址会作为 geox-url 发给核心（VPN 运行时立即生效，下次启动 VPN 时也生效）；留空或填错为默认地址。")

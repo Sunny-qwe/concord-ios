@@ -44,6 +44,11 @@ struct MitmModule: Codable, Equatable, Hashable, Identifiable {
     var arguments: [String: String]
     var resources: [String: String]
     var system: String?
+    /// How many scripts this module declares, judged at save time
+    /// (upstream `_withContent` records this on every save, from
+    /// the core's readMitmModule). The consent gate reads this
+    /// stored count instead of re-parsing the file (audit B42).
+    var declaredScripts: Int
     var scripts: Int
     /// Whether the content asks about network changes, skipped
     /// verification or limited clients (fork 2d31f10 `asksConsent`),
@@ -59,7 +64,7 @@ struct MitmModule: Codable, Equatable, Hashable, Identifiable {
     init(id: String = UUID().uuidString, name: String, description: String = "",
          url: String? = nil, enabled: Bool = true, order: Int = 0,
          arguments: [String: String] = [:], resources: [String: String] = [:],
-         system: String? = nil, scripts: Int = 0, asksConsent: Bool = false,
+         system: String? = nil, declaredScripts: Int = 0, scripts: Int = 0, asksConsent: Bool = false,
          accepted: Bool? = nil, lastUpdateTime: Date = Date()) {
         self.id = id
         self.name = name
@@ -70,6 +75,7 @@ struct MitmModule: Codable, Equatable, Hashable, Identifiable {
         self.arguments = arguments
         self.resources = resources
         self.system = system
+        self.declaredScripts = declaredScripts
         self.scripts = scripts
         self.asksConsent = asksConsent
         self.accepted = accepted
@@ -79,7 +85,7 @@ struct MitmModule: Codable, Equatable, Hashable, Identifiable {
     /// Tolerates rows written by older builds (new keys default).
     private enum CodingKeys: String, CodingKey {
         case id, name, description, url, enabled, order, arguments
-        case resources, system, scripts, asksConsent, accepted, lastUpdateTime
+        case resources, system, declaredScripts, scripts, asksConsent, accepted, lastUpdateTime
     }
 
     init(from decoder: Decoder) throws {
@@ -93,6 +99,7 @@ struct MitmModule: Codable, Equatable, Hashable, Identifiable {
         arguments = try c.decodeIfPresent([String: String].self, forKey: .arguments) ?? [:]
         resources = try c.decodeIfPresent([String: String].self, forKey: .resources) ?? [:]
         system = try c.decodeIfPresent(String.self, forKey: .system)
+        declaredScripts = try c.decodeIfPresent(Int.self, forKey: .declaredScripts) ?? 0
         scripts = try c.decodeIfPresent(Int.self, forKey: .scripts) ?? 0
         asksConsent = try c.decodeIfPresent(Bool.self, forKey: .asksConsent) ?? false
         accepted = try c.decodeIfPresent(Bool.self, forKey: .accepted)
@@ -188,6 +195,29 @@ final class MitmModuleStore: ObservableObject {
               let decoded = try? JSONDecoder().decode([MitmModule].self, from: data) else { return }
         modules = decoded.sorted { ($0.order, $0.id) < ($1.order, $1.id) }
         migrateConsentIfNeeded()
+        backfillDeclaredScriptsIfNeeded()
+    }
+
+    /// One-time backfill of `declaredScripts` for rows written
+    /// before it was stored (v0.2.143): the current declared count
+    /// per module, from the Swift parser, so the consent gate can
+    /// read the stored count instead of re-parsing (audit B42).
+    /// A file that cannot be read counts as asking (7140e37), so
+    /// its row keeps awaiting consent.
+    private func backfillDeclaredScriptsIfNeeded() {
+        let key = "ConcordiOS.mitm.declaredScriptsBackfilled"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        guard !modules.isEmpty else { return }
+        for i in modules.indices {
+            if let content = parsedContent(for: modules[i]) {
+                modules[i].declaredScripts = content.declaredScripts
+                modules[i].asksConsent = asksConsent(of: content)
+            } else {
+                modules[i].asksConsent = true
+            }
+        }
+        persist()
     }
 
     /// One-time settlement of rows written before consent was
@@ -239,13 +269,16 @@ final class MitmModuleStore: ObservableObject {
     }
 
     /// Whether this module awaits consent (fork `awaitsConsent`):
-    /// off, never answered, and asking about something. A file
-    /// that cannot be read counts as asking (7140e37). The state
-    /// lives in the row, so it survives app restart.
+    /// off, never answered, and asking about something. The gate
+    /// reads the row's stored values (declaredScripts + asksConsent,
+    /// judged at save time from the core's read) instead of
+    /// re-parsing the file (audit B42). A file that cannot be read
+    /// counts as asking (7140e37). The state lives in the row, so
+    /// it survives app restart.
     func awaitsConsent(_ module: MitmModule) -> Bool {
         guard !module.enabled, module.accepted == nil else { return false }
-        guard let content = parsedContent(for: module) else { return true }
-        return module.asksBeforeTurningOn(declaredScripts: content.declaredScripts)
+        guard let url = textURL(for: module), FileManager.default.fileExists(atPath: url.path) else { return true }
+        return module.asksBeforeTurningOn(declaredScripts: module.declaredScripts)
     }
 
     /// Every module awaiting consent, in list order (fork
@@ -271,11 +304,12 @@ final class MitmModuleStore: ObservableObject {
     /// Pass the core's parse when the caller already has it (the
     /// module detail page loads mitm.readModule while the tunnel
     /// runs): the declared-script count then comes from the core
-    /// instead of the Swift parser (audit B42). The list has no
-    /// core parse, so it keeps the Swift one.
+    /// instead of the Swift parser (audit B42). Otherwise the
+    /// stored save-time count is used; the parse is only needed for
+    /// the prompt's message parts.
     func consentPrompt(for module: MitmModule, content: MitmModuleContent? = nil) -> (title: String, message: String)? {
         let content = content ?? parsedContent(for: module)
-        let declared = content?.declaredScripts ?? 0
+        let declared = content?.declaredScripts ?? module.declaredScripts
         let asks = content.map { asksConsent(of: $0) } ?? true
         let unreadable = content == nil
         let unacceptedScripts = declared > module.scripts
@@ -325,18 +359,21 @@ final class MitmModuleStore: ObservableObject {
     /// the scripts it declares now; declining leaves it off and
     /// records the decline, so it stops awaiting consent.
     /// `content` is the core's parse when the caller has it (see
-    /// consentPrompt): the accepted script count then comes from
-    /// the core instead of the Swift parser (audit B42).
+    /// consentPrompt); otherwise the core is asked here, and the
+    /// Swift parser is the last fallback — the accepted script
+    /// count then comes from the core instead of the Swift parser
+    /// (audit B42).
     @MainActor
     func answerConsent(_ module: MitmModule, agreed: Bool, content: MitmModuleContent? = nil) async {
         guard let index = modules.firstIndex(where: { $0.id == module.id }) else { return }
-        let content = content ?? parsedContent(for: modules[index])
+        let content = content ?? (await coreParsedContent(for: modules[index])) ?? parsedContent(for: modules[index])
         modules[index].asksConsent = content.map { asksConsent(of: $0) } ?? true
         if agreed {
             modules[index].accepted = true
             modules[index].enabled = true
             if let content {
                 modules[index].scripts = content.declaredScripts
+                modules[index].declaredScripts = content.declaredScripts
             }
         } else {
             modules[index].accepted = false
@@ -397,12 +434,24 @@ final class MitmModuleStore: ObservableObject {
     /// default; local-file attachments ride along as `attachments`
     /// (name → stored file), as the core's readModule takes them.
     func coreParsedContent(for module: MitmModule) async -> MitmModuleContent? {
-        guard let client, client.mode == .live, TunnelManager.shared.isRunning,
-              let text = readText(module) else { return nil }
+        guard let text = readText(module) else { return nil }
+        return await coreJudgedContent(text: text, arguments: module.arguments, resources: module.resources)
+    }
+
+    /// Reads a module's text with the core (mitm.readModule,
+    /// upstream `_withContent`) when the tunnel is running; nil
+    /// when the core cannot be reached, and the caller falls back
+    /// to the Swift parse. The text is passed in — it may not be
+    /// on disk yet at save time — with the arguments + resources
+    /// the save is writing, so the declared scripts and
+    /// asksConsent the save records come from the core, not the
+    /// Swift parser (audit B42).
+    private func coreJudgedContent(text: String, arguments: [String: String], resources: [String: String]) async -> MitmModuleContent? {
+        guard let client, client.mode == .live, TunnelManager.shared.isRunning else { return nil }
         do {
             let language = Locale.preferredLanguages.first ?? "zh-Hans"
-            let view = try await client.mitmReadModule(text: text, arguments: module.arguments, attachments: attachmentsParam(for: module), language: language)
-            var content = MitmModuleParser.parseWithCore(view: view, text: text, values: module.arguments, resources: module.resources)
+            let view = try await client.mitmReadModule(text: text, arguments: arguments, attachments: resources.filter { !isMitmResourceUrl($0.key) }, language: language)
+            var content = MitmModuleParser.parseWithCore(view: view, text: text, values: arguments, resources: resources)
             // The core's rules name its rule sets `mitm-<sha256[0:12]>`
             // (upstream rule.rs set_name) while the Swift parser names
             // them `mitm-<sha1[0:12]>` — on this path the Swift
@@ -1295,7 +1344,13 @@ final class MitmModuleStore: ObservableObject {
         // directory and re-parse, or the first parse skips them as
         // .notDownloaded and the merged script list loses them.
         materializeInlineResources(firstContent, into: &mergedResources)
-        let content = MitmModuleParser.parse(text: text, values: module.arguments, resources: mergedResources)
+        // Judge the saved content with the core when it is reachable
+        // (upstream `_withContent` reads every save through
+        // readMitmModule): declared scripts + asksConsent then come
+        // from the core, not the Swift parser (audit B42). The Swift
+        // parse stays the fallback when the core cannot be reached.
+        let content = await coreJudgedContent(text: text, arguments: module.arguments, resources: mergedResources)
+            ?? MitmModuleParser.parse(text: text, values: module.arguments, resources: mergedResources)
         try writeText(module, text: text)
         var saved = module
         saved.name = content.name ?? module.name
@@ -1310,6 +1365,7 @@ final class MitmModuleStore: ObservableObject {
         // Whether the new content asks about anything besides
         // scripts (fork `_withContent` records this on every save).
         saved.asksConsent = asksConsent(of: content)
+        saved.declaredScripts = content.declaredScripts
         if added {
             // A module added with scripts — or with other asks —
             // starts off until the user accepts them; `scripts`
@@ -1397,7 +1453,13 @@ final class MitmModuleStore: ObservableObject {
             persist()
             content = MitmModuleParser.parse(text: text, values: values, resources: updatedResources)
         }
-        modules[index].asksConsent = asksConsent(of: content)
+        // Judge the new values with the core when it is reachable
+        // (upstream `_withContent`, audit B42); the Swift parse
+        // stays the fallback.
+        let judged = await coreJudgedContent(text: text, arguments: values, resources: modules[index].resources)
+            ?? MitmModuleParser.parse(text: text, values: values, resources: modules[index].resources)
+        modules[index].asksConsent = asksConsent(of: judged)
+        modules[index].declaredScripts = judged.declaredScripts
         let missing = content.resourceUrls.subtracting(module.resources.keys)
         if !missing.isEmpty {
             let fetched = await downloadResources(missing, previous: module.resources)
@@ -1406,7 +1468,7 @@ final class MitmModuleStore: ObservableObject {
                 persist()
             }
         }
-        if module.enabled && content.declaredScripts > module.scripts {
+        if module.enabled && judged.declaredScripts > module.scripts {
             // New scripts from the new values: turn off until
             // re-accepted; the accepted count stays, so turning it
             // back on still asks for consent — and the module now
@@ -1430,9 +1492,11 @@ final class MitmModuleStore: ObservableObject {
     func setEnabled(_ module: MitmModule, on: Bool) async {
         guard let index = modules.firstIndex(where: { $0.id == module.id }) else { return }
         modules[index].enabled = on
-        if on, let content = parsedContent(for: modules[index]) {
-            modules[index].scripts = content.declaredScripts
-            modules[index].asksConsent = asksConsent(of: content)
+        // The row carries the save-time core-judged values (upstream's
+        // toggle never re-reads the module): enabling accepts the
+        // scripts the module declares now; asksConsent stays as saved.
+        if on {
+            modules[index].scripts = modules[index].declaredScripts
         }
         if !on, modules[index].accepted == nil {
             modules[index].accepted = false

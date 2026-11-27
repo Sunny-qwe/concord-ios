@@ -2781,7 +2781,14 @@ enum FlClashRestore {
                 url: row.url, enabled: row.enabled,
                 order: Int(row.order ?? 0),
                 arguments: row.arguments, resources: row.resources,
-                system: row.system, scripts: Int(row.scripts),
+                system: row.system,
+                // Upstream `_withContent` stores the DECLARED script
+                // count in `scripts` (declaredScripts.length), so
+                // the backup row's scripts is the declared count —
+                // which is what `declaredScripts` stores here
+                // (v0.2.143, audit B42).
+                declaredScripts: Int(row.scripts),
+                scripts: Int(row.scripts),
                 asksConsent: row.asksConsent, accepted: row.accepted,
                 lastUpdateTime: Date(timeIntervalSince1970: TimeInterval(row.lastUpdateTimeMillis) / 1000)))
             // Foreign modules get fresh ids here, so their text /

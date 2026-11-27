@@ -270,6 +270,7 @@ struct ProfilesView: View {
                 CustomSubscriptionImportView(store: customStore) { sub in
                     navPath.append(.customSubscription(sub.id))
                 }
+                .environmentObject(profileStore)
                 .formSheetChrome()
             }
             .sheet(isPresented: $showReorder) {
@@ -755,6 +756,20 @@ struct ProfilesView: View {
                 failures.append((profile.name, error))
             }
         }
+        // v0.2.148: rule-provider records (ClashProvider) have no
+        // auto-update lifecycle of their own — re-download them
+        // here too, and re-apply the active profile when a baked
+        // custom subscription maps one. A failed download is
+        // listed with the profile failures (the old content stays
+        // in place).
+        let clashStore = ClashProviderStore()
+        for record in clashStore.providers {
+            if await clashStore.updateContent(for: record) {
+                await profileStore.reapplyActiveForClashProvider(id: record.id)
+            } else {
+                failures.append((record.label, "更新失败"))
+            }
+        }
         if !failures.isEmpty {
             alertMessage = "\("profiles.notice.updateFailedPrefix".l10n)\(failures.count)\("profiles.notice.updateFailedSuffix".l10n)\n"
                 + failures.map { "· \($0.name)：\($0.error)" }.joined(separator: "\n")
@@ -778,14 +793,20 @@ struct ProfilesView: View {
     /// profile is never consulted for it — so the old
     /// proxyProviders / ruleProviders name match was a false
     /// positive (the dialog claimed the profile was in use when
-    /// nothing referenced it) and is dropped. Name-based, like
-    /// the bake linkage — a provider is referenced by name,
-    /// never by id.
+    /// nothing referenced it) and is dropped. Those two checks
+    /// are name-based, like the bake linkage — a provider is
+    /// referenced by name, never by id. The third check is
+    /// id-based (v0.2.148): a proxy provider MAPPED to this
+    /// profile through providerProfileMap — the map holds the
+    /// profile id, so a renamed provider profile is still named
+    /// here. Without it the confirm would miss the subscription
+    /// whose provider content comes from this profile.
     private func providerUsers(of profile: Profile) -> [String] {
         customStore.subscriptions
             .filter { sub in
                 sub.groups.contains(where: { $0.useProviders.contains(profile.name) })
                 || sub.rules.contains(where: { $0.type == "RULE-SET" && $0.content == profile.name })
+                || sub.providerProfileMap.values.contains(where: { $0.profileId == profile.id })
             }
             .map { $0.name }
     }

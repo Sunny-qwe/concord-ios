@@ -20,9 +20,14 @@ import Foundation
 //     per-profile 区（CustomDnsSection 等，上游 _importOverrides）；
 //     区内无法表示的键记入 notes；
 //   * 分组/提供方对象里的未知字段是硬错误（列出字段名）；
-//   * rule-providers 的 behavior 只有 classical 可接受：它是核心默认值，
-//     未保存也不改变行为（记入 notes 向用户展示）；domain/ipcidr 会改变
-//     路由语义且模型存不下，是硬错误；
+//   * rule-providers 的 behavior / format / payload 现在存入模型
+//     （v0.2.148：CustomProvider.behavior / .format / .payload；
+//     behavior 接受 domain / ipcidr / classical，format 接受
+//     yaml / text / mrs，type: inline 时 payload 存规则行）。
+//     此前只有 classical 可接受，domain/ipcidr 是硬错误——那时
+//     模型存不下 behavior；现在存下了，硬错误取消。注意：bake
+//     时 rule provider 一律带 behavior（核心 parse_rule_provider
+//     要求 type+behavior，缺了会被核心拒绝）。
 //   * mixed-port、mode 等其余顶层配置键与自定义订阅无关，不进模型，
 //     但会列入结果的 ignoredTopLevelKeys，由导入界面向用户展示——
 //     不是静默丢弃；
@@ -38,7 +43,8 @@ struct CustomSubscriptionImportResult {
     let subscription: CustomSubscription
     /// 顶层配置键（mixed-port、dns……）：与自定义订阅无关，未导入。
     let ignoredTopLevelKeys: [String]
-    /// 已接受但未存入模型的说明（如 behavior=classical 按核心默认值处理）。
+    /// 已接受但未存入模型的说明（如代理提供方的 behavior=classical
+    /// 按核心默认值处理）。
     let notes: [String]
     /// Imported node definitions (upstream CustomProfileImport
     /// proxies): the full `proxies:` entries, renamed where they
@@ -47,6 +53,37 @@ struct CustomSubscriptionImportResult {
     /// CustomProxyStore.rawProxies — the v0.2.146 drop-with-note
     /// ends here: nodes now survive the import.
     let proxies: [JSONValue]
+    /// Proxy providers with a URL whose real URL Profile still
+    /// needs creating (v0.2.148): the importer has no age-key
+    /// context and no ProfileStore access, so the view layer
+    /// find-or-creates the Profile from these and fills
+    /// providerProfileMap. The CustomProvider entry stays in the
+    /// subscription (all options survive); bake falls back to
+    /// http until the map entry lands.
+    let pendingProviderProfiles: [PendingProviderProfile]
+    /// Rule providers with a URL whose ClashProvider record still
+    /// needs creating + downloading (v0.2.148): same hand-off as
+    /// pendingProviderProfiles, for ruleProviderMap.
+    let pendingRuleProviders: [PendingRuleProvider]
+}
+
+/// One proxy provider awaiting its real URL Profile (v0.2.148).
+struct PendingProviderProfile {
+    var providerName: String
+    var label: String
+    var url: String
+    /// The provider's own age key (its `age-secret-key` field,
+    /// when present) — nil when the provider has none.
+    var ageSecretKey: String?
+}
+
+/// One rule provider awaiting its ClashProvider record (v0.2.148).
+struct PendingRuleProvider {
+    var providerName: String
+    var label: String
+    var url: String
+    var behavior: String?
+    var format: String?
 }
 
 enum CustomSubscriptionImporter {
@@ -308,25 +345,51 @@ enum CustomSubscriptionImporter {
             }
         }
         var proxyProviders: [CustomProvider] = []
+        var pendingProviderProfiles: [PendingProviderProfile] = []
         if let rawProviders = top["proxy-providers"] {
             guard case .object(let dict) = rawProviders else {
                 throw CustomSubscriptionImportError(message: "proxy-providers 必须是映射")
             }
             for name in dict.keys.sorted() {
-                let (provider, providerNotes) = try mapProvider(name: name, value: dict[name]!)
+                let (provider, providerNotes, ageSecretKey) = try mapProvider(name: name, value: dict[name]!, isRuleProvider: false)
                 proxyProviders.append(provider)
                 notes.append(contentsOf: providerNotes)
+                // A proxy provider with a URL becomes a real URL
+                // Profile at import (upstream _importProviders
+                // bySource); the view layer creates it and fills
+                // providerProfileMap. Only http providers carry a
+                // URL (upstream: url = type == 'http' ? … : '') —
+                // a file provider with a stray url keeps its file
+                // path and gets no map entry. URL-less providers
+                // (file) keep the CustomProvider path.
+                let trimmedURL = provider.url.trimmingCharacters(in: .whitespaces)
+                if provider.kind == "http", !trimmedURL.isEmpty {
+                    pendingProviderProfiles.append(PendingProviderProfile(
+                        providerName: provider.name, label: provider.name,
+                        url: trimmedURL, ageSecretKey: ageSecretKey))
+                }
             }
         }
         var ruleProviders: [CustomProvider] = []
+        var pendingRuleProviders: [PendingRuleProvider] = []
         if let rawProviders = top["rule-providers"] {
             guard case .object(let dict) = rawProviders else {
                 throw CustomSubscriptionImportError(message: "rule-providers 必须是映射")
             }
             for name in dict.keys.sorted() {
-                let (provider, providerNotes) = try mapProvider(name: name, value: dict[name]!)
+                let (provider, providerNotes, _) = try mapProvider(name: name, value: dict[name]!, isRuleProvider: true)
                 ruleProviders.append(provider)
                 notes.append(contentsOf: providerNotes)
+                // Only http rule providers carry a URL (an inline
+                // provider with a stray url gets no record — bake
+                // never consults the map for inline entries).
+                let trimmedURL = provider.url.trimmingCharacters(in: .whitespaces)
+                if provider.kind == "http", !trimmedURL.isEmpty {
+                    pendingRuleProviders.append(PendingRuleProvider(
+                        providerName: provider.name, label: provider.name,
+                        url: trimmedURL, behavior: provider.behavior,
+                        format: provider.format))
+                }
             }
         }
         var rules: [CustomRule] = []
@@ -404,7 +467,9 @@ enum CustomSubscriptionImporter {
             dns: dns, ntp: ntp, sniffer: sniffer, tun: tun)
         return CustomSubscriptionImportResult(
             subscription: subscription, ignoredTopLevelKeys: ignored, notes: notes,
-            proxies: importedProxies)
+            proxies: importedProxies,
+            pendingProviderProfiles: pendingProviderProfiles,
+            pendingRuleProviders: pendingRuleProviders)
     }
 
     // MARK: - 分组
@@ -543,28 +608,104 @@ enum CustomSubscriptionImporter {
         "proxy-override", "filter", "exclude-filter",
     ]
 
-    private static func mapProvider(name: String, value: JSONValue) throws -> (CustomProvider, [String]) {
+    private static func mapProvider(name: String, value: JSONValue, isRuleProvider: Bool) throws -> (CustomProvider, [String], String?) {
         guard case .object(let dict) = value else {
             throw CustomSubscriptionImportError(message: "提供方「\(name)」必须是映射")
         }
-        let unknown = dict.keys.filter { !providerKeys.contains($0) }.sorted()
+        // format / payload are rule-provider-only keys (mihomo has
+        // no format on proxy providers); age-secret-key is a
+        // proxy-provider-only key (the core's proxy parse reads
+        // it; rule providers have no age key — upstream
+        // readsAgeSecretKey is false for them). A proxy provider
+        // carrying payload is accepted but noted (the core keeps a
+        // payload fallback for proxy providers, but the
+        // custom-subscription model cannot hold it — upstream
+        // ignores it too).
+        var allowedKeys = providerKeys
+        if isRuleProvider {
+            allowedKeys.formUnion(["format", "payload"])
+        } else {
+            allowedKeys.formUnion(["age-secret-key", "payload"])
+        }
+        let unknown = dict.keys.filter { !allowedKeys.contains($0) }.sorted()
         guard unknown.isEmpty else {
             throw CustomSubscriptionImportError(message: "提供方「\(name)」含有无法识别的字段：\(unknown.joined(separator: "、"))")
         }
         var notes: [String] = []
-        if let behavior = dict["behavior"] {
-            guard case .string(let behaviorText) = behavior else {
+        // age-secret-key (v0.2.148): proxy providers only. The
+        // third return value carries it to the pending list, so
+        // the created URL Profile stores it (findOrCreateProvider-
+        // Profile) — the key is NEVER stored on the CustomProvider
+        // itself or baked into the config. Upstream reads it the
+        // same way (custom_import.dart readsAgeSecretKey).
+        var ageSecretKey: String? = nil
+        if !isRuleProvider, let ageValue = dict["age-secret-key"] {
+            guard case .string(let ageText) = ageValue else {
+                throw CustomSubscriptionImportError(message: "提供方「\(name)」的 age-secret-key 必须是字符串")
+            }
+            ageSecretKey = ageText.isEmpty ? nil : ageText
+        }
+        if !isRuleProvider, let payloadValue = dict["payload"] {
+            guard case .array = payloadValue else {
+                throw CustomSubscriptionImportError(message: "提供方「\(name)」的 payload 必须是列表")
+            }
+            notes.append("提供方「\(name)」的 payload 未保存（代理提供方的内容不在自定义订阅中保存）")
+        }
+        // behavior: stored for rule providers (v0.2.148 — the
+        // model now holds it); for proxy providers the old rule
+        // stands (classical is a no-op note, anything else is a
+        // hard error — mihomo proxy providers have no behavior).
+        var behavior: String? = nil
+        if let behaviorValue = dict["behavior"] {
+            guard case .string(let behaviorText) = behaviorValue else {
                 throw CustomSubscriptionImportError(message: "提供方「\(name)」的 behavior 必须是字符串")
             }
-            if behaviorText == "classical" {
-                notes.append("提供方「\(name)」的 behavior=classical 未保存（核心默认值即 classical）")
+            if isRuleProvider {
+                guard ["domain", "ipcidr", "classical"].contains(behaviorText) else {
+                    throw CustomSubscriptionImportError(
+                        message: "提供方「\(name)」的 behavior=\(behaviorText) 不受支持（domain / ipcidr / classical）")
+                }
+                behavior = behaviorText
+            } else if behaviorText == "classical" {
+                notes.append("提供方「\(name)」的 behavior=classical 未保存（代理提供方没有 behavior 字段）")
             } else {
                 throw CustomSubscriptionImportError(
                     message: "提供方「\(name)」的 behavior=\(behaviorText) 无法表示（自定义订阅不保存 behavior，只有 classical 可按核心默认值处理）")
             }
         }
+        // format / payload: rule providers only.
+        var format: String? = nil
+        var payload: [String] = []
+        if isRuleProvider {
+            if let formatValue = dict["format"] {
+                guard case .string(let formatText) = formatValue else {
+                    throw CustomSubscriptionImportError(message: "提供方「\(name)」的 format 必须是字符串")
+                }
+                // "" means yaml in the core (provider.rs:
+                // "" | "yaml" => Yaml) — treat it as unset rather
+                // than an error.
+                if !formatText.isEmpty {
+                    guard ["yaml", "text", "mrs"].contains(formatText) else {
+                        throw CustomSubscriptionImportError(
+                            message: "提供方「\(name)」的 format=\(formatText) 不受支持（yaml / text / mrs）")
+                    }
+                    format = formatText
+                }
+            }
+            if let payloadValue = dict["payload"] {
+                guard case .array(let items) = payloadValue else {
+                    throw CustomSubscriptionImportError(message: "提供方「\(name)」的 payload 必须是列表")
+                }
+                for item in items {
+                    guard case .string(let line) = item else {
+                        throw CustomSubscriptionImportError(message: "提供方「\(name)」的 payload 里的每一项都必须是字符串")
+                    }
+                    payload.append(line)
+                }
+            }
+        }
         let kind = try stringField(dict, key: "type", context: "提供方「\(name)」的 type", default: "http")
-        guard kind == "http" || kind == "file" else {
+        guard kind == "http" || kind == "file" || (isRuleProvider && kind == "inline") else {
             throw CustomSubscriptionImportError(message: "提供方「\(name)」的 type「\(kind)」不受支持")
         }
         let url = try stringField(dict, key: "url", context: "提供方「\(name)」的 url")
@@ -575,19 +716,23 @@ enum CustomSubscriptionImporter {
         if kind == "file" && path.isEmpty {
             throw CustomSubscriptionImportError(message: "提供方「\(name)」缺少 path")
         }
+        if kind == "inline" && payload.isEmpty {
+            throw CustomSubscriptionImportError(message: "提供方「\(name)」是 inline 类型但缺少 payload")
+        }
         var provider = CustomProvider(
             name: name, kind: kind, url: url, path: path,
             interval: try intField(dict, key: "interval", context: "提供方「\(name)」的 interval"),
             healthCheck: false,
             filter: try stringField(dict, key: "filter", context: "提供方「\(name)」的 filter"),
-            excludeFilter: try stringField(dict, key: "exclude-filter", context: "提供方「\(name)」的 exclude-filter"))
+            excludeFilter: try stringField(dict, key: "exclude-filter", context: "提供方「\(name)」的 exclude-filter"),
+            behavior: behavior, format: format, payload: payload)
         if let healthCheck = dict["health-check"] {
             try parseHealthCheck(healthCheck, provider: &provider, name: name)
         }
         if let override = dict["proxy-override"] {
             try parseProxyOverride(override, provider: &provider, name: name)
         }
-        return (provider, notes)
+        return (provider, notes, ageSecretKey)
     }
 
     private static let healthCheckKeys: Set<String> = ["enable", "url", "timeout", "lazy", "expected-status"]

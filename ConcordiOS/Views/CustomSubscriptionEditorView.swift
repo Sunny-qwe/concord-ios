@@ -657,7 +657,7 @@ struct CustomSubscriptionEditorView: View {
             .concordNavBarBackground()
         }
         .sheet(item: $editingRuleProvider) { provider in
-            CustomProviderOptionsView(provider: provider) { saved in
+            CustomProviderOptionsView(provider: provider, isRuleProvider: true, clashProviderId: sub.ruleProviderMap[provider.name]?.clashProviderId) { saved in
                 var copy = sub
                 if let index = copy.ruleProviders.firstIndex(where: { $0.id == saved.id }) {
                     copy.ruleProviders[index] = saved
@@ -1130,13 +1130,25 @@ private struct CustomProviderOptionsView: View {
     @State private var provider: CustomProvider
     /// The provider as opened (dirty = changed since open).
     private let original: CustomProvider
+    /// True when this is a rule provider (v0.2.148): the rule
+    /// section (behavior / format / payload) and the content
+    /// update button appear only then.
+    private let isRuleProvider: Bool
+    /// The mapped ClashProvider record, when this rule provider
+    /// was imported from a URL (v0.2.148): its content can be
+    /// re-downloaded from here. Nil for unmapped providers.
+    private let clashProviderId: UUID?
     @State private var showDiscardConfirm = false
+    @State private var updateMessage: String?
     var onSave: (CustomProvider) -> Void
+    @EnvironmentObject private var profileStore: ProfileStore
     @Environment(\.dismiss) private var dismiss
 
-    init(provider: CustomProvider, onSave: @escaping (CustomProvider) -> Void) {
+    init(provider: CustomProvider, isRuleProvider: Bool = false, clashProviderId: UUID? = nil, onSave: @escaping (CustomProvider) -> Void) {
         _provider = State(initialValue: provider)
         self.original = provider
+        self.isRuleProvider = isRuleProvider
+        self.clashProviderId = clashProviderId
         self.onSave = onSave
     }
 
@@ -1151,6 +1163,80 @@ private struct CustomProviderOptionsView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+                // Rule-provider options (v0.2.148, mihomo
+                // rule-provider keys): behavior is REQUIRED by the
+                // core at bake time (classical is the default when
+                // unset); format is only emitted when set (when
+                // unset the core defaults to yaml — the same
+                // default as upstream's ClashProvider); an inline
+                // provider's payload is shown read-only — it comes
+                // from the import, this sheet has no multi-line
+                // rule editor.
+                if isRuleProvider {
+                    Section("规则") {
+                        Picker("匹配方式 behavior", selection: Binding(
+                            get: { provider.behavior ?? "classical" },
+                            set: { provider.behavior = $0 }
+                        )) {
+                            Text("domain（域名）").tag("domain")
+                            Text("ipcidr（IP 段）").tag("ipcidr")
+                            Text("classical（经典）").tag("classical")
+                        }
+                        Picker("格式 format", selection: Binding(
+                            get: { provider.format ?? "" },
+                            set: { provider.format = $0.isEmpty ? nil : $0 }
+                        )) {
+                            Text("自动").tag("")
+                            Text("yaml").tag("yaml")
+                            Text("text").tag("text")
+                            Text("mrs").tag("mrs")
+                        }
+                        if provider.kind == "inline" {
+                            Text("内联规则（\(provider.payload.count) 行）")
+                            // Indexed (not id: \.self): payload
+                            // lines may repeat, and duplicate ids
+                            // break ForEach.
+                            ForEach(Array(provider.payload.enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    // Re-download this rule provider's content
+                    // (upstream ClashProvider update): after a
+                    // successful download the active profile is
+                    // re-applied when a custom subscription baked
+                    // into it maps this record.
+                    if let clashProviderId, let record = ClashProviderStore().provider(id: clashProviderId) {
+                        Section("规则内容") {
+                            Button {
+                                Task {
+                                    updateMessage = nil
+                                    let store = ClashProviderStore()
+                                    if await store.updateContent(for: record) {
+                                        await profileStore.reapplyActiveForClashProvider(id: record.id)
+                                        updateMessage = "已更新规则内容"
+                                    } else {
+                                        updateMessage = "更新失败：请检查链接与网络"
+                                    }
+                                }
+                            } label: {
+                                Label("更新规则内容", systemImage: "arrow.clockwise")
+                            }
+                            if let updatedAt = record.updatedAt {
+                                Text("上次更新：\(updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let updateMessage {
+                                Text(updateMessage)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                 }
                 Section("选项") {
                     HStack {

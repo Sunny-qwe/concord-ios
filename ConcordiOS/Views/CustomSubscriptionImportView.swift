@@ -11,6 +11,11 @@ import UniformTypeIdentifiers
 
 struct CustomSubscriptionImportView: View {
     @ObservedObject var store: CustomSubscriptionStore
+    /// The real ProfileStore (v0.2.148): provider profiles are
+    /// created through it at save time. Passed explicitly from
+    /// ProfilesView (`.environmentObject(profileStore)` on the
+    /// sheet) rather than relying on environment inheritance.
+    @EnvironmentObject var profileStore: ProfileStore
     let onImported: (CustomSubscription) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -23,6 +28,10 @@ struct CustomSubscriptionImportView: View {
     @State private var pendingResult: CustomSubscriptionImportResult?
     @State private var showFileImporter = false
     @State private var showReplaceConfirm = false
+    /// Provider-creation failures from the last save (v0.2.148):
+    /// a failed provider download keeps the http fallback and is
+    /// noted here — the import itself still succeeds.
+    @State private var providerProfileNotes: [String] = []
 
     var body: some View {
         NavigationStack {
@@ -62,7 +71,7 @@ struct CustomSubscriptionImportView: View {
                     } header: {
                         Text("来源")
                     } footer: {
-                        Text("只导入分组、提供方和规则。文件里的节点（proxies）自定义订阅存不下，会报错并提示改到「配置」页导入为普通订阅；顶层配置项（如 mixed-port、dns）与自定义订阅无关，会在导入结果里列出。")
+                        Text("导入分组、提供方、规则和节点（proxies 会导入到本地节点）；dns / ntp / sniffer / tun 区会导入到订阅的配置区；其余顶层配置项与自定义订阅无关，会在导入结果里列出。")
                     }
                     if let errorMessage {
                         Section {
@@ -79,6 +88,22 @@ struct CustomSubscriptionImportView: View {
                         Text("\(result.subscription.groups.count) 分组 · \(result.subscription.proxyProviders.count + result.subscription.ruleProviders.count) 提供方 · \(result.subscription.rules.count) 规则")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                        if !saved.providerProfileMap.isEmpty || !saved.ruleProviderMap.isEmpty {
+                            Text("其中 \(saved.providerProfileMap.count) 个代理提供方已创建为订阅，\(saved.ruleProviderMap.count) 个规则提供方已下载")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if !providerProfileNotes.isEmpty {
+                        Section {
+                            ForEach(providerProfileNotes, id: \.self) { note in
+                                Text(note)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } header: {
+                            Text("提供方订阅")
+                        }
                     }
                     if !result.ignoredTopLevelKeys.isEmpty {
                         Section {
@@ -129,7 +154,7 @@ struct CustomSubscriptionImportView: View {
             .alert("替换已有订阅", isPresented: $showReplaceConfirm) {
                 Button("替换", role: .destructive) {
                     if let pending = pendingResult {
-                        saveResult(pending, replacing: true)
+                        Task { await saveResult(pending, replacing: true) }
                     }
                     pendingResult = nil
                 }
@@ -198,27 +223,64 @@ struct CustomSubscriptionImportView: View {
     }
 
     /// 导入成功后的处理：同名则弹一次替换确认，否则直接保存。
+    /// Saving is async (v0.2.148): provider profiles are
+    /// downloaded at save time.
     private func finishImport(_ imported: CustomSubscriptionImportResult) {
         errorMessage = nil
         if store.subscriptions.contains(where: { $0.name == imported.subscription.name }) {
             pendingResult = imported
             showReplaceConfirm = true
         } else {
-            saveResult(imported, replacing: false)
+            Task { await saveResult(imported, replacing: false) }
         }
     }
 
-    private func saveResult(_ imported: CustomSubscriptionImportResult, replacing: Bool) {
+    private func saveResult(_ imported: CustomSubscriptionImportResult, replacing: Bool) async {
         var subscription = imported.subscription
         if replacing,
            let existing = store.subscriptions.first(where: { $0.name == subscription.name }) {
             subscription.id = existing.id
+        }
+        var notes: [String] = []
+        // Proxy providers with a URL become real URL Profiles
+        // (v0.2.148, upstream _importProviders bySource):
+        // find-or-create each (dedup by url + age key), then
+        // record provider-name → profile in the map so bake can
+        // confine the profile's file. A failed download keeps the
+        // http fallback and is noted — the import itself still
+        // succeeds. The maps start empty on a replace: a provider
+        // the new file keeps re-resolves to the same profile
+        // through the dedup, a dropped provider's entry goes away
+        // with it.
+        for pending in imported.pendingProviderProfiles {
+            if let profile = await profileStore.findOrCreateProviderProfile(label: pending.label, url: pending.url, ageSecretKey: pending.ageSecretKey) {
+                subscription.providerProfileMap[pending.providerName] = ProviderProfileRef(
+                    profileId: profile.id, fileToken: FlClashHash.md5Hex("\(pending.providerName)@\(pending.url)"))
+            } else {
+                notes.append("提供方「\(pending.label)」的订阅下载失败，已保留原链接方式：\(profileStore.lastError ?? "下载失败")")
+            }
+        }
+        // Rule providers with a URL become ClashProvider records
+        // (v0.2.148): find-or-create each (dedup by url),
+        // download its content, then record provider-name →
+        // record in the map. The store is local to this save (it
+        // loads its JSON on init; update() persists immediately).
+        let clashStore = ClashProviderStore()
+        for pending in imported.pendingRuleProviders {
+            do {
+                let record = try await clashStore.findOrCreate(label: pending.label, url: pending.url, behavior: pending.behavior, format: pending.format)
+                subscription.ruleProviderMap[pending.providerName] = RuleProviderRef(
+                    clashProviderId: record.id, fileToken: FlClashHash.md5Hex("\(pending.providerName)@\(pending.url)"))
+            } catch {
+                notes.append("规则提供方「\(pending.label)」下载失败，已保留原链接方式：\(error.localizedDescription)")
+            }
         }
         store.update(subscription)
         // v0.2.147: imported node definitions land in the app-wide
         // raw proxy store (deduped by name there), so the imported
         // groups' members resolve when the subscription is baked.
         CustomProxyStore().addRawProxies(imported.proxies)
+        providerProfileNotes = notes
         result = imported
         savedSubscription = subscription
     }

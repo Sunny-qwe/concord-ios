@@ -173,6 +173,23 @@ struct CustomProvider: Codable, Equatable, Identifiable {
     var ipVersion: String?
     var additionalPrefix: String?
     var additionalSuffix: String?
+    /// Rule-provider only (v0.2.148): mihomo `behavior`
+    /// (domain / ipcidr / classical) and `format` (yaml / text /
+    /// mrs). Nil = unset — the importer stores the source value
+    /// verbatim when present; bake emits
+    /// `behavior: <stored ?? classical>` for every rule provider,
+    /// because the core REQUIRES behavior (parse_rule_provider
+    /// requires type+behavior and finish() errors on missing
+    /// keys, so a rule provider baked without behavior is
+    /// rejected outright). The core itself has NO classical
+    /// default — the default comes from bake. Proxy providers
+    /// never set these (mihomo proxy providers have no
+    /// behavior/format).
+    var behavior: String?
+    var format: String?
+    /// Rule-provider only (v0.2.148): `type: inline` payload —
+    /// the rule lines. Empty = not inline.
+    var payload: [String]
 
     init(id: String = UUID().uuidString, name: String = "", kind: String = "http",
          url: String = "", path: String = "", interval: Int = 0,
@@ -180,7 +197,8 @@ struct CustomProvider: Codable, Equatable, Identifiable {
          healthCheckURL: String? = nil, healthCheckTimeout: Int? = nil,
          healthCheckLazy: Bool? = nil, expectedStatus: String? = nil,
          udp: Bool? = nil, skipCertVerify: Bool? = nil, ipVersion: String? = nil,
-         additionalPrefix: String? = nil, additionalSuffix: String? = nil) {
+         additionalPrefix: String? = nil, additionalSuffix: String? = nil,
+         behavior: String? = nil, format: String? = nil, payload: [String] = []) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -199,6 +217,48 @@ struct CustomProvider: Codable, Equatable, Identifiable {
         self.ipVersion = ipVersion
         self.additionalPrefix = additionalPrefix
         self.additionalSuffix = additionalSuffix
+        self.behavior = behavior
+        self.format = format
+        self.payload = payload
+    }
+
+    // Tolerant decode (CustomSubscription pattern, v0.2.147):
+    // synthesized decode REQUIRES every key, and files saved
+    // before v0.2.148 have no behavior / format / payload keys —
+    // without this the whole subscription list would fail to load
+    // when one provider lacks them. Every field decodes with
+    // decodeIfPresent and the init's defaults.
+    enum CodingKeys: String, CodingKey {
+        case id, name, kind, url, path, interval, healthCheck, filter,
+             excludeFilter, healthCheckURL, healthCheckTimeout,
+             healthCheckLazy, expectedStatus, udp, skipCertVerify,
+             ipVersion, additionalPrefix, additionalSuffix, behavior,
+             format, payload
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "http"
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+        interval = try c.decodeIfPresent(Int.self, forKey: .interval) ?? 0
+        healthCheck = try c.decodeIfPresent(Bool.self, forKey: .healthCheck) ?? false
+        filter = try c.decodeIfPresent(String.self, forKey: .filter) ?? ""
+        excludeFilter = try c.decodeIfPresent(String.self, forKey: .excludeFilter) ?? ""
+        healthCheckURL = try c.decodeIfPresent(String.self, forKey: .healthCheckURL)
+        healthCheckTimeout = try c.decodeIfPresent(Int.self, forKey: .healthCheckTimeout)
+        healthCheckLazy = try c.decodeIfPresent(Bool.self, forKey: .healthCheckLazy)
+        expectedStatus = try c.decodeIfPresent(String.self, forKey: .expectedStatus)
+        udp = try c.decodeIfPresent(Bool.self, forKey: .udp)
+        skipCertVerify = try c.decodeIfPresent(Bool.self, forKey: .skipCertVerify)
+        ipVersion = try c.decodeIfPresent(String.self, forKey: .ipVersion)
+        additionalPrefix = try c.decodeIfPresent(String.self, forKey: .additionalPrefix)
+        additionalSuffix = try c.decodeIfPresent(String.self, forKey: .additionalSuffix)
+        behavior = try c.decodeIfPresent(String.self, forKey: .behavior)
+        format = try c.decodeIfPresent(String.self, forKey: .format)
+        payload = try c.decodeIfPresent([String].self, forKey: .payload) ?? []
     }
 
     static let kinds = ["http", "file"]
@@ -612,6 +672,32 @@ struct CustomTunSection: Codable, Equatable {
     }
 }
 
+/// A proxy-provider's link to its real URL Profile (v0.2.148,
+/// upstream importCustomProfile: a proxy-provider with a URL
+/// becomes a real Profile). Keyed by provider name in
+/// CustomSubscription.providerProfileMap. fileToken is
+/// md5("name@url") at import time (upstream confineProviders
+/// key) — the confined file's stable name, so bake needs no
+/// Profile lookup. The profile's ageSecretKey is NOT duplicated
+/// here: it lives only on the Profile (age-encrypted provider
+/// content falls back to http at bake time until the profile
+/// update decrypts it).
+struct ProviderProfileRef: Codable, Equatable {
+    var profileId: UUID
+    var fileToken: String
+}
+
+/// A rule-provider's link to its ClashProvider record
+/// (v0.2.148, upstream ClashProvider). Keyed by provider name
+/// in CustomSubscription.ruleProviderMap. fileToken is
+/// md5("name@url") at import time (upstream confineProviders
+/// key). Bake resolves the record via ClashProviderStore to
+/// find its downloaded content file.
+struct RuleProviderRef: Codable, Equatable {
+    var clashProviderId: UUID
+    var fileToken: String
+}
+
 struct CustomSubscription: Codable, Equatable, Identifiable {
     var id: UUID
     var name: String
@@ -656,6 +742,19 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
     /// reads it — the map is persisted so a future exit surface
     /// can use it without a migration.
     var exitTargets: [String: String]
+    /// Provider-name → real URL Profile (v0.2.148): a
+    /// proxy-provider with a URL is a real Profile (created at
+    /// import, downloaded there); bake rewrites the mapped entry
+    /// to `type: file` with the profile's content confined under
+    /// providers/<sub-id>/proxies/. Unmapped entries bake as
+    /// today (the core downloads them itself).
+    var providerProfileMap: [String: ProviderProfileRef]
+    /// Provider-name → ClashProvider record (v0.2.148): a
+    /// rule-provider with a URL is a ClashProvider record
+    /// (downloaded at import); bake rewrites the mapped entry to
+    /// `type: file` with the record's content confined under
+    /// providers/<sub-id>/rules/. Unmapped entries bake as today.
+    var ruleProviderMap: [String: RuleProviderRef]
 
     init(id: UUID = UUID(), name: String = "", groups: [CustomGroup] = [],
          dialers: [CustomDialer] = [], proxyProviders: [CustomProvider] = [],
@@ -663,7 +762,9 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
          dns: CustomDnsSection? = nil, ntp: CustomNtpSection? = nil,
          sniffer: CustomSnifferSection? = nil, tun: CustomTunSection? = nil,
          selectedMap: [String: String] = [:], scriptId: String? = nil,
-         exitTargets: [String: String] = [:]) {
+         exitTargets: [String: String] = [:],
+         providerProfileMap: [String: ProviderProfileRef] = [:],
+         ruleProviderMap: [String: RuleProviderRef] = [:]) {
         self.id = id
         self.name = name
         self.groups = groups
@@ -678,6 +779,8 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
         self.selectedMap = selectedMap
         self.scriptId = scriptId
         self.exitTargets = exitTargets
+        self.providerProfileMap = providerProfileMap
+        self.ruleProviderMap = ruleProviderMap
     }
 
     // Tolerant decode (CustomGroup pattern): the struct has no
@@ -689,7 +792,7 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case id, name, groups, dialers, proxyProviders, ruleProviders,
              rules, dns, ntp, sniffer, tun, selectedMap, scriptId,
-             exitTargets
+             exitTargets, providerProfileMap, ruleProviderMap
     }
 
     init(from decoder: Decoder) throws {
@@ -708,6 +811,8 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
         selectedMap = try c.decodeIfPresent([String: String].self, forKey: .selectedMap) ?? [:]
         scriptId = try c.decodeIfPresent(String.self, forKey: .scriptId)
         exitTargets = try c.decodeIfPresent([String: String].self, forKey: .exitTargets) ?? [:]
+        providerProfileMap = try c.decodeIfPresent([String: ProviderProfileRef].self, forKey: .providerProfileMap) ?? [:]
+        ruleProviderMap = try c.decodeIfPresent([String: RuleProviderRef].self, forKey: .ruleProviderMap) ?? [:]
     }
 }
 
@@ -853,11 +958,11 @@ final class CustomSubscriptionStore: ObservableObject {
         )
         result = bakeSection(
             result, key: "proxy-providers:", begin: proxyProvidersBegin, end: proxyProvidersEnd,
-            lines: sub.proxyProviders.flatMap { providerYAML($0) }
+            lines: sub.proxyProviders.flatMap { providerYAML($0, in: sub, isRuleProvider: false) }
         )
         result = bakeSection(
             result, key: "rule-providers:", begin: ruleProvidersBegin, end: ruleProvidersEnd,
-            lines: sub.ruleProviders.flatMap { providerYAML($0) }
+            lines: sub.ruleProviders.flatMap { providerYAML($0, in: sub, isRuleProvider: true) }
         )
         result = bakeSection(
             result, key: "rules:", begin: rulesBegin, end: rulesEnd,
@@ -1406,12 +1511,137 @@ final class CustomSubscriptionStore: ObservableObject {
         return lines
     }
 
-    private static func providerYAML(_ provider: CustomProvider) -> [String] {
-        var lines = ["  \(CustomProxy.quote(provider.name)):", "    type: \(provider.kind)"]
-        if provider.kind == "http", !provider.url.isEmpty {
+    /// App Group root — where the app writes shared files. The
+    /// EXTENSION core's home is this directory (PacketTunnel
+    /// core.init {"home": <app-group dir>}); the IN-APP core's
+    /// home is separate (ApplicationSupport/ConcordAppCore) and is
+    /// seeded from here before boot (AppCore.seedProviderCache).
+    /// Confined provider files are written under here, but the
+    /// baked YAML carries RELATIVE providers/... paths so
+    /// HomeDir::confine resolves them under EACH core's home.
+    private static var appGroupURL: URL? {
+        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)
+    }
+
+    /// Age-encrypted marker sniff (ProfileStore.looksAgeEncrypted
+    /// equivalent, local so bake stays self-contained): the first
+    /// 64 bytes contain the age header.
+    private static func isAgeEncryptedData(_ data: Data) -> Bool {
+        let head = data.prefix(64)
+        guard let text = String(data: head, encoding: .ascii) else { return false }
+        return text.contains("age-encryption.org/v1")
+    }
+
+    /// Confined file for a mapped proxy provider (upstream
+    /// confineProviders shape): copies the URL Profile's
+    /// downloaded file (profiles/<profileId>.yaml —
+    /// ProfileStore.profilesDirectory) to
+    /// providers/<subID>/proxies/<fileToken>.yaml and returns the
+    /// RELATIVE path for the baked YAML (see appGroupURL: an
+    /// absolute App Group path fails confine in the in-app core,
+    /// whose home is separate; the relative path resolves under
+    /// both homes). Nil when the App Group is unavailable, the
+    /// profile file is missing, or its content is age-encrypted
+    /// (the http fallback then applies — the profile update
+    /// decrypts it with the stored key and the next bake confines
+    /// the plaintext). The file holds the full subscription YAML;
+    /// parse_provider_content takes the `proxies:` list from it
+    /// and ignores the other keys.
+    private static func confinedProxyProviderFile(ref: ProviderProfileRef, subID: UUID) -> String? {
+        guard let root = appGroupURL else { return nil }
+        let source = root.appendingPathComponent("profiles/\(ref.profileId.uuidString).yaml")
+        guard let data = try? Data(contentsOf: source), !isAgeEncryptedData(data) else { return nil }
+        let relative = "providers/\(subID.uuidString)/proxies/\(ref.fileToken).yaml"
+        let dest = root.appendingPathComponent(relative)
+        do {
+            try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: dest, options: .atomic)
+        } catch { return nil }
+        return relative
+    }
+
+    /// Confined file for a mapped rule provider: copies the
+    /// ClashProvider record's downloaded content to
+    /// providers/<subID>/rules/<fileToken> and returns the
+    /// RELATIVE path for the baked YAML (same two-homes reason as
+    /// confinedProxyProviderFile). Nil when the record or its
+    /// content file is missing (the http fallback then applies).
+    private static func confinedRuleProviderFile(ref: RuleProviderRef, subID: UUID) -> String? {
+        guard let root = appGroupURL else { return nil }
+        let store = ClashProviderStore()
+        guard let record = store.provider(id: ref.clashProviderId),
+              let contentURL = ClashProviderStore.contentFileURL(for: record),
+              let data = try? Data(contentsOf: contentURL), !data.isEmpty else { return nil }
+        let relative = "providers/\(subID.uuidString)/rules/\(ref.fileToken)"
+        let dest = root.appendingPathComponent(relative)
+        do {
+            try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: dest, options: .atomic)
+        } catch { return nil }
+        return relative
+    }
+
+    private static func providerYAML(_ provider: CustomProvider, in sub: CustomSubscription, isRuleProvider: Bool) -> [String] {
+        var lines = ["  \(CustomProxy.quote(provider.name)):"]
+        if isRuleProvider {
+            // Inline payload providers bake verbatim (core
+            // RuleSource::Inline): type + behavior + payload.
+            if provider.kind == "inline" {
+                lines.append("    type: inline")
+                lines.append("    behavior: \(provider.behavior ?? "classical")")
+                if let format = provider.format, !format.isEmpty { lines.append("    format: \(format)") }
+                if !provider.payload.isEmpty {
+                    lines.append("    payload:")
+                    lines.append(contentsOf: provider.payload.map { "      - \(CustomProxy.quote($0))" })
+                }
+                // Fall through to the shared tail below: the core
+                // reads `interval` before the source match
+                // (provider.rs parse_rule_provider), so an inline
+                // provider with interval > 0 needs the line too.
+                // (health-check / proxy-override / filter are
+                // ignored by the core's rule parse — finish()
+                // only errors on missing fields — so emitting
+                // them here is harmless and matches the old bake.)
+            } else {
+                if let ref = sub.ruleProviderMap[provider.name],
+                   let confined = confinedRuleProviderFile(ref: ref, subID: sub.id) {
+                    lines.append("    type: file")
+                    lines.append("    path: \(CustomProxy.quote(confined))")
+                } else if provider.kind == "http", !provider.url.isEmpty {
+                    lines.append("    type: http")
+                    lines.append("    url: \(CustomProxy.quote(provider.url))")
+                } else if provider.kind == "file", !provider.path.isEmpty {
+                    lines.append("    type: file")
+                    lines.append("    path: \(CustomProxy.quote(provider.path))")
+                } else {
+                    // No usable source (the importer requires url
+                    // for http and path for file) — bake the kind
+                    // line alone rather than dropping the provider
+                    // silently; the core reports it.
+                    lines.append("    type: \(provider.kind)")
+                }
+                // behavior is REQUIRED by the core
+                // (parse_rule_provider requires type+behavior and
+                // finish() errors on missing keys): classical is
+                // the default. Before v0.2.148 bake emitted no
+                // behavior line at all, so every
+                // custom-subscription rule provider produced a
+                // config the core rejected.
+                lines.append("    behavior: \(provider.behavior ?? "classical")")
+                if let format = provider.format, !format.isEmpty { lines.append("    format: \(format)") }
+            }
+        } else if let ref = sub.providerProfileMap[provider.name],
+                  let confined = confinedProxyProviderFile(ref: ref, subID: sub.id) {
+            lines.append("    type: file")
+            lines.append("    path: \(CustomProxy.quote(confined))")
+        } else if provider.kind == "http", !provider.url.isEmpty {
+            lines.append("    type: http")
             lines.append("    url: \(CustomProxy.quote(provider.url))")
         } else if provider.kind == "file", !provider.path.isEmpty {
+            lines.append("    type: file")
             lines.append("    path: \(CustomProxy.quote(provider.path))")
+        } else {
+            lines.append("    type: \(provider.kind)")
         }
         if provider.interval > 0 { lines.append("    interval: \(provider.interval)") }
         if provider.healthCheck || provider.healthCheckURL != nil || provider.healthCheckTimeout != nil

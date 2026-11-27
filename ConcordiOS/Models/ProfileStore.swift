@@ -981,19 +981,10 @@ final class ProfileStore: ObservableObject {
                 }
             }
             if Self.looksAgeEncrypted(downloadedData) {
-                var profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), subscriptionInfo: downloaded.info)
-                profile.ageSecretKey = (trimmedKey?.isEmpty == false) ? trimmedKey : nil
-                // Upstream default (profile.dart:80-97): a new URL
-                // profile auto-updates, daily. The old off default
-                // was a speculative battery choice; the user order
-                // is to follow upstream.
-                profile.autoUpdate = true
-                profile.autoUpdateIntervalMinutes = 1440
-                profiles.append(profile)
-                try saveProfileFile(profile: profile, data: downloadedData)
+                let profile = try storeDownloadedURLProfile(
+                    name: name, urlString: urlString, ageSecretKey: ageSecretKey,
+                    data: downloadedData, fileName: downloaded.fileName, info: downloaded.info)
                 statusMessage = "已导入订阅 \(profile.name)（age 加密，待填写私钥后更新解密）"
-                save()
-                lastError = nil
                 return
             }
             let normalized: (data: Data, note: String?)
@@ -1004,17 +995,10 @@ final class ProfileStore: ObservableObject {
                 lastError = "订阅内容异常：\(reason.message)"
                 return
             }
-            var profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), subscriptionInfo: downloaded.info)
-            profile.ageSecretKey = (trimmedKey?.isEmpty == false) ? trimmedKey : nil
-            // Upstream default (profile.dart:80-97): a new URL
-            // profile auto-updates, daily.
-            profile.autoUpdate = true
-            profile.autoUpdateIntervalMinutes = 1440
-            profiles.append(profile)
-            try saveProfileFile(profile: profile, data: normalized.data)
+            let profile = try storeDownloadedURLProfile(
+                name: name, urlString: urlString, ageSecretKey: ageSecretKey,
+                data: normalized.data, fileName: downloaded.fileName, info: downloaded.info)
             statusMessage = "已导入订阅 \(profile.name)" + (normalized.note.map { "（\($0)）" } ?? "")
-            save()
-            lastError = nil
         } catch {
             // Specific cause, no "导入失败：" prefix here — the
             // UnifiedImporter row adds the single "导入失败：" in
@@ -1022,6 +1006,107 @@ final class ProfileStore: ObservableObject {
             // doubled "导入失败：导入失败：…" with only the bare
             // system string behind it).
             lastError = Self.subscriptionFailureMessage(error)
+        }
+    }
+
+    /// Creates + stores a URL profile from already-downloaded
+    /// bytes (v0.2.148 extraction of addFromURL's post-download
+    /// tail, so findOrCreateProviderProfile can reuse it without
+    /// going through addFromURL's URL-only duplicate guard — the
+    /// provider path dedups by (url, ageSecretKey) instead).
+    /// Throws when the file cannot be saved; nothing is appended
+    /// then. The caller sets statusMessage.
+    @MainActor
+    private func storeDownloadedURLProfile(name: String, urlString: String, ageSecretKey: String?, data: Data, fileName: String?, info: SubscriptionInfo?) throws -> Profile {
+        var profile = Profile(name: name.isEmpty ? (fileName ?? URL(string: urlString)?.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), subscriptionInfo: info)
+        let trimmedKey = ageSecretKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        profile.ageSecretKey = (trimmedKey?.isEmpty == false) ? trimmedKey : nil
+        // Upstream default (profile.dart:80-97): a new URL profile
+        // auto-updates, daily.
+        profile.autoUpdate = true
+        profile.autoUpdateIntervalMinutes = 1440
+        profiles.append(profile)
+        try saveProfileFile(profile: profile, data: data)
+        save()
+        lastError = nil
+        return profile
+    }
+
+    /// Finds the URL Profile for a provider URL + age key, or
+    /// downloads + creates it (v0.2.148, upstream _importProviders
+    /// bySource). Dedup is by (url, ageSecretKey) — the same URL
+    /// with a different age key is a different profile. Returns
+    /// nil and sets lastError when the download or the content
+    /// check fails; the caller keeps the http fallback and notes
+    /// the failure. The created profile is a normal URL profile
+    /// (auto-update daily, upstream default) and appears in the
+    /// Profiles list like any other.
+    @MainActor
+    func findOrCreateProviderProfile(label: String, url: String, ageSecretKey: String?) async -> Profile? {
+        let normalizedURL = url.trimmingCharacters(in: .whitespaces)
+        let trimmedKey = ageSecretKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = (trimmedKey?.isEmpty == false) ? trimmedKey : nil
+        if let existing = profiles.first(where: {
+            $0.kind == .url
+            && $0.urlString?.trimmingCharacters(in: .whitespaces) == normalizedURL
+            && $0.ageSecretKey == key
+        }) {
+            return existing
+        }
+        // Upstream _importProviders byUrl fallback: when the
+        // import carries no key, reuse a same-URL profile even if
+        // it has one — the keyed profile's content is what the
+        // provider needs, and the map points at it either way.
+        if key == nil,
+           let existing = profiles.first(where: {
+               $0.kind == .url
+               && $0.urlString?.trimmingCharacters(in: .whitespaces) == normalizedURL
+           }) {
+            return existing
+        }
+        guard let downloadURL = URL(string: normalizedURL) else {
+            lastError = "提供方「\(label)」的链接无效"
+            return nil
+        }
+        do {
+            let downloaded = try await downloadSubscription(from: downloadURL)
+            // Age-encrypted body: try to decrypt with the key now
+            // (same step as addFromURL); otherwise the ciphertext
+            // is stored WITH the key and 更新 decrypts it — bake
+            // falls back to http until then.
+            var downloadedData = downloaded.data
+            if Self.looksAgeEncrypted(downloadedData), let key {
+                switch await decryptAgeDataIfNeeded(downloadedData, key: key) {
+                case .success(let plain):
+                    downloadedData = plain
+                case .failure:
+                    break
+                }
+            }
+            // A provider file is a full subscription YAML: it goes
+            // through the same content check as any URL import, so
+            // a broken provider file is reported instead of stored.
+            // Age-encrypted content skips that check (it is not
+            // YAML yet) and is stored as-is WITH the key.
+            if Self.looksAgeEncrypted(downloadedData) {
+                return try storeDownloadedURLProfile(
+                    name: label, urlString: normalizedURL, ageSecretKey: key,
+                    data: downloadedData, fileName: downloaded.fileName, info: downloaded.info)
+            }
+            let normalized: (data: Data, note: String?)
+            switch await normalizedSubscriptionData(downloadedData) {
+            case .success(let value):
+                normalized = value
+            case .failure(let reason):
+                lastError = "提供方「\(label)」内容异常：\(reason.message)"
+                return nil
+            }
+            return try storeDownloadedURLProfile(
+                name: label, urlString: normalizedURL, ageSecretKey: key,
+                data: normalized.data, fileName: downloaded.fileName, info: downloaded.info)
+        } catch {
+            lastError = Self.subscriptionFailureMessage(error)
+            return nil
         }
     }
 
@@ -1198,7 +1283,38 @@ final class ProfileStore: ObservableObject {
                 }
             }
         }
+        // v0.2.148: a custom subscription baked into the active
+        // profile may map one of its proxy providers to this
+        // profile by id (providerProfileMap) — the raw file has no
+        // trace of it (the map lives in custom-subscriptions.json
+        // and the confined file path only exists in the baked
+        // text), so check the map directly. Without this, updating
+        // a provider profile would never re-apply a custom
+        // subscription that confines it.
+        if !referenced,
+           let subID = CustomSubscriptionStore.bakedSubscriptionID(for: active.id),
+           let sub = CustomSubscriptionStore().subscriptions.first(where: { $0.id == subID }),
+           sub.providerProfileMap.values.contains(where: { $0.profileId == updatedProfile.id }) {
+            referenced = true
+        }
         guard referenced,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: activePath)) else { return }
+        await applyProfile(active, data: data)
+    }
+
+    /// Re-applies the active profile when a custom subscription
+    /// baked into it maps a rule provider to this ClashProvider
+    /// record (v0.2.148; upstream ClashProvider.applyIfReferenced).
+    /// Called after the record's content is re-downloaded (the
+    /// editor's update button). No-ops when the active profile has
+    /// no such subscription, or the active file cannot be read.
+    @MainActor
+    func reapplyActiveForClashProvider(id: UUID) async {
+        guard let active = activeProfile,
+              let subID = CustomSubscriptionStore.bakedSubscriptionID(for: active.id),
+              let sub = CustomSubscriptionStore().subscriptions.first(where: { $0.id == subID }),
+              sub.ruleProviderMap.values.contains(where: { $0.clashProviderId == id }),
+              let activePath = absolutePath(for: active),
               let data = try? Data(contentsOf: URL(fileURLWithPath: activePath)) else { return }
         await applyProfile(active, data: data)
     }
@@ -1245,6 +1361,15 @@ final class ProfileStore: ObservableObject {
         }
         profiles.removeAll { $0.id == profile.id }
         save()
+        // v0.2.148: custom subscriptions may map a proxy provider
+        // to this profile (providerProfileMap). Strip those entries
+        // so bake falls back to http instead of confining a deleted
+        // profile's file (which no longer exists).
+        let store = CustomSubscriptionStore()
+        for var sub in store.subscriptions where sub.providerProfileMap.values.contains(where: { $0.profileId == profile.id }) {
+            sub.providerProfileMap = sub.providerProfileMap.filter { $0.value.profileId != profile.id }
+            store.update(sub)
+        }
     }
 
     /// Deletes a profile the FlClash way (profiles.dart
@@ -1265,8 +1390,28 @@ final class ProfileStore: ObservableObject {
     func deleteProfile(_ profile: Profile) async {
         let wasActive = profile.isActive
         let name = profile.name
+        // v0.2.148: when the deleted profile was a provider
+        // profile mapped into a custom subscription baked into the
+        // ACTIVE profile, the active profile must be re-applied
+        // after the strip — otherwise it keeps serving the deleted
+        // profile's content (the confined file is still on disk)
+        // until the next bake. Computed BEFORE delete() strips the
+        // map (afterwards the check cannot see the reference).
+        let activeReferencedDeleted: Bool = {
+            guard !wasActive,
+                  let active = activeProfile,
+                  let subID = CustomSubscriptionStore.bakedSubscriptionID(for: active.id),
+                  let sub = CustomSubscriptionStore().subscriptions.first(where: { $0.id == subID }) else { return false }
+            return sub.providerProfileMap.values.contains(where: { $0.profileId == profile.id })
+        }()
         delete(profile)
         guard wasActive else {
+            if activeReferencedDeleted,
+               let active = activeProfile,
+               let activePath = absolutePath(for: active),
+               let data = try? Data(contentsOf: URL(fileURLWithPath: activePath)) {
+                await applyProfile(active, data: data)
+            }
             statusMessage = "已删除 \(name)"
             return
         }
@@ -1404,6 +1549,12 @@ final class ProfileStore: ObservableObject {
             lastError = nil
             if profile.isActive {
                 await applyProfile(profile, data: data)
+            } else {
+                // v0.2.148: the file-edit path must reload
+                // referencers like update() does — a provider
+                // profile edited here feeds custom subscriptions
+                // baked into the active profile.
+                await reloadReferencingActiveProfileIfNeeded(updatedProfile: profile)
             }
         } catch {
             lastError = "保存失败：\(error.localizedDescription)"

@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
 
 // MARK: - Dashboard bottom sheets (v0.2.56, MuYu iOS build)
 //
@@ -264,7 +266,8 @@ struct DashboardBottomSheet<Content: View, Actions: View>: View {
     /// every system-sheet call site.
     let onClose: (() -> Void)?
     /// v0.2.124: drag callbacks for the overlay sheets (drag the
-    /// header to grow / dismiss, mirroring DnsSheetOverlay). Nil
+    /// header to grow / dismiss, mirroring the overlay sheets in
+    /// ContentView). Nil
     /// means no gesture is attached at all — system sheets are
     /// untouched. The gesture lives on the header only (never on
     /// the scrollable content — v0.2.114: a gesture on the
@@ -773,6 +776,14 @@ struct ProfileDetailSheet: View {
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var profileStore: ProfileStore
     @EnvironmentObject private var client: ConcordClient
+    /// Extend settings + the MITM script library, for the 扩展脚本
+    /// row (upstream profile_detail.dart reads profile.scriptId
+    /// against the scripts library). Ours stores no script id:
+    /// ExtendConfigView copies the picked library script's CONTENT
+    /// into the settings, so the label is recovered by matching
+    /// that content against the library (see scriptLabel).
+    @StateObject private var extendStore = ExtendConfigStore()
+    @StateObject private var scriptStore = MitmScriptStore()
 
     let profileName: String
     /// The active profile's subscription info, passed from the
@@ -781,6 +792,28 @@ struct ProfileDetailSheet: View {
     let subscription: ConcordSubscriptionInfo?
     @State private var isRefreshing = false
     @State private var isSyncingProviders = false
+    @State private var isSyncingProfile = false
+    @State private var showPreview = false
+    @State private var headerError: String?
+    /// Update-all failures, one line per failed provider
+    /// (upstream _updateProviders → dialogs.showFailures).
+    @State private var providerFailures: String?
+    /// Stat counts parsed from the applied config file on disk
+    /// (upstream _countConfigFile / configCountsOf, 8 MB cap).
+    /// Nil = not loaded yet or the file could not be read — the
+    /// cells then fall back to the live stores, and to "—" when
+    /// those are empty too. Only used in live mode; sample mode
+    /// keeps the live-store counts (its mock data has no real
+    /// file behind it).
+    @State private var localCounts: ProfileStore.AppliedConfigCounts?
+    /// Provider rows: edit (text files) and .mrs dump preview.
+    @State private var editingProvider: ConcordProviderInfo?
+    @State private var previewingProvider: ConcordProviderInfo?
+    /// Subscription-info dialog (upstream _handleShowSubscriptionInfo).
+    @State private var subscriptionInfoProvider: ConcordProviderInfo?
+    /// Side-load upload target + the system file picker.
+    @State private var uploadTarget: ConcordProviderInfo?
+    @State private var showFileImporter = false
 
     private var providers: [ConcordProviderInfo] {
         ruleStore.providers
@@ -788,9 +821,15 @@ struct ProfileDetailSheet: View {
 
     /// Header (v0.2.64, video sheet_2 bottom-right): four stat
     /// cells (策略组 / 代理 / 规则 / 外部资源）, a 订阅信息
-    /// section (used/total + expiry date), and a 配置 section
-    /// (上次更新）. Counts with no loaded data show "—" —
-    /// never an invented number.
+    /// section (used/total + expiry date, only when the profile
+    /// actually has subscription traffic — upstream shows the
+    /// section only when total > 0), and a 配置 section
+    /// (上次更新 + 扩展脚本）. Counts come from the applied
+    /// config file when it could be parsed (works VPN-off,
+    /// upstream profile_detail.dart), falling back to the live
+    /// stores; with no loaded data they show "—" — never an
+    /// invented number. A legitimately empty config shows 0,
+    /// not "—" (upstream reserves "-" for a load failure).
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
@@ -799,19 +838,19 @@ struct ProfileDetailSheet: View {
                 profileStatCell(value: ruleCountText, label: "规则")
                 profileStatCell(value: providerCountText, label: "外部资源")
             }
-            VStack(alignment: .leading, spacing: 6) {
-                Text("订阅信息")
-                    .font(.headline)
-                HStack {
-                    Text(subscriptionText)
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text(expireText)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                // v0.2.68: wavy usage bar under the used/total line.
-                if let info = subscription, info.total > 0 {
+            if let info = subscription, info.total > 0 {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("订阅信息")
+                        .font(.headline)
+                    HStack {
+                        Text(subscriptionText)
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                        Text(expireText)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    // v0.2.68: wavy usage bar under the used/total line.
                     WavyProgressBar(
                         progress: Double(info.upload + info.download) / Double(info.total),
                         color: ConcordTheme.accent
@@ -821,9 +860,6 @@ struct ProfileDetailSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("配置")
                     .font(.headline)
-                // v0.2.68: "上次更新" only. The video's "扩展脚本 /
-                // FlClash" row has no data source in our code, so it
-                // is not added.
                 HStack {
                     Text("上次更新")
                         .font(.footnote)
@@ -833,6 +869,26 @@ struct ProfileDetailSheet: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                // Upstream profile_detail.dart:229-237: the 扩展脚本
+                // row, for non-custom profiles (every profile here
+                // is url/file). The label is the library script
+                // whose content matches the extend settings, or
+                // "自定义脚本" when a script is set but came from
+                // nowhere in the library.
+                HStack {
+                    Text("扩展脚本")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(scriptLabel)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let headerError {
+                Text(headerError)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
             }
         }
         .padding(16)
@@ -856,54 +912,175 @@ struct ProfileDetailSheet: View {
         isRefreshing = true
         defer { isRefreshing = false }
         await ruleStore.refresh()
+        await loadLocalCounts()
+    }
+
+    /// Parses the applied config file off the main thread
+    /// (ProfileStore.localAppliedConfigCounts, upstream
+    /// _countConfigFile). Live mode only: sample mode has no real
+    /// file behind its mock stores.
+    private func loadLocalCounts() async {
+        guard client.mode == .live else { return }
+        let counts = await Task.detached(priority: .userInitiated) {
+            ProfileStore.localAppliedConfigCounts()
+        }.value
+        // The detached parse resumes off the main thread; the
+        // @State write must hop back explicitly.
+        await MainActor.run { localCounts = counts }
+    }
+
+    /// The extend-script label for the 配置 section: the library
+    /// script whose content matches the active profile's extend
+    /// settings. No script set → "无"; a script with no library
+    /// match → "自定义脚本" (pasted in, or from a deleted library
+    /// entry). There is no stored script id to look up directly
+    /// — ExtendConfigView copies content, not the id.
+    private var scriptLabel: String {
+        guard let active = profileStore.activeProfile else { return "无" }
+        let settings = extendStore.settings(for: active.id)
+        guard settings.mode == .script, settings.scriptEnabled,
+              !settings.scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "无" }
+        if let match = scriptStore.scripts.first(where: { scriptStore.content(of: $0) == settings.scriptText }) {
+            return match.label
+        }
+        return "自定义脚本"
+    }
+
+    /// Upstream profile_detail.dart syncProfile: re-downloads the
+    /// active URL profile (the sheet's sync icon action). Errors
+    /// surface under the header; a success re-reads the counts
+    /// and the provider list.
+    private func syncProfile() async {
+        guard let active = profileStore.activeProfile, active.kind == .url else { return }
+        isSyncingProfile = true
+        defer { isSyncingProfile = false }
+        await profileStore.update(active)
+        if let error = profileStore.lastError {
+            headerError = error
+        } else {
+            headerError = nil
+            await loadLocalCounts()
+            await ruleStore.refresh()
+        }
     }
 
     /// Upstream's sliver header sync (providers.dart
     /// _updateProviders): updates every provider in the sliver in
-    /// turn, then refreshes the list. Failures are reported via
-    /// ruleStore.lastError and do not stop the rest.
+    /// parallel, reports EVERY failed provider (not just the
+    /// last), then refreshes the proxy groups
+    /// (updateGroupsDebounce) and the list.
     private func syncAllProviders() async {
+        guard !isSyncingProviders else { return }
         isSyncingProviders = true
         defer { isSyncingProviders = false }
-        for provider in providers {
-            do {
-                try await client.providerUpdate(name: provider.name)
-            } catch {
-                ruleStore.lastError = error.localizedDescription
+        providerFailures = nil
+        let store = ruleStore
+        let failures: [(String, String)] = await withTaskGroup(of: (String, String)?.self) { group in
+            for provider in providers {
+                group.addTask {
+                    do {
+                        try await store.updateProviderThrowing(provider)
+                        return nil
+                    } catch {
+                        return (provider.name, error.localizedDescription)
+                    }
+                }
             }
+            var collected: [(String, String)] = []
+            for await item in group {
+                if let item { collected.append(item) }
+            }
+            return collected
+        }
+        if !failures.isEmpty {
+            providerFailures = "更新失败（\(failures.count) 个）：\n"
+                + failures.sorted(by: { $0.0 < $1.0 }).map { "· \($0.0)：\($0.1)" }.joined(separator: "\n")
         }
         await ruleStore.refresh()
+        await proxyStore.refresh(activeProfile: profileStore.activeProfile)
     }
 
-    /// Upstream ProviderItem._handleUpdateProvider: only HTTP
-    /// providers sync (file providers have no URL to pull from).
+    /// Upstream ProviderItem._handleUpdateProvider (via
+    /// RuleStore.updateProvider, which handles the HTTP case, the
+    /// app-rule-set remote sync, and the VPN-off in-app core),
+    /// then the groups refresh (upstream updateGroupsDebounce).
     private func updateProvider(_ provider: ConcordProviderInfo) async {
-        guard provider.vehicleType == "HTTP" else { return }
-        do {
-            try await client.providerUpdate(name: provider.name)
-            await ruleStore.refresh()
-        } catch {
-            ruleStore.lastError = error.localizedDescription
+        await ruleStore.updateProvider(provider)
+        await proxyStore.refresh(activeProfile: profileStore.activeProfile)
+    }
+
+    /// Tap-to-preview (upstream ProviderItem._handlePreviewProvider):
+    /// a text provider opens the editor; an .mrs rule set is dumped
+    /// by the core to text first and shown read-only (a binary
+    /// .mrs must never be opened as text). A binary provider has
+    /// no preview — the row tap is disabled for it.
+    private func previewProvider(_ provider: ConcordProviderInfo) async {
+        let kind = await ruleStore.probeProviderFile(provider)
+        if kind == .ruleSet {
+            await ruleStore.dumpRuleSet(provider)
+            if ruleStore.dumpedRuleSetName == provider.name, ruleStore.dumpedRuleSetText != nil {
+                previewingProvider = provider
+            }
+        } else if kind == .text {
+            editingProvider = provider
+        }
+    }
+
+    /// Upstream _sideLoadProvider: uploads a picked file's text
+    /// into the core under the provider's name. Non-UTF-8 files
+    /// are refused (the core's string side-load cannot take them,
+    /// same as upstream's _decodeProviderFile).
+    private func handleUploadResult(_ result: Result<URL, Error>) async {
+        guard let provider = uploadTarget else { return }
+        switch result {
+        case .success(let url):
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url),
+                  let text = String(data: data, encoding: .utf8), !text.isEmpty else {
+                // The file-picker completion runs off the main
+                // thread; the @Published write hops explicitly.
+                await MainActor.run { ruleStore.lastError = "上传失败：文件为空或不是 UTF-8 文本" }
+                return
+            }
+            await ruleStore.sideLoadProvider(name: provider.name, data: text)
+            await proxyStore.refresh(activeProfile: profileStore.activeProfile)
+        case .failure(let error):
+            await MainActor.run { ruleStore.lastError = "选择文件失败：\(error.localizedDescription)" }
         }
     }
 
     private var groupCountText: String {
-        proxyStore.groups.isEmpty ? "—" : "\(proxyStore.groups.count)"
+        if let local = localCounts { return "\(local.groups)" }
+        return proxyStore.groups.isEmpty ? "—" : "\(proxyStore.groups.count)"
     }
 
     private var nodeCountText: String {
+        // Upstream profileStatsOf: the applied config's own proxies
+        // PLUS the proxies provided by proxy providers.
+        if let local = localCounts { return "\(local.proxies + providedProxyCount)" }
         // allNodes repeats a node once per group that lists it;
         // dedup by name (unique within a profile) for the true
         // proxy count.
-        proxyStore.groups.isEmpty ? "—" : "\(Set(proxyStore.allNodes.map { $0.name }).count)"
+        return proxyStore.groups.isEmpty ? "—" : "\(Set(proxyStore.allNodes.map { $0.name }).count)"
     }
 
     private var ruleCountText: String {
-        ruleStore.rules.isEmpty ? "—" : "\(ruleStore.rules.count)"
+        if let local = localCounts { return "\(local.rules)" }
+        return ruleStore.rules.isEmpty ? "—" : "\(ruleStore.rules.count)"
     }
 
     private var providerCountText: String {
         ruleStore.providers.isEmpty ? "—" : "\(ruleStore.providers.count)"
+    }
+
+    /// Proxies contributed by proxy providers (upstream
+    /// profileStatsOf's providedProxies fold). Core provider
+    /// types arrive lowercase ("proxy" / "rule", see the sample
+    /// transport); the comparison is case-insensitive so a core
+    /// that reports "Proxy" counts the same.
+    private var providedProxyCount: Int {
+        providers.filter { $0.type.lowercased() == "proxy" }.reduce(0) { $0 + Int($1.count) }
     }
 
     private var subscriptionText: String {
@@ -929,8 +1106,21 @@ struct ProfileDetailSheet: View {
         DashboardBottomSheet(
             title: profileName,
             actions: {
+                // Upstream profile_detail.dart:178-192 icon actions:
+                // sync (URL profiles only, with the updating
+                // spinner) + runtime-config preview (eye). The
+                // 刷新 pill stays as the third action: it only
+                // re-reads the provider/rule lists.
                 SheetActionsPill {
-                    SheetActionButton(systemImage: "arrow.clockwise", label: "刷新", disabled: isRefreshing) {
+                    if profileStore.activeProfile?.kind == .url {
+                        SheetActionButton(systemImage: "arrow.clockwise", label: "同步", disabled: isSyncingProfile, loading: isSyncingProfile) {
+                            Task { await syncProfile() }
+                        }
+                    }
+                    SheetActionButton(systemImage: "eye", label: "运行时配置", disabled: profileStore.activeProfile == nil) {
+                        showPreview = true
+                    }
+                    SheetActionButton(systemImage: "arrow.triangle.2.circlepath", label: "刷新", disabled: isRefreshing) {
                         Task { await refreshProviders() }
                     }
                 }
@@ -940,21 +1130,25 @@ struct ProfileDetailSheet: View {
                 VStack(alignment: .leading, spacing: 0) {
                     headerSection
                     Divider().padding(.horizontal, 16)
-                    // v0.2.145: upstream's sliver header sync
-                    // (providers.dart _updateProviders): updates
-                    // every provider in turn, then refreshes the
-                    // list. The header pill above only reloads the
-                    // list.
+                    // Upstream's sliver header sync (providers.dart
+                    // _updateProviders): parallel, every failure
+                    // reported, groups refreshed afterwards. The
+                    // header pill above only reloads the list.
                     HStack {
                         Text("外部资源")
                             .font(.headline)
                         Spacer()
                         Button { Task { await syncAllProviders() } } label: {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(Color(.label))
-                                .frame(width: 36, height: 36)
-                                .background(ConcordTheme.cardBackground, in: Circle())
+                            if isSyncingProviders {
+                                ProgressView()
+                                    .frame(width: 36, height: 36)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(Color(.label))
+                                    .frame(width: 36, height: 36)
+                                    .background(ConcordTheme.cardBackground, in: Circle())
+                            }
                         }
                         .buttonStyle(.plain)
                         .disabled(isRefreshing || isSyncingProviders)
@@ -968,7 +1162,7 @@ struct ProfileDetailSheet: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("暂无提供方")
                                 .font(.subheadline.weight(.semibold))
-                            Text("核心未返回提供方列表：请先启动 VPN，或点右上角刷新。")
+                            Text("核心未返回提供方列表：请点右上角刷新重试；若一直为空，请检查配置是否引用了提供方。")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -981,6 +1175,12 @@ struct ProfileDetailSheet: View {
                             }
                         }
                     }
+                    if let failures = providerFailures {
+                        Text(failures)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .padding(16)
+                    }
                     if let error = ruleStore.lastError {
                         Text(error)
                             .font(.caption2)
@@ -992,38 +1192,174 @@ struct ProfileDetailSheet: View {
             }
         }
         .task {
+            await loadLocalCounts()
+            await ruleStore.refreshAppRuleSetNames()
             if ruleStore.providers.isEmpty {
                 await ruleStore.refresh()
             }
         }
+        .sheet(isPresented: $showPreview) {
+            if let active = profileStore.activeProfile {
+                ProfilePreviewView(profile: active)
+            }
+        }
+        .sheet(item: $editingProvider) { provider in
+            EditProviderView(provider: provider)
+        }
+        .sheet(item: $previewingProvider) { provider in
+            ProviderDumpPreviewSheet(name: provider.name, text: ruleStore.dumpedRuleSetText ?? "")
+        }
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.yaml, .plainText]) { result in
+            Task { await handleUploadResult(result) }
+        }
+        .alert(
+            "订阅信息",
+            isPresented: Binding(
+                get: { subscriptionInfoProvider != nil },
+                set: { if !$0 { subscriptionInfoProvider = nil } }
+            ),
+            presenting: subscriptionInfoProvider
+        ) { _ in
+            Button("确定", role: .cancel) {}
+        } message: { provider in
+            Text(subscriptionInfoMessage(ruleStore.providerDetails[provider.name]?.subscriptionInfo ?? provider.subscriptionInfo))
+        }
     }
 
+    /// Upstream ProviderItem (providers.dart:160-371): tap
+    /// previews (editor, or the core's dumpRules for .mrs),
+    /// the menu offers edit (text files), preview (.mrs),
+    /// side-load upload, sync (HTTP or app rule set), and the
+    /// subscription-info dialog when the provider has
+    /// subscription traffic. The subtitle is the traffic meter
+    /// (used/total + progress bar) when subscription info is
+    /// known, else the rule/proxy count; the title carries the
+    /// expiry chip; the trailing shows a spinner while this
+    /// provider updates, else the last-update time. The detail
+    /// (provider.get) and the file kind are fetched when the row
+    /// appears; until the kind lands the row is not tappable and
+    /// the menu shows only the always-available items.
     private func providerRow(_ provider: ConcordProviderInfo) -> some View {
-        HStack {
+        let detail = ruleStore.providerDetails[provider.name]
+        let info = detail?.subscriptionInfo ?? provider.subscriptionInfo
+        let kind = ruleStore.providerFileKinds[provider.name]
+        let isUpdating = ruleStore.updatingProviderNames.contains(provider.name)
+        let previewable = kind != nil && kind != .binary
+        let syncable = provider.vehicleType == "HTTP" || ruleStore.isAppRuleSetProvider(provider)
+        return HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(provider.name)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                Text(countText(for: provider))
+                HStack(spacing: 6) {
+                    Text(provider.name)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    if let expire = providerExpireText(info) {
+                        Text(expire)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(ConcordTheme.accent.opacity(0.12), in: Capsule())
+                            .foregroundStyle(ConcordTheme.accent)
+                            .lineLimit(1)
+                    }
+                }
+                if let info, info.total > 0 {
+                    providerTrafficMeter(info: info)
+                } else {
+                    Text(countText(for: provider))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if isUpdating {
+                ProgressView()
+                    .frame(width: 24, height: 24)
+            } else {
+                Text(updatedText(for: provider))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Spacer()
-            Text(updatedText(for: provider))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        // Upstream ProviderItem menu: HTTP providers can be updated
-        // from the row (file providers have nothing to pull).
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard !isUpdating, previewable else { return }
+            Task { await previewProvider(provider) }
+        }
+        .task {
+            _ = await ruleStore.probeProviderFile(provider)
+            await ruleStore.loadProviderDetailIfNeeded(provider)
+        }
         .contextMenu {
-            if provider.vehicleType == "HTTP" {
+            if kind == .text {
+                Button("编辑提供方") {
+                    editingProvider = provider
+                }
+            }
+            if kind == .ruleSet {
+                Button("预览规则") {
+                    Task { await previewProvider(provider) }
+                }
+            }
+            Button("上传文件") {
+                uploadTarget = provider
+                showFileImporter = true
+            }
+            if syncable {
                 Button("更新提供方") {
                     Task { await updateProvider(provider) }
                 }
             }
+            if let info, info.total > 0 {
+                Button("订阅信息") {
+                    subscriptionInfoProvider = provider
+                }
+            }
         }
+    }
+
+    /// Upstream ProviderItem._TrafficMeter: used/total + a thin
+    /// progress bar. The header's wavy bar is the profile-level
+    /// one; rows use the plain bar, like upstream's
+    /// LinearProgressIndicator.
+    private func providerTrafficMeter(info: ConcordSubscriptionInfo) -> some View {
+        let used = info.upload + info.download
+        let usage = info.total > 0 ? min(Double(used) / Double(info.total), 1.0) : 0
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("\(dashboardBytesNoSpace(used)) / \(dashboardBytesNoSpace(info.total))")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            ProgressView(value: usage)
+                .tint(ConcordTheme.accent)
+        }
+    }
+
+    /// Expiry date chip (upstream ChipTitle expire): "yyyy-MM-dd",
+    /// nil when the provider has no subscription expiry.
+    private func providerExpireText(_ info: ConcordSubscriptionInfo?) -> String? {
+        guard let info, info.expire > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: TimeInterval(info.expire))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    /// Subscription-info dialog body (upstream
+    /// SubscriptionInfoDetailView): used / total / expiry, one
+    /// line each. No traffic info at all → the fallback line.
+    private func subscriptionInfoMessage(_ info: ConcordSubscriptionInfo?) -> String {
+        guard let info else { return "无订阅信息" }
+        var lines = [
+            "已用：\(dashboardBytesNoSpace(info.upload + info.download))",
+            "总量：\(info.total > 0 ? dashboardBytesNoSpace(info.total) : "不限")",
+        ]
+        if let expire = providerExpireText(info) {
+            lines.append("到期：\(expire)")
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func countText(for provider: ConcordProviderInfo) -> String {
@@ -1036,6 +1372,45 @@ struct ProfileDetailSheet: View {
     private func updatedText(for provider: ConcordProviderInfo) -> String {
         guard let updatedAt = provider.updatedAt else { return "—" }
         return ConcordRelativeTime.string(since: Date(timeIntervalSince1970: TimeInterval(updatedAt)))
+    }
+}
+
+/// Read-only dump preview for an .mrs rule-set provider
+/// (upstream ProviderItem._handlePreviewProvider with
+/// core.dumpRules): the dumped text in a monospaced, selectable
+/// scroll view with copy. Kept separate from EditProviderView
+/// on purpose — saving dumped text back through side-load would
+/// corrupt the compiled set.
+private struct ProviderDumpPreviewSheet: View {
+    let name: String
+    let text: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var copied = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(text)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .background(ConcordTheme.pageBackground)
+            .navigationTitle(name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(copied ? "已复制" : "复制") {
+                        UIPasteboard.general.string = text
+                        copied = true
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
     }
 }
 
@@ -1779,17 +2154,25 @@ struct TrafficStatsSheet: View {
 struct MemoryDetailSheet: View {
     let appBytes: UInt64
     let coreBytes: UInt64?
+    /// Extension (NetworkExtension process) RSS — the same GET /memory
+    /// number the card shows as its extension leg (v0.2.146 D-42).
+    /// Non-nil only while the tunnel runs; nil VPN-off / sample mode.
+    let extensionBytes: UInt64?
     @Binding var isReleasing: Bool
     @Binding var releaseMessage: String?
     let onRelease: () async -> Void
-    /// False while the tunnel runs (v0.2.133): the core memory then
-    /// comes from the tunnel controller's /memory stream, and
-    /// core.releaseMemory has NO REST route (JSON-RPC only, against
-    /// the stopped in-app core) — so the broom stays disabled and
-    /// the release cannot be attempted in that state.
+    /// v0.2.146 (D-43): release is enabled exactly where a route
+    /// exists — VPN-on the tunnel core answers core.releaseMemory
+    /// over the existing JSON-RPC route, sample mode keeps its mock
+    /// answer. VPN-off live stays disabled (no AppCore release RPC).
     let canRelease: Bool
 
-    private var totalBytes: UInt64 { appBytes + (coreBytes ?? 0) }
+    /// While the tunnel runs the /memory number belongs to the
+    /// extension leg, so the core leg is 0 (same split as the card);
+    /// otherwise the core leg is coreBytes (nil = core not running).
+    private var hasExtension: Bool { (extensionBytes ?? 0) > 0 }
+    private var coreLeg: UInt64 { hasExtension ? 0 : (coreBytes ?? 0) }
+    private var totalBytes: UInt64 { appBytes + coreLeg + (extensionBytes ?? 0) }
 
     var body: some View {
         DashboardBottomSheet(
@@ -1821,16 +2204,20 @@ struct MemoryDetailSheet: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
-                    // Segmented bar: 2 segments only (app + core).
-                    // The video's third "扩展内核" segment has NO data
-                    // source in our code — it is not faked.
-                    MemoryDetailBar(appBytes: appBytes, coreBytes: coreBytes ?? 0)
+                    // Segmented bar: app + core + extension (v0.2.146
+                    // D-42 — the extension leg is the tunnel core's
+                    // /memory number; 0 while the tunnel is down).
+                    MemoryDetailBar(appBytes: appBytes, coreBytes: coreLeg, extensionBytes: extensionBytes ?? 0)
                     VStack(spacing: 0) {
                         memoryRow("总计", value: ConcordFormat.bytes(Int64(totalBytes)))
                         Divider()
                         memoryRow("应用及共享", value: ConcordFormat.bytes(Int64(appBytes)))
                         Divider()
-                        if let core = coreBytes {
+                        if hasExtension {
+                            memoryRow("内核", value: ConcordFormat.bytes(0))
+                            Divider()
+                            memoryRow("扩展", value: ConcordFormat.bytes(Int64(extensionBytes ?? 0)))
+                        } else if let core = coreBytes {
                             memoryRow("内核", value: ConcordFormat.bytes(Int64(core)))
                         } else {
                             memoryRow("内核", value: "核心未运行")
@@ -1867,21 +2254,25 @@ struct MemoryDetailSheet: View {
     }
 }
 
-/// Two-segment memory bar for the detail sheet (app in accent,
-/// core in the series2 tone, on a soft track).
+/// Three-segment memory bar for the detail sheet (app in accent,
+/// core in the series2 tone, extension in series3, on a soft track;
+/// the extension segment is 0 while the tunnel is down).
 private struct MemoryDetailBar: View {
     let appBytes: UInt64
     let coreBytes: UInt64
+    let extensionBytes: UInt64
 
     var body: some View {
         GeometryReader { geo in
-            let total = max(1, appBytes + coreBytes)
+            let total = max(1, appBytes + coreBytes + extensionBytes)
             let appWidth = geo.size.width * CGFloat(appBytes) / CGFloat(total)
+            let coreWidth = geo.size.width * CGFloat(coreBytes) / CGFloat(total)
             ZStack(alignment: .leading) {
                 Capsule().fill(ConcordTheme.softFill)
                 HStack(spacing: 2) {
                     Capsule().fill(ConcordTheme.accent).frame(width: max(0, appWidth - 1))
-                    Capsule().fill(ConcordTheme.accent.opacity(0.45)).frame(width: max(0, geo.size.width - appWidth - 1))
+                    Capsule().fill(ConcordTheme.accent.opacity(0.45)).frame(width: max(0, coreWidth - 1))
+                    Capsule().fill(ConcordTheme.series3).frame(width: max(0, geo.size.width - appWidth - coreWidth - 1))
                 }
             }
         }

@@ -1,21 +1,24 @@
 import Foundation
 import Combine
 
-// MARK: - Unified import (single-item orchestrator)
+// MARK: - Unified import (batch orchestrator)
 // One entry point for every import: subscription links, node share
 // links and whole YAML text. It wraps ONLY existing ProfileStore
 // methods (addFromURL / addFromFile / delete / activate / decodeLinks)
 // — no existing method was changed for this feature.
 //
-// Single-item rules (per the user's request: one tap imports ONE
-// item, never a batch):
+// Batch rules (upstream add.dart showNamedUrlsForm +
+// addProfilesFromLinks, restored in v0.2.146 — the earlier
+// one-item-per-tap direction is superseded by the user's
+// "全部按照上游" order):
 //  - a whole YAML document counts as one item;
-//  - otherwise only the FIRST importable line is imported — any
-//    further lines are ignored and the summary says so, so the user
-//    pastes the next one separately;
-//  - node lines are saved once as the "我的节点" config (replacing
-//    an old one of the same name);
-//  - the imported profile is activated once at the end.
+//  - every subscription link becomes its own profile;
+//  - ALL node share links together become one profile (the
+//    generated "我的节点" config), in the place of the first;
+//  - lines that are neither are reported as unrecognised, never
+//    silently dropped;
+//  - the first successfully imported profile is activated once at
+//    the end.
 // Success detection is by snapshot: ProfileStore appends the profile
 // BEFORE writing its file, so a save failure leaves the profile in
 // the list with lastError set. A call only counts as success when
@@ -45,11 +48,23 @@ enum ImportLineKind {
     case unknown
 }
 
+/// An age-encrypted file waiting for its decryption key.
+struct PendingAgeFile {
+    let data: Data
+    let fileName: String
+}
+
 final class UnifiedImporter: ObservableObject {
     @Published var results: [ImportLineResult] = []
     @Published var isImporting = false
     @Published var summaryText: String?
     @Published var activatedName: String?
+    /// An age-encrypted file waiting for its key (upstream
+    /// _withAgeSecretKey): the + menu file path sets this when
+    /// the picked file is age-encrypted and no key was given,
+    /// and ProfilesView shows the key prompt for it. Cleared as
+    /// soon as a key is supplied (success or failure).
+    @Published var pendingAgeFile: PendingAgeFile?
 
     let profileStore: ProfileStore
 
@@ -86,16 +101,7 @@ final class UnifiedImporter: ObservableObject {
         }
     }
 
-    /// The single item the one-at-a-time UI imports: a whole YAML
-    /// document as-is, otherwise the first importable line.
-    static func singleItemText(_ text: String) -> String? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        if looksLikeYamlDocument(trimmed) { return trimmed }
-        return nonEmptyLines(trimmed).first { kind(of: $0) != .unknown }
-    }
-
-    /// Detected kind of the single item (for the UI's type chip).
+    /// Detected kind of the first item (for the UI's type chip).
     static func singleItemKind(_ text: String) -> ImportKind {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .unknown }
@@ -137,14 +143,13 @@ final class UnifiedImporter: ObservableObject {
             return
         }
         var activationFailure: String?
-        var ignoredLines = 0
         if Self.looksLikeYamlDocument(trimmed) {
             await importYamlDocument(trimmed, yamlName: yamlName ?? name)
         } else {
-            ignoredLines = await importFirstLine(trimmed, name: name, ageSecretKey: ageSecretKey)
+            await importLines(trimmed, name: name, ageSecretKey: ageSecretKey)
         }
         results.sort { $0.order < $1.order }
-        // Activate the imported profile once at the end.
+        // Activate the first imported profile once at the end.
         if let first = successProfiles.sorted(by: { $0.order < $1.order }).first {
             await profileStore.activate(first.profile)
             if profileStore.lastError == nil {
@@ -156,9 +161,6 @@ final class UnifiedImporter: ObservableObject {
         let ok = results.filter { $0.succeeded }.count
         let failed = results.count - ok
         var summary = "导入完成：成功 \(ok) 个，失败 \(failed) 个"
-        if ignoredLines > 0 {
-            summary += "；只导入了第一条，其余 \(ignoredLines) 行没有导入，请分次粘贴"
-        }
         if let activated = activatedName {
             summary += "；已切换到「\(activated)」，去仪表盘点播放键启动即可"
         }
@@ -168,8 +170,63 @@ final class UnifiedImporter: ObservableObject {
         summaryText = summary
     }
 
+    /// The + menu's 文件 item, with the age path (upstream
+    /// addProfileFormFile → _withAgeSecretKey): an age-encrypted
+    /// file first asks for the key (pendingAgeFile, shown by
+    /// ProfilesView), then decrypts when a core is reachable.
+    /// With no core reachable the ciphertext is saved WITH the
+    /// key — the link flow's fallback — so a later 更新 decrypts
+    /// it instead of the import failing outright.
     @MainActor
-    func importFileData(_ data: Data, fileName: String) async {
+    func importFileData(_ data: Data, fileName: String, ageSecretKey: String? = nil) async {
+        if ProfileStore.isAgeEncrypted(data) {
+            let key = ageSecretKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let key, !key.isEmpty else {
+                results = []
+                pendingAgeFile = PendingAgeFile(data: data, fileName: fileName)
+                summaryText = "该文件是 age 加密的，请填写私钥"
+                return
+            }
+            pendingAgeFile = nil
+            let base = (fileName as NSString).deletingPathExtension
+            let yamlBase = base.isEmpty ? "导入的配置" : base
+            if profileStore.client.mode == .live, TunnelManager.shared.isRunning {
+                switch await profileStore.decryptAgeData(data, key: key) {
+                case .success(let plain):
+                    guard let text = String(data: plain, encoding: .utf8),
+                          !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        results = [ImportLineResult(order: 0, line: fileName, kind: .unknown, succeeded: false, message: "解密成功，但内容不是有效的 UTF-8 文本")]
+                        summaryText = "解密成功，但内容无法识别"
+                        return
+                    }
+                    await importText(text, yamlName: yamlBase)
+                    return
+                case .failure(let message):
+                    results = [ImportLineResult(order: 0, line: fileName, kind: .unknown, succeeded: false, message: message)]
+                    summaryText = "解密失败：\(message)"
+                    return
+                }
+            }
+            // No core reachable (VPN off / sample mode): save the
+            // ciphertext with the key, like the link flow.
+            let name = uniqueYamlName(base: yamlBase)
+            let beforeCount = profileStore.profiles.count
+            profileStore.addFromFile(name: name, data: data, ageSecretKey: key)
+            if profileStore.profiles.count > beforeCount, profileStore.lastError == nil,
+               let created = profileStore.profiles.last {
+                results = [ImportLineResult(order: 0, line: name, kind: .yaml, succeeded: true, message: "已保存加密文件「\(name)」（未启动 VPN，无法当场解密；已保存私钥，更新时解密）")]
+                successProfiles = [(order: 0, profile: created)]
+                // No activation here: an age ciphertext cannot be
+                // applied yet (applyProfile refuses it until it is
+                // decrypted). The user taps 更新 on the card, which
+                // decrypts with the stored key.
+                summaryText = "导入完成：成功 1 个，失败 0 个；已保存加密文件「\(name)」，请点「更新」解密后再切换"
+            } else {
+                results = [ImportLineResult(order: 0, line: name, kind: .yaml, succeeded: false, message: "保存失败：\(profileStore.lastError ?? "原因未知")")]
+                summaryText = "导入失败：\(profileStore.lastError ?? "原因未知")"
+            }
+            return
+        }
         guard let text = String(data: data, encoding: .utf8),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             summaryText = "文件不是 UTF-8 文本，无法导入"
@@ -210,33 +267,45 @@ final class UnifiedImporter: ObservableObject {
         }
     }
 
-    // MARK: - Single line (one tap imports ONE item)
+    // MARK: - Lines (batch: every subscription link is its own
+    // profile, ALL node links together are one profile)
 
-    /// Imports only the first importable line; returns how many
-    /// further lines were ignored (the user pastes them separately).
+    /// Imports every importable line (upstream
+    /// addProfilesFromLinks): subscription links each become
+    /// their own profile; all node share links together become
+    /// the one generated "我的节点" config; lines that are
+    /// neither get an unrecognised row instead of being dropped
+    /// silently.
     @MainActor
-    private func importFirstLine(_ text: String, name: String?, ageSecretKey: String? = nil) async -> Int {
+    private func importLines(_ text: String, name: String?, ageSecretKey: String? = nil) async {
         let lines = Self.nonEmptyLines(text)
-        guard let firstIndex = lines.firstIndex(where: { Self.kind(of: $0) != .unknown }) else {
+        let importable = lines.enumerated().filter { Self.kind(of: $0.element) != .unknown }
+        guard !importable.isEmpty else {
             results.append(ImportLineResult(order: 0, line: lines.first ?? text, kind: .unknown, succeeded: false, message: "无法识别：不是订阅链接、节点链接或 YAML（整段 YAML 请单独粘贴导入）"))
-            return 0
+            return
         }
-        let line = lines[firstIndex]
-        switch Self.kind(of: line) {
-        case .subscription:
-            switch await importSubscriptionURL(line, name: name, ageSecretKey: ageSecretKey) {
+        for (offset, line) in lines.enumerated() where Self.kind(of: line) == .unknown {
+            results.append(ImportLineResult(order: offset, line: line, kind: .unknown, succeeded: false, message: "无法识别：不是订阅链接、节点链接或 YAML，已跳过"))
+        }
+        // The form's name field names ONE profile: with several
+        // subscription links it applies to none of them (each
+        // derives its name from its own download, like upstream's
+        // per-link labels); with exactly one it names that one.
+        let subscriptionLines = importable.filter { Self.kind(of: $0.element) == .subscription }
+        let singleName = subscriptionLines.count == 1 ? name : nil
+        for (index, line) in subscriptionLines {
+            switch await importSubscriptionURL(line, name: singleName, ageSecretKey: ageSecretKey) {
             case .success(let profile):
-                results.append(ImportLineResult(order: firstIndex, line: line, kind: .subscription, succeeded: true, message: "已导入订阅「\(profile.name)」"))
-                successProfiles.append((order: firstIndex, profile: profile))
+                results.append(ImportLineResult(order: index, line: line, kind: .subscription, succeeded: true, message: "已导入订阅「\(profile.name)」"))
+                successProfiles.append((order: index, profile: profile))
             case .failure(let error):
-                results.append(ImportLineResult(order: firstIndex, line: line, kind: .subscription, succeeded: false, message: "导入失败：\(error.message)"))
+                results.append(ImportLineResult(order: index, line: line, kind: .subscription, succeeded: false, message: "导入失败：\(error.message)"))
             }
-        case .nodeLink:
-            await importNodeLines([(index: firstIndex, line: line)], totalLines: lines.count)
-        case .unknown:
-            break
         }
-        return lines.count - firstIndex - 1
+        let nodeLines = importable.filter { Self.kind(of: $0.element) == .nodeLink }
+        if !nodeLines.isEmpty {
+            await importNodeLines(nodeLines.map { (index: $0.offset, line: $0.element) }, totalLines: lines.count)
+        }
     }
 
     // MARK: - Node lines (local parse + core fallback + default config)

@@ -4,10 +4,11 @@ import UIKit
 // MARK: - Import from link (FlClash: lib/views/profiles/add.dart)
 // ONE of the three separate add entries (the others are the 文件
 // picker and the 扫码 page, both reached from the Profiles + menu —
-// not from this page). Paste ONE subscription link, node share link
-// or a whole YAML config — the page detects what it is, imports just
-// that one, and activates it. A second link is pasted separately
-// (the user asked for one-at-a-time, not batch). Link subscriptions
+// not from this page). Paste subscription links, node share links
+// or a whole YAML config — the page imports them as a batch
+// (upstream showNamedUrlsForm / addProfilesFromLinks): every
+// subscription link becomes its own profile, all node links
+// together become one "我的节点" profile. Link subscriptions
 // that return base64 node links are decoded and rebuilt into a Clash
 // config by ProfileStore, so they import like any other subscription.
 // The QR scanner feeds this same form (ProfilesView hands the
@@ -39,7 +40,9 @@ struct UnifiedImportView: View {
         _importText = State(initialValue: initialText)
     }
 
-    /// The single item currently in the field, if recognisable.
+    /// The first item currently in the field, if recognisable
+    /// (the type chip shows the first item; the import itself
+    /// is a batch — see UnifiedImporter.importLines).
     private var detectedKind: ImportKind {
         UnifiedImporter.singleItemKind(importText)
     }
@@ -122,9 +125,10 @@ struct UnifiedImportView: View {
                 }
                 if importText.isEmpty,
                    let clip = UIPasteboard.general.string,
-                   let item = UnifiedImporter.singleItemText(clip) {
-                    importText = item
-                    clipboardNotice = "已从剪贴板填入一条\(UnifiedImporter.singleItemKind(clip).rawValue)，检查后点「导入」"
+                   !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   UnifiedImporter.singleItemKind(clip) != .unknown {
+                    importText = clip
+                    clipboardNotice = "已从剪贴板填入内容，检查后点「导入」"
                 }
             }
         }
@@ -145,7 +149,7 @@ struct UnifiedImportView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("导入订阅或节点")
                     .font(.body.weight(.bold))
-                Text("一次导入一个：粘贴一条订阅链接或节点链接，点导入就行。")
+                Text("批量导入：每行一条订阅链接或节点链接，点导入就行；多条节点链接会合成一个「我的节点」配置。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -168,11 +172,11 @@ struct UnifiedImportView: View {
                 }
             }
             HStack(spacing: 8) {
-                TextField("粘贴订阅链接或节点链接", text: $importText)
+                TextField("粘贴订阅链接或节点链接（每行一条）", text: $importText, axis: .vertical)
                     .font(.footnote.weight(.semibold))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
-                    .lineLimit(1)
+                    .lineLimit(3...6)
                 if !importText.isEmpty {
                     Button {
                         importText = ""
@@ -184,9 +188,10 @@ struct UnifiedImportView: View {
                 }
                 Button {
                     if let clip = UIPasteboard.general.string,
-                       let item = UnifiedImporter.singleItemText(clip) {
-                        importText = item
-                        clipboardNotice = "已填入一条\(UnifiedImporter.singleItemKind(clip).rawValue)"
+                       !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       UnifiedImporter.singleItemKind(clip) != .unknown {
+                        importText = clip
+                        clipboardNotice = "已从剪贴板填入内容，检查后点「导入」"
                     } else {
                         clipboardNotice = "剪贴板里没有可导入的链接"
                     }

@@ -499,7 +499,7 @@ struct IPQualityView: View {
             return
         }
         // 3. Network: FlClash's waves.
-        let result = await lookupWaves(targetIp: targetIp)
+        let result = await Self.lookupWaves(targetIp: targetIp)
         failures = result.failures
         if let (answer, source) = result.answer {
             info = answer
@@ -521,7 +521,14 @@ struct IPQualityView: View {
     /// kept only as a fallback while a stated type is still awaited
     /// (upstream _Lookup._onAnswer/_settle). On total failure the
     /// per-source statuses come back for the breakdown section.
-    private func lookupWaves(targetIp: String?) async -> (answer: (IPQualityInfo, String)?, failures: [IPQualityFailure]) {
+    ///
+    /// Static so the Dashboard's status card can run the same
+    /// fan-out for its IP enrichment (D-60): `sessions` defaults
+    /// to the sheet's own direct session; the dashboard passes
+    /// [proxy, direct] so each source is tried through the tunnel
+    /// first and directly second, like its old ip-api.com code.
+    static func lookupWaves(targetIp: String?, sessions: [URLSession]? = nil) async -> (answer: (IPQualityInfo, String)?, failures: [IPQualityFailure]) {
+        let sessions = sessions ?? [timedSession]
         var launchedWave = 0
         var inFlight = 0
         var fallback: (IPQualityInfo, String)?
@@ -531,7 +538,7 @@ struct IPQualityView: View {
                 launchedWave = index
                 for source in Self.waves[index] {
                     inFlight += 1
-                    group.addTask { await Self.query(source: source, targetIp: targetIp) }
+                    group.addTask { await Self.query(source: source, targetIp: targetIp, sessions: sessions) }
                 }
                 group.addTask {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -568,38 +575,53 @@ struct IPQualityView: View {
         return (answer, failures.sorted { $0.source < $1.source })
     }
 
-    /// One source, 8 s timeout. Success needs a resolved IP and a
-    /// stated (or inferred) type; a 429 is rate-limited, a
-    /// proxycheck `denied` is rate-limited, an ident.me answer for
-    /// another IP is an IP mismatch, and a parse with no type is a
-    /// no-type failure (upstream _query/_statusOf).
-    private static func query(source: IPQualitySource, targetIp: String?) async -> WaveOutcome {
-        do {
-            guard let url = source.url(for: targetIp) else {
-                return .failed(source.label, .failed)
-            }
-            let (data, response) = try await Self.timedSession.data(from: url)
-            guard let http = response as? HTTPURLResponse else {
-                return .failed(source.label, .failed)
-            }
-            if http.statusCode == 429 {
-                return .failed(source.label, .rateLimited)
-            }
-            guard http.statusCode == 200 else {
-                return .failed(source.label, .failed)
-            }
-            switch source.parse(data, targetIp: targetIp) {
-            case .answer(let info, let inferred):
-                return .answer(info, source.label, inferred)
-            case .failure(let status):
-                return .failed(source.label, status)
-            }
-        } catch {
-            if (error as NSError).code == NSURLErrorTimedOut {
-                return .failed(source.label, .timeout)
-            }
+    /// One source, 8 s per attempt. Tries each session in order
+    /// (the dashboard passes [proxy, direct]); a 429 is
+    /// rate-limited on the first session that answers it and is
+    /// not retried on the next one — the quota is per source, not
+    /// per egress. Success needs a resolved IP and a stated (or
+    /// inferred) type; a proxycheck `denied` is rate-limited, an
+    /// ident.me answer for another IP is an IP mismatch, and a
+    /// parse with no type is a no-type failure (upstream
+    /// _query/_statusOf). The timeout is set on the request so
+    /// every session — including URLSession.shared, whose own
+    /// timeout is 60 s — is bounded at 8 s.
+    private static func query(source: IPQualitySource, targetIp: String?, sessions: [URLSession]? = nil) async -> WaveOutcome {
+        guard let url = source.url(for: targetIp) else {
             return .failed(source.label, .failed)
         }
+        let request = URLRequest(url: url, timeoutInterval: 8)
+        var sawTimeout = false
+        for session in sessions ?? [timedSession] {
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    continue
+                }
+                if http.statusCode == 429 {
+                    return .failed(source.label, .rateLimited)
+                }
+                guard http.statusCode == 200 else {
+                    continue
+                }
+                switch source.parse(data, targetIp: targetIp) {
+                case .answer(let info, let inferred):
+                    return .answer(info, source.label, inferred)
+                case .failure(let status):
+                    return .failed(source.label, status)
+                }
+            } catch {
+                if (error as NSError).code == NSURLErrorTimedOut {
+                    // A slow proxy path still gets the direct
+                    // attempt; the timeout is only reported if
+                    // every session timed out.
+                    sawTimeout = true
+                    continue
+                }
+                continue
+            }
+        }
+        return .failed(source.label, sawTimeout ? .timeout : .failed)
     }
 
     // MARK: - Cache / cooldown persistence

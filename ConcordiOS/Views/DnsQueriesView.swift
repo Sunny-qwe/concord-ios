@@ -45,10 +45,15 @@ struct DnsQueriesView: View {
     /// Presentation mode (v0.2.68): `.page` is the Tools /
     /// Settings pushed page (manual query + filters); `.sheet`
     /// is the Dashboard stats sheet (records only, own MuYu
-    /// header + bottom floating search bar).
+    /// header + bottom floating search bar); `.segment` is the
+    /// Requests page's DNS segment (v0.2.146, upstream
+    /// RequestsSegment.dns): the records list with its filter
+    /// row, no navigation chrome — the parent page owns the
+    /// title, toolbar and search box.
     enum Mode {
         case page
         case sheet
+        case segment
     }
 
     let mode: Mode
@@ -216,7 +221,7 @@ struct DnsQueriesView: View {
     /// DNS查询 on the Dashboard, VPN off). Deferring to the next
     /// runloop lets the current update/layout pass finish first.
     private func scrollToNewest(_ proxy: ScrollViewProxy) {
-        guard mode == .page else { return }
+        guard mode != .sheet else { return }
         if let id = visibleEntries.first?.seq {
             DispatchQueue.main.async {
                 withAnimation { proxy.scrollTo(id, anchor: .top) }
@@ -486,6 +491,8 @@ struct DnsQueriesView: View {
                         .presentationDetents([.fraction(0.5625), .fraction(0.9)])
                         .presentationDragIndicator(.visible)
                 }
+            } else if mode == .segment {
+                segmentList
             } else {
                 ScrollViewReader { proxy in
                     pageList(proxy: proxy)
@@ -509,29 +516,7 @@ struct DnsQueriesView: View {
                                 // active ones show as removable
                                 // chips above the list.
                                 Menu {
-                                    Picker("筛选", selection: $recordFilter) {
-                                        ForEach(DnsRecordFilter.allCases, id: \.self) { filter in
-                                            Text(filter.title).tag(filter)
-                                        }
-                                    }
-                                    Picker("记录类型", selection: $selectedType) {
-                                        Text("全部").tag(nil as String?)
-                                        ForEach(availableTypes, id: \.self) { type in
-                                            Text(type).tag(type as String?)
-                                        }
-                                    }
-                                    Picker("发起方", selection: $selectedInitiator) {
-                                        Text("全部").tag(nil as String?)
-                                        ForEach(availableInitiators, id: \.self) { initiator in
-                                            Text(initiator).tag(initiator as String?)
-                                        }
-                                    }
-                                    Picker("返回码", selection: $selectedRcode) {
-                                        Text("全部").tag(nil as String?)
-                                        ForEach(availableRcodes, id: \.self) { rcode in
-                                            Text(rcode).tag(rcode as String?)
-                                        }
-                                    }
+                                    dnsFilterMenuContent
                                 } label: {
                                     Image(systemName: "line.3.horizontal.decrease.circle")
                                 }
@@ -584,6 +569,90 @@ struct DnsQueriesView: View {
                                 .presentationDragIndicator(.visible)
                         }
                 }
+            }
+        }
+    }
+
+    /// The filter menu, shared by the page toolbar and the
+    /// segment's filter row (v0.2.139, C19-c1 — upstream
+    /// dns_queries.dart optionMenuItems): status + type +
+    /// initiator + rcode facets.
+    @ViewBuilder
+    private var dnsFilterMenuContent: some View {
+        Picker("筛选", selection: $recordFilter) {
+            ForEach(DnsRecordFilter.allCases, id: \.self) { filter in
+                Text(filter.title).tag(filter)
+            }
+        }
+        Picker("记录类型", selection: $selectedType) {
+            Text("全部").tag(nil as String?)
+            ForEach(availableTypes, id: \.self) { type in
+                Text(type).tag(type as String?)
+            }
+        }
+        Picker("发起方", selection: $selectedInitiator) {
+            Text("全部").tag(nil as String?)
+            ForEach(availableInitiators, id: \.self) { initiator in
+                Text(initiator).tag(initiator as String?)
+            }
+        }
+        Picker("返回码", selection: $selectedRcode) {
+            Text("全部").tag(nil as String?)
+            ForEach(availableRcodes, id: \.self) { rcode in
+                Text(rcode).tag(rcode as String?)
+            }
+        }
+    }
+
+    /// The Requests page's DNS segment (v0.2.146, upstream
+    /// RequestsSegment.dns): the same records list as the page,
+    /// with the filter menu in a row above it — no navigation
+    /// title, toolbar, back button or own search box (the parent
+    /// page drives dnsStore.searchText from its shared search).
+    /// The ⋯ menu's clear-DNS-cache lives on the parent page.
+    private var segmentList: some View {
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                HStack {
+                    Menu {
+                        dnsFilterMenuContent
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color(.label))
+                            .frame(width: 30, height: 30)
+                            .background(Color.secondary.opacity(0.15), in: Circle())
+                    }
+                    .accessibilityLabel("筛选")
+                    Spacer()
+                    Text("\(visibleEntries.count) 条记录")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 4)
+                pageList(proxy: proxy)
+            }
+            .background(ConcordTheme.pageBackground)
+            .task {
+                // Same gate as the page's appear-refresh (v0.2.82):
+                // with the VPN off in live mode the refresh can
+                // never succeed — the parent page's 1 s poll
+                // refreshes while the segment is shown.
+                if dnsStore.entries.isEmpty
+                    && (TunnelManager.shared.isRunning || client.mode == .sample) {
+                    await dnsStore.refresh()
+                }
+            }
+            .onChange(of: visibleEntries.first?.seq) { old, _ in
+                if old != nil, followEnd {
+                    scrollToNewest(proxy)
+                }
+            }
+            .sheet(item: $selectedEntry) { entry in
+                DnsEntryDetailView(entry: entry)
+                    .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                    .presentationDragIndicator(.visible)
             }
         }
     }

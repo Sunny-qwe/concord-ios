@@ -355,7 +355,6 @@ final class BackupStore: ObservableObject {
         "ConcordiOS.mitmCaTrustReady",
         // Dashboard layout / display.
         "ConcordiOS.dashboard.order",
-        "ConcordiOS.dashboard.densityCompact",
         "ConcordiOS.dashboard.show.vpn",
         "ConcordiOS.dashboard.show.status",
         "ConcordiOS.dashboard.show.speed",

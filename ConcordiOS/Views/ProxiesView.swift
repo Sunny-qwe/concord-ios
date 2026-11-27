@@ -6,11 +6,10 @@ import SwiftUI
 //   (magnifier, presents the search field) + bolt. In tab style the
 //   bolt tests the current group; in list / card style it tests ALL
 //   groups (MuYu iOS build _delayTestAllGroups). The ⋯ opens a white
-//   card menu (FlClash PopupMenu): 风格 expands inline (MuYu
-//   video: the three style rows sit directly below it in the same
-//   popup); 排序/布局/尺寸/图标样式 each open a submenu with a
-//   checkmark on the current value, plus 隐藏超时代理. No test-all
-//   and no refresh in the menu (FlClash
+//   card menu (FlClash PopupMenu, lib/views/proxies/proxies.dart:
+//   40-110): 风格/排序/布局/尺寸/图标样式 each open a SUBMENU with
+//   a checkmark on the current value, plus 隐藏超时代理 as a direct
+//   toggle row. No test-all and no refresh in the menu (FlClash
 //   has neither there). 滚动到已选 is a top-bar button in tab
 //   style (upstream iconActions, v0.2.123); re-tapping the
 //   active group pill scrolls to the selected node too. The page
@@ -35,8 +34,9 @@ import SwiftUI
 //   a group.
 // - Tap a card to select it (Selector) or pin/unpin it as 首选
 //   (url-test / fallback); load-balance / relay cannot be chosen by
-//   hand. Long-press opens the card menu: 选择/设为首选， 添加到本地
-//   节点， 测速， 节点详情. Tapping the delay chip tests that node.
+//   hand. Long-press opens the card menu: 选择/设为首选 + 添加到本地
+//   节点 only (v0.2.146 P-D11 — the ours-only 测速 / 节点详情 rows
+//   are gone). Tapping the delay chip tests that node.
 
 /// Card-style folder bar (MuYu-only, lib/enum/enum.dart
 /// ProxyFolder + lib/views/proxies/list.dart _FolderBar): filters
@@ -111,13 +111,16 @@ struct ProxiesView: View {
     /// Picker mode (FlClash proxies.dart:14-18,157,165,174):
     /// as a dashboard sheet the page keeps only search + delay
     /// test — the ⋯ menu is stripped and the locate button hidden.
-    /// v0.2.64: the dashboard's 策略组 card presents this in
-    /// picker mode (upstream showProxiesSheet), forcing the card
-    /// grid regardless of the tab's style, with a sheet header
-    /// (✕ + 代理 + a standalone bolt circle, v0.2.68 video f_018:
-    /// two separate white circles, no magnifier, no ⋯) instead of
-    /// the 24pt tab title, and a bottom floating search bar.
-    /// `onPickGroup`, when set, is called with the picked
+    /// v0.2.146 P-D1 (rs.1 wins over the MuYu-video picker): the
+    /// sheet keeps the USER'S style (tab or list) instead of
+    /// forcing the card grid, and has no bottom floating search
+    /// bar — the top inline search field opens from a magnifier
+    /// button in the sheet header, like the tab page. v0.2.64:
+    /// the dashboard's 策略组 card presents this in picker mode
+    /// (upstream showProxiesSheet), with a sheet header (✕ + 代理
+    /// + a standalone bolt circle, v0.2.68 video f_018: two
+    /// separate white circles, no ⋯) instead of the 24pt tab
+    /// title. `onPickGroup`, when set, is called with the picked
     /// group's name instead of expanding it — the dashboard sheet
     /// uses it to select the group, dismiss, and switch to the
     /// Proxies tab. Default false / nil (the tab page).
@@ -149,8 +152,6 @@ struct ProxiesView: View {
     @State private var searchText = ""
     @State private var isSearching = false
     @State private var showMoreMenu = false
-    @State private var detailNode: ProxyNode?
-    @State private var detailTestURL: String?
     @State private var notice: String?
     @State private var scrollTargetName: String?
     @State private var scrollNonce = 0
@@ -224,6 +225,20 @@ struct ProxiesView: View {
         return raw.nodes.filter(matchesSearch).map(\.name)
     }
 
+    /// Search-matching node names across ALL groups (v0.2.146
+    /// P-F2): the union the top bolt / picker bolt test while
+    /// searching (FlClash delayTestPageGroup(matchSearch: true)
+    /// tests only search matches). Nil while not searching, so
+    /// the test-all covers every node.
+    private var searchMatchedAllNodeNames: [String]? {
+        guard searching else { return nil }
+        var out: [String] = []
+        for group in proxyStore.displayGroups {
+            out.append(contentsOf: group.nodes.filter(matchesSearch).map(\.name))
+        }
+        return Array(Set(out))
+    }
+
     private var selectedGroup: ProxyGroup? {
         if let name = proxyStore.selectedGroupName {
             return proxyStore.displayGroups.first { $0.name == name }
@@ -275,7 +290,14 @@ struct ProxiesView: View {
         if node.name == group.selectedNodeName { return true }
         if groupNames.contains(node.name) { return true }
         if Self.isUnprobeableType(node.type) { return true }
-        guard let ms = node.latencyMs else { return true }
+        // P-D13 (rs.1 delaysAtLastTestBatch): the delay is read from
+        // the map frozen at the last test batch's start (or end),
+        // not the live latency — otherwise nodes drop out one by
+        // one mid-test. Before the first test the frozen map is
+        // empty and the live value is the fallback (rs.1's initial
+        // state, where the frozen map IS the live map).
+        let ms = proxyStore.latencyAtLastTestBatch(for: node.name, inGroup: group.name) ?? node.latencyMs
+        guard let ms else { return true }
         return ms > 0
     }
 
@@ -285,12 +307,15 @@ struct ProxiesView: View {
         Self.unprobeableTypesNormalized.contains(type.lowercased().replacingOccurrences(of: "-", with: ""))
     }
 
-    /// Delay-sort priority (FlClash DelayState, models/common.dart:
-    /// 1046-1064): valid latency → untested (nil, FlClash delay ?? 0)
-    /// → timeout (-1) → other failures.
+    /// Delay-sort priority (FlClash DelayState.priority, models/
+    /// common.dart:1089-1112): delay > 0 → 0; == 0 → 1 (untested —
+    /// a 0 ms result is not a failure, v0.2.146 P-D14); nil →
+    /// 1 as well (FlClash delay ?? 0); == -1 (timeout) → 2;
+    /// anything else (-2 and below) → 3.
     private static func delayPriority(_ node: ProxyNode) -> Int {
         guard let ms = node.latencyMs else { return 1 }
         if ms > 0 { return 0 }
+        if ms == 0 { return 1 }
         if ms == -1 { return 2 }
         return 3
     }
@@ -337,17 +362,39 @@ struct ProxiesView: View {
         return group.nodes.allSatisfy { !allGroupNames.contains($0.name) }
     }
 
-    /// Folder counts, from the mode-filtered groups (MuYu counts
-    /// from allGroups = groupsProvider, not the search-filtered
-    /// list — "raw" here means before search filtering, and the
-    /// provider itself is already mode-filtered).
+    /// Folder counts, from the RAW group list (v0.2.146 P-D9 —
+    /// MuYu list.dart:460-470 counts from allGroups =
+    /// groupsProvider, the raw provider list INCLUDING hidden
+    /// groups; rs.1 has no folder bar at all, so this one follows
+    /// MuYu). The old comment claimed "raw means before search
+    /// filtering, provider already mode-filtered" — wrong: the
+    /// counts must not depend on the mode filter either.
     private func folderCount(_ folder: ProxyFolder) -> Int {
+        let raw = proxyStore.groups
         switch folder {
-        case .all: return proxyStore.displayGroups.count
-        case .strategy: return proxyStore.displayGroups.filter { !isNodeOnlyGroup($0) }.count
-        case .nodes: return proxyStore.displayGroups.filter { isNodeOnlyGroup($0) }.count
-        case .leafNodes: return leafNodeEntries.count
+        case .all: return raw.count
+        case .strategy: return raw.filter { !isNodeOnlyGroup($0) }.count
+        case .nodes: return raw.filter { isNodeOnlyGroup($0) }.count
+        case .leafNodes: return rawLeafNodeCount
         }
+    }
+
+    /// Raw leaf-node count (P-D9, same base as folderCount):
+    /// MuYu countLeafNodes over allGroups — pure dedupe, no
+    /// search/hide/delay filter (compute.dart:76-89).
+    private var rawLeafNodeCount: Int {
+        let groupNames = allGroupNames
+        var seen = Set<String>()
+        var count = 0
+        for group in proxyStore.groups {
+            for node in group.nodes {
+                guard !groupNames.contains(node.name),
+                      !Self.reservedNames.contains(node.name),
+                      seen.insert(node.name).inserted else { continue }
+                count += 1
+            }
+        }
+        return count
     }
 
     /// Visible groups after the folder filter (MuYu
@@ -599,75 +646,29 @@ struct ProxiesView: View {
         NavigationStack {
             GeometryReader { geometry in
                 VStack(spacing: 0) {
-                    if client.mode == .sample {
-                        HStack {
-                            SampleDataBadge()
-                            Text("proxies.sampleNotice".l10n)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                        }
-                        .padding(.horizontal)
-                        .padding(.vertical, 6)
-                    }
-                    // The top inline search field is tab-page only:
-                    // the picker sheet searches from its bottom
-                    // floating bar (video f_018) and has no
-                    // magnifier to open this field.
-                    if !picker {
-                        searchField
-                    }
+                    // The top inline search field (searchField
+                    // renders nothing while !isSearching): shown on
+                    // the tab page and in the picker sheet alike
+                    // (v0.2.146 P-D1 — the picker has no bottom
+                    // floating bar any more; its magnifier button
+                    // opens this field).
+                    searchField
+                    // Direct user-action feedback (v0.2.146 P-D12):
+                    // the only notice left on this page. rs.1 has
+                    // no delay-test / repair banners (those are
+                    // gone, with their store state), but its
+                    // selectGroupProxy DOES show a warning banner
+                    // for a non-selectable tap (card.dart:10-35) —
+                    // so a notice row stays for exactly that:
+                    // taps the user made and the app must answer
+                    // (not-allowed tip, add-to-local results).
+                    // Text + dismiss × only — no retry / 修复 buttons.
                     if let notice {
                         HStack {
                             Text(notice)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Spacer()
-                            // GeoIP-failure banner (v0.2.35): the
-                            // seed failed, so the delay test could
-                            // not run at all. Tapping 重试 re-seeds
-                            // immediately — bundle copy first,
-                            // network fallback — bypassing the
-                            // 10-minute cool-down that used to trap
-                            // the user, then re-runs the failed test.
-                            // A retry that still fails keeps the
-                            // honest reason in the banner.
-                            if proxyStore.testErrorIsGeoSeed {
-                                if proxyStore.isRetryingGeoSeed {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                } else {
-                                    Button("common.retry".l10n) {
-                                        Task { await proxyStore.retryGeoSeedAndRetest() }
-                                    }
-                                    .buttonStyle(.plain)
-                                    .font(.caption.weight(.semibold))
-                                    .accessibilityLabel("proxies.geoRetry".l10n)
-                                }
-                            }
-                            // Rule-set repair (v0.2.46 ITEM 1): the
-                            // banner error names a rule-set the
-                            // config references but never defines,
-                            // so the core refused the whole config.
-                            // Tapping 修复 only builds the plan and
-                            // shows the exact lines; nothing is
-                            // written without confirmation.
-                            if let missing = proxyStore.missingRuleSetName {
-                                Button {
-                                    Task { await proxyStore.prepareRuleSetRepair() }
-                                } label: {
-                                    if proxyStore.isRepairingRuleSet {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                    } else {
-                                        Text("proxies.fix".l10n)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                .font(.caption.weight(.semibold))
-                                .accessibilityLabel("\("proxies.repair.label".l10n) \(missing)")
-                                .disabled(proxyStore.isRepairingRuleSet)
-                            }
                             Button { self.notice = nil } label: {
                                 Image(systemName: "xmark")
                                     .font(.caption2)
@@ -680,53 +681,16 @@ struct ProxiesView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 4)
                     }
-                    // Repair notice (v0.2.58): a repair attempt that
-                    // could not build a plan (or found nothing
-                    // missing) reports HERE, as its own dismissible
-                    // notice — never by overwriting testError, so
-                    // the TikTok error and its 修复 button stay
-                    // visible above after a failed plan.
-                    if let repairNotice = proxyStore.repairNotice {
-                        HStack {
-                            Text(repairNotice)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button { proxyStore.repairNotice = nil } label: {
-                                Image(systemName: "xmark")
-                                    .font(.caption2)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("proxies.fix.dismiss".l10n)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 10))
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 4)
-                    }
-                    if picker {
-                        // The dashboard sheet always shows the card
-                        // grid (video: 2-column group cards +
-                        // filter pills), whatever the tab's style.
-                        // The search is a BOTTOM floating bar
-                        // overlaid on the grid (video f_018), not
-                        // the top inline field — see pickerSearchBar.
-                        ZStack(alignment: .bottom) {
-                            iconsContent(width: geometry.size.width)
-                            pickerSearchBar
-                                .padding(.horizontal, 16)
-                                .padding(.bottom, 10)
-                        }
-                    } else {
-                        switch styleStore.style {
-                        case .tab:
-                            tabContent(width: geometry.size.width)
-                        case .list:
-                            listContent(width: geometry.size.width)
-                        case .icons:
-                            iconsContent(width: geometry.size.width)
-                        }
+                    // Picker and tab page render the same content:
+                    // the USER'S style (v0.2.146 P-D1) — the picker
+                    // no longer forces the card grid.
+                    switch styleStore.style {
+                    case .tab:
+                        tabContent(width: geometry.size.width)
+                    case .list:
+                        listContent(width: geometry.size.width)
+                    case .icons:
+                        iconsContent(width: geometry.size.width)
                     }
                 }
                 .background(ConcordTheme.pageBackground)
@@ -759,6 +723,21 @@ struct ProxiesView: View {
                     ToolbarItem(placement: .principal) {
                         Text("tab.proxies".l10n)
                             .font(.headline)
+                    }
+                    // P-D1: the picker opens the top inline search
+                    // field from a magnifier circle (same 36pt
+                    // circle as the bolt), like the tab page's
+                    // magnifier opens it from the pill.
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { isSearching = true } label: {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color(.label))
+                                .frame(width: 36, height: 36)
+                                .background(ConcordTheme.cardBackground, in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("common.search".l10n)
                     }
                     ToolbarItem(placement: .topBarTrailing) {
                         pickerBoltButton
@@ -799,12 +778,6 @@ struct ProxiesView: View {
             // systemGroupedBackground, so the visible change is in
             // dark / pure-black mode.
             .presentationBackground(ConcordTheme.pageBackground)
-            .sheet(item: $detailNode) { node in
-                NodeDetailView(node: node, testURL: detailTestURL)
-            }
-            .sheet(item: $proxyStore.ruleSetRepairOffer) { plan in
-                RuleSetRepairSheet(plan: plan)
-            }
             .task {
                 // The refresh's VPN-off fallback scans the active
                 // profile's YAML; the scan itself runs off the main
@@ -821,21 +794,6 @@ struct ProxiesView: View {
             .onChange(of: profileStore.activeProfile?.id) { _, _ in
                 Task { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
             }
-            .onChange(of: proxyStore.testError) { _, new in
-                // A failed delay test used to be total silence
-                // (lastError is never read on this page): show the
-                // reason in the notice banner instead. A nil error
-                // (a new test started, or a banner retry seeded
-                // the files) dismisses the banner.
-                if let new { notice = new } else { notice = nil }
-            }
-            .onChange(of: proxyStore.selectError) { _, new in
-                // A node switch the core refused twice (v0.2.97
-                // gap 4): the pick was rolled back — show why,
-                // like the delay-test failure above. A nil error
-                // (a later switch succeeded) dismisses the banner.
-                if let new { notice = new } else { notice = nil }
-            }
             .onChange(of: groupSearchFocus) { _, focused in
                 if focused == nil {
                     for name in groupSearchOpen where (groupSearchKeywords[name] ?? "").isEmpty {
@@ -843,29 +801,11 @@ struct ProxiesView: View {
                     }
                 }
             }
-            .onChange(of: proxyStore.testErrorNonce) { _, _ in
-                // The same failure twice in a row does not change
-                // testError, so the observer above never fires —
-                // the nonce re-shows the banner for the repeat.
-                if let current = proxyStore.testError { notice = current }
-            }
-            .onChange(of: proxyStore.selectErrorNonce) { _, _ in
-                // The same switch failure twice in a row does not
-                // change selectError, so the observer above never
-                // fires — the nonce re-shows the banner for the
-                // repeat (same reason as testErrorNonce).
-                if let current = proxyStore.selectError { notice = current }
-            }
             .onAppear {
                 // The bar's opaque appearance has no view behind
                 // it anymore (v0.2.123: the representable is
                 // gone), so it is applied here on every appear.
                 applyNavBarAppearance()
-                // Returning to this page with a failure already
-                // recorded (e.g. the run finished while another tab
-                // was frontmost) must still show it.
-                if let current = proxyStore.testError { notice = current }
-                if let current = proxyStore.selectError { notice = current }
             }
             .onChange(of: themeStore.accent) { _, _ in
                 applyNavBarAppearance()
@@ -1092,11 +1032,13 @@ struct ProxiesView: View {
     /// _delayTestAllGroups — Future.wait over delayTestPageGroup
     /// per group, each still restricted to the page-search matches).
     /// Loading while ANY group is testing (MuYu reads
-    /// delayTestingGroupsProvider.isNotEmpty).
+    /// delayTestingGroupsProvider.isNotEmpty). While searching
+    /// only the search-matching names are tested (v0.2.146 P-F2:
+    /// the old no-filter call tested everything even mid-search).
     private var topBarTestAllButton: some View {
         let testing = !proxyStore.testingGroups.isEmpty
         return Button {
-            Task { await proxyStore.testLatency() }
+            Task { await proxyStore.testLatency(nodeNames: searchMatchedAllNodeNames) }
         } label: {
             if testing {
                 ProgressView()
@@ -1116,11 +1058,12 @@ struct ProxiesView: View {
     /// The picker header's bolt (v0.2.68, video f_018): a
     /// STANDALONE white circle, 36pt like the ✕ on the other side
     /// — not the magnifier+bolt capsule, and with no ⋯ menu next
-    /// to it. Tests all groups, like the list / card bolt.
+    /// to it. Tests all groups, like the list / card bolt; while
+    /// searching only the search-matching names (v0.2.146 P-F2).
     private var pickerBoltButton: some View {
         let testing = !proxyStore.testingGroups.isEmpty
         return Button {
-            Task { await proxyStore.testLatency() }
+            Task { await proxyStore.testLatency(nodeNames: searchMatchedAllNodeNames) }
         } label: {
             Group {
                 if testing {
@@ -1137,36 +1080,6 @@ struct ProxiesView: View {
         .buttonStyle(.plain)
         .disabled(proxyStore.displayGroups.isEmpty || testing)
         .accessibilityLabel("proxies.testAll".l10n)
-    }
-
-    /// The picker sheet's search (v0.2.68, video f_018/f_021): a
-    /// BOTTOM floating bar overlaid on the grid — a rounded bar
-    /// with a magnifier + TextField "搜索" — NOT the top inline
-    /// search box ("搜索节点" + "取消"). It binds the same
-    /// searchText the page search uses, so typing filters the
-    /// grid live. The grid's bottom clearance (tabBarClearance)
-    /// leaves room for it; the bar floats above the last row.
-    private var pickerSearchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("common.search".l10n, text: $searchText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .submitLabel(.search)
-            if !searchText.isEmpty {
-                Button { searchText = "" } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("proxies.search.clear".l10n)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
-        .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 2)
     }
 
     /// The ⋯ menu overlay's arrow: a small triangle at the card's
@@ -1259,22 +1172,21 @@ struct ProxiesView: View {
 
     /// The ⋯ menu is a white card, not a native context menu:
     /// 风格， 排序， 布局， 尺寸， 图标样式 (not in tab style), and
-    /// the hide-timeout toggle last. 风格 does NOT drill down: tapping it toggles
-    /// the three style rows inline, directly below it in the same
-    /// popup (MuYu video f_023/f_026 — an accordion, sibling rows
-    /// stay visible; tapping a style applies it and closes the
-    /// menu). The other rows open a drill-down submenu with a
-    /// checkmark on the current value. No test-all and no refresh
-    /// in the menu — FlClash has neither there (the bolt is the
-    /// test; refresh is pull-to-refresh). Icon style shows in
-    /// list AND card style, hidden only in tab style (MuYu changed
-    /// FlClash's `type == list` to `type != tab` when it added the
-    /// card style, proxies.dart).
+    /// the hide-timeout toggle last. Each of the five rows drills
+    /// into a SUBMENU with a checkmark on the current value
+    /// (v0.2.146 P-D2 — rs.1 PopupMenu, proxies.dart:40-110; the
+    /// old inline accordion is gone). Tapping an option applies it
+    /// and closes the menu. No test-all and no refresh in the menu
+    /// — FlClash has neither there (the bolt is the test; refresh
+    /// is pull-to-refresh). Icon style shows in list AND card
+    /// style, hidden only in tab style (MuYu changed FlClash's
+    /// `type == list` to `type != tab` when it added the card
+    /// style, proxies.dart).
     /// A plain VStack, NOT a NavigationStack: a NavigationStack
     /// inside a popover reports no usable ideal height, so the card
-    /// rendered clipped to ~1 row (v0.2.27). Each row's expansion is
-    /// state, and the card sizes itself to the VStack — the same as
-    /// FlClash's PopupMenu sizing to its content.
+    /// rendered clipped to ~1 row (v0.2.27). The drilled-in
+    /// section is state, and the card sizes itself to the VStack
+    /// — the same as FlClash's PopupMenu sizing to its content.
 
     /// The ⋯ menu as its own View with its own state — NOT a
     /// computed property on ProxiesView. The menu's level and 风格
@@ -1293,134 +1205,97 @@ struct ProxiesView: View {
         @EnvironmentObject private var styleStore: ProxyStyleStore
         @Binding var isPresented: Bool
 
-        // v0.2.73: every submenu row expands INLINE (accordion)
-        // below its own row inside this same card — no drill-down,
-        // no separate pop-up. Each row owns one boolean; tapping
-        // anywhere on the row toggles it (MuYu video behaviour).
-        @State private var styleExpanded = false
-        @State private var sortExpanded = false
-        @State private var layoutExpanded = false
-        @State private var sizeExpanded = false
-        @State private var iconStyleExpanded = false
+        /// The section currently drilled into (v0.2.146 P-D2):
+        /// rs.1's PopupMenu opens each section as a SUBMENU,
+        /// not an inline accordion — one section at a time, with
+        /// a back row to the root. Nil = the root list.
+        private enum MenuSection: Hashable {
+            case style, sort, layout, size, iconStyle
+        }
+        @State private var activeSection: MenuSection?
 
         var body: some View {
             VStack(spacing: 0) {
-                // 风格 expands INLINE (v0.2.57, MuYu video
-                // f_023/f_026): the three style rows appear directly
-                // below this row inside the same popup — 标签页 ✓ /
-                // 列表 / 卡片 — while the sibling rows stay visible.
-                // Chevron: > collapsed, ∨ expanded (MuYu IMG_1214
-                // vs the expanded frames). Tapping a style applies
-                // it and closes the menu (menuOptionRow); tapping
-                // 风格 only toggles the expansion. Tapping anywhere
-                // on the row toggles it — the chevron is only a
-                // visual indicator (v0.2.73).
-                expandableMenuRow(
-                    icon: Image(systemName: "list.bullet")
-                        .font(.system(size: 19, weight: .semibold)),
-                    label: "proxies.options.style".l10n,
-                    expanded: styleExpanded
-                ) {
-                    withAnimation { styleExpanded.toggle() }
-                }
-                if styleExpanded {
-                    ForEach(ProxyStyleStore.Style.allCases, id: \.self) { style in
-                        menuOptionRow(label: style.label, selected: styleStore.style == style) {
-                            styleStore.style = style
+                if let section = activeSection {
+                    // Back row: returns to the root list, labelled
+                    // with the section's own name — rs.1's submenu
+                    // title is the same section name.
+                    Button {
+                        withAnimation { activeSection = nil }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "chevron.left")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 22)
+                            Text(sectionLabel(section))
+                            Spacer()
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
                     }
-                }
-                // 排序 (MuYu: three horizontal lines, decreasing —
-                // SF line.3.horizontal.decrease; the old
-                // arrow.up.arrow.down up/down arrows do not match).
-                // v0.2.73: inline accordion like 风格 — the sort
-                // options appear directly below this row; the whole
-                // row toggles it.
-                expandableMenuRow(
-                    icon: Image(systemName: "line.3.horizontal.decrease")
-                        .font(.system(size: 19, weight: .semibold)),
-                    label: "proxies.options.sort".l10n,
-                    expanded: sortExpanded
-                ) {
-                    withAnimation { sortExpanded.toggle() }
-                }
-                if sortExpanded {
-                    ForEach(ProxySort.allCases) { option in
-                        menuOptionRow(label: option.rawValue, selected: styleStore.sort == option) {
-                            styleStore.sort = option
-                        }
-                    }
-                }
-                expandableMenuRow(
-                    icon: Image(systemName: "square.grid.2x2")
-                        .font(.system(size: 19, weight: .semibold)),
-                    label: "proxies.options.layout".l10n,
-                    expanded: layoutExpanded
-                ) {
-                    withAnimation { layoutExpanded.toggle() }
-                }
-                if layoutExpanded {
-                    ForEach(ProxyStyleStore.Layout.allCases, id: \.self) { layout in
-                        menuOptionRow(label: layout.rawValue, selected: styleStore.layout == layout) {
-                            styleStore.layout = layout
-                        }
-                    }
-                }
-                // 尺寸 (MuYu: a "Tt" glyph — SF Symbols has none,
-                // so the custom TtIcon in CustomGlyphs.swift).
-                // v0.2.73: inline accordion like 风格.
-                expandableMenuRow(
-                    icon: TtIcon(size: 20),
-                    label: "proxies.options.size".l10n,
-                    expanded: sizeExpanded
-                ) {
-                    withAnimation { sizeExpanded.toggle() }
-                }
-                if sizeExpanded {
-                    ForEach(ProxyStyleStore.CardType.allCases, id: \.self) { type in
-                        menuOptionRow(label: type.rawValue, selected: styleStore.cardType == type) {
-                            styleStore.cardType = type
-                        }
-                    }
-                }
-                if styleStore.style != .tab {
-                    expandableMenuRow(
-                        icon: Image(systemName: "photo")
+                    .buttonStyle(.plain)
+                    Divider()
+                        .padding(.vertical, 4)
+                    submenuOptions(for: section)
+                } else {
+                    // Root: one row per section, each drilling into
+                    // its submenu (chevron.right); the hide-timeout
+                    // toggle stays a direct row, as in rs.1.
+                    menuSectionRow(
+                        icon: Image(systemName: "list.bullet")
                             .font(.system(size: 19, weight: .semibold)),
-                        label: "proxies.options.iconStyle".l10n,
-                        expanded: iconStyleExpanded
-                    ) {
-                        withAnimation { iconStyleExpanded.toggle() }
+                        label: "proxies.options.style".l10n
+                    ) { activeSection = .style }
+                    // 排序 (MuYu: three horizontal lines, decreasing —
+                    // SF line.3.horizontal.decrease; the old
+                    // arrow.up.arrow.down up/down arrows do not match).
+                    menuSectionRow(
+                        icon: Image(systemName: "line.3.horizontal.decrease")
+                            .font(.system(size: 19, weight: .semibold)),
+                        label: "proxies.options.sort".l10n
+                    ) { activeSection = .sort }
+                    menuSectionRow(
+                        icon: Image(systemName: "square.grid.2x2")
+                            .font(.system(size: 19, weight: .semibold)),
+                        label: "proxies.options.layout".l10n
+                    ) { activeSection = .layout }
+                    // 尺寸 (MuYu: a "Tt" glyph — SF Symbols has none,
+                    // so the custom TtIcon in CustomGlyphs.swift).
+                    menuSectionRow(
+                        icon: TtIcon(size: 20),
+                        label: "proxies.options.size".l10n
+                    ) { activeSection = .size }
+                    if styleStore.style != .tab {
+                        menuSectionRow(
+                            icon: Image(systemName: "photo")
+                                .font(.system(size: 19, weight: .semibold)),
+                            label: "proxies.options.iconStyle".l10n
+                        ) { activeSection = .iconStyle }
                     }
-                    if iconStyleExpanded {
-                        ForEach(ProxyStyleStore.IconStyle.allCases, id: \.self) { style in
-                            menuOptionRow(label: style.rawValue, selected: styleStore.iconStyle == style) {
-                                styleStore.iconStyle = style
+                    Divider()
+                        .padding(.vertical, 4)
+                    Button {
+                        styleStore.hideTimeout.toggle()
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "eye.slash")
+                                .font(.system(size: 19, weight: .semibold))
+                                .frame(width: 22)
+                            Text("proxies.options.hideTimeout".l10n)
+                            Spacer()
+                            if styleStore.hideTimeout {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(ConcordTheme.accent)
                             }
                         }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 12)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
-                Divider()
-                    .padding(.vertical, 4)
-                Button {
-                    styleStore.hideTimeout.toggle()
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "eye.slash")
-                            .font(.system(size: 19, weight: .semibold))
-                            .frame(width: 22)
-                        Text("proxies.options.hideTimeout".l10n)
-                        Spacer()
-                        if styleStore.hideTimeout {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(ConcordTheme.accent)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 12)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
             }
             // v0.2.74: maxWidth 200 (was 280) — the menu expanded
             // to the full 280pt and looked far wider than MuYu's
@@ -1431,29 +1306,79 @@ struct ProxiesView: View {
             .frame(minWidth: 160, maxWidth: 200)
             .font(.subheadline)
             .foregroundStyle(Color(.label))
-            .onDisappear { styleExpanded = false; sortExpanded = false; layoutExpanded = false; sizeExpanded = false; iconStyleExpanded = false }
+            .onDisappear { activeSection = nil }
         }
 
-        /// One expandable menu row (v0.2.73): the whole row is the tap
-        /// target — icon, label, empty space and chevron all toggle the
-        /// inline expansion (`.contentShape(Rectangle())` makes the
-        /// Button cover the full row width). The chevron is only a
-        /// visual indicator: > collapsed, ∨ expanded (MuYu). The icon
-        /// is a generic View so the SF Symbol rows and the custom
-        /// TtIcon row share this helper.
-        private func expandableMenuRow<Icon: View>(
+        private func sectionLabel(_ section: MenuSection) -> String {
+            switch section {
+            case .style: return "proxies.options.style".l10n
+            case .sort: return "proxies.options.sort".l10n
+            case .layout: return "proxies.options.layout".l10n
+            case .size: return "proxies.options.size".l10n
+            case .iconStyle: return "proxies.options.iconStyle".l10n
+            }
+        }
+
+        /// The options of one drilled-in section (v0.2.146 P-D2):
+        /// tapping one applies it and closes the whole menu.
+        @ViewBuilder
+        private func submenuOptions(for section: MenuSection) -> some View {
+            switch section {
+            case .style:
+                ForEach(ProxyStyleStore.Style.allCases, id: \.self) { style in
+                    menuOptionRow(label: style.label, selected: styleStore.style == style) {
+                        styleStore.style = style
+                    }
+                }
+            case .sort:
+                ForEach(ProxySort.allCases) { option in
+                    menuOptionRow(label: option.rawValue, selected: styleStore.sort == option) {
+                        styleStore.sort = option
+                    }
+                }
+            case .layout:
+                ForEach(ProxyStyleStore.Layout.allCases, id: \.self) { layout in
+                    menuOptionRow(label: layout.rawValue, selected: styleStore.layout == layout) {
+                        styleStore.layout = layout
+                    }
+                }
+            case .size:
+                ForEach(ProxyStyleStore.CardType.allCases, id: \.self) { type in
+                    menuOptionRow(label: type.rawValue, selected: styleStore.cardType == type) {
+                        styleStore.cardType = type
+                    }
+                }
+            case .iconStyle:
+                ForEach(ProxyStyleStore.IconStyle.allCases, id: \.self) { style in
+                    menuOptionRow(label: style.rawValue, selected: styleStore.iconStyle == style) {
+                        styleStore.iconStyle = style
+                    }
+                }
+            }
+        }
+
+        /// One root row (v0.2.146 P-D2): the whole row is the tap
+        /// target — icon, label, empty space and chevron all drill
+        /// into the submenu (`.contentShape(Rectangle())` makes
+        /// the Button cover the full row width). The chevron is
+        /// only a visual indicator: > always (the row drills down,
+        /// it never expands inline). The icon is a generic View so
+        /// the SF Symbol rows and the custom TtIcon row share this
+        /// helper.
+        private func menuSectionRow<Icon: View>(
             icon: Icon,
             label: String,
-            expanded: Bool,
             action: @escaping () -> Void
         ) -> some View {
-            Button(action: action) {
+            Button {
+                withAnimation { action() }
+            } label: {
                 HStack(spacing: 12) {
                     icon
                         .frame(width: 22)
                     Text(label)
                     Spacer()
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    Image(systemName: "chevron.right")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1515,7 +1440,13 @@ struct ProxiesView: View {
                             HStack(spacing: 8) {
                                 ForEach(visibleGroups) { group in
                                     Button {
-                                        if selectedVisibleGroup?.id == group.id {
+                                        // Picker mode (v0.2.146 P-D1): a pill
+                                        // tap PICKS the group (dashboard
+                                        // sheet contract) instead of
+                                        // selecting / scrolling to it.
+                                        if picker, let pick = onPickGroup {
+                                            pick(group.name)
+                                        } else if selectedVisibleGroup?.id == group.id {
                                             scrollToSelected(in: group)
                                         } else {
                                             proxyStore.selectedGroupName = group.name
@@ -1615,7 +1546,6 @@ struct ProxiesView: View {
                             withAnimation { reader.scrollTo(target, anchor: .center) }
                         }
                     }
-                    .refreshable { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
                 }
             } else if proxyStore.displayGroups.isEmpty && proxyStore.isLoading {
                 ProgressView()
@@ -1671,19 +1601,19 @@ struct ProxiesView: View {
     /// List style (v0.2.68, video f_040): EVERY group is an
     /// independent rounded card (panelRadius 20, cardBackground)
     /// with the page background visible as gaps between cards.
-    /// The old structure was one big white board — a header with
-    /// top-only corners + a node grid with bottom-only corners
-    /// sharing one continuous white surface — which the video does
-    /// not have. Each card's row is the brand icon (~40pt), the
-    /// name bold with the selected node in gray below, and on the
-    /// right the capitalized type ("Selector") + a light-gray solid
-    /// circle holding a black chevron (▼ collapsed, ▲ expanded).
+    /// Each card's row is the brand icon (~40pt), the name bold
+    /// with the selected node in gray below, and on the right the
+    /// capitalized type ("Selector") + a light-gray solid circle
+    /// holding a black chevron (▼ collapsed, ▲ expanded).
     /// Tapping the row expands the group inline: its nodes appear
-    /// inside the same card. No per-group bolt / locate / search
-    /// in the row — the video has none (the top-bar bolt tests all
-    /// groups; each node card still has its own delay chip).
-    /// Members of an expanded group are not listed again as their
-    /// own cards below (listGroups, item 6).
+    /// inside the same card. The expanded header shows the locate
+    /// / bolt / per-group-search pill (MuYu list.dart) and the
+    /// collapse triangle. Headers pin while scrolling (v0.2.146
+    /// P-D4 — one Section per group, pinnedViews .sectionHeaders),
+    /// so the header stays visible while its nodes scroll under
+    /// it; the node grid is the section's content. Members of an
+    /// expanded group are not listed again as their own cards
+    /// below (listGroups, item 6).
     private func listContent(width: CGFloat) -> some View {
         // One group lookup for this pass (see rawGroupsByName).
         let groupsByName = rawGroupsByName
@@ -1698,12 +1628,34 @@ struct ProxiesView: View {
             } else {
                 ScrollViewReader { reader in
                     ScrollView {
-                        // MuYu proxyGridSpacing = 8.0 (v0.2.81;
-                        // was 12; the screenshot's gap is ~7.3pt).
-                        LazyVStack(spacing: 8) {
+                        // P-D4 (rs.1/MuYu PinnedHeaderSliver): one
+                        // Section per group, headers pinned — the
+                        // header stays visible while its nodes scroll
+                        // under it. spacing 0 + the flush header /
+                        // content seam keep the one-card look: the
+                        // header carries the top corners when
+                        // expanded and the full radius when
+                        // collapsed, the node container the bottom
+                        // corners. The 8pt inter-card gap is a
+                        // clear spacer at the end of each section's
+                        // content (NOT header padding, which would
+                        // stick to the pinned header, and NOT stack
+                        // spacing, which would also gap the header
+                        // from its own nodes).
+                        LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
                             ForEach(listGroups) { group in
-                                listGroupCard(group, width: width, groupsByName: groupsByName)
-                                    .id(groupHeaderID(group.name))
+                                Section {
+                                    if proxyStore.expandedGroups.contains(group.name) {
+                                        listGroupNodes(group, width: width, groupsByName: groupsByName)
+                                            .padding(.horizontal, 12)
+                                            .padding(.bottom, 12)
+                                            .background(ConcordTheme.cardBackground, in: UnevenRoundedRectangle(bottomLeadingRadius: ConcordTheme.panelRadius, bottomTrailingRadius: ConcordTheme.panelRadius))
+                                    }
+                                    Color.clear.frame(height: 8)
+                                } header: {
+                                    listGroupHeader(group)
+                                        .id(groupHeaderID(group.name))
+                                }
                             }
                         }
                         .padding(.horizontal, 16)
@@ -1718,7 +1670,6 @@ struct ProxiesView: View {
                             withAnimation { reader.scrollTo(target, anchor: anchor) }
                         }
                     }
-                    .refreshable { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
                 }
             }
         }
@@ -1761,12 +1712,19 @@ struct ProxiesView: View {
                                 withAnimation { reader.scrollTo(target, anchor: .center) }
                             }
                         }
-                        .refreshable { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
                     }
                 } else {
                     ScrollViewReader { reader in
                         ScrollView {
-                            LazyVStack(spacing: 8) {
+                            // P-D4 (rs.1/MuYu PinnedHeaderSliver):
+                            // expanded groups are Sections, so the
+                            // card pins while its nodes scroll under
+                            // it; collapsed pairs stay plain rows.
+                            // The 8pt stack spacing is the gap the
+                            // old expanded VStack(spacing: 8) gave
+                            // between card and nodes, and between
+                            // rows — unchanged.
+                            LazyVStack(spacing: 8, pinnedViews: [.sectionHeaders]) {
                                 ForEach(iconSegments) { segment in
                                     switch segment {
                                     case .pair(let first, let second):
@@ -1782,9 +1740,7 @@ struct ProxiesView: View {
                                             }
                                         }
                                     case .expanded(let group):
-                                        VStack(spacing: 8) {
-                                            iconGroupCard(group, groupsByName: groupsByName)
-                                                .id(groupHeaderID(group.name))
+                                        Section {
                                             if displayNodes(for: group).isEmpty {
                                                 emptyNodesRow(for: group)
                                             } else {
@@ -1795,6 +1751,9 @@ struct ProxiesView: View {
                                                     }
                                                 }
                                             }
+                                        } header: {
+                                            iconGroupCard(group, groupsByName: groupsByName)
+                                                .id(groupHeaderID(group.name))
                                         }
                                     }
                                 }
@@ -1811,7 +1770,6 @@ struct ProxiesView: View {
                                 withAnimation { reader.scrollTo(target, anchor: anchor) }
                             }
                         }
-                        .refreshable { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
                     }
                 }
             }
@@ -2030,44 +1988,60 @@ struct ProxiesView: View {
         }
     }
 
-    /// One list-style group card (v0.2.68, video f_040): the
-    /// whole group — header row plus, when expanded, its node
-    /// grid — is ONE rounded card (panelRadius 20,
-    /// cardBackground), so the page background shows as gaps
-    /// between cards. The row is the brand icon (~40pt, groupIcon),
-    /// the name bold with the selected node in gray below
-    /// (FlClash ListHeader: the subtitle is the selected node
-    /// name whenever there is one, hidden entirely when there is
-    /// none; the minHeight keeps the two-line height stable when
-    /// the subtitle is empty — upstream's header is a fixed 61pt),
-    /// and on the right the capitalized type ("Selector", never
-    /// the raw lowercase type) + a light-gray solid circle holding
-    /// a black chevron (▼ collapsed, ▲ expanded). Tapping the row
-    /// toggles expand/collapse; expanding scrolls the group into
-    /// view once its rows are laid out (FlClash _handleChange,
-    /// list.dart:45-60). The node grid is the same LazyVGrid the
-    /// old section row drew, now inside the card.
-    /// Built as a plain ListGroupCard (v0.2.120: NOT Equatable,
-    /// no .equatable() — see the struct; the old wrapper froze
-    /// the card in its launch-time disabled state and no tap ever
-    /// reached it on 117–119). The header's values are plain
-    /// inputs, and the expanded grid arrives as a @ViewBuilder
-    /// closure. Collapsed cards render no grid.
-    private func listGroupCard(_ group: ProxyGroup, width: CGFloat, groupsByName: [String: ProxyGroup]) -> some View {
+    /// One list-style group header (v0.2.68, video f_040): the
+    /// header row — brand icon (~40pt, groupIcon), name bold with
+    /// the selected node in gray below (FlClash ListHeader: the
+    /// subtitle is the selected node name whenever there is one,
+    /// hidden entirely when there is none; the minHeight keeps the
+    /// two-line height stable when the subtitle is empty —
+    /// upstream's header is a fixed 61pt), and on the right the
+    /// capitalized type ("Selector", never the raw lowercase type)
+    /// + a light-gray solid circle holding a black chevron (▼
+    /// collapsed, ▲ expanded). Tapping the row toggles
+    /// expand/collapse; expanding scrolls the group into view once
+    /// its rows are laid out (FlClash _handleChange, list.dart:
+    /// 45-60). Built as a plain ListGroupHeader (v0.2.120: NOT
+    /// Equatable, no .equatable() — see the struct; the old wrapper
+    /// froze the card in its launch-time disabled state and no tap
+    /// ever reached it on 117–119). The header's values are plain
+    /// inputs. The expanded node grid is the section's content
+    /// (listGroupNodes), not part of the header.
+    private func listGroupHeader(_ group: ProxyGroup) -> some View {
         let expanded = proxyStore.expandedGroups.contains(group.name)
-        let nodes = displayNodes(for: group)
-        return ListGroupCard(
+        return ListGroupHeader(
             name: group.name,
             icon: group.icon,
             typeDisplay: Self.typeDisplayName(group.type),
             selectedName: group.selectedNodeName,
             expanded: expanded,
             iconStyle: styleStore.iconStyle,
-            columnCount: ProxyStyleStore.columns(for: styleStore.layout, width: width),
-            cardType: styleStore.cardType,
-            cardHeight: cardHeight,
-            groupType: group.type,
+            searchKeyword: groupSearchKeywords[group.name] ?? "",
+            searchOpen: groupSearchOpen.contains(group.name),
+            searchFocus: $groupSearchFocus,
+            onSearchKeywordChange: { new in
+                if new.isEmpty {
+                    groupSearchKeywords.removeValue(forKey: group.name)
+                } else {
+                    groupSearchKeywords[group.name] = new
+                }
+            },
+            onSearchOpen: { groupSearchOpen.insert(group.name) },
+            onSearchClose: {
+                groupSearchKeywords.removeValue(forKey: group.name)
+                groupSearchOpen.remove(group.name)
+                groupSearchFocus = nil
+            },
+            onSearchAppear: { groupSearchFocus = group.name },
             onToggleExpand: {
+                // Picker (v0.2.146 P-D1): tapping a group picks it
+                // instead of expanding — the caller selects the
+                // group, dismisses the sheet, and switches to the
+                // Proxies tab (same contract as the card style's
+                // onTap).
+                if picker {
+                    onPickGroup?(group.name)
+                    return
+                }
                 // Expansion goes through the store (v0.2.118): the
                 // store reference can never go stale, so the action
                 // must not close over the view's @State.
@@ -2082,13 +2056,20 @@ struct ProxiesView: View {
                 }
             },
             onScrollToSelected: { scrollToSelected(in: group) },
-            onTestAll: { Task { await proxyStore.testLatency(group: group) } },
-            onSearch: { isSearching = true }
-        ) {
+            onTestAll: { Task { await proxyStore.testLatency(group: group, nodeNames: searchMatchedNodeNames(forGroupNamed: group.name)) } }
+        )
+    }
+
+    /// The node grid inside an expanded list-style group (the
+    /// Section content in listContent): the same LazyVGrid the old
+    /// ListGroupCard drew inside the card, now as the section's
+    /// rows. The per-group search keyword (displayNodes) filters
+    /// only this group's nodes.
+    private func listGroupNodes(_ group: ProxyGroup, width: CGFloat, groupsByName: [String: ProxyGroup]) -> some View {
+        let nodes = displayNodes(for: group)
+        return Group {
             if nodes.isEmpty {
                 emptyNodesRow(for: group)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 12)
             } else {
                 LazyVGrid(columns: gridColumns(width: width), spacing: 8) {
                     ForEach(nodes) { node in
@@ -2101,8 +2082,6 @@ struct ProxiesView: View {
                             .id(scrollID(nodeName: node.name, groupName: group.name))
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 12)
             }
         }
     }
@@ -2134,6 +2113,9 @@ struct ProxiesView: View {
             description: nodeDescription(node, groupsByName: groupsByName),
             latencyMs: node.latencyMs,
             testing: proxyStore.testingNodes.contains(node.name),
+            // P-D3: queued for a group run but not yet started —
+            // the clock glyph (rs.1 DelayTestPhase.queued).
+            queued: proxyStore.queuedNodes.contains(node.name),
             pinned: group.fixed == node.name,
             selected: group.selectedNodeName == node.name,
             cardType: styleStore.cardType,
@@ -2191,15 +2173,9 @@ struct ProxiesView: View {
                     Label("proxies.menu.addLocal".l10n, systemImage: "plus.square.on.square")
                 }
             }
-            Button { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } } label: {
-                Label("proxies.testSpeed".l10n, systemImage: "bolt")
-            }
-            Button {
-                detailTestURL = nodeTestURL(group)
-                detailNode = node
-            } label: {
-                Label("title.nodeDetail".l10n, systemImage: "info.circle")
-            }
+            // v0.2.146 P-D11: the ours-only 测速 / 节点详情 rows are
+            // gone — the menu keeps ONLY 选择/设为首选 + 添加到本地
+            // 节点. Per-node test stays on the delay chip.
         }
     }
 
@@ -2403,7 +2379,7 @@ private struct GroupBrandIconView: View {
 /// static, so the frozen subtree never re-rendered enabled). That
 /// is why no tap — gesture in 117, Button in 119 — ever reached
 /// the card. As a plain view the parent rebuilds it with the live
-/// environment on every render. Same trade as ListGroupCard: the
+/// environment on every render. Same trade as ListGroupHeader: the
 /// 40+ node cards keep their Equatable optimization.
 private struct IconGroupCard: View {
     let name: String
@@ -2505,7 +2481,7 @@ private struct IconGroupCard: View {
     var body: some View {
         let m = Self.metrics(for: cardType)
         // The collapsed card is a real Button (v0.2.119 FIX 2,
-        // same pattern as ListGroupCard in v0.2.118): the old
+        // same pattern as ListGroupHeader in v0.2.118): the old
         // .onTapGesture on this card never fired on-device
         // (v0.2.117 — every group card untappable in card style).
         // The gesture and the 119 Button both died the same way:
@@ -2701,11 +2677,14 @@ private struct IconGroupCard: View {
     /// the pill is deliberately neutral instead of keeping the last
     /// delay's colour.
     private var latencyPill: some View {
+        // P-D10: the colour is the theme delay colour (rs.1
+        // delayColor), not a literal — same hues, so the look is
+        // unchanged. ms == 0 follows delayColor too (success);
+        // the text for 0 stays 失败 (unchanged).
         let color: Color = {
             if testing { return .secondary }
             guard let ms = latencyMs else { return .secondary }
-            if ms > 0 { return ms < 600 ? .green : .orange }
-            return .red
+            return ConcordTheme.delayColor(for: ms)
         }()
         return Button(action: onTestLatency) {
             Group {
@@ -2736,9 +2715,16 @@ private struct IconGroupCard: View {
     }
 }
 
-/// One list-style group card (v0.2.68, video f_040) as its own
-/// view, fed only by plain values plus the expanded node grid as
-/// a @ViewBuilder closure (same scoping idea as ProxyNodeCard).
+/// One list-style group header (v0.2.68, video f_040) as its own
+/// view, fed only by plain values (same scoping idea as
+/// ProxyNodeCard). v0.2.146 P-D4: the header is a Section header
+/// in listContent's LazyVStack (pinned while scrolling — rs.1/MuYu
+/// PinnedHeaderSliver), so the old ListGroupCard (header + node
+/// grid in one rounded card) is split: this struct is the header
+/// only, and the node grid is the section's content. The header
+/// carries its own background — full radius when collapsed,
+/// top-only radius when expanded (the section content carries
+/// the bottom radius) — so the seam stays flush at spacing 0.
 /// v0.2.120: deliberately NOT Equatable, and never wrapped in
 /// .equatable() again — the wrapper froze the card in the
 /// disabled state it mounted in (ContentView disables every
@@ -2749,11 +2735,11 @@ private struct IconGroupCard: View {
 /// ever reached the card. As a plain view the parent rebuilds
 /// it with the live environment on every render, so the header
 /// Button is enabled whenever the tab is selected. The cost is
-/// re-rendering 3–4 group cards on store changes; the 40+ node
+/// re-rendering 3–4 group headers on store changes; the 40+ node
 /// cards keep their Equatable optimization (their tap sits
 /// outside the wrapper, and they mount after the tab is
 /// selected, so they never mount disabled).
-private struct ListGroupCard<ExpandedContent: View>: View {
+private struct ListGroupHeader: View {
     let name: String
     let icon: String
     /// Capitalized type display name (Selector / URLTest / ...).
@@ -2761,21 +2747,23 @@ private struct ListGroupCard<ExpandedContent: View>: View {
     let selectedName: String?
     let expanded: Bool
     let iconStyle: ProxyStyleStore.IconStyle
-    let columnCount: Int
-    let cardType: ProxyStyleStore.CardType
-    let cardHeight: CGFloat
-    /// Raw group type: nodeMenu branches on it ("select" → 选择,
-    /// url-test/fallback/smart → 首选）.
-    let groupType: String
-    let expandedContent: () -> ExpandedContent
+    /// Per-group search (MuYu GroupSearchControl, common.dart),
+    /// rendered only while expanded: the keyword filters only
+    /// this group's nodes (v0.2.146 P-F1 — the state was dead
+    /// code in list style before; the card style already had it).
+    let searchKeyword: String
+    let searchOpen: Bool
+    let searchFocus: FocusState<String?>.Binding
+    let onSearchKeywordChange: (String) -> Void
+    let onSearchOpen: () -> Void
+    let onSearchClose: () -> Void
+    let onSearchAppear: () -> Void
     /// Header tap: toggle expand/collapse (+ scroll into view).
     let onToggleExpand: () -> Void
     /// Expanded-header actions (MuYu list.dart, v0.2.88):
-    /// scroll to the selected node, test this group, open the
-    /// page search.
+    /// scroll to the selected node, test this group.
     let onScrollToSelected: () -> Void
     let onTestAll: () -> Void
-    let onSearch: () -> Void
 
     init(
         name: String,
@@ -2784,15 +2772,16 @@ private struct ListGroupCard<ExpandedContent: View>: View {
         selectedName: String?,
         expanded: Bool,
         iconStyle: ProxyStyleStore.IconStyle,
-        columnCount: Int,
-        cardType: ProxyStyleStore.CardType,
-        cardHeight: CGFloat,
-        groupType: String,
+        searchKeyword: String,
+        searchOpen: Bool,
+        searchFocus: FocusState<String?>.Binding,
+        onSearchKeywordChange: @escaping (String) -> Void,
+        onSearchOpen: @escaping () -> Void,
+        onSearchClose: @escaping () -> Void,
+        onSearchAppear: @escaping () -> Void,
         onToggleExpand: @escaping () -> Void,
         onScrollToSelected: @escaping () -> Void,
-        onTestAll: @escaping () -> Void,
-        onSearch: @escaping () -> Void,
-        @ViewBuilder expandedContent: @escaping () -> ExpandedContent
+        onTestAll: @escaping () -> Void
     ) {
         self.name = name
         self.icon = icon
@@ -2800,49 +2789,65 @@ private struct ListGroupCard<ExpandedContent: View>: View {
         self.selectedName = selectedName
         self.expanded = expanded
         self.iconStyle = iconStyle
-        self.columnCount = columnCount
-        self.cardType = cardType
-        self.cardHeight = cardHeight
-        self.groupType = groupType
+        self.searchKeyword = searchKeyword
+        self.searchOpen = searchOpen
+        self.searchFocus = searchFocus
+        self.onSearchKeywordChange = onSearchKeywordChange
+        self.onSearchOpen = onSearchOpen
+        self.onSearchClose = onSearchClose
+        self.onSearchAppear = onSearchAppear
         self.onToggleExpand = onToggleExpand
         self.onScrollToSelected = onScrollToSelected
         self.onTestAll = onTestAll
-        self.onSearch = onSearch
-        self.expandedContent = expandedContent
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // v0.2.123 rebuild (upstream ListHeader, list.dart):
-            // the WHOLE header is ONE Button in BOTH states —
-            // Card.onPressed toggles the unfold set, and the
-            // expanded-state action buttons (locate / bolt /
-            // search + the collapse triangle) are nested Buttons
-            // inside its label, so a tap on one of them runs its
-            // own action while a tap anywhere else on the header
-            // toggles expand/collapse. The old split — collapsed
-            // header a Button, expanded header bare with only the
-            // triangle to collapse — meant an expanded header's
-            // centre did nothing at all, and both halves sat
-            // under the full-page representable layer that is now
-            // removed (see the file-scope note at the top). The
-            // label is an HStack with a Spacer, so the
-            // contentShape goes on the LABEL, not the Button —
-            // the v0.2.18 ToolRow precedent: contentShape on the
-            // Button itself did not extend the hit area, while
-            // the shape on the label HStack makes the whole row
-            // rect tappable (v0.2.121).
-            Button(action: { tapAction() }) {
-                headerContent
+        // The expanded header is NOT wrapped in a Button: it
+        // holds a TextField (the per-group search), and a Button
+        // wrapping a TextField swallows its focus — the same
+        // reason IconGroupCard's expanded card is unwrapped.
+        // Only the left icon+name part is a Button (collapse);
+        // the actions pill and the triangle keep working
+        // untouched. Collapsed, the whole header is one Button,
+        // as before.
+        Group {
+            if expanded {
+                HStack(spacing: 10) {
+                    Button(action: { tapAction() }) {
+                        leftContent
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    // The middle gap collapses too (v0.2.123: the
+                    // whole header used to be one Button, and the
+                    // old split left the centre dead). It cannot be
+                    // part of a Button — the header now holds a
+                    // TextField — so the Spacer itself takes the tap.
+                    Spacer()
+                        .contentShape(Rectangle())
+                        .onTapGesture { tapAction() }
+                    expandedHeaderActions
+                }
+                .padding(6)
+            } else {
+                Button(action: { tapAction() }) {
+                    HStack(spacing: 10) {
+                        leftContent
+                        Spacer()
+                        collapsedRight
+                    }
                     .padding(6)
                     .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            if expanded {
-                expandedContent()
+                }
+                .buttonStyle(.plain)
             }
         }
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .background(
+            ConcordTheme.cardBackground,
+            in: expanded
+                ? AnyShape(UnevenRoundedRectangle(topLeadingRadius: ConcordTheme.panelRadius, topTrailingRadius: ConcordTheme.panelRadius))
+                : AnyShape(RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        )
     }
 
     /// The header Button action (v0.2.119 FIX 2, v0.2.123: now
@@ -2853,66 +2858,61 @@ private struct ListGroupCard<ExpandedContent: View>: View {
     /// calling onToggleExpand directly; its proof is
     /// toggleExpanded's own line.)
     private func tapAction() {
-        ProxyTapDiagnostics.record("ListGroupCard button fired: \(name) (expanded=\(expanded))")
+        ProxyTapDiagnostics.record("ListGroupHeader button fired: \(name) (expanded=\(expanded))")
         onToggleExpand()
     }
 
-    /// The header row: brand icon + name / selected node on the
-    /// left, type + chevron (collapsed) or the action pill +
-    /// collapse triangle (expanded) on the right. MuYu card
-    /// padding is 6pt all round (v0.2.81; was 12 horizontal /
-    /// 10 vertical). Row stays 60pt: 48pt icon + 2×6pt padding.
-    private var headerContent: some View {
+    /// Brand icon + name / selected node (MuYu ListHeader,
+    /// v0.2.81): name = callout 16pt emphasized, subtitle +
+    /// type = caption1 12pt emphasized grey. Row stays 60pt:
+    /// 48pt icon + 2×6pt padding.
+    private var leftContent: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 10) {
-                groupIconView(icon: icon, name: name, iconStyle: iconStyle)
-                VStack(alignment: .leading, spacing: 2) {
-                    // MuYu ListHeader (v0.2.81): name = callout
-                    // 16pt emphasized, subtitle + type = caption1
-                    // 12pt emphasized grey. Was subheadline 15pt
-                    // + caption2 11pt — visibly smaller than MuYu.
-                    Text(name)
-                        .font(.callout)
-                        .fontWeight(.bold)
-                        .lineLimit(1)
-                    Text(selectedName ?? "")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(minHeight: 13, alignment: .leading)
-                }
-            }
-            Spacer()
-            if expanded {
-                expandedHeaderActions
-            } else {
-                HStack(spacing: 10) {
-                    Text(typeDisplay)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    // MuYu ExpandIcon in a tonal compact IconButton
-                    // (v0.2.81): the screenshot's light-grey circle is
-                    // ~36pt with a ~14pt chevron (was 30pt / 12pt).
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.black)
-                        .frame(width: 36, height: 36)
-                        .background(Color(.systemGray4), in: Circle())
-                }
+            groupIconView(icon: icon, name: name, iconStyle: iconStyle)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.callout)
+                    .fontWeight(.bold)
+                    .lineLimit(1)
+                Text(selectedName ?? "")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(minHeight: 13, alignment: .leading)
             }
         }
     }
 
+    /// Collapsed right side: capitalized type + a light-gray
+    /// solid circle holding a black chevron (MuYu ExpandIcon in
+    /// a tonal compact IconButton, v0.2.81: ~36pt circle with a
+    /// ~14pt chevron).
+    private var collapsedRight: some View {
+        HStack(spacing: 10) {
+            Text(typeDisplay)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.black)
+                .frame(width: 36, height: 36)
+                .background(Color(.systemGray4), in: Circle())
+        }
+    }
+
     /// MuYu expanded header (list.dart, v0.2.88): a light pill
-    /// with target / bolt / magnifier, plus a separate grey
-    /// circle with a black up-triangle to collapse (IMG_1243 —
-    /// the triangle sits in its own circle, like the collapsed
+    /// with target / bolt / per-group search, plus a separate
+    /// grey circle with a black up-triangle to collapse (IMG_1243
+    /// — the triangle sits in its own circle, like the collapsed
     /// chevron, not inside the pill). The pill fill is
     /// pageBackground — the same grey as the node cards, one
     /// level above the white group card. Icons use .primary so
     /// they stay visible in dark mode, where the pill fill is
     /// dark; the triangle circle keeps the existing black-on-
-    /// systemGray4, which reads in both modes.
+    /// systemGray4, which reads in both modes. The magnifier that
+    /// used to open the PAGE search is gone (v0.2.146 P-F1): the
+    /// GroupSearchControl sits here instead, filtering only this
+    /// group's nodes.
     private var expandedHeaderActions: some View {
         HStack(spacing: 12) {
             HStack(spacing: 14) {
@@ -2930,13 +2930,7 @@ private struct ListGroupCard<ExpandedContent: View>: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("proxies.testGroup".l10n)
-                Button(action: onSearch) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.primary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("common.search".l10n)
+                groupSearchControl
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
@@ -2950,6 +2944,52 @@ private struct ListGroupCard<ExpandedContent: View>: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("proxies.collapse".l10n)
+        }
+    }
+
+    /// Per-group search (MuYu GroupSearchControl, common.dart):
+    /// a magnifier opens a 128pt field; the keyword filters only
+    /// this group's nodes. Closes the field (MuYu _close) and
+    /// clears the keyword on ×. Autofocus on open; the keyword
+    /// entry is removed when the text becomes empty. The keyword
+    /// Binding is built here from the plain keyword value + the
+    /// parent's change callback; focus is the parent's FocusState
+    /// binding. Same control as IconGroupCard's.
+    private var groupSearchControl: some View {
+        Group {
+            if searchOpen {
+                HStack(spacing: 4) {
+                    TextField("common.search".l10n, text: Binding(
+                        get: { searchKeyword },
+                        set: { onSearchKeywordChange($0) }
+                    ))
+                    .font(.caption)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused(searchFocus, equals: name)
+                    .frame(width: 128)
+                    Button(action: onSearchClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("proxies.search.clear".l10n)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 8))
+                .onAppear(perform: onSearchAppear)
+            } else {
+                Button(action: onSearchOpen) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("proxies.search.thisGroup".l10n)
+            }
         }
     }
 }
@@ -3011,6 +3051,9 @@ private struct ProxyNodeCard: View, Equatable {
     let description: String
     let latencyMs: Int32?
     let testing: Bool
+    /// Queued for a group run but not yet started (v0.2.146 P-D3 —
+    /// rs.1 DelayTestPhase.queued): the clock glyph in DelayText.
+    let queued: Bool
     let pinned: Bool
     let selected: Bool
     let cardType: ProxyStyleStore.CardType
@@ -3037,6 +3080,7 @@ private struct ProxyNodeCard: View, Equatable {
         description: String,
         latencyMs: Int32?,
         testing: Bool,
+        queued: Bool,
         pinned: Bool,
         selected: Bool,
         cardType: ProxyStyleStore.CardType,
@@ -3050,6 +3094,7 @@ private struct ProxyNodeCard: View, Equatable {
         self.description = description
         self.latencyMs = latencyMs
         self.testing = testing
+        self.queued = queued
         self.pinned = pinned
         self.selected = selected
         self.cardType = cardType
@@ -3067,6 +3112,7 @@ private struct ProxyNodeCard: View, Equatable {
             && lhs.description == rhs.description
             && lhs.latencyMs == rhs.latencyMs
             && lhs.testing == rhs.testing
+            && lhs.queued == rhs.queued
             && lhs.pinned == rhs.pinned
             && lhs.selected == rhs.selected
             && lhs.cardType == rhs.cardType
@@ -3134,7 +3180,7 @@ private struct ProxyNodeCard: View, Equatable {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Button(action: onTest) {
-                        DelayText(latencyMs: latencyMs, testing: testing)
+                        DelayText(latencyMs: latencyMs, testing: testing, queued: queued)
                     }
                     .buttonStyle(.plain)
                 }
@@ -3146,7 +3192,7 @@ private struct ProxyNodeCard: View, Equatable {
                         .lineLimit(1)
                     Spacer()
                     Button(action: onTest) {
-                        DelayText(latencyMs: latencyMs, testing: testing)
+                        DelayText(latencyMs: latencyMs, testing: testing, queued: queued)
                     }
                     .buttonStyle(.plain)
                 }
@@ -3160,18 +3206,52 @@ private struct ProxyNodeCard: View, Equatable {
     }
 }
 
+/// Delay-test colours (v0.2.146 P-D10): rs.1's delayColor reads the
+/// theme's success / warning / error tokens (ui/delay_color.dart),
+/// not literal green / orange / red. This app's theme has no such
+/// tokens yet (DesignSystem.swift defines ConcordTheme without
+/// them), so they live here as an extension on ConcordTheme until
+/// a theme pass adds them to the theme itself — same hues as the
+/// old literals, so the look is unchanged. NOTE for the v0.2.146
+/// coordinator: if another agent adds the same three tokens (e.g.
+/// in DesignSystem.swift), delete these three lines — a duplicate
+/// definition is a compile error.
+extension ConcordTheme {
+    /// Success green (<600 ms).
+    static var success: Color { .green }
+    /// Warning orange (>=600 ms).
+    static var warning: Color { .orange }
+    /// Error red (<0 ms — 超时 / 失败）.
+    static var error: Color { .red }
+
+    /// The delay colour for one latency (rs.1 delayColor,
+    /// ui/delay_color.dart:5-10): <0 → error, <600 → success, else
+    /// warning. (Null → no colour — the caller shows the bolt.)
+    static func delayColor(for ms: Int32) -> Color {
+        if ms < 0 { return .error }
+        return ms < 600 ? .success : .warning
+    }
+}
+
 /// Delay text, FlClash _DelayText (card.dart:258-400): plain text,
-/// no capsule. <600ms success green, >=600ms warning orange, <0
-/// error red; -1 is 超时, other negatives 失败 (video f_043 —
-/// not "测速失败")
+/// no capsule. Colours come from the theme success/warning/error
+/// tokens (v0.2.146 P-D10 — rs.1 delayColor, ui/delay_color.dart:
+/// 5-10): <600ms success, >=600ms warning, <0 error; -1 is 超时,
+/// other negatives 失败 (video f_043 — not "测速失败")
 /// (ui/delay_color.dart:5-10, common/app_localizations.dart:130-134).
-/// Untested shows the bolt glyph, as in FlClash.
+/// Untested shows the bolt glyph, as in FlClash; queued shows a
+/// clock glyph (rs.1 DelayTestPhase.queued, card.dart:360-372).
 private struct DelayText: View {
     let latencyMs: Int32?
     /// While this node's test runs (FlClash shows an ActivityIndicator
     /// for DelayTestPhase.running); without it the tap shows nothing
     /// until the result lands.
     var testing: Bool = false
+    /// Queued for a group run but not yet started (v0.2.146 P-D3 —
+    /// rs.1 DelayTestPhase.queued, card.dart:360-372): a clock glyph
+    /// in the secondary colour (rs.1 AppGlyphs.clock, onSurfaceVariant
+    /// opacity 38 — .secondary here).
+    var queued: Bool = false
 
     var body: some View {
         Group {
@@ -3185,13 +3265,16 @@ private struct DelayText: View {
                 ProgressView()
                     .frame(width: 11, height: 11)
                     .scaleEffect(0.55)
+            } else if queued {
+                Image(systemName: "clock")
+                    .foregroundStyle(.secondary)
             } else if let ms = latencyMs {
                 if ms > 0 {
                     Text("\(ms) ms")
-                        .foregroundStyle(ms < 600 ? Color.green : Color.orange)
+                        .foregroundStyle(ConcordTheme.delayColor(for: ms))
                 } else {
                     Text(ms == -1 ? "proxies.latency.timeout".l10n : "common.failed".l10n)
-                        .foregroundStyle(Color.red)
+                        .foregroundStyle(ConcordTheme.error)
                 }
             } else {
                 Image(systemName: "bolt")
@@ -3204,199 +3287,6 @@ private struct DelayText: View {
         // upstream sizes the spinner and glyphs by.
         .font(.caption2)
         .fontWeight(.semibold)
-    }
-}
-
-// Node detail sheet (FlClash proxy card detail). Loads the node's
-// configured definition (proxy.definition) and live state
-// (proxy.states) from the core when it opens.
-struct NodeDetailView: View {
-    let node: ProxyNode
-    /// The owning group's test URL, so the 测速 button here probes
-    /// the same URL as the card's delay chip (FlClash
-    /// _handleTestCurrentDelay).
-    let testURL: String?
-    @EnvironmentObject private var proxyStore: ProxyStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var detail: ProxyStore.NodeDetail?
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section("proxies.detail.sectionNode".l10n) {
-                    LabeledContent("proxies.detail.name".l10n, value: node.name)
-                    LabeledContent("proxies.detail.type".l10n, value: node.type)
-                    LabeledContent("proxies.detail.provider".l10n, value: node.provider ?? "—")
-                    LabeledContent("proxies.detail.latency".l10n, value: ConcordFormat.latency(node.latencyMs))
-                    if let state = detail?.state {
-                        LabeledContent("proxies.detail.alive".l10n, value: state.alive ? "common.yes".l10n : "common.no".l10n)
-                        LabeledContent("UDP", value: state.udp ? "common.supported".l10n : "common.unsupported".l10n)
-                        if let last = state.history.last {
-                            LabeledContent("proxies.detail.lastLatency".l10n, value: last.delay == 0 ? "common.failed".l10n : "\(last.delay) ms")
-                        }
-                    }
-                }
-                Section {
-                    Button("proxies.testSpeed".l10n) {
-                        Task { await proxyStore.testLatency(node: node, testURL: testURL) }
-                    }
-                }
-                if let definition = detail?.definition {
-                    Section("proxies.detail.sectionConfig".l10n) {
-                        JSONValueView(value: definition)
-                            .frame(minHeight: 120)
-                    }
-                } else if let error = detail?.error {
-                    Section {
-                        Text(error).font(.caption2).foregroundStyle(.orange)
-                    }
-                } else {
-                    Section {
-                        ProgressView()
-                    }
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
-            .background(ConcordTheme.pageBackground)
-            .navigationTitle("title.nodeDetail".l10n)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("common.done".l10n) { dismiss() }
-                }
-            }
-            .task {
-                detail = await proxyStore.fetchNodeDetail(name: node.name)
-            }
-        }
-    }
-}
-
-/// Confirmation sheet for the rule-set repair (v0.2.46 ITEM 1):
-/// shows the exact YAML lines the repair will add / remove and
-/// requires an explicit tap — nothing is written from the banner
-/// alone. Unrepairable plans show the reason with no confirm
-/// button. While a confirmed repair is writing + re-applying,
-/// the button becomes a spinner.
-/// Repair-ALL confirmation sheet (v0.2.49): every rule set the
-/// core reported missing, each with its action and exact lines,
-/// one confirm for all of them. The sheet stays open after
-/// confirm: the outcome (success or the remaining problem) is
-/// shown INLINE here, never as a fresh banner pop.
-private struct RuleSetRepairSheet: View {
-    @EnvironmentObject private var proxyStore: ProxyStore
-    @Environment(\.dismiss) private var dismiss
-    let plan: RuleSetRepairAllPlan
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(plan.summary)
-                        .font(.system(size: 14))
-                    if let blockingIssue = plan.blockingIssue {
-                        Text(blockingIssue)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                    ForEach(plan.items) { item in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 6) {
-                                Text("「\(item.missingName)」")
-                                    .font(.footnote.weight(.semibold))
-                                Text(item.actionTitle)
-                                    .font(.caption2.weight(.semibold))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 2)
-                                    .background(itemActionColor(item.kind).opacity(0.15), in: Capsule())
-                                    .foregroundStyle(itemActionColor(item.kind))
-                            }
-                            if !item.previewLines.isEmpty {
-                                Text(item.previewTitle)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    Text(item.previewLines.joined(separator: "\n"))
-                                        .font(.system(.caption, design: .monospaced))
-                                        .padding(10)
-                                }
-                                .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 8))
-                            }
-                        }
-                    }
-                    if plan.isRepairable {
-                        Text("proxies.repair.confirmNote".l10n)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let outcome = proxyStore.ruleSetRepairOutcome {
-                        Text(outcome)
-                            .font(.footnote)
-                            .foregroundStyle(proxyStore.ruleSetRepairOutcomeIsSuccess ? .green : .red)
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background((proxyStore.ruleSetRepairOutcomeIsSuccess ? Color.green : Color.red).opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                }
-                .padding()
-            }
-            .navigationTitle("proxies.repair.title".l10n)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(proxyStore.ruleSetRepairOutcome == nil ? "common.cancel".l10n : "common.done".l10n) {
-                        proxyStore.dismissRuleSetRepair()
-                        dismiss()
-                    }
-                }
-                if plan.isRepairable && proxyStore.ruleSetRepairOutcome == nil {
-                    ToolbarItem(placement: .confirmationAction) {
-                        if proxyStore.isRepairingRuleSet {
-                            ProgressView()
-                        } else {
-                            Button(plan.confirmTitle) {
-                                Task { await proxyStore.confirmRuleSetRepair() }
-                            }
-                            .fontWeight(.semibold)
-                        }
-                    }
-                }
-                // After a confirmed repair, a remaining missing-set
-                // error (v0.2.62, 150G: TikTok fixed, Netflix next
-                // — the core only reports one missing set at a
-                // time) offers the next repair right here, instead
-                // of making the user close the sheet and tap 修复
-                // again from the banner. The new plan replaces the
-                // offer in place; prepareRuleSetRepair clears the
-                // old outcome first.
-                if plan.isRepairable, proxyStore.ruleSetRepairOutcome != nil, !proxyStore.ruleSetRepairOutcomeIsSuccess,
-                   let next = proxyStore.missingRuleSetName,
-                   !plan.items.map({ $0.missingName }).contains(next) {
-                    ToolbarItem(placement: .confirmationAction) {
-                        if proxyStore.isRepairingRuleSet {
-                            ProgressView()
-                        } else {
-                            Button("\("proxies.repair.continuePrefix".l10n)\(next)\("proxies.repair.continueSuffix".l10n)") {
-                                Task { await proxyStore.prepareRuleSetRepair() }
-                            }
-                            .fontWeight(.semibold)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func itemActionColor(_ kind: RuleSetRepairPlan.Kind) -> Color {
-        switch kind {
-        case .complete: return .blue
-        case .delete: return .orange
-        case .unrepairable: return .red
-        }
     }
 }
 

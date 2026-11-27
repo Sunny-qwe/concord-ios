@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - IP lookup diagnostics (v0.2.95 Bug 2)
 //
@@ -169,14 +170,13 @@ struct DashboardView: View {
     @AppStorage("ConcordiOS.dashboard.show.groups") private var showGroups = true
     @AppStorage("ConcordiOS.dashboard.show.stats") private var showStats = true
     @AppStorage("ConcordiOS.dashboard.show.memory") private var showMemory = true
-    @AppStorage("ConcordiOS.dashboard.show.update") private var showUpdate = true
     /// Traffic statistics card (MuYu TrafficStatisticsCard, D-M8):
     /// today's up/down + uptime, plus week/month totals from the
     /// daily history TrafficStore records since v0.2.55.
     @AppStorage("ConcordiOS.dashboard.show.traffic") private var showTraffic = true
-    /// Compact density (FlClash layout.dart DashboardDensity.compact):
-    /// smaller type, smaller start button and tiles, subtitles dropped.
-    @AppStorage("ConcordiOS.dashboard.densityCompact") private var densityCompact = false
+    /// Intranet IP card (v0.2.146, D-45, upstream
+    /// intranet_ip.dart): the LAN IPv4 + allow-LAN switch.
+    @AppStorage("ConcordiOS.dashboard.show.intranet") private var showIntranet = true
     /// Card order, comma-separated DashboardCardID raw values; empty
     /// means the default order (also used to append cards added by
     /// later versions).
@@ -218,6 +218,15 @@ struct DashboardView: View {
     /// opens ProxiesView(picker: true) here instead of jumping
     /// to the Proxies tab.
     @State private var showGroupsSheet = false
+    /// Profile picker sheet (v0.2.146, D-32): the profile card's
+    /// tap (no active profile) and swap button open
+    /// ProfilesView(picker: true) here instead of jumping to the
+    /// Profiles tab. ProfilesView does not dismiss itself on
+    /// selection, so the sheet watches the active profile id and
+    /// closes when it changes (pickerProfileId records the id at
+    /// presentation).
+    @State private var showProfilesPicker = false
+    @State private var pickerProfileId: UUID?
     @State private var tunnelStartedAt: Date?
     /// v0.2.118 (Job 6): when the app observed the current tunnel
     /// run start (the running=false→true transition in
@@ -242,9 +251,9 @@ struct DashboardView: View {
     /// background at appear. Only ever the user's own last egress;
     /// a fresh probe overwrites it within seconds of launch.
     @State private var ipInfo: IPQualityInfo? = DashboardView.cachedIpInfo()
-    /// Enrichment-failure flag (v0.2.121): the ip-api.com lookup
-    /// failed (decode / non-success status / HTTP error). Without
-    /// it the chips/org showed pulsing skeletons forever when the
+    /// Enrichment-failure flag (v0.2.121): the IP enrichment
+    /// fan-out failed (every source failed). Without it the
+    /// chips/org showed pulsing skeletons forever when the
     /// enrichment failed deterministically; with it they settle on
     /// the fallback chips / "—". Reset at the start of every
     /// fetchIPInfo() attempt; the probed IP itself is unaffected
@@ -270,11 +279,12 @@ struct DashboardView: View {
     /// deleted: the red failure is the probe's own flag now
     /// (trafficStore.outboundIpProbeFailed).
     @State private var ipFetchInFlight = false
-    /// The ip-api.com `as` field ("AS15169 Google LLC"), parsed to
-    /// the bare "AS<n>" token for the org fallback (FlClash
-    /// current_outbound.dart: organization ?? "AS{asn}").
-    /// IPQualityInfo maps no `as` key, so it is decoded separately.
-    /// Restored from the same last-known cache as ipInfo (above).
+    /// The bare "AS<n>" token for the org fallback (FlClash
+    /// current_outbound.dart: organization ?? "AS{asn}"). The
+    /// fan-out answers carry it in IPQualityInfo.asn — ip-api.com's
+    /// `as` field is "AS15169 Google LLC", so only the first token
+    /// is kept (see fetchIPEnrichment). Restored from the same
+    /// last-known cache as ipInfo (above).
     @State private var ipAsn: String? = DashboardView.cachedIpAsn()
     /// Profile sync spinner (FlClash profiles.dart _SyncButton shows
     /// an activity indicator while the profile is updating).
@@ -286,11 +296,12 @@ struct DashboardView: View {
     @State private var showMemoryDetail = false
     @State private var isReleasingMemory = false
     @State private var memoryReleaseMessage: String?
-    /// Update card state (FlClash update_status.dart): reads the
-    /// same UpdateChecker the About page uses; the last result is
-    /// kept in AppStorage so the card shows something before the
-    /// first check of the session.
-    @State private var updateCheckMessage: String?
+    /// Update state (v0.2.146, D-46/D-51): the standalone update
+    /// card is deleted, but the check result still feeds the
+    /// live-status deck's update entry — the same UpdateChecker
+    /// the About page uses, the last result kept in AppStorage so
+    /// the deck shows something before the first check of the
+    /// session.
     @State private var isCheckingUpdate = false
     @AppStorage("ConcordiOS.update.lastSha") private var lastUpdateSha = ""
     @AppStorage("ConcordiOS.update.lastMessage") private var lastUpdateMessage = ""
@@ -362,13 +373,17 @@ struct DashboardView: View {
         max(0, proxyStore.nonHiddenGroups.count - 4)
     }
 
-    // MARK: - Card order + density (FlClash dashboard/edit.dart)
+    // MARK: - Card order (FlClash dashboard/edit.dart)
 
-    /// Card spacing and the big-number type shrink in compact density.
-    private var stackSpacing: CGFloat { densityCompact ? 8 : 12 }
-    private var playButtonSize: CGFloat { densityCompact ? 72 : 88 }
-    private var bigNumberSize: CGFloat { densityCompact ? 20 : 25 }
-    private var statNumberSize: CGFloat { densityCompact ? 19 : 24 }
+    /// Card spacing and type sizes (v0.2.146, D-48): the compact
+    /// density toggle was removed — upstream has no density
+    /// switch on the dashboard — so these are the standard
+    /// (non-compact) values, kept as named constants for the
+    /// card layouts that read them.
+    private var stackSpacing: CGFloat { 12 }
+    private var playButtonSize: CGFloat { 88 }
+    private var bigNumberSize: CGFloat { 25 }
+    private var statNumberSize: CGFloat { 24 }
 
     /// The stored order, repaired: unknown ids are dropped, cards
     /// added by later versions are appended at the end.
@@ -383,22 +398,33 @@ struct DashboardView: View {
         return order
     }
 
-    private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.25"
-    }
-
     private func checkForUpdate() async {
         isCheckingUpdate = true
         defer { isCheckingUpdate = false }
         if let result = await UpdateChecker.check() {
-            updateCheckMessage = result.isNew ? "dashboard.update.newCommit".l10n : "dashboard.update.latestCommit".l10n
             lastUpdateSha = result.sha
             lastUpdateMessage = result.message
             lastUpdateDate = result.date
             lastUpdateIsNew = result.isNew
             lastUpdateChecked = true
-        } else {
-            updateCheckMessage = "dashboard.update.checkFailed".l10n
+        }
+    }
+
+    /// Restarts the core (v0.2.146, D-51): the live-status deck's
+    /// core-running card offers this. The stop/wait/start pattern
+    /// moved here from the deleted TUN-restart banner — stop()
+    /// waits up to 5 s for .disconnected; make sure the tunnel
+    /// really settled before toggling, or the toggle would stop
+    /// again instead of starting. A start failure lands in
+    /// proxyStore.startError, like the play button's.
+    private func restartCore() {
+        Task {
+            await TunnelManager.shared.stop()
+            let deadline = Date().addingTimeInterval(10)
+            while TunnelManager.shared.isRunning && Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            await proxyStore.toggle()
         }
     }
 
@@ -523,14 +549,23 @@ struct DashboardView: View {
     /// never discovers an IP via HTTP: the direct ip-api.com /
     /// ident.me / ipify chain is deleted, so the status card can
     /// no longer show the phone's direct IP as the egress. This
-    /// only fetches geo/org/ASN for the probed IP (the upstream
-    /// ipQualityProvider equivalent — upstream also looks the
-    /// quality up over HTTP for the known probed IP). A failed
-    /// enrichment sets no failure flag and schedules no retry:
-    /// the IP still shows from the probe, and the next probe /
-    /// pull-to-refresh / manual re-fetch enriches again. The
-    /// status card shows the result with the VPN off too — MuYu
-    /// shows the full card with the tunnel down.
+    /// only fetches geo/org/ASN/quality for the probed IP (the
+    /// upstream ipQualityProvider equivalent — upstream also looks
+    /// the quality up over HTTP for the known probed IP). A failed
+    /// enrichment sets the failure flag and schedules no retry
+    /// beyond the one below: the IP still shows from the probe,
+    /// and the next probe / pull-to-refresh / manual re-fetch
+    /// enriches again. The status card shows the result with the
+    /// VPN off too — MuYu shows the full card with the tunnel
+    /// down.
+    ///
+    /// v0.2.146 (D-60): the enrichment runs upstream's fan-out
+    /// (IPQualityView.lookupWaves — 6 sources in 4 waves,
+    /// ident.me / ip-api.com / ipquery.io / iplocate.io /
+    /// ipapi.is / proxycheck.io, 1 s hedge, 8 s per source), not
+    /// the old ip-api.com-only fetch. Each source is tried
+    /// through the core's local mixed proxy first and directly
+    /// second, like the old code.
     private func fetchIPInfo() async {
         // v0.2.115: the IP comes from the core probe only — no
         // probed IP yet means nothing to enrich.
@@ -552,8 +587,8 @@ struct DashboardView: View {
         // process's DNS/routing is not yet stable — the lookup
         // fast-fails and the card stays without geo until a manual
         // re-fetch. The lookup now goes through the core's local
-        // proxy (fetchIPInfoFromIpApi), whose routing is stable as
-        // soon as the tunnel is up, so only a 1 s settle remains
+        // proxy first (below), whose routing is stable as soon as
+        // the tunnel is up, so only a 1 s settle remains
         // (was 4 s) — the proxy only needs the core to be listening
         // on 17890. No delay when the tunnel has been up for a
         // while, or its start time is unknown.
@@ -566,110 +601,60 @@ struct DashboardView: View {
         }
         ipChecking = true
         defer { ipChecking = false }
-        // Interface B3 (DashboardView part): a stalled ip-api.com
-        // used to hang this lookup forever (URLSession.shared
-        // defaults: 60 s request / 7 days resource). 10 s, then
-        // the lookup fails instead of hanging.
         // v0.2.128 item 7: one automatic retry 2 s after a failure
         // (a transient proxy/DNS miss right after connect), so the
         // enrichment self-heals instead of skeletoning until a
         // manual re-fetch. The retry only runs for the same IP —
         // a fresh probe in between owns the enrichment.
-        if await fetchIPInfoFromIpApi(for: ip) {
+        if await fetchIPEnrichment(for: ip) {
             return
         }
         try? await Task.sleep(nanoseconds: 2_000_000_000)
         if Task.isCancelled { return }
         guard trafficStore.outboundIp == ip else { return }
-        _ = await fetchIPInfoFromIpApi(for: ip)
+        _ = await fetchIPEnrichment(for: ip)
     }
 
-    /// Applies one ip-api.com response (the known-IP lookup):
-    /// decodes IPQualityInfo + the `as` token, stores + persists
-    /// them. False when the answer does not decode or reports a
-    /// non-success status. v0.2.115: a failed enrichment sets no
-    /// failure flag — the probed IP still shows.
-    private func applyIpApiResponse(_ data: Data) -> Bool {
-        let decoded: IPQualityInfo
-        do {
-            decoded = try JSONDecoder().decode(IPQualityInfo.self, from: data)
-        } catch {
-            // v0.2.121: record the full DecodingError (it names the
-            // missing key) and a snippet of the raw body — the phone
-            // got an HTTP 200 body with no `status` key (not a
-            // genuine ip-api.com answer), and localizedDescription
-            // alone erases both. Also mark the enrichment as failed
-            // so the chips/org settle instead of skeletoning forever.
-            ipEnrichmentFailed = true
-            let bodySnippet = String(data: data.prefix(200), encoding: .utf8) ?? "<non-utf8 \(data.count)B>"
-            IPLookupDiagnostics.record("ip-api.com: decode failed: \(error) | body: \(bodySnippet)")
-            return false
-        }
-        guard decoded.status == "success" else {
-            ipEnrichmentFailed = true
-            IPLookupDiagnostics.record("ip-api.com: status \(decoded.status ?? "?")")
-            return false
-        }
-        // v0.2.128 item 7: a successful enrichment clears the
-        // failure flag — the proxy-first lookup below can fail
-        // once (setting the flag) and succeed on the direct
-        // fallback, and the flag must not stay stale afterwards.
-        ipEnrichmentFailed = false
-        setIpInfo(decoded, asn: (try? JSONDecoder().decode(IPApiAsField.self, from: data))?.asNumber)
-        return true
-    }
-
-    /// ip-api.com for a KNOWN IP (v0.2.115): queries the geo of the
-    /// core-probed egress IP. ip-api answers geo for any IP, not
-    /// just the caller's — so with the VPN off the card shows the
-    /// proxy egress's country/org instead of the phone's direct IP.
-    /// This is now the ONLY ip-api.com path: the no-arg caller-IP
-    /// variant is deleted (the IP comes only from the core probe).
-    ///
-    /// v0.2.128 item 7: the lookup goes through the core's local
-    /// mixed proxy first (ServiceProbeLocal.makeProxySession) —
-    /// the core's DNS/routing is stable as soon as the tunnel is
-    /// up, so the enrichment answers immediately instead of
-    /// waiting for the app process's own routing to settle. When
-    /// the VPN is off there is no core on 17890, so the proxy
-    /// attempt fails fast and the direct lookup runs instead.
-    private func fetchIPInfoFromIpApi(for ip: String) async -> Bool {
-        guard let url = URL(string: "http://ip-api.com/json/\(ip)?fields=status,message,country,countryCode,city,regionName,isp,org,as,timezone,query,lat,lon,mobile,proxy,hosting") else { return false }
-        if await fetchIpApi(url: url, session: ServiceProbeLocal.makeProxySession()) {
+    /// One fan-out enrichment for a KNOWN IP: the waves answer
+    /// with the first stated type (an inferred residential answer
+    /// is only a fallback). True when an answer landed and was
+    /// stored; false when every source failed — then the failure
+    /// flag is set and one diagnostics line records the
+    /// per-source failures. When the VPN is off there is no core
+    /// on 17890, so the proxy attempt fails fast and the direct
+    /// lookup runs instead.
+    private func fetchIPEnrichment(for ip: String) async -> Bool {
+        let sessions = [ServiceProbeLocal.makeProxySession(timeoutSeconds: 8), URLSession.shared]
+        let result = await IPQualityView.lookupWaves(targetIp: ip, sessions: sessions)
+        if let (answer, _) = result.answer {
+            // v0.2.128 item 7: a successful enrichment clears the
+            // failure flag — the first attempt can fail (setting
+            // the flag) and the retry succeed, and the flag must
+            // not stay stale afterwards.
+            ipEnrichmentFailed = false
+            setIpInfo(answer, asn: answer.asn?.split(separator: " ").first.map(String.init))
             return true
         }
-        return await fetchIpApi(url: url, session: URLSession.shared)
-    }
-
-    /// One ip-api.com attempt on the given session. False when the
-    /// transport fails, the status is not 200, or the answer does
-    /// not decode / reports a non-success status.
-    private func fetchIpApi(url: URL, session: URLSession) async -> Bool {
-        do {
-            let request = URLRequest(url: url, timeoutInterval: 10)
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-                ipEnrichmentFailed = true
-                IPLookupDiagnostics.record("ip-api.com: HTTP \(status)")
-                return false
-            }
-            return applyIpApiResponse(data)
-        } catch {
-            ipEnrichmentFailed = true
-            IPLookupDiagnostics.recordError(source: "ip-api.com", error: error)
-            return false
-        }
+        ipEnrichmentFailed = true
+        let failures = result.failures.map { "\($0.source): \($0.status.rawValue)" }.joined(separator: ", ")
+        IPLookupDiagnostics.record("enrichment: all sources failed (\(failures))")
+        return false
     }
 
     /// The ip-api.com answer assessed like upstream (D-D3): the
     /// type and level come from the real hosting/mobile/proxy
     /// flags — the old code derived "质量 优/良/差" from the
-    /// lookup latency, which says nothing about the IP. ip-api.com
-    /// states no type, so silence about hosting/mobile reads as
-    /// residential, flagged inferred (upstream _pickType fallback).
+    /// lookup latency, which says nothing about the IP. The
+    /// fan-out answers already carry a stated (or inferred) type
+    /// via assessed() — that wins. Only a legacy cache entry
+    /// from the ip-api.com-only days (qualityType == nil) falls
+    /// back to deriving the type from the hosting/mobile flags
+    /// (ip-api.com states no type, so silence about
+    /// hosting/mobile reads as residential, flagged inferred —
+    /// upstream _pickType fallback).
     private var assessedIpInfo: IPQualityInfo? {
         guard let info = ipInfo else { return nil }
+        if info.qualityType != nil { return info }
         let type: IpQualityType = info.hosting == true ? .hosting
             : (info.mobile == true ? .mobile : .residential)
         let inferred = info.hosting != true && info.mobile != true
@@ -745,6 +730,19 @@ struct DashboardView: View {
         }
         .sheet(isPresented: $showProfileDetailSheet) { profileDetailSheetContent }
         .sheet(isPresented: $showGroupsSheet) { groupsSheetContent }
+        .sheet(isPresented: $showProfilesPicker) { profilesPickerSheetContent }
+        // v0.2.146 (D-32): ProfilesView(picker:) does not dismiss
+        // itself on selection — the picker sheet closes when the
+        // active profile changes, and the card's subscription info
+        // refreshes for the new profile. Guarded by
+        // showProfilesPicker so a switch from the Profiles tab
+        // does not touch the dashboard.
+        .onChange(of: profileStore.activeProfile?.id) { _, newId in
+            guard showProfilesPicker, let newId, newId != pickerProfileId else { return }
+            pickerProfileId = newId
+            showProfilesPicker = false
+            Task { await refreshSubscription() }
+        }
         // The dashboard's consent prompt (fork 0a55a31): the same
         // prompt the modules page uses, asked over the dashboard
         // for each module that awaits an answer in turn; an answer
@@ -768,22 +766,12 @@ struct DashboardView: View {
     // below is one small property or helper; behaviour is
     // unchanged, only the grouping moved.
 
-    /// The scrolling card list: title row, sample badge, pending
-    /// modules, the inline edit panel, the ordered cards, and the
-    /// start-error line.
+    /// The scrolling card list: title row, the inline edit panel,
+    /// the ordered cards, and the start-error line.
     private var dashboardScrollContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: stackSpacing) {
                 titleRow
-                if client.mode == .sample {
-                    HStack {
-                        SampleDataBadge()
-                        Text("dashboard.sampleNotice".l10n)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                pendingModulesCard
                 // v0.2.85: inline edit panel (upstream `_editing`)
                 // sits above the cards, which stay visible below
                 // so toggles and reordering apply live.
@@ -864,6 +852,20 @@ struct DashboardView: View {
             .presentationCornerRadius(28)
     }
 
+    /// v0.2.146 (D-32): the profile card's tap (no active profile)
+    /// and swap button open the picker sheet (upstream
+    /// profiles.dart _openProfile → ProfilesView(picker: true))
+    /// instead of jumping to the Profiles tab. The sheet closes
+    /// when the active profile changes — see the onChange in
+    /// dashboardScrollContent.
+    private var profilesPickerSheetContent: some View {
+        ProfilesView(picker: true)
+            .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+            .presentationDragIndicator(.hidden)
+            .presentationBackground(ConcordTheme.pageBackground)
+            .presentationCornerRadius(28)
+    }
+
     /// v0.2.113: the .live / .recent stats sheets no longer use
     /// the system .sheet either — like .dns since v0.2.111, they
     /// render as custom overlays at the ContentView root
@@ -881,34 +883,12 @@ struct DashboardView: View {
 
     // MARK: - Modules awaiting consent (fork 2d31f10 + 0a55a31)
 
-    /// The pending-modules card (fork live_status_deck
-    /// `MitmConsentStatus`): shown only while a module awaits
-    /// consent. It is a status card, not a user-ordered dashboard
-    /// card, so it sits above the ordered cards and cannot be
-    /// hidden in the edit sheet.
-    @ViewBuilder
-    private var pendingModulesCard: some View {
-        let pending = mitmModuleStore.modulesAwaitingConsent
-        if !pending.isEmpty {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    CardTitleRow(icon: "puzzlepiece.extension", title: "dashboard.module.closed".l10n)
-                    Spacer()
-                    PillBadge(text: String(format: "dashboard.module.pendingCount".l10n, "\(pending.count)"), tint: .orange)
-                }
-                Text(pending.count == 1
-                     ? "\(pending[0].name) \("dashboard.module.consentSingle".l10n)"
-                     : "\(pending.count) \("dashboard.module.consentMultiple".l10n)")
-                    .font(.footnote)
-                    .foregroundStyle(Color(.label))
-                Button("dashboard.module.view".l10n) { reviewNext() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.orange)
-                    .controlSize(.small)
-            }
-            .concordCard()
-        }
-    }
+    /// v0.2.146 (D-51): the pinned pending-modules card is gone —
+    /// MITM consent is a live-status deck entry now (see
+    /// LiveStatusDeck in ConfigWarningsDeck.swift, reached from
+    /// the title-row live-status pill). The review state machine
+    /// below stays: the deck's MITM action calls reviewNext(),
+    /// and the same consent alert asks about each module in turn.
 
     /// The prompt title for the module the dashboard is asking about.
     private var reviewAlertTitle: String {
@@ -963,17 +943,13 @@ struct DashboardView: View {
         case .speed: if showSpeed { speedCard }
         case .traffic: if showTraffic { trafficCard }
         case .mode: if showMode { modeCard }
-        case .vpn: if showVpn { vpnCardSection }
+        case .vpn: if showVpn { vpnCard }
+        case .intranet: if showIntranet { intranetCard }
         case .services: if showServices { servicesCard }
         case .profile: if showProfile { profileCard }
         case .groups: if showGroups { groupsCard }
         case .stats: if showStats { statsCard }
         case .memory: if showMemory { memoryCard }
-        // D-D1: the update card only shows while a check is running
-        // or a newer commit was found — a quiet "已是最新" card is
-        // noise on every dashboard open. Checking is still offered
-        // from the About page when the card is hidden.
-        case .update: if showUpdate && (isCheckingUpdate || lastUpdateIsNew) { updateCard }
         }
     }
 
@@ -988,31 +964,24 @@ struct DashboardView: View {
                 .font(.system(size: 24, weight: .bold))
             Spacer()
             // v0.2.86: upstream dashboard.dart statusActions —
-            // the faults badge first, then the live-status
-            // (warnings) pill; both hidden while editing. Both
-            // are TrafficStore leaves, so the 1 s tick never
-            // re-evaluates this view (v0.2.69).
+            // the faults badge first, then the live-status pill
+            // (core / update / MITM / warnings deck); both hidden
+            // while editing. Both are TrafficStore leaves, so the
+            // 1 s tick never re-evaluates this view (v0.2.69).
             if !isEditingDashboard {
                 DashboardServiceFaultsBadge()
-                DashboardWarningsPill()
-            }
-            // D-M2: core-status button — shown only while the VPN
-            // is off, one tap starts it (the same path as the play
-            // button). There is no separate core-restart API: the
-            // core lives in the extension and starts with the VPN.
-            if !proxyStore.isRunning {
-                Button {
-                    Task { await proxyStore.toggle() }
-                } label: {
-                    Label("dashboard.start".l10n, systemImage: "play.fill")
-                        .font(.footnote.weight(.semibold))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(ConcordTheme.accent, in: Capsule())
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("dashboard.startVpn".l10n)
+                DashboardLiveStatusPill(
+                    isCheckingUpdate: isCheckingUpdate,
+                    onStartCore: { Task { await proxyStore.toggle() } },
+                    onRestartCore: restartCore,
+                    onReviewMitm: { reviewNext() },
+                    onOpenReleases: {
+                        if let url = URL(string: "https://github.com/Sunny-qwe/concord-ios/releases/latest") {
+                            openURL(url)
+                        }
+                    },
+                    onCheckUpdate: { Task { await checkForUpdate() } }
+                )
             }
             // v0.2.85: inline edit mode (upstream dashboard.dart
             // `_editing`) — the pencil toggles editing on this
@@ -1075,17 +1044,12 @@ struct DashboardView: View {
             Toggle("dashboard.card.traffic".l10n, isOn: $showTraffic)
             Toggle("dashboard.card.mode".l10n, isOn: $showMode)
             Toggle("VPN", isOn: $showVpn)
+            Toggle("局域网 IP", isOn: $showIntranet)
             Toggle("dashboard.card.services".l10n, isOn: $showServices)
             Toggle("dashboard.card.profile".l10n, isOn: $showProfile)
             Toggle("dashboard.card.groups".l10n, isOn: $showGroups)
             Toggle("dashboard.card.stats".l10n, isOn: $showStats)
             Toggle("dashboard.card.memory".l10n, isOn: $showMemory)
-            Toggle("dashboard.card.update".l10n, isOn: $showUpdate)
-            Divider()
-            Toggle("dashboard.edit.compactDensity".l10n, isOn: $densityCompact)
-            Text("dashboard.edit.compactHint".l10n)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
             Divider()
             Text("dashboard.edit.cardOrder".l10n)
                 .font(.subheadline.weight(.semibold))
@@ -1325,6 +1289,16 @@ struct DashboardView: View {
                     .frame(width: playButtonSize, height: playButtonSize)
                 }
                 .buttonStyle(.plain)
+                // v0.2.146 (D-9): the start is gated on having a
+                // profile (MuYu _StartToggle enabled: hasProfile)
+                // — proxyStore.toggle() does NOT no-op without one,
+                // it starts the tunnel and lands the failure in
+                // startError. The gate is start-only: a running
+                // tunnel can always be stopped, even if the profile
+                // was deleted mid-run. Dimmed while gated so the
+                // disabled state is visible.
+                .disabled(!proxyStore.isRunning && profileStore.activeProfile == nil)
+                .opacity(proxyStore.isRunning || profileStore.activeProfile != nil ? 1 : 0.4)
                 .accessibilityLabel(proxyStore.isRunning ? "dashboard.stopVpn".l10n : "dashboard.startVpn".l10n)
                 .frame(width: playButtonSize)
             }
@@ -1389,8 +1363,8 @@ struct DashboardView: View {
                 // v0.2.69: each panel observes TrafficStore
                 // itself — the 1 s tick re-renders only the two
                 // panels, not the card or the dashboard.
-                SpeedPanelView(isUp: true, bigNumberSize: bigNumberSize, densityCompact: densityCompact)
-                SpeedPanelView(isUp: false, bigNumberSize: bigNumberSize, densityCompact: densityCompact)
+                SpeedPanelView(isUp: true, bigNumberSize: bigNumberSize)
+                SpeedPanelView(isUp: false, bigNumberSize: bigNumberSize)
             }
             // v0.2.68: the waveform moved INSIDE each speed panel
             // (SpeedPanelAreaWaveform) — no separate sparkline here.
@@ -1466,11 +1440,6 @@ struct DashboardView: View {
                 }
                 .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 26))
             }
-            if let message = settingsStore.generalApplyMessage, !densityCompact {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
         }
         .concordCard()
     }
@@ -1502,142 +1471,6 @@ struct DashboardView: View {
     // working (see V3 in the audit: ours actually toggles the
     // tunnel, FlClash's iOS switch is a no-op). The switch is
     // tinted iOS blue, like NAGRAM.
-
-    /// The VPN card plus its banners (D5): the disconnect / crash-loop
-    /// / TUN-restart banners live HERE, on the main VPN card, where
-    /// they are always visible — not inside the Services card, whose
-    /// inline "expanded" section (v0.2.130: removed) used to hide
-    /// the disconnect banner and leave the crash-loop banner with
-    /// no reader at all.
-    private var vpnCardSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            vpnCard
-            // Unexpected disconnect (moved out of the Services card's
-            // removed inline section in v0.2.130):
-            // the tunnel dropped without the user asking (system
-            // kill, core stall, failed start). One tap reconnects
-            // via the same path as the play button; the flag clears
-            // on the next successful connect. A watchdog-triggered
-            // restart under On-Demand clears it by itself when the
-            // tunnel comes back.
-            if tunnelManager.unexpectedDisconnect {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("dashboard.vpn.unexpectedDisconnect".l10n)
-                            .font(.footnote.weight(.semibold))
-                        // The extension's startup diagnostic (if any)
-                        // names the exact stage where the start died;
-                        // otherwise fall back to the app-side error.
-                        Text(tunnelManager.lastStartupDiagnostic() ?? tunnelManager.lastError ?? "dashboard.vpn.tunnelClosed".l10n)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("dashboard.vpn.reconnect".l10n) {
-                        Task { await proxyStore.toggle() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-                .padding(10)
-                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-            }
-            // Crash loop (D5): 3 rapid drops in 5 minutes — the
-            // tunnel is crash-looping and On-Demand auto-reconnect
-            // has been suspended, so this must be visible, not
-            // hidden in a collapsed card. The reason is the
-            // lastError the crash-loop detector set.
-            if tunnelManager.crashLoopActive {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("dashboard.vpn.flappingPaused".l10n)
-                            .font(.footnote.weight(.semibold))
-                        Text(tunnelManager.lastError ?? "dashboard.vpn.flappingDetail".l10n)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("dashboard.vpn.reconnect".l10n) {
-                        Task { await proxyStore.toggle() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-                .padding(10)
-                .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-            }
-            // Zombie tunnel (v0.2.96): the system reports .connected
-            // but the extension core does not answer. The manager
-            // probes once after start and auto-restarts at most once;
-            // this banner shows the in-progress / final state.
-            if let zombieNotice = tunnelManager.zombieNotice {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("dashboard.vpn.coreUnresponsive".l10n)
-                            .font(.footnote.weight(.semibold))
-                        Text(zombieNotice)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("dashboard.vpn.reconnect".l10n) {
-                        Task { await proxyStore.toggle() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-                .padding(10)
-                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-            }
-            // TUN restart needed (config B1): a live config change
-            // killed the TUN runner and the extension could not
-            // restart it — the config applied, but traffic no longer
-            // goes through the proxy until the VPN restarts. The
-            // flag is TunnelManager.tunRestartNeeded, read from the
-            // extension's tun-restart-needed.json.
-            if let tunRestartNeeded = tunnelManager.tunRestartNeeded {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("dashboard.vpn.tunRestart".l10n)
-                            .font(.footnote.weight(.semibold))
-                        Text(tunRestartNeeded)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("dashboard.vpn.restart".l10n) {
-                        Task {
-                            await TunnelManager.shared.stop()
-                            // stop() waits up to 5 s for
-                            // .disconnected; make sure the tunnel
-                            // really settled before toggling, or the
-                            // toggle would stop again instead of
-                            // starting. A start failure lands in
-                            // proxyStore.startError, like the play
-                            // button's.
-                            let deadline = Date().addingTimeInterval(10)
-                            while TunnelManager.shared.isRunning && Date() < deadline {
-                                try? await Task.sleep(for: .milliseconds(200))
-                            }
-                            await proxyStore.toggle()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                }
-                .padding(10)
-                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-            }
-        }
-    }
 
     private var vpnCard: some View {
         HStack(spacing: 12) {
@@ -1679,6 +1512,14 @@ struct DashboardView: View {
         // card elsewhere flips the same enable flag.
         .contentShape(Rectangle())
         .onTapGesture { Task { await proxyStore.setVpnEnabled(!proxyStore.vpnEnabled) } }
+    }
+
+    /// Intranet IP card (v0.2.146, D-45, upstream
+    /// intranet_ip.dart): the LAN IPv4 + allow-LAN switch, 6th in
+    /// the mobile default order. The leaf reads the address
+    /// itself (getifaddrs) and the switch from SettingsStore.
+    private var intranetCard: some View {
+        IntranetIpCardView(bigNumberSize: bigNumberSize)
     }
 
     // MARK: - Service status card
@@ -1743,7 +1584,7 @@ struct DashboardView: View {
                         .accessibilityLabel("dashboard.profile.updateSubscription".l10n)
                     }
                 }
-                Button { onSelectTab(.profiles) } label: {
+                Button { openProfileCard() } label: {
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.tertiary)
@@ -1756,9 +1597,11 @@ struct DashboardView: View {
                     .fontWeight(.semibold)
                     .lineLimit(1)
                 // FlClash profiles.dart: the swap button shows only
-                // when more than one profile exists.
+                // when more than one profile exists. v0.2.146
+                // (D-34): it opens the picker sheet, not the
+                // Profiles tab.
                 if profileStore.profiles.count > 1 {
-                    Button { onSelectTab(.profiles) } label: {
+                    Button { openProfilesPicker() } label: {
                         Image(systemName: "arrow.left.arrow.right")
                             .font(.footnote)
                             .foregroundStyle(Color(.label))
@@ -1781,25 +1624,35 @@ struct DashboardView: View {
                     .help(profileEndTooltip ?? "")
                     .accessibilityLabel(profileEndTooltip ?? profileEndText)
             }
-            HStack(alignment: .firstTextBaseline) {
-                Text(usedPercentText)
-                    .font(.system(size: statNumberSize, weight: .bold))
-                Text("dashboard.profile.used".l10n)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(trafficText)
-                    .font(.footnote)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.secondary)
-            }
-            // v0.2.68: the usage bar is the video's wavy line
-            // (WavyProgressBar); warn colour at ≥90% used.
-            WavyProgressBar(progress: usedFraction, color: usedFraction >= 0.9 ? Color.orange : ConcordTheme.accent)
-            if subscription == nil {
-                Text("dashboard.profile.noTrafficInfo".l10n)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            if subscription != nil {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(usedPercentText)
+                        .font(.system(size: statNumberSize, weight: .bold))
+                    Text("dashboard.profile.used".l10n)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(trafficText)
+                        .font(.footnote)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                }
+                // v0.2.68: the usage bar is the video's wavy line
+                // (WavyProgressBar); warn colour at ≥90% used.
+                WavyProgressBar(progress: usedFraction, color: usedFraction >= 0.9 ? Color.orange : ConcordTheme.accent)
+            } else {
+                // v0.2.146 (D-33): upstream profiles.dart
+                // _ConfigStats — with no subscription info the card
+                // shows the config counts (groups / proxies /
+                // rules) instead of an empty usage block. The
+                // counts use the detail sheet's exact expressions
+                // (DashboardSheets.swift:890-906); "—" when the
+                // source is empty.
+                HStack(spacing: 24) {
+                    configStatCell(label: "策略组", value: proxyStore.groups.count)
+                    configStatCell(label: "代理", value: Set(proxyStore.allNodes.map { $0.name }).count)
+                    configStatCell(label: "规则", value: ruleStore.rules.count)
+                }
             }
         }
         .concordCard()
@@ -1807,9 +1660,41 @@ struct DashboardView: View {
         // sheet (upstream profiles.dart:53 showProfileDetailSheet),
         // with the stats, subscription and providers sliver — the
         // MuYu rule-providers sheet it replaces showed rule
-        // providers only.
+        // providers only. v0.2.146 (D-32): a null profile opens
+        // the picker sheet instead — see openProfileCard.
         .contentShape(Rectangle())
-        .onTapGesture { showProfileDetailSheet = true }
+        .onTapGesture { openProfileCard() }
+    }
+
+    /// v0.2.146 (D-32): upstream profiles.dart _openProfile — a
+    /// null profile opens the picker sheet; a profile opens its
+    /// detail sheet. The card tap and the chevron both use it.
+    private func openProfileCard() {
+        if profileStore.activeProfile == nil {
+            openProfilesPicker()
+        } else {
+            showProfileDetailSheet = true
+        }
+    }
+
+    /// Opens the profile picker sheet (D-32/D-34): the swap button
+    /// and the no-profile card tap. Records the current active id
+    /// so the onChange dismisses the sheet only on a real switch.
+    private func openProfilesPicker() {
+        pickerProfileId = profileStore.activeProfile?.id
+        showProfilesPicker = true
+    }
+
+    /// One _ConfigStats cell (D-33): bold count over a secondary
+    /// label, the dashboard's stat-cell language.
+    private func configStatCell(label: String, value: Int) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value > 0 ? "\(value)" : "—")
+                .font(.system(size: statNumberSize, weight: .bold))
+            Text(label)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
     }
 
     // MARK: - Proxy groups card
@@ -1947,44 +1832,16 @@ struct DashboardView: View {
             // destination sheets.
             HStack(spacing: 0) {
                 statCell(value: dashboardCount(connectionStore.connections.count), label: "dashboard.stats.live".l10n, destination: .live)
-                // v0.2.121: this counted eventStore.totalEventCount
-                // (cumulative core EVENTS since launch, not requests)
-                // while the sheet lists finished connections — the
-                // two numbers could never agree (Dashboard 97 vs
-                // sheet 2). Count the same collection the sheet
-                // renders: connectionStore.recentConnections.
-                statCell(value: dashboardCount(connectionStore.recentConnections.count), label: "dashboard.stats.recent".l10n, destination: .recent)
+                // v0.2.146 (D-39): the unbounded opened-connection
+                // total since core setup (upstream
+                // requestCountProvider), not the 200-capped
+                // recentConnections the sheet renders. A leaf, so
+                // the 1 s tick re-renders only this cell.
+                TotalRequestStatCell(statNumberSize: statNumberSize, statsDestination: $statsDestination)
                 statCell(value: dashboardCount(dnsStore.entries.count), label: "dashboard.stats.dns".l10n, destination: .dns)
             }
         }
         .concordCard()
-    }
-
-    /// Shared grouped-digits formatter for dashboardCount below
-    /// 100k: NumberFormatter setup is expensive, so one instance
-    /// serves every render (main thread only — all callers are
-    /// view code).
-    private static let groupedCountFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        formatter.locale = Locale(identifier: "en_US")
-        return formatter
-    }()
-
-    /// FlClash style.dart dashboardCount: grouped digits below
-    /// 100k, compact form at/above (123K, 1.5M).
-    private func dashboardCount(_ count: Int) -> String {
-        if count < 100_000 {
-            return Self.groupedCountFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
-        }
-        if count < 1_000_000 {
-            return "\(Int((Double(count) / 1_000).rounded()))K"
-        }
-        let millions = Double(count) / 1_000_000
-        if millions.truncatingRemainder(dividingBy: 1) == 0 {
-            return "\(Int(millions))M"
-        }
-        return "\(String(format: "%.1f", millions))M"
     }
 
     /// D-M6: a stat cell opens its source page — live/recent
@@ -2036,83 +1893,68 @@ struct DashboardView: View {
         )
     }
 
-    // MARK: - Update card (FlClash update_status.dart)
-    //
-    // The app has no in-app update download (self-signed IPA): the
-    // card shows the current version, the latest commit on main
-    // from the same UpdateChecker the About page uses, and whether
-    // it is newer. Checking writes the result to AppStorage so the
-    // card keeps its last answer across launches.
+}
 
-    private var updateCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                CardTitleRow(icon: "arrow.down.circle", title: "dashboard.card.update".l10n)
-                Spacer()
-                if lastUpdateChecked {
-                    PillBadge(
-                        text: lastUpdateIsNew ? "dashboard.update.newCommit".l10n : "dashboard.update.latest".l10n,
-                        tint: lastUpdateIsNew ? .orange : .green
-                    )
-                }
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("v\(appVersion)")
-                    .font(.system(size: bigNumberSize, weight: .bold))
-                Text("dashboard.update.currentVersion".l10n)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if lastUpdateChecked {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\("dashboard.update.latestCommitSha".l10n)\(String(lastUpdateSha.prefix(7)))")
-                        .font(.footnote)
-                        .fontWeight(.semibold)
-                    Text(lastUpdateMessage)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                    if !lastUpdateDate.isEmpty {
-                        Text(lastUpdateDate)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            } else {
-                Text("dashboard.update.neverChecked".l10n)
+/// Shared grouped-digits formatter for dashboardCount below
+/// 100k: NumberFormatter setup is expensive, so one instance
+/// serves every render (main thread only — all callers are
+/// view code). File scope (v0.2.146): TotalRequestStatCell is a
+/// leaf outside DashboardView and needs the same formatter.
+private let groupedCountFormatter: NumberFormatter = {
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .decimal
+    formatter.locale = Locale(identifier: "en_US")
+    return formatter
+}()
+
+/// FlClash style.dart dashboardCount: grouped digits below
+/// 100k, compact form at/above (123K, 1.5M). File scope
+/// (v0.2.146): TotalRequestStatCell is a leaf outside
+/// DashboardView.
+private func dashboardCount(_ count: Int) -> String {
+    if count < 100_000 {
+        return groupedCountFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
+    }
+    if count < 1_000_000 {
+        return "\(Int((Double(count) / 1_000).rounded()))K"
+    }
+    let millions = Double(count) / 1_000_000
+    if millions.truncatingRemainder(dividingBy: 1) == 0 {
+        return "\(Int(millions))M"
+    }
+    return "\(String(format: "%.1f", millions))M"
+}
+
+/// The "最近请求" stat cell (v0.2.146, D-39): a TrafficStore leaf,
+/// so the 1 s tick re-renders only this cell — the dashboard body
+/// must not read trafficStore directly (v0.2.69 leaf rule). The
+/// count is the unbounded opened-connection total since core
+/// setup (TrafficStore.totalRequestCount), NOT the 200-capped
+/// recentConnections the sheet renders — upstream's
+/// requestCountProvider is cumulative too. Tapping opens the
+/// recent-connections sheet, like before.
+private struct TotalRequestStatCell: View {
+    @EnvironmentObject private var trafficStore: TrafficStore
+
+    let statNumberSize: CGFloat
+    @Binding var statsDestination: StatsDestination?
+
+    var body: some View {
+        Button {
+            MainThreadWatchdog.noteAction("statsDestination set to .recent")
+            statsDestination = .recent
+        } label: {
+            VStack(spacing: 4) {
+                Text(dashboardCount(trafficStore.totalRequestCount))
+                    .font(.system(size: statNumberSize, weight: .bold))
+                Text("dashboard.stats.recent".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            if let message = updateCheckMessage {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Button(isCheckingUpdate ? "dashboard.update.checking".l10n : "dashboard.update.check".l10n) {
-                Task { await checkForUpdate() }
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(ConcordTheme.accent)
-            .controlSize(.small)
-            .disabled(isCheckingUpdate)
-            if lastUpdateIsNew {
-                Text("dashboard.update.installHint".l10n)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
-        .concordCard()
-        // v0.2.85: upstream update_status.dart installs directly
-        // from the update row with no dialog — tapping the card
-        // while an update is known opens the Releases page
-        // straight away (the app cannot install an IPA itself).
-        // The inner 检查更新 button keeps its own tap.
-        .contentShape(Rectangle())
-        .onTapGesture {
-            guard lastUpdateIsNew,
-                  let url = URL(string: "https://github.com/Sunny-qwe/concord-ios/releases/latest") else { return }
-            openURL(url)
-        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -2279,23 +2121,6 @@ private struct VpnBadge: View {
     }
 }
 
-/// The ip-api.com `as` field ("AS15169 Google LLC") — decoded
-/// separately because IPQualityInfo maps no `as` key.
-private struct IPApiAsField: Decodable {
-    let asNumber: String?
-
-    enum CodingKeys: String, CodingKey {
-        case asNumber = "as"
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        let raw = try c.decodeIfPresent(String.self, forKey: .asNumber)
-        // Keep the bare "AS<n>" token: "AS15169 Google LLC" -> "AS15169".
-        asNumber = raw?.split(separator: " ").first.map(String.init)
-    }
-}
-
 /// The top-right edit button's glyph: the reference is a thick, bold
 /// pencil (17x17pt bbox, ~24pt diagonal, ~7pt body), not the thin SF
 /// Symbol pencil. Drawn as a filled pentagon (tip bottom-left, flat
@@ -2382,17 +2207,20 @@ private struct CloverBadge: View {
 /// Dashboard card identities (FlClash DashboardWidget): the order
 /// is user-editable, the visibility is the show/hide toggles.
 private enum DashboardCardID: String, CaseIterable {
-    case status, speed, traffic, mode, vpn, services, profile, groups, stats, memory, update
+    case status, speed, traffic, mode, vpn, intranet, services, profile, groups, stats, memory
 
-    /// v0.2.56: the tail follows the MuYu iOS build (IMG_1181 /
-    /// video): stats row, 策略组， 配置， 流量统计， 内存信息 — so
-    /// the traffic card sits directly below 配置 and directly
-    /// above 内存信息. A saved custom order (cardOrderString)
+    /// v0.2.146 (D-1/D-2): the default order follows upstream
+    /// FlClash v0.9.5-rs.1 mobile default — status, speed, mode,
+    /// vpn, intranet, services, profiles, groups, stats — with
+    /// traffic kept in its MuYu position (below 配置， above
+    /// 内存信息） and memory last. The update card is deleted
+    /// (D-46); a saved order containing "update" is repaired by
+    /// orderedCards dropping unknown ids. A saved custom order
     /// is untouched by this: it only sets the default for
     /// installs that never reordered.
     static let defaultOrder: [DashboardCardID] = [
-        .status, .speed, .vpn, .mode, .services,
-        .stats, .groups, .profile, .traffic, .memory, .update,
+        .status, .speed, .mode, .vpn, .intranet, .services,
+        .profile, .groups, .stats, .traffic, .memory,
     ]
 
     var title: String {
@@ -2402,32 +2230,38 @@ private enum DashboardCardID: String, CaseIterable {
         case .traffic: return "dashboard.card.traffic".l10n
         case .mode: return "dashboard.card.mode".l10n
         case .vpn: return "VPN"
+        case .intranet: return "局域网 IP"
         case .services: return "dashboard.card.services".l10n
         case .profile: return "dashboard.card.profile".l10n
         case .groups: return "dashboard.card.groups".l10n
         case .stats: return "dashboard.stats.title".l10n
         case .memory: return "dashboard.card.memoryTitle".l10n
-        case .update: return "dashboard.card.update".l10n
         }
     }
 }
 
-/// Two-segment memory bar (FlClash _MemoryBar): app share in accent
-/// blue, core share in the series2 blue tone (accent 45% over the
-/// card), on a soft track.
+/// Three-segment memory bar (v0.2.146, D-42 — FlClash
+/// _MemoryBar / MuYu MemorySnapshot): app share in accent, core
+/// share in the series2 tone (accent 45% over the card), and the
+/// extension-process share in series3 (tertiary 45% over the
+/// card), on a soft track. The extension leg is zero (and its
+/// legend row hidden) whenever the tunnel is down.
 private struct MemoryBar: View {
     let appBytes: UInt64
     let coreBytes: UInt64
+    let extensionBytes: UInt64
 
     var body: some View {
         GeometryReader { geo in
-            let total = max(1, appBytes + coreBytes)
+            let total = max(1, appBytes + coreBytes + extensionBytes)
             let appWidth = geo.size.width * CGFloat(appBytes) / CGFloat(total)
+            let coreWidth = geo.size.width * CGFloat(coreBytes) / CGFloat(total)
             ZStack(alignment: .leading) {
                 Capsule().fill(ConcordTheme.softFill)
                 HStack(spacing: 2) {
                     Capsule().fill(ConcordTheme.accent).frame(width: max(0, appWidth - 1))
-                    Capsule().fill(ConcordTheme.accent.opacity(0.45)).frame(width: max(0, geo.size.width - appWidth - 1))
+                    Capsule().fill(ConcordTheme.accent.opacity(0.45)).frame(width: max(0, coreWidth - 1))
+                    Capsule().fill(ConcordTheme.series3).frame(width: max(0, geo.size.width - appWidth - coreWidth - 1))
                 }
             }
         }
@@ -2544,36 +2378,147 @@ private struct DashboardServiceFaultsBadge: View {
 /// tick re-renders only this pill. The deck is ConfigWarningsDeck
 /// (Views/ConfigWarningsDeck.swift); the sheet chrome matches the
 /// other dashboard sheets.
-private struct DashboardWarningsPill: View {
+/// Live-status pill (v0.2.146, D-51 — upstream live_status.dart
+/// LiveStatusButton): the title row's single entry into the
+/// live-status deck (core / update / MITM consent / warnings).
+/// No statuses → hidden... except only-the-core-running, which
+/// shrinks to a small green check button (the deck would hold
+/// only the core card). Otherwise the pill wears the most
+/// important status (core stopped/starting > update > MITM >
+/// warnings) with its tint, plus the count when more than one
+/// status is present (the warnings count when warnings are the
+/// only status, else the icon alone). Tapping opens the deck
+/// sheet; the MITM action dismisses the deck first, then starts
+/// the consent review after a short delay (sheet-dismiss /
+/// animation safety).
+private struct DashboardLiveStatusPill: View {
     @EnvironmentObject private var trafficStore: TrafficStore
-    @State private var showWarningsDeck = false
+    @EnvironmentObject private var tunnelManager: TunnelManager
+    @EnvironmentObject private var mitmModuleStore: MitmModuleStore
+
+    @AppStorage("ConcordiOS.update.lastIsNew") private var lastUpdateIsNew = false
+    @AppStorage("ConcordiOS.update.lastMessage") private var lastUpdateMessage = ""
+
+    let isCheckingUpdate: Bool
+    let onStartCore: () -> Void
+    let onRestartCore: () -> Void
+    let onReviewMitm: () -> Void
+    let onOpenReleases: () -> Void
+    let onCheckUpdate: () -> Void
+
+    @State private var showDeck = false
+
+    private var corePhase: LiveStatusDeck.CorePhase {
+        switch tunnelManager.status {
+        case .connected: return .running
+        case .connecting, .reasserting: return .starting
+        default: return .stopped
+        }
+    }
+
+    private var hasCoreStatus: Bool { corePhase != .running }
+    private var hasUpdateStatus: Bool { lastUpdateIsNew || isCheckingUpdate }
+    private var mitmPending: [String] { mitmModuleStore.modulesAwaitingConsent.map { $0.name } }
+    private var hasMitmStatus: Bool { !mitmPending.isEmpty }
+    private var hasWarningsStatus: Bool { !trafficStore.lastWarnings.isEmpty }
+
+    private var statusCount: Int {
+        (hasCoreStatus ? 1 : 0) + (hasUpdateStatus ? 1 : 0) + (hasMitmStatus ? 1 : 0) + (hasWarningsStatus ? 1 : 0)
+    }
+
+    /// The top status (upstream order): core first, then update,
+    /// MITM, warnings.
+    private var topStatus: (icon: String, tint: Color)? {
+        if hasCoreStatus {
+            return corePhase == .starting
+                ? ("arrow.triangle.2.circlepath", .blue)
+                : ("power", .secondary)
+        }
+        if hasUpdateStatus { return ("arrow.down.circle.fill", .blue) }
+        if hasMitmStatus { return ("shield.fill", .purple) }
+        if hasWarningsStatus { return ("exclamationmark.triangle.fill", .orange) }
+        return nil
+    }
 
     var body: some View {
-        if !trafficStore.lastWarnings.isEmpty {
-            Button { showWarningsDeck = true } label: {
+        if statusCount == 0 {
+            // Only the core running: the small green check button.
+            Button { showDeck = true } label: {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(Color.green.opacity(0.14), in: Capsule())
+                    .foregroundStyle(.green)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("实时状态")
+            .sheet(isPresented: $showDeck) { deckSheet }
+        } else if let top = topStatus {
+            Button { showDeck = true } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle.fill")
+                    Image(systemName: top.icon)
                         .font(.system(size: 13, weight: .semibold))
-                    Text("\(trafficStore.lastWarnings.count)")
-                        .font(.footnote.weight(.semibold).monospacedDigit())
+                    // The count when more than one status is
+                    // present; the warnings count when warnings are
+                    // the only status; otherwise the icon alone.
+                    if statusCount > 1 {
+                        Text("\(statusCount)")
+                            .font(.footnote.weight(.semibold).monospacedDigit())
+                    } else if hasWarningsStatus {
+                        Text("\(trafficStore.lastWarnings.count)")
+                            .font(.footnote.weight(.semibold).monospacedDigit())
+                    }
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
-                .background(Color.orange.opacity(0.14), in: Capsule())
-                .foregroundStyle(.orange)
+                .background(top.tint.opacity(0.14), in: Capsule())
+                .foregroundStyle(top.tint)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("dashboard.configWarning".l10n)
-            .sheet(isPresented: $showWarningsDeck) {
-                ConfigWarningsDeck(warnings: trafficStore.lastWarnings)
-                    .concordCard()
-                    .padding()
-                    .presentationDetents([.fraction(0.5625), .fraction(0.9)])
-                    .presentationDragIndicator(.hidden)
-                    .presentationBackground(ConcordTheme.pageBackground)
-                    .presentationCornerRadius(28)
+            .accessibilityLabel("实时状态")
+            .sheet(isPresented: $showDeck) { deckSheet }
+        }
+    }
+
+    private var deckSheet: some View {
+        NavigationStack {
+            LiveStatusDeck(
+                corePhase: corePhase,
+                coreError: tunnelManager.lastError,
+                warnings: trafficStore.lastWarnings,
+                update: hasUpdateStatus ? LiveStatusUpdateInfo(
+                    isNew: lastUpdateIsNew,
+                    isChecking: isCheckingUpdate,
+                    message: lastUpdateMessage.isEmpty ? nil : lastUpdateMessage
+                ) : nil,
+                mitmPending: mitmPending,
+                onStartCore: onStartCore,
+                onRestartCore: { showDeck = false; onRestartCore() },
+                onReviewMitm: {
+                    showDeck = false
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        onReviewMitm()
+                    }
+                },
+                onOpenReleases: onOpenReleases,
+                onCheckUpdate: onCheckUpdate
+            )
+            .navigationTitle("实时状态")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showDeck = false } label: {
+                        Image(systemName: "xmark")
+                    }
+                }
             }
         }
+        .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+        .presentationDragIndicator(.hidden)
+        .presentationBackground(ConcordTheme.pageBackground)
+        .presentationCornerRadius(28)
     }
 }
 
@@ -2801,6 +2746,21 @@ private struct DashboardTrafficEffects: View {
                     // overlapping runs are harmless.
                     Task { await connectionStore.refresh() }
                     Task { await dnsStore.refresh() }
+                    // v0.2.146 (D-39): feed the unbounded request
+                    // counter from the last refreshed snapshot —
+                    // the refreshes above are fire-and-forget
+                    // (never awaited, see v0.2.132), so the counter
+                    // reads the lists as they stand and picks new
+                    // ids up on the next tick, at most one second
+                    // behind. Ids that left both lists are dropped
+                    // from the seen set, so it stays bounded.
+                    // Awaited (not called direct): noteSeen is a
+                    // @MainActor function and this loop must not
+                    // assume its own isolation.
+                    await trafficStore.noteSeenConnectionIds(
+                        live: connectionStore.connections.map { $0.id },
+                        recent: connectionStore.recentConnections.map { $0.id }
+                    )
                 }
             }
             .onChange(of: proxyStore.isRunning) { _, running in
@@ -2822,6 +2782,10 @@ private struct DashboardTrafficEffects: View {
                 if running {
                     tunnelStartObservedAt = Date()
                     tunnelStartedAt = Date()
+                    // v0.2.146 (D-39): upstream resets the request
+                    // count on setup — a new tunnel run starts the
+                    // count at 0.
+                    Task { await trafficStore.resetRequestCount() }
                 } else {
                     tunnelStartObservedAt = nil
                     tunnelStartedAt = nil
@@ -3035,20 +2999,20 @@ private struct SpeedPanelView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
     let isUp: Bool
     let bigNumberSize: CGFloat
-    let densityCompact: Bool
 
     var body: some View {
         let bytes = isUp ? trafficStore.current.up : trafficStore.current.down
         let total = isUp ? trafficStore.current.totalUp : trafficStore.current.totalDown
         let split = ConcordBytes.split(bytes)
-        // v0.2.82: upstream series2 — upload is the primary at 45%
-        // (a light tint under any accent; the video's upload area
-        // is light pink, not orange). Applies to every accent
-        // EXCEPT the default blue theme, which keeps the orange
-        // upload. The waveform itself applies its own opacity on
-        // top, so 45% here renders upload at 45% of download's
-        // strength, matching upstream.
-        let uploadColor = ConcordTheme.isDefaultBlueTheme ? Color.orange : ConcordTheme.accent.opacity(0.45)
+        // v0.2.146 (D-18): upstream series2 — upload is the
+        // primary at 45% in EVERY theme, default blue included.
+        // Both rs.1 and MuYu traffic.dart use series2 for upload
+        // (TrafficDirection.colorOf); the old orange-under-
+        // default-blue cited the MuYu video, but the code wins
+        // over the comment. The waveform itself applies its own
+        // opacity on top, so 45% here renders upload at 45% of
+        // download's strength, matching upstream.
+        let uploadColor = ConcordTheme.accent.opacity(0.45)
         // v0.2.68: the area waveform is the panel's BACKGROUND
         // (theme-tinted, numbers overlaid), like the video.
         return ZStack(alignment: .leading) {
@@ -3074,17 +3038,13 @@ private struct SpeedPanelView: View {
                         .fontWeight(.semibold)
                         .foregroundStyle(.secondary)
                 }
-                // Compact density drops the subtitle (FlClash
-                // DashboardDensity.compact drops subtitles).
-                if !densityCompact {
-                    // Reference shows "累计 0 B" (no ".0"): ConcordFormat
-                    // formats 0 as "0.0 B", so special-case zero locally
-                    // (the shared formatter is used elsewhere and stays).
-                    Text("\("dashboard.traffic.totalPrefix".l10n) \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.secondary)
-                }
+                // Reference shows "累计 0 B" (no ".0"): ConcordFormat
+                // formats 0 as "0.0 B", so special-case zero locally
+                // (the shared formatter is used elsewhere and stays).
+                Text("\("dashboard.traffic.totalPrefix".l10n) \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.secondary)
             }
             .padding(14)
         }
@@ -3191,6 +3151,124 @@ private struct TrafficCardContent: View {
 /// DashboardView would subscribe that view to the store and
 /// re-render the dashboard on the 1 s tick, so the whole card
 /// lives here.
+/// The device's LAN IPv4 address (v0.2.146, D-45, upstream
+/// lib/utils/network.dart): prefer the Wi-Fi interface (en0)
+/// IPv4, else any up non-loopback interface's IPv4, else "" (no
+/// network). nil means not read yet — the card skeletons while
+/// loading, shows "无网络" for "", and the raw IP otherwise.
+/// getifaddrs is the only way to read the address in-app; there
+/// is no NetworkExtension or core API for it.
+private func readLocalIPv4Address() -> String? {
+    var ifaddr: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return "" }
+    defer { freeifaddrs(ifaddr) }
+    var fallback: String?
+    var current: UnsafeMutablePointer<ifaddrs>? = first
+    while let iface = current {
+        defer { current = iface.pointee.ifa_next }
+        guard let addr = iface.pointee.ifa_addr,
+              addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+        let flags = iface.pointee.ifa_flags
+        // Up + running, not loopback.
+        guard flags & UInt32(IFF_UP) != 0, flags & UInt32(IFF_LOOPBACK) == 0 else { continue }
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        let result = getnameinfo(addr, socklen_t(addr.pointee.sa_len),
+                                 &host, socklen_t(host.count),
+                                 nil, 0, NI_NUMERICHOST)
+        guard result == 0 else { continue }
+        let ip = String(cString: host)
+        let name = String(cString: iface.pointee.ifa_name)
+        if name == "en0" { return ip }
+        if fallback == nil { fallback = ip }
+    }
+    return fallback ?? ""
+}
+
+/// Intranet IP card (v0.2.146, D-45, upstream
+/// intranet_ip.dart): header (devices glyph + title + copy
+/// button, disabled with no address), figure (120-wide skeleton
+/// while loading / "无网络" grey text when "" / the raw IP), and
+/// the switch row (wifi glyph, "允许局域网", subtitle = port or
+/// "已停用", toggle). The copy value is `ip:port` when allow-LAN
+/// is on, the bare IP otherwise; the figure always shows the raw
+/// IP. The address is re-read on appear and on foregrounding —
+/// the interface changes when the phone joins/leaves Wi-Fi.
+private struct IntranetIpCardView: View {
+    @EnvironmentObject private var settingsStore: SettingsStore
+
+    let bigNumberSize: CGFloat
+
+    @State private var localIp: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                CardTitleRow(icon: "network", title: "局域网 IP")
+                Spacer()
+                Button {
+                    if let text = copyText {
+                        UIPasteboard.general.string = text
+                    }
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .disabled(copyText == nil)
+            }
+            if let ip = localIp {
+                if ip.isEmpty {
+                    Text("无网络")
+                        .font(.system(size: bigNumberSize, weight: .bold))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(ip)
+                        .font(.system(size: bigNumberSize, weight: .bold))
+                        .lineLimit(1)
+                }
+            } else {
+                SkeletonBar(width: 120, height: 25, animated: true)
+            }
+            HStack(spacing: 8) {
+                Image(systemName: "wifi")
+                    .font(.callout.weight(.semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("允许局域网")
+                        .font(.subheadline.weight(.semibold))
+                    Text(settingsStore.allowLan ? "端口 \(settingsStore.mixedPort)" : "已停用")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { settingsStore.allowLan },
+                    set: { newValue in
+                        settingsStore.allowLan = newValue
+                        settingsStore.save()
+                        Task { await settingsStore.applyGeneralToCore() }
+                    }
+                ))
+                .labelsHidden()
+            }
+        }
+        .concordCard()
+        .task { refreshIp() }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            refreshIp()
+        }
+    }
+
+    private var copyText: String? {
+        guard let ip = localIp, !ip.isEmpty else { return nil }
+        return settingsStore.allowLan ? "\(ip):\(settingsStore.mixedPort)" : ip
+    }
+
+    private func refreshIp() {
+        localIp = readLocalIPv4Address()
+    }
+}
+
 private struct ServicesCardView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
 
@@ -3250,13 +3328,24 @@ private struct ServicesCardView: View {
         trafficStore.services.first { $0.name.lowercased() == name.lowercased() }
     }
 
-    /// Service-status verdict (FlClash service_status.dart: problems
-    /// = services where abnormal, i.e. status != available; chip is
-    /// "N 项异常" warn / "全部可用" ok, hidden while nothing has been
-    /// checked — FlClash has no grey "未检测" state).
+    /// Service-status verdict (FlClash service_status.dart:184-195
+    /// — problems = services where abnormal, i.e. status !=
+    /// available; chip is "N 项异常" warn / "全部可用" ok). The
+    /// verdict covers ONLY the shown services (the first two
+    /// enabled names): a shown service with no probe item — e.g.
+    /// enabled in the manage sheet after the last probe — used to
+    /// read as available while the badge counted abnormal over
+    /// ALL services, so the two could contradict each other. The
+    /// verdict is null while any shown service is unchecked (no
+    /// item, or the pre-start results are held — held reads as
+    /// still-checking per upstream probe_start_hold), so the chip
+    /// hides instead of claiming a verdict nobody has.
     private var serviceBadge: (text: String, tint: Color)? {
-        guard !trafficStore.services.isEmpty else { return nil }
-        let abnormal = trafficStore.services.filter { $0.status != "available" }.count
+        let shown = Array(trafficStore.enabledServiceNames.prefix(2))
+        guard !shown.isEmpty else { return nil }
+        let items = shown.map { service(named: $0) }
+        if trafficStore.servicesHeld || items.contains(where: { $0 == nil }) { return nil }
+        let abnormal = items.compactMap { $0 }.filter { $0.status != "available" }.count
         if abnormal == 0 { return ("dashboard.services.allOk".l10n, .green) }
         return (String(format: "dashboard.services.abnormalCount".l10n, "\(abnormal)"), .orange)
     }
@@ -3274,17 +3363,39 @@ private struct ServicesCardView: View {
                 .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 12))
                 .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                if service?.status == "available" {
+                // Status dot in the status colour while checked
+                // (green only when available); no dot while the
+                // service is unchecked.
+                if let service, !trafficStore.servicesHeld {
                     Circle()
-                        .fill(Color.green)
+                        .fill(dashboardServiceStatusColor(service.status))
                         .frame(width: 12, height: 12)
                         .overlay(Circle().stroke(Color.white, lineWidth: 2))
                         .offset(x: 2, y: 2)
                 }
             }
-            Text(service?.delay.map { "\($0) ms" } ?? "—")
-                .font(.footnote)
-                .fontWeight(.semibold)
+            // Status text (D-26), not delay only: available with a
+            // delay shows the delay, available without one shows
+            // "可用", anything else its status label. Unchecked
+            // (no item, or held) shows a skeleton while probing,
+            // else "—".
+            if let service, !trafficStore.servicesHeld {
+                if service.status == "available", let delay = service.delay {
+                    Text("\(delay) ms")
+                        .font(.footnote)
+                        .fontWeight(.semibold)
+                } else {
+                    Text(dashboardServiceStatusLabel(service.status))
+                        .font(.footnote)
+                        .fontWeight(.semibold)
+                }
+            } else if trafficStore.isProbingServices {
+                SkeletonBar(width: 48, height: 14, animated: true)
+            } else {
+                Text("—")
+                    .font(.footnote)
+                    .fontWeight(.semibold)
+            }
             Spacer()
         }
         .padding(10)
@@ -3317,8 +3428,25 @@ private struct MemoryCardView: View {
     let bigNumberSize: CGFloat
     let onOpenDetail: () -> Void
 
+    /// v0.2.146 (D-42): the three legs — app RSS (task_info),
+    /// the active core's RSS, and the extension process's RSS
+    /// (MuYu MemorySnapshot: app / coreTotal / extensionTotal).
+    /// VPN-on the core runs in the extension process, so the core
+    /// leg is 0 and the extension leg carries the GET /memory
+    /// number; VPN-off the in-app core is the core leg (nil →
+    /// 0 while it is not running) and there is no extension
+    /// process. The total is unchanged in both states — the same
+    /// bytes, only split differently.
+    private var coreLegBytes: UInt64 {
+        proxyStore.isRunning ? 0 : (trafficStore.coreMemoryBytes ?? 0)
+    }
+
+    private var extensionLegBytes: UInt64 {
+        proxyStore.isRunning ? (trafficStore.extensionMemoryBytes ?? 0) : 0
+    }
+
     private var memoryTotalBytes: UInt64 {
-        appMemoryBytes + (trafficStore.coreMemoryBytes ?? 0)
+        appMemoryBytes + coreLegBytes + extensionLegBytes
     }
 
     var body: some View {
@@ -3336,10 +3464,16 @@ private struct MemoryCardView: View {
                         .font(.system(size: bigNumberSize, weight: .bold))
                         .foregroundStyle(Color(.label))
                 }
-                MemoryBar(appBytes: appMemoryBytes, coreBytes: trafficStore.coreMemoryBytes ?? 0)
+                MemoryBar(appBytes: appMemoryBytes, coreBytes: coreLegBytes, extensionBytes: extensionLegBytes)
                 HStack(spacing: 16) {
                     memoryLegend(dot: ConcordTheme.accent, label: "dashboard.memory.app".l10n, bytes: appMemoryBytes)
-                    memoryLegend(dot: memoryCoreColor, label: "dashboard.memory.core".l10n, bytes: trafficStore.coreMemoryBytes ?? 0)
+                    memoryLegend(dot: memoryCoreColor, label: "dashboard.memory.core".l10n, bytes: coreLegBytes)
+                    // MuYu shows the extension leg only when it is
+                    // > 0 — with the tunnel down there is no
+                    // extension process, so no third row.
+                    if extensionLegBytes > 0 {
+                        memoryLegend(dot: ConcordTheme.series3, label: "扩展", bytes: extensionLegBytes)
+                    }
                 }
                 if !proxyStore.isRunning {
                     Text("dashboard.memory.coreNotRunning".l10n)
@@ -3409,6 +3543,7 @@ private struct MemoryDetailSheetHost: View {
         MemoryDetailSheet(
             appBytes: appMemoryBytes,
             coreBytes: trafficStore.coreMemoryBytes,
+            extensionBytes: trafficStore.extensionMemoryBytes,
             isReleasing: $isReleasing,
             releaseMessage: $releaseMessage,
             onRelease: {
@@ -3423,11 +3558,22 @@ private struct MemoryDetailSheetHost: View {
                     releaseMessage = "\("dashboard.memory.releaseFailed".l10n)\(error.localizedDescription)"
                 }
             },
-            // v0.2.133: release works only against the in-app core
-            // (core.releaseMemory is JSON-RPC only, no REST route),
-            // so the broom is disabled while the tunnel runs — the
-            // memory number still comes from the tunnel controller.
-            canRelease: !TunnelManager.shared.isRunning
+            // v0.2.146 (D-43): release is enabled exactly where a
+            // route exists. VPN-on the tunnel core answers
+            // core.releaseMemory over the existing JSON-RPC route
+            // — ConcordClient sends it via
+            // TunnelManager.sendProviderMessage and
+            // PacketTunnelProvider forwards any method to the core
+            // session (only config.apply/delay.run are
+            // special-cased), so no core patch was needed and the
+            // old gate (disabled while the tunnel runs) was simply
+            // inverted. Sample mode keeps its mock answer. VPN-off
+            // live stays DISABLED: the in-app core exposes no
+            // release RPC (AppCore has probeServices /
+            // configGeneral / delayTest only), and the client talks
+            // to the tunnel core, not the in-app one — enabling it
+            // would need an AppCore change, out of scope here.
+            canRelease: TunnelManager.shared.isRunning || client.mode == .sample
         )
         .task {
             if let bytes = readAppMemoryBytes() {

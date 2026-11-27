@@ -102,7 +102,7 @@ func buildConnectionTimelineEvents(
             nodeParts.append("延迟 \(delay) ms")
         }
         events.append(TimelineEvent(
-            kind: "节点",
+            kind: "代理节点",
             title: connection.chains.first ?? "",
             note: timelineJoin(nodeParts),
             at: at(timing?.dialStart)

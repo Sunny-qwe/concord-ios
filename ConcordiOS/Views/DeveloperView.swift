@@ -115,8 +115,8 @@ struct DeveloperView: View {
             Text("将删除所有配置、设置和本地数据，随后关闭应用。重新打开即可从头开始。")
         }
         // V-M1 (v0.2.138): the live-status preview sheet — the
-        // same chrome as the Dashboard warnings sheet
-        // (DashboardWarningsPill).
+        // same chrome as the Dashboard live-status deck
+        // (ConfigWarningsDeck).
         .sheet(isPresented: $showLiveStatusTest) {
             ConfigWarningsDeck(warnings: Self.sampleLiveStatusWarnings)
                 .concordCard()

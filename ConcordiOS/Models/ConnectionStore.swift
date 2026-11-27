@@ -17,6 +17,10 @@ struct LiveConnection: Identifiable {
     let proxy: String?
     let inboundType: String
     let process: String?
+    /// Upstream process UID (tracker_info_detail.dart
+    /// TrackerPathSection shows `process(uid)`): decoded in
+    /// ConcordClient but dropped in the mapping until v0.2.146.
+    let uid: UInt32?
     let upload: Int64
     let download: Int64
     /// Upstream detail fields (tracker_info_item.dart Overview): the
@@ -74,6 +78,11 @@ struct LiveConnection: Identifiable {
     /// (recent) connections and before the second sample.
     var upSpeed: Double = 0
     var downSpeed: Double = 0
+    /// How many identical failed dials this row stands for
+    /// (upstream TrackerRepeats, `×N`): 1 unless the failed-status
+    /// list merged repeats into it (see
+    /// ConnectionStore.mergedRepeats).
+    var repeatCount: Int = 1
 
     var durationSeconds: Int64 {
         max(0, Int64(Date().timeIntervalSince(start)))
@@ -94,6 +103,7 @@ struct LiveConnection: Identifiable {
         proxy = c.proxy
         inboundType = c.inboundType
         process = c.process
+        uid = c.uid
         upload = c.upload ?? 0
         download = c.download ?? 0
         destinationIp = c.destinationIp
@@ -147,36 +157,87 @@ struct LiveConnection: Identifiable {
     }
 }
 
-enum ConnectionSort: String, CaseIterable, Identifiable {
-    case newest = "最新"
-    case host = "域名"
-    case download = "下行"
-    case upload = "上行"
-    /// Upstream every table column is sortable
-    /// (tracker_info_table.dart sortKey on each RecordColumn):
-    /// rule (rule + payload), exit (first chain), duration (oldest
-    /// start first = longest running), live up/down speeds, process.
-    case rule = "规则"
-    case exit = "出口"
-    case duration = "持续"
-    case downSpeed = "下行速度"
-    case upSpeed = "上行速度"
-    case process = "进程"
+/// One filter condition on the connections list (upstream
+/// lib/models/connection_query.dart RecordCondition): a field, a
+/// value, and how the value meets the field. Same-field conditions
+/// widen each other, different fields narrow; an excluding one
+/// drops whatever it holds. The `+` button's editor and the
+/// `field:` search syntax both build these.
+struct ConnectionCondition: Identifiable, Equatable {
+    enum Field: String, CaseIterable, Identifiable {
+        case host, app, exit, rule, net, ip
 
-    var id: String { rawValue }
-}
+        var id: String { rawValue }
 
-/// Record grouping (upstream trackerInfoGroupers, persisted per page
-/// in appSetting.recordGroupings): group the list by process, host,
-/// rule or exit chain instead of one flat list.
-enum ConnectionGroupBy: String, CaseIterable, Identifiable {
-    case none = "不分组"
-    case process = "进程"
-    case host = "域名"
-    case rule = "规则"
-    case exit = "出口"
+        var label: String {
+            switch self {
+            case .host: return "域名"
+            case .app: return "应用"
+            case .exit: return "出口"
+            case .rule: return "规则"
+            case .net: return "网络"
+            case .ip: return "IP"
+            }
+        }
 
-    var id: String { rawValue }
+        /// The field's searchable values for one connection
+        /// (upstream ConnectionField.valuesOf).
+        func values(of connection: LiveConnection) -> [String] {
+            switch self {
+            case .host:
+                return [connection.host ?? "", connection.host ?? connection.destinationIp ?? ""]
+            case .app:
+                return [connection.process ?? "", connection.processPath ?? ""]
+            case .exit:
+                return connection.chains
+            case .rule:
+                return [Self.ruleText(of: connection)]
+            case .net:
+                return [connection.network]
+            case .ip:
+                return [connection.destinationIp ?? "", connection.sourceIp]
+            }
+        }
+
+        /// Rule with its matched payload (upstream TrackerRuleText);
+        /// "无规则" when no rule decided.
+        static func ruleText(of connection: LiveConnection) -> String {
+            guard let rule = connection.rule, !rule.isEmpty else { return "无规则" }
+            if let payload = connection.rulePayload, !payload.isEmpty {
+                return "\(rule) (\(payload))"
+            }
+            return rule
+        }
+    }
+
+    enum Op: String, CaseIterable, Identifiable {
+        case contains = "包含"
+        case notContains = "不包含"
+        case equals = "等于"
+        case notEquals = "不等于"
+
+        var id: String { rawValue }
+    }
+
+    let id = UUID()
+    var field: Field
+    var value: String
+    var op: Op
+
+    var excludes: Bool { op == .notContains || op == .notEquals }
+    var isEquals: Bool { op == .equals || op == .notEquals }
+
+    /// Whether the connection meets this condition's value, before
+    /// exclusion is applied (upstream RecordCondition.holds).
+    func holds(_ connection: LiveConnection) -> Bool {
+        let needle = value.lowercased()
+        guard !needle.isEmpty else { return false }
+        let values = field.values(of: connection)
+        if isEquals {
+            return values.contains { $0.lowercased() == needle }
+        }
+        return values.joined(separator: "\n").lowercased().contains(needle)
+    }
 }
 
 /// Status filter for the Requests list (upstream ConnectionStatus,
@@ -199,97 +260,179 @@ struct ConnectionMinuteGroup {
 final class ConnectionStore: ObservableObject {
     @Published var connections: [LiveConnection] = []
     @Published var searchText = ""
-    @Published var sort: ConnectionSort = .newest
+    /// Structured filter conditions (upstream
+    /// connection_conditions.dart): built by the `+` condition
+    /// editor and by "隐藏此主机". Same-field conditions widen,
+    /// cross-field conditions narrow, excluding ones drop.
+    @Published var conditions: [ConnectionCondition] = []
     /// Status filter (upstream ConditionFilterRow): all / active /
     /// failed. Session-only; filters in addition to search/facets.
     @Published var statusFilter: ConnectionStatusFilter = .all
     @Published var lastError: String?
     @Published var lastUpdated: Date?
-    /// The result message of the last network.update call.
-    @Published var networkUpdateMessage: String?
     /// First-load state (upstream requests.dart _loaded): false until
     /// the first snapshot read has landed, so the page can show a
     /// loading indicator instead of the empty state.
     @Published var loaded = false
     /// Record-filter facets (upstream trackerInfoFacets: network,
-    /// rule, MITM, app/process, proxy chains). Session-only: one
-    /// selected value per facet, nil = unfiltered.
-    @Published var facetNetwork: String?
-    @Published var facetRule: String?
-    @Published var facetProxy: String?
-    @Published var facetProcess: String?
+    /// rule, MITM, app/process, proxy chains). Session-only:
+    /// MULTI-value per facet (upstream conditionsMatcher: values
+    /// on one field widen each other), empty = unfiltered.
+    @Published var facetNetworks: Set<String> = []
+    @Published var facetRules: Set<String> = []
+    @Published var facetProxies: Set<String> = []
+    @Published var facetProcesses: Set<String> = []
     @Published var facetMitmOnly = false
-    /// Record grouping (upstream trackerInfoGroupers), persisted.
-    @Published var groupBy: ConnectionGroupBy = ConnectionGroupBy(rawValue: UserDefaults.standard.string(forKey: ConnectionStore.groupByKey) ?? "") ?? .none {
-        didSet { UserDefaults.standard.set(groupBy.rawValue, forKey: ConnectionStore.groupByKey) }
-    }
-
-    private static let groupByKey = "ConcordiOS.connections.groupBy.v1"
     /// Last-seen byte counts behind the per-connection live speeds
     /// (same differencing idea as TrafficStore.refreshNodeSpeeds,
     /// but per connection id instead of per chain name).
     private var previousBytes: [UInt64: (upload: Int64, download: Int64, at: Date)] = [:]
 
     /// Facet value lists offered by the current data (live + recent).
-    var facetNetworks: [String] {
+    var offeredNetworks: [String] {
         Array(Set((connections + recentConnections).map { $0.network.lowercased() })).sorted()
     }
-    var facetRules: [String] {
+    var offeredRules: [String] {
         Array(Set((connections + recentConnections).compactMap(\.rule))).sorted()
     }
-    var facetProxies: [String] {
+    var offeredProxies: [String] {
         Array(Set((connections + recentConnections).flatMap { $0.chains.isEmpty ? [$0.proxy].compactMap { $0 } : $0.chains })).sorted()
     }
-    var facetProcesses: [String] {
+    var offeredProcesses: [String] {
         Array(Set((connections + recentConnections).compactMap(\.process))).sorted()
     }
 
     var hasActiveFacets: Bool {
-        facetNetwork != nil || facetRule != nil || facetProxy != nil
-            || facetProcess != nil || facetMitmOnly
+        !facetNetworks.isEmpty || !facetRules.isEmpty || !facetProxies.isEmpty
+            || !facetProcesses.isEmpty || facetMitmOnly || !conditions.isEmpty
     }
 
     func clearFacets() {
-        facetNetwork = nil
-        facetRule = nil
-        facetProxy = nil
-        facetProcess = nil
+        facetNetworks.removeAll()
+        facetRules.removeAll()
+        facetProxies.removeAll()
+        facetProcesses.removeAll()
         facetMitmOnly = false
+        conditions.removeAll()
     }
 
     private func matchesFacets(_ connection: LiveConnection) -> Bool {
-        if let network = facetNetwork, connection.network.lowercased() != network { return false }
-        if let rule = facetRule, connection.rule != rule { return false }
-        if let proxy = facetProxy, !connection.chains.contains(proxy) && connection.proxy != proxy { return false }
-        if let process = facetProcess, connection.process != process { return false }
+        if !facetNetworks.isEmpty, !facetNetworks.contains(connection.network.lowercased()) { return false }
+        if !facetRules.isEmpty, !facetRules.contains(connection.rule ?? "") { return false }
+        if !facetProxies.isEmpty,
+           !connection.chains.contains(where: { facetProxies.contains($0) })
+           && !(connection.proxy.map { facetProxies.contains($0) } ?? false) { return false }
+        if !facetProcesses.isEmpty, !facetProcesses.contains(connection.process ?? "") { return false }
         if facetMitmOnly, !connection.mitm { return false }
         return true
     }
 
-    private func matchesSearch(_ connection: LiveConnection) -> Bool {
-        guard !searchText.isEmpty else { return true }
-        let q = searchText.lowercased()
-        return (connection.host?.lowercased().contains(q) ?? false)
-            || connection.destination.lowercased().contains(q)
-            || (connection.proxy?.lowercased().contains(q) ?? false)
-            || (connection.rule?.lowercased().contains(q) ?? false)
+    /// `field:` conditions in the search text (upstream
+    /// ConnectionQuery.parse): `host:github.com`,
+    /// `-host:ads` (exclude), `rule:=DIRECT` (equals), quoted
+    /// values with spaces. A match only counts when it starts the
+    /// text or follows whitespace, as upstream's lookbehind does.
+    private static let queryConditionPattern: NSRegularExpression = {
+        // swiftlint:disable:next force_try — static literal pattern.
+        try! NSRegularExpression(
+            pattern: "(-?)(host|app|exit|rule|net|ip):(=?)(\"([^\"]*)\"|([^\\s]+))",
+            options: [.caseInsensitive]
+        )
+    }()
+
+    /// The search text split into `field:` conditions and the
+    /// remaining free-text terms (upstream ConnectionQuery).
+    private func parsedSearch() -> (conditions: [ConnectionCondition], terms: [String]) {
+        let text = searchText
+        let nsText = text as NSString
+        let matches = Self.queryConditionPattern.matches(
+            in: text, range: NSRange(location: 0, length: nsText.length))
+        var conditions: [ConnectionCondition] = []
+        var rest = text
+        for match in matches.reversed() {
+            let range = match.range
+            // Only a token at the start or after whitespace counts.
+            if range.location > 0 {
+                let prev = nsText.character(at: range.location - 1)
+                guard prev == 32 || prev == 9 || prev == 10 else { continue }
+            }
+            guard let swiftRange = Range(range, in: rest) else { continue }
+            let minus = nsText.substring(with: match.range(at: 1)) == "-"
+            let fieldName = nsText.substring(with: match.range(at: 2)).lowercased()
+            let equals = nsText.substring(with: match.range(at: 3)) == "="
+            let value: String
+            if match.range(at: 5).location != NSNotFound {
+                value = nsText.substring(with: match.range(at: 5))
+            } else if match.range(at: 6).location != NSNotFound {
+                value = nsText.substring(with: match.range(at: 6))
+            } else {
+                continue
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty,
+                  let field = ConnectionCondition.Field(rawValue: fieldName) else { continue }
+            let op: ConnectionCondition.Op =
+                equals ? (minus ? .notEquals : .equals)
+                       : (minus ? .notContains : .contains)
+            conditions.append(ConnectionCondition(field: field, value: trimmed, op: op))
+            rest.replaceSubrange(swiftRange, with: " ")
+        }
+        let terms = rest.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        return (conditions, terms)
     }
 
-    private func sorted(_ list: [LiveConnection]) -> [LiveConnection] {
-        var list = list
-        switch sort {
-        case .newest: list.sort { $0.start > $1.start }
-        case .host: list.sort { ($0.host ?? "") < ($1.host ?? "") }
-        case .download: list.sort { $0.download > $1.download }
-        case .upload: list.sort { $0.upload > $1.upload }
-        case .rule: list.sort { "\($0.rule ?? "") \($0.rulePayload ?? "")" < "\($1.rule ?? "") \($1.rulePayload ?? "")" }
-        case .exit: list.sort { ($0.chains.first ?? $0.proxy ?? "") < ($1.chains.first ?? $1.proxy ?? "") }
-        case .duration: list.sort { $0.start < $1.start }
-        case .downSpeed: list.sort { $0.downSpeed > $1.downSpeed }
-        case .upSpeed: list.sort { $0.upSpeed > $1.upSpeed }
-        case .process: list.sort { ($0.process ?? "") < ($1.process ?? "") }
+    /// The free-text search fields (upstream TrackerInfo.searchFields,
+    /// common.dart:226-243): network, host, dest/source IP/port,
+    /// process/path, remote destination, ASN, GeoIP, special
+    /// proxy/rules, rule/payload, chains. Every free-text term must
+    /// appear somewhere in the joined fields (upstream SearchQuery).
+    private func searchFieldText(_ connection: LiveConnection) -> String {
+        var fields: [String] = [
+            connection.network,
+            connection.host ?? "",
+            connection.destinationIp ?? "",
+            "\(connection.destinationPort)",
+            connection.sourceIp,
+            "\(connection.sourcePort)",
+            connection.process ?? "",
+            connection.processPath ?? "",
+            connection.remoteDestination ?? "",
+            connection.destinationAsn ?? "",
+        ]
+        fields += connection.destinationGeoIp
+        fields += [
+            connection.specialProxy ?? "",
+            connection.specialRules ?? "",
+            connection.rule ?? "",
+            connection.rulePayload ?? "",
+        ]
+        if (connection.rule ?? "").isEmpty {
+            fields.append(ConnectionCondition.Field.ruleText(of: connection))
         }
-        return list
+        fields += connection.chains
+        return fields.joined(separator: "\n").lowercased()
+    }
+
+    /// Whether a connection passes the search text and the structured
+    /// conditions: excluding conditions drop what they hold, same-field
+    /// conditions widen, cross-field conditions narrow (upstream
+    /// conditionsMatcher), then every free-text term must match.
+    private func matchesQuery(
+        _ connection: LiveConnection,
+        parsed: [ConnectionCondition],
+        terms: [String]
+    ) -> Bool {
+        let all = parsed + conditions
+        for condition in all where condition.excludes && condition.holds(connection) {
+            return false
+        }
+        let included = Dictionary(grouping: all.filter { !$0.excludes }) { $0.field }
+        for (_, group) in included {
+            if !group.contains(where: { $0.holds(connection) }) { return false }
+        }
+        guard !terms.isEmpty else { return true }
+        let haystack = searchFieldText(connection)
+        return terms.allSatisfy { haystack.contains($0) }
     }
 
     /// Recently finished connections (FlClash: 请求 -> 最近请求).
@@ -307,31 +450,102 @@ final class ConnectionStore: ObservableObject {
         self.client = client
     }
 
-    var filtered: [LiveConnection] {
-        sorted(connections.filter { matchesSearch($0) && matchesFacets($0) && matchesStatus($0, isLive: true) })
+    /// The connections segment's single list (upstream Requests:
+    /// one log, newest first): live connections plus the locally
+    /// built recent list, filtered by search / facets / conditions
+    /// / status. No sort control — upstream v0.9.5 has none (log
+    /// order, newest first). Failed dials merge into `×N` rows
+    /// while the status filter is 失败 (upstream mergesRepeats).
+    var displayedConnections: [LiveConnection] {
+        let (parsed, terms) = parsedSearch()
+        let liveIds = Set(connections.map(\.id))
+        var rows = (connections + recentConnections)
+            .filter { matchesQuery($0, parsed: parsed, terms: terms) }
+            .filter { matchesFacets($0) }
+            .filter { matchesStatus($0, liveIds: liveIds) }
+            .sorted { $0.start > $1.start }
+        if statusFilter == .failed {
+            rows = mergedRepeats(rows)
+        }
+        return rows
     }
 
-    /// Recent connections matching the search text, facets and sort
-    /// (the view used to filter these itself with search only).
-    var recentFiltered: [LiveConnection] {
-        sorted(recentConnections.filter { matchesSearch($0) && matchesFacets($0) && matchesStatus($0, isLive: false) })
+    /// Whether this id is still an open connection.
+    func isLive(_ id: UInt64) -> Bool {
+        connections.contains { $0.id == id }
     }
 
-    /// Feed-scoped status counts (v0.2.121): the pills used to count
-    /// live + recent held rows regardless of the feed being viewed,
-    /// so on the recent feed 全部 included live rows that aren't
-    /// listed. Pass the viewed feed: on recent, 全部 = recent held,
-    /// 活动 = 0 (recent holds only closed rows), 失败 = failed
-    /// recent; on live, 全部/活动 = live, 失败 = failed live.
-    /// (Upstream ConnectionRows.counts / offerCounts: the counts
-    /// shown are the held totals, not affected by search/facets.)
-    func statusCount(for status: ConnectionStatusFilter, inRecentFeed: Bool) -> Int {
+    /// Merge identical failed dials into one row carrying the count
+    /// (upstream trackerRepeatKeyOf: failure kind, network, title,
+    /// destination port, process). The newest dial is the row's
+    /// representative; the list is already newest-first.
+    private func mergedRepeats(_ rows: [LiveConnection]) -> [LiveConnection] {
+        var seen: [String: Int] = [:]
+        var out: [LiveConnection] = []
+        for row in rows {
+            guard row.failureKind != nil else {
+                out.append(row)
+                continue
+            }
+            let key = [
+                row.failureKind ?? "",
+                row.network,
+                row.host ?? row.destinationIp ?? row.destination,
+                "\(row.destinationPort)",
+                row.process ?? "",
+            ].joined(separator: "\u{1f}")
+            if let index = seen[key] {
+                out[index].repeatCount += 1
+            } else {
+                seen[key] = out.count
+                var representative = row
+                representative.repeatCount = 1
+                out.append(representative)
+            }
+        }
+        return out
+    }
+
+    /// Value suggestions with counts for the condition editor
+    /// (upstream FieldDraft.suggestionsOf): the field's distinct
+    /// values across live + recent, most common first, filtered
+    /// by the typed text.
+    func suggestedValues(
+        for field: ConnectionCondition.Field,
+        matching text: String,
+        limit: Int = 6
+    ) -> [(value: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for connection in connections + recentConnections {
+            for value in field.values(of: connection) where !value.isEmpty {
+                counts[value, default: 0] += 1
+            }
+        }
+        let needle = text.trimmingCharacters(in: .whitespaces).lowercased()
+        return counts
+            .filter { needle.isEmpty || $0.key.lowercased().contains(needle) }
+            .sorted { $0.value > $1.value }
+            .prefix(limit)
+            .map { ($0.key, $0.value) }
+    }
+
+    /// How many live + recent rows a draft condition holds (the
+    /// editor's "将匹配 N 条" preview; excluding conditions invert it).
+    func countMatching(_ condition: ConnectionCondition) -> Int {
+        (connections + recentConnections).filter { condition.holds($0) }.count
+    }
+
+    /// Feed-scoped status counts (upstream ConnectionRows.counts /
+    /// offerCounts: the counts shown are the held totals, not
+    /// affected by search/facets). The connections segment is one
+    /// merged list, so 全部 counts live + recent, 活动 counts live,
+    /// 失败 counts failed rows in both.
+    func statusCount(for status: ConnectionStatusFilter) -> Int {
         switch status {
-        case .all: return inRecentFeed ? recentConnections.count : connections.count
-        case .active: return inRecentFeed ? 0 : connections.count
+        case .all: return connections.count + recentConnections.count
+        case .active: return connections.count
         case .failed:
-            let rows = inRecentFeed ? recentConnections : connections
-            return rows.filter { $0.failureKind != nil }.count
+            return (connections + recentConnections).filter { $0.failureKind != nil }.count
         }
     }
 
@@ -339,10 +553,10 @@ final class ConnectionStore: ObservableObject {
     /// is active by definition (it is still open); a recent row is
     /// closed, so it only passes the failed status when its dial
     /// failed.
-    private func matchesStatus(_ connection: LiveConnection, isLive: Bool) -> Bool {
+    private func matchesStatus(_ connection: LiveConnection, liveIds: Set<UInt64>) -> Bool {
         switch statusFilter {
         case .all: return true
-        case .active: return isLive
+        case .active: return liveIds.contains(connection.id)
         case .failed: return connection.failureKind != nil
         }
     }
@@ -393,28 +607,6 @@ final class ConnectionStore: ObservableObject {
         formatter.dateFormat = "MM-dd HH:mm"
         return formatter
     }()
-
-    /// Group key for one connection under the active grouping
-    /// (upstream trackerInfoGroupers: app/process, host, rule, exit).
-    func groupKey(for connection: LiveConnection, by groupBy: ConnectionGroupBy) -> String {
-        switch groupBy {
-        case .none: return ""
-        case .process: return connection.process ?? "未知进程"
-        case .host: return connection.host ?? connection.destination
-        case .rule: return connection.rule.map { rule in
-            connection.rulePayload.map { "\(rule) (\($0))" } ?? rule
-        } ?? "无规则"
-        case .exit: return connection.chains.first ?? connection.proxy ?? "直连"
-        }
-    }
-
-    /// A flat list grouped into (key, rows) sections, keys sorted,
-    /// rows in the active sort order.
-    func grouped(_ list: [LiveConnection], by groupBy: ConnectionGroupBy) -> [(key: String, rows: [LiveConnection])] {
-        guard groupBy != .none else { return [("", list)] }
-        let groups = Dictionary(grouping: list) { groupKey(for: $0, by: groupBy) }
-        return groups.keys.sorted().map { key in (key, groups[key] ?? []) }
-    }
 
     var totalUpload: Int64 { connections.reduce(0) { $0 + $1.upload } }
     var totalDownload: Int64 { connections.reduce(0) { $0 + $1.download } }
@@ -525,11 +717,6 @@ final class ConnectionStore: ObservableObject {
         }
     }
 
-    /// Clear the recorded history.
-    func clearRecent() {
-        recentConnections.removeAll()
-    }
-
     /// One-line-per-record diagnostics for the log export
     /// (LogStore "连接诊断" section): failed dials first (kind +
     /// the core's error text), then the other recently ended
@@ -572,56 +759,6 @@ final class ConnectionStore: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
-    }
-
-    /// Resets the core's resolver connections (network.reset) — the
-    /// next DNS lookup re-dials. Useful when connections look stuck
-    /// after a network change.
-    @MainActor
-    func resetNetwork() async {
-        do {
-            try await client.networkReset()
-            lastError = nil
-        } catch {
-            lastError = error.localizedDescription
-        }
-    }
-
-    /// Tells the core the system network changed (network.update).
-    /// Reads the current system DNS servers from /etc/resolv.conf
-    /// and sends them as `dnsServers`; `interfaceChanged` means the
-    /// default network changed, so connections over the old one are
-    /// closed. The extension does not yet notify the core
-    /// automatically on network change — this is the manual trigger.
-    @MainActor
-    func networkUpdate(interfaceChanged: Bool = false) async {
-        do {
-            try await client.networkUpdate(dnsServers: Self.systemDnsServers(), interfaceChanged: interfaceChanged)
-            networkUpdateMessage = interfaceChanged
-                ? "已通知核心：网络接口已切换，旧连接已关闭"
-                : "已通知核心：DNS 服务器已更新"
-            lastError = nil
-        } catch {
-            networkUpdateMessage = nil
-            lastError = error.localizedDescription
-        }
-    }
-
-    /// The DNS servers iOS currently uses, read from /etc/resolv.conf
-    /// (SCDynamicStore is macOS-only and unavailable on iOS), as socket
-    /// addresses. Returns nil when they cannot be read (nil = "unchanged"
-    /// to the core — the core still processes the network change).
-    static func systemDnsServers() -> [String]? {
-        guard let text = try? String(contentsOfFile: "/etc/resolv.conf", encoding: .utf8) else {
-            return nil
-        }
-        let servers = text.split(separator: "\n").compactMap { line -> String? in
-            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard parts.count >= 2, parts[0] == "nameserver" else { return nil }
-            let server = String(parts[1])
-            return server.contains(":") ? "[\(server)]:53" : "\(server):53"
-        }
-        return servers.isEmpty ? nil : servers
     }
 
     /// Runs one connections query against the tunnel core when it

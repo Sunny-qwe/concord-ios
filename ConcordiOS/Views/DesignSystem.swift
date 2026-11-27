@@ -96,6 +96,32 @@ enum ConcordTheme {
     /// #007AFF). Read from ThemeStore so a theme change recolours
     /// every page that uses it.
     static var accent: Color { ThemeStore.shared.accentColor }
+    /// Series 3 (v0.2.146, D-42/D-18): the memory bar's extension
+    /// leg and any third chart series — MuYu style.dart
+    /// series3 = tertiary at 45% alpha blended over the card.
+    /// Tertiary = the accent hue shifted ~+30° (blue → teal,
+    /// magenta → purple), so the third leg reads as a distinct
+    /// family member of the theme rather than a fixed colour.
+    /// The hue is read off the accent's UIColor; when it cannot
+    /// be (greyscale monochrome style) it falls back to the
+    /// accent itself at 45% — the same series2 value, still
+    /// theme-following and never a hardcoded colour.
+    static var series3: Color {
+        let uiColor = UIColor(accent)
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 0
+        guard uiColor.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha),
+              saturation > 0.05 else {
+            return accent.opacity(0.45)
+        }
+        let shifted = UIColor(hue: (hue + 0.083).truncatingRemainder(dividingBy: 1),
+                              saturation: saturation,
+                              brightness: brightness,
+                              alpha: 1)
+        return Color(shifted).opacity(0.45)
+    }
     /// Pale fill for unselected pills / inner panels (v0.2.100):
     /// pure white in light mode under the DEFAULT blue theme
     /// (unchanged — same user request as cardBackground, v0.2.74).

@@ -427,14 +427,15 @@ struct ContentView: View {
         // that already cured the identical DNS / .live / .recent
         // freezes. ServiceStatusSheet is unchanged inside.
         .overlay {
-            if statsDestination == .dns {
-                DnsSheetOverlay(onDismiss: { statsDestination = nil })
-            } else if statsDestination == .services {
+            if statsDestination == .services {
                 ServiceStatusSheetOverlay(onDismiss: { statsDestination = nil })
             } else if let destination = statsDestination,
-                      destination == .live || destination == .recent {
+                      destination == .live || destination == .recent || destination == .dns {
+                // The DNS stat opens the Requests page on its DNS segment
+                // (upstream has no standalone DNS page — v0.2.146).
                 ConnectionsSheetOverlay(
                     feed: destination == .live ? .live : .recent,
+                    segment: destination == .dns ? .dns : nil,
                     onDismiss: { statsDestination = nil }
                 )
                 .id(destination)
@@ -701,189 +702,15 @@ struct ContentView: View {
     }
 }
 
-/// Custom bottom-sheet overlay for the Dashboard DNS destination
-/// (v0.2.111, DNS freeze): the system .sheet presentation path is
-/// a freeze suspect on iOS 17.6.1, so the DNS destination no longer
-/// uses .sheet at all — it renders as a plain overlay at the
-/// ContentView root, above the floating tab bar (like the system
-/// sheet was). Same content (DnsQueriesView mode .sheet — same
-/// header, drag handle, ✕ button, search bar, rows), same 28pt
-/// corners, same detents (0.5625 / 0.9 of screen height), same dim,
-/// drag-down-to-dismiss, tap-dim-to-dismiss, ✕ dismiss. The nested
-/// .sheet(item: $selectedEntry) inside DnsQueriesView (entry
-/// detail) stays a system sheet. UNTESTED HYPOTHESIS — not proven
-/// to fix the freeze until it holds on-device.
-///
-/// Drag behaviour (v0.2.114): the gesture lives on the content
-/// view's header ONLY (see the onSheetDragChanged /
-/// onSheetDragEnded callbacks passed to DnsQueriesView) — never on
-/// the sheet container. v0.2.111–113 attached it to the container
-/// and the list never scrolled: the container gesture captured
-/// every vertical drag (the user's v0.2.113 video: swipe-up did
-/// nothing). The header is a sibling of the list, so it can never
-/// block list scrolling. Drag up on the header grows toward 0.9,
-/// drag down follows the finger; on release a far drag (>140pt)
-/// dismisses, a short drag down from the tall detent steps back to
-/// 0.5625, a clear upward drag (or an upward fling) settles at
-/// 0.9 (v0.2.119), otherwise it snaps to the nearest detent.
-/// v0.2.119: dragging the LIST up at the top grows the sheet too,
-/// via the UIKit pan bridge (SheetListDragPan) — the v0.2.118
-/// simultaneous-gesture mechanism never delivered and is gone.
-///
-/// Keyboard: the sheet's search field opens the keyboard, which
-/// would cover the floating search bar (the system sheet moved
-/// out of the way for free). The bottom strip under the content
-/// grows to the keyboard height while it is up, and the sheet
-/// auto-expands to the 0.9 detent (restored when the keyboard
-/// hides), so the search bar stays visible above the keyboard.
-private struct DnsSheetOverlay: View {
-    let onDismiss: () -> Void
-
-    /// Current detent, as a fraction of screen height.
-    @State private var heightFraction: CGFloat = 0.5625
-    /// Live drag offset (downward drags slide the sheet down).
-    @State private var dragOffset: CGFloat = 0
-    /// Detent the drag started from; captured on the first
-    /// onChanged so upward drags grow from the right base.
-    @State private var dragStartFraction: CGFloat = 0.5625
-    @State private var dragging = false
-    /// Keyboard height while the search field is focused, 0 else.
-    @State private var keyboardHeight: CGFloat = 0
-    /// Whether the keyboard auto-expanded the sheet (restored on
-    /// hide); false when the user expanded it themselves.
-    @State private var keyboardExpandedSheet = false
-
-    private let minFraction: CGFloat = 0.5625
-    private let maxFraction: CGFloat = 0.9
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .bottom) {
-                Color.black.opacity(0.35)
-                    .ignoresSafeArea()
-                    .onTapGesture(perform: onDismiss)
-                    .transition(.opacity)
-                VStack(spacing: 0) {
-                    // v0.2.114: the sheet-drag gesture lives on
-                    // DnsQueriesView's header (via these callbacks),
-                    // NOT on this container — a .gesture here
-                    // captured every vertical drag and the list
-                    // never scrolled.
-                    DnsQueriesView(mode: .sheet, onClose: onDismiss,
-                                   onSheetDragChanged: { sheetDragChanged($0, screenHeight: geo.size.height) },
-                                   onSheetDragEnded: { sheetDragEnded($0, velocity: $1) })
-                    // Bottom strip: the home-indicator safe area
-                    // normally, the keyboard height while the
-                    // search field is focused — the sheet's
-                    // background extends to the screen bottom in
-                    // both cases, like the system sheet.
-                    Color.clear
-                        .frame(height: keyboardHeight > 0 ? keyboardHeight : geo.safeAreaInsets.bottom)
-                }
-                .frame(width: geo.size.width, height: geo.size.height * heightFraction)
-                .background(ConcordTheme.pageBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 28))
-                .offset(y: dragOffset)
-                .transition(.move(edge: .bottom))
-            }
-            .ignoresSafeArea()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
-            let height = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.height ?? 0
-            guard height > 0 else { return }
-            withAnimation(.easeOut(duration: 0.25)) {
-                keyboardHeight = height
-                if heightFraction < maxFraction {
-                    keyboardExpandedSheet = true
-                    heightFraction = maxFraction
-                }
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            withAnimation(.easeOut(duration: 0.25)) {
-                keyboardHeight = 0
-                if keyboardExpandedSheet {
-                    keyboardExpandedSheet = false
-                    heightFraction = minFraction
-                }
-            }
-        }
-    }
-
-    /// Sheet-drag handlers (v0.2.114): driven by the drag gesture
-    /// on DnsQueriesView's header (see the callbacks passed
-    /// above) and, since v0.2.119, by the UIKit pan bridge on the
-    /// list (SheetListDragPan) — NOT by a gesture on this
-    /// container. Same rules as before: drag up grows toward 0.9,
-    /// drag down follows the finger; on release a far drag
-    /// (>140pt) dismisses, a short drag down from the tall detent
-    /// steps back to 0.5625, a clear upward drag (net translation
-    /// <= -20pt) or an upward fling (release velocity <= -200
-    /// pt/s) settles at 0.9 — the old nearest-detent snap sent any
-    /// upward drag under ~180pt back to the short detent, so
-    /// dragging the list up never expanded the sheet — otherwise
-    /// it snaps to the nearest detent.
-    private func sheetDragChanged(_ translation: CGFloat, screenHeight: CGFloat) {
-        if !dragging {
-            dragging = true
-            dragStartFraction = heightFraction
-        }
-        if translation < 0 {
-            // Drag up: grow toward the 0.9 detent.
-            dragOffset = 0
-            heightFraction = min(maxFraction, max(minFraction, dragStartFraction - translation / screenHeight))
-        } else {
-            // Drag down: follow the finger; the detent
-            // only changes on release.
-            dragOffset = translation
-        }
-    }
-
-    private func sheetDragEnded(_ translation: CGFloat, velocity: CGFloat = 0) {
-        dragging = false
-        if translation > 140 {
-            // Dragged far down: dismiss (the overlay
-            // removal transition continues the slide).
-            onDismiss()
-        } else if heightFraction >= maxFraction - 0.01, translation > 40 {
-            // At the tall detent, a short drag down steps
-            // back to the short detent, not a dismiss.
-            withAnimation(.easeOut(duration: 0.25)) {
-                heightFraction = minFraction
-                dragOffset = 0
-            }
-        } else if translation <= -20 || velocity <= -200 {
-            // v0.2.119: a clear upward drag — or an upward fling,
-            // even a short one — settles at the tall detent.
-            // velocity is pt/s, upward negative; the header
-            // passes 0 (DragGesture.Value exposes no public
-            // velocity) and relies on the translation branch,
-            // the UIKit list bridge passes the real release
-            // velocity.
-            withAnimation(.easeOut(duration: 0.25)) {
-                heightFraction = maxFraction
-                dragOffset = 0
-            }
-        } else {
-            // Snap to the nearest detent.
-            withAnimation(.easeOut(duration: 0.25)) {
-                heightFraction = heightFraction > (minFraction + maxFraction) / 2 ? maxFraction : minFraction
-                dragOffset = 0
-            }
-        }
-    }
-}
-
-/// v0.2.113 (Connections freeze): sibling of DnsSheetOverlay for
-/// the .live / .recent stats destinations — same mechanics, same
+/// v0.2.113 (Connections freeze): overlay for
+/// the .live / .recent / .dns stats destinations — same mechanics, same
 /// look (28pt corners, detents 0.5625 / 0.9, dim, drag-down-to-
 /// dismiss, tap-dim-to-dismiss, ✕ dismiss, keyboard handling for
-/// the floating search bar's TextField). DnsSheetOverlay is left
-/// untouched (it is confirmed working on-device). The nested
+/// the floating search bar's TextField). The nested
 /// .sheet(item: $detail) inside ConnectionsView (connection
 /// detail) stays a system sheet, like the DNS entry detail.
 ///
-/// Drag behaviour mirrors DnsSheetOverlay (v0.2.114): the gesture
+/// Drag behaviour (v0.2.114): the gesture
 /// lives on the content view's header ONLY — never on the sheet
 /// container, which captured every vertical drag and left the list
 /// unscrollable on v0.2.113. Drag up on the header grows toward
@@ -904,6 +731,9 @@ private struct DnsSheetOverlay: View {
 /// search bar stays visible above the keyboard.
 private struct ConnectionsSheetOverlay: View {
     let feed: ConnectionsView.ConnectionFeed
+    /// Requests segment to open on (nil = connections); the Dashboard DNS
+    /// stat opens the overlay on .dns (upstream has no standalone DNS page).
+    let segment: ConnectionsView.RequestsSegment?
     let onDismiss: () -> Void
 
     /// Current detent, as a fraction of screen height.
@@ -936,7 +766,7 @@ private struct ConnectionsSheetOverlay: View {
                     // callbacks), NOT on this container — a
                     // .gesture here captured every vertical drag
                     // and the list never scrolled.
-                    ConnectionsView(initialFeed: feed, sheetChrome: true, onClose: onDismiss,
+                    ConnectionsView(initialFeed: feed, initialSegment: segment, sheetChrome: true, onClose: onDismiss,
                                     onSheetDragChanged: { sheetDragChanged($0, screenHeight: geo.size.height) },
                                     onSheetDragEnded: { sheetDragEnded($0, velocity: $1) })
                     // Bottom strip: the home-indicator safe area
@@ -1041,7 +871,7 @@ private struct ConnectionsSheetOverlay: View {
     }
 }
 
-/// v0.2.124 (服务状态 freeze): sibling of DnsSheetOverlay /
+/// v0.2.124 (服务状态 freeze): sibling of
 /// ConnectionsSheetOverlay for the services card. The system
 /// .sheet presentation froze on 123 — the 123 diagnostic proved
 /// the sheet appeared and the probe was skipped, and a static
@@ -1101,7 +931,7 @@ private struct ServiceStatusSheetOverlay: View {
         }
     }
 
-    /// Sheet-drag handlers (same rules as DnsSheetOverlay /
+    /// Sheet-drag handlers (same rules as
     /// ConnectionsSheetOverlay): driven by the drag gesture on
     /// the sheet's header (via DashboardBottomSheet's callbacks)
     /// — NOT by a gesture on this container. Drag up grows toward

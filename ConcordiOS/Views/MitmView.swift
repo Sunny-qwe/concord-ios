@@ -7,10 +7,12 @@ import UIKit
 // the page is pushed from a connection, never opened standalone.
 // Rows show path + query only (upstream `exchangePathOf`); tapping
 // one opens the detail (mitm.exchange) and reads its request /
-// response body (mitm.body). The cross-connection search below is
-// mitm.query (upstream RequestsView's http segment). Scripts run
-// only from a module's script lines — there is no run-script box
-// here (upstream mitm_modules.dart:42-56).
+// response body (mitm.body). Scripts run only from a module's
+// script lines — there is no run-script box here (upstream
+// mitm_modules.dart:42-56).
+// The cross-connection search (mitm.query) lives on the Requests
+// page's HTTP segment (upstream RequestsView), not here — the
+// per-connection tab lists only this connection's exchanges.
 // The exchange context menu (copy / export / add-rule) is
 // MitmExchangeMenuButtons at the bottom of this file (upstream
 // lib/features/connection/mitm_exchange_menu.dart).
@@ -60,57 +62,6 @@ struct MitmView: View {
                         .foregroundStyle(.secondary)
                 }
                 .listRowBackground(Color.clear)
-            }
-
-            // Cross-connection search (mitm.query, upstream
-            // 0c9788f): the capture across ALL connections, newest
-            // first — no connection id needed, unlike mitm.exchanges
-            // below. An empty search matches everything; results
-            // page through the answer's `next` cursor.
-            Section("搜索拦截记录（mitm.query）") {
-                HStack {
-                    TextField("搜索 URL、方法、内容类型、错误或应用", text: $mitmStore.queryText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .onSubmit { Task { await mitmStore.runQuery() } }
-                    Button("搜索") {
-                        Task { await mitmStore.runQuery() }
-                    }
-                    .disabled(mitmStore.isQuerying)
-                }
-                if mitmStore.isQuerying {
-                    ProgressView()
-                }
-                if mitmStore.hasQueried {
-                    if let matched = mitmStore.queryMatched, let held = mitmStore.queryHeld {
-                        Text("共 \(matched) 条匹配（已保留 \(held) 条）· 已加载 \(mitmStore.queryResults.count) 条")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let message = mitmStore.queryMessage {
-                        Text(message)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                ForEach(mitmStore.queryResults) { exchange in
-                    Button { detailSummary = exchange } label: {
-                        exchangeRow(exchange)
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        MitmExchangeMenuButtons(summary: exchange, model: menuModel)
-                    }
-                }
-                if mitmStore.queryNext != nil {
-                    Button("加载更多") {
-                        Task { await mitmStore.runQuery(loadMore: true) }
-                    }
-                    .disabled(mitmStore.isQuerying)
-                }
-                Text("按最新排序；空搜索列出全部。结果来自核心的 MITM 捕获，需要 MITM 已开启并正在捕获。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
 
             // This connection's exchanges (upstream MitmExchangesView):

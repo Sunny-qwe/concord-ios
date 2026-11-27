@@ -228,6 +228,50 @@ final class TrafficStore: ObservableObject {
     /// is up — the extension probe itself is hardened instead.
     private var consecutiveExtensionProbeFailures = 0
     @Published var coreMemoryBytes: UInt64?
+    /// The extension process's memory (MuYu MemorySnapshot
+    /// extensionTotal): the tunnel controller's GET /memory `inuse`
+    /// — the extension core's RSS — while the tunnel runs, nil
+    /// otherwise. It is the same number coreMemoryBytes carries
+    /// VPN-on (one source, two legs: the card shows it as the
+    /// extension leg, the detail sheet as the core leg — see the
+    /// D-42 note on MemoryCardView); kept separate so the card
+    /// can label the legs honestly without changing what the
+    /// detail sheet reads.
+    @Published var extensionMemoryBytes: UInt64?
+    /// Unbounded finished-request count (D-39, upstream
+    /// RequestCount: opened connections since core setup). The
+    /// Dashboard's "最近请求" reads this, not the 200-capped
+    /// recentConnections. Fed by noteSeenConnectionIds from the
+    /// dashboard's 1 s poll; reset on tunnel start (upstream
+    /// resets on setup). A connection that opens and closes
+    /// between two polls is never seen and is missed — the same
+    /// honest undercount as the proxy/direct split below.
+    @Published private(set) var totalRequestCount: Int = 0
+    private var seenRequestIds: Set<UInt64> = []
+
+    /// Counts connection ids the 1 s feed has never shown before
+    /// (live or recent — an id moves from live to recent, never
+    /// back). Ids that left both feeds are dropped from the seen
+    /// set: a finished connection evicted from the 200-capped
+    /// recent list never reappears, so the set stays bounded by
+    /// the live + recent lists instead of growing forever.
+    @MainActor
+    func noteSeenConnectionIds(live: [UInt64], recent: [UInt64]) {
+        let current = Set(live + recent)
+        let fresh = current.subtracting(seenRequestIds)
+        if !fresh.isEmpty {
+            totalRequestCount += fresh.count
+        }
+        seenRequestIds = current
+    }
+
+    /// Resets the unbounded request count (tunnel start =
+    /// upstream's setup reset).
+    @MainActor
+    func resetRequestCount() {
+        totalRequestCount = 0
+        seenRequestIds = []
+    }
     @Published var services: [ConcordServiceItem] = []
     @Published var isProbingServices = false
     @Published var servicesError: String?
@@ -474,6 +518,30 @@ final class TrafficStore: ObservableObject {
 
     private static let dailyHistoryFileName = "daily-history-v1.json"
     private static let dailyHistoryDefaultsKey = "ConcordiOS.traffic.dailyHistory.v1"
+    /// Last-seen cumulative core counters at backgrounding (D-20),
+    /// with the date they belong to. Read once by the seed branch
+    /// in maintainDailyHistory, then cleared.
+    private static let lastSeenDateKey = "ConcordiOS.traffic.lastSeenDate.v1"
+    private static let lastSeenUpKey = "ConcordiOS.traffic.lastSeenUp.v1"
+    private static let lastSeenDownKey = "ConcordiOS.traffic.lastSeenDown.v1"
+
+    private static func persistedLastSeenDate() -> String? {
+        UserDefaults.standard.string(forKey: lastSeenDateKey)
+    }
+
+    private static func persistedLastSeenUp() -> Int64? {
+        (UserDefaults.standard.object(forKey: lastSeenUpKey) as? NSNumber)?.int64Value
+    }
+
+    private static func persistedLastSeenDown() -> Int64? {
+        (UserDefaults.standard.object(forKey: lastSeenDownKey) as? NSNumber)?.int64Value
+    }
+
+    private static func clearPersistedLastSeen() {
+        UserDefaults.standard.removeObject(forKey: lastSeenDateKey)
+        UserDefaults.standard.removeObject(forKey: lastSeenUpKey)
+        UserDefaults.standard.removeObject(forKey: lastSeenDownKey)
+    }
     /// History is kept small and bounded: entries older than this
     /// are pruned on load and on every save.
     private static let dailyHistoryRetentionDays = 62
@@ -869,6 +937,31 @@ final class TrafficStore: ObservableObject {
                 accumDown = partial.down
                 seedDayAccumulators(from: partial)
             }
+            // D-20: traffic while the app was dead. The core's
+            // cumulative counters keep running in the extension
+            // while the app is gone, so a same-day relaunch can
+            // recover the gap: the background snapshot persisted
+            // the last-seen counters, and whatever the core's
+            // counters gained since then flowed through the tunnel
+            // while the app was away. A negative delta means the
+            // core restarted while the app was dead — its
+            // counters re-based and the gap is unrecoverable, so
+            // it is dropped (never negative, never double-counted:
+            // the partial above already holds everything up to the
+            // backgrounding). The gap lands in the day total only
+            // — the proxy/direct split and rankings cannot be
+            // attributed to traffic nobody observed. A gap that
+            // spans midnight is dropped too: it cannot be split
+            // between the days. Only the same-day persisted
+            // last-seen is consumed, then cleared.
+            if let lastDate = Self.persistedLastSeenDate(), lastDate == today,
+               let seenUp = Self.persistedLastSeenUp(), let seenDown = Self.persistedLastSeenDown() {
+                let gapUp = current.totalUp - seenUp
+                let gapDown = current.totalDown - seenDown
+                if gapUp > 0 { accumUp += gapUp }
+                if gapDown > 0 { accumDown += gapDown }
+            }
+            Self.clearPersistedLastSeen()
             lastSeenUp = current.totalUp
             lastSeenDown = current.totalDown
             return
@@ -961,6 +1054,18 @@ final class TrafficStore: ObservableObject {
     func snapshotCurrentDayPartial() {
         checkpointUptime()
         guard let date = accumDate, date == Self.todayString() else { return }
+        // D-20: persist the last-seen cumulative counters with the
+        // partial, so a same-day relaunch can recover the traffic
+        // that flowed while the app was dead (see the seed branch
+        // in maintainDailyHistory). Written together with the
+        // partial — the two always describe the same moment.
+        UserDefaults.standard.set(date, forKey: Self.lastSeenDateKey)
+        if let seenUp = lastSeenUp {
+            UserDefaults.standard.set(seenUp, forKey: Self.lastSeenUpKey)
+        }
+        if let seenDown = lastSeenDown {
+            UserDefaults.standard.set(seenDown, forKey: Self.lastSeenDownKey)
+        }
         if dailyHistory[date]?.partial == false { return }
         dailyHistory[date] = DailyTraffic(
             up: max(0, accumUp), down: max(0, accumDown), partial: true,
@@ -1797,6 +1902,13 @@ final class TrafficStore: ObservableObject {
         if TunnelManager.shared.isRunning {
             if let rss = await TunnelController.memoryRSS() {
                 coreMemoryBytes = rss
+                // D-42: the same /memory number is the extension
+                // leg — the tunnel core runs in the extension
+                // process, and GET /memory reports that process's
+                // RSS (MuYu MemorySnapshot extensionTotal). The
+                // card and the detail sheet both split it as the
+                // extension leg, with the core leg 0.
+                extensionMemoryBytes = rss
             }
             return
         }
@@ -1810,10 +1922,14 @@ final class TrafficStore: ObservableObject {
         // keeps its mock answer below.
         if client.mode != .sample {
             coreMemoryBytes = nil
+            extensionMemoryBytes = nil
             return
         }
         do {
             coreMemoryBytes = try await client.coreStats().rss
+            // Sample mode has no extension process — its mock core
+            // is in-process, so the extension leg stays nil.
+            extensionMemoryBytes = nil
         } catch {
             lastError = error.localizedDescription
         }

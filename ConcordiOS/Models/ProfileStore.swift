@@ -446,6 +446,27 @@ final class ProfileStore: ObservableObject {
         }
     }
 
+    /// Age-encrypted bodies are detected by their header, not by a
+    /// failed parse (upstream _withAgeSecretKey / validateProfile).
+    static func isAgeEncrypted(_ data: Data) -> Bool {
+        looksAgeEncrypted(data)
+    }
+
+    /// Decrypts age-encrypted data with the given key, for the file
+    /// import path (UnifiedImporter mirrors the link flow: prompt
+    /// for the key, decrypt, then import the plaintext). The error
+    /// is a plain message: the importer's failure branch decides
+    /// whether the core was simply unreachable (then the ciphertext
+    /// is saved with the key, like the link flow) or the key itself
+    /// was wrong.
+    @MainActor
+    func decryptAgeData(_ data: Data, key: String) async -> Result<Data, String> {
+        switch await decryptAgeDataIfNeeded(data, key: key) {
+        case .success(let plain): return .success(plain)
+        case .failure(let error): return .failure(error.message)
+        }
+    }
+
     private static func looksAgeEncrypted(_ data: Data) -> Bool {
         let head = data.prefix(64)
         guard let text = String(data: head, encoding: .ascii) else { return false }
@@ -962,6 +983,12 @@ final class ProfileStore: ObservableObject {
             if Self.looksAgeEncrypted(downloadedData) {
                 var profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), subscriptionInfo: downloaded.info)
                 profile.ageSecretKey = (trimmedKey?.isEmpty == false) ? trimmedKey : nil
+                // Upstream default (profile.dart:80-97): a new URL
+                // profile auto-updates, daily. The old off default
+                // was a speculative battery choice; the user order
+                // is to follow upstream.
+                profile.autoUpdate = true
+                profile.autoUpdateIntervalMinutes = 1440
                 profiles.append(profile)
                 try saveProfileFile(profile: profile, data: downloadedData)
                 statusMessage = "已导入订阅 \(profile.name)（age 加密，待填写私钥后更新解密）"
@@ -979,6 +1006,10 @@ final class ProfileStore: ObservableObject {
             }
             var profile = Profile(name: name.isEmpty ? (downloaded.fileName ?? url.host ?? "订阅") : name, kind: .url, urlString: urlString, updatedAt: Date(), subscriptionInfo: downloaded.info)
             profile.ageSecretKey = (trimmedKey?.isEmpty == false) ? trimmedKey : nil
+            // Upstream default (profile.dart:80-97): a new URL
+            // profile auto-updates, daily.
+            profile.autoUpdate = true
+            profile.autoUpdateIntervalMinutes = 1440
             profiles.append(profile)
             try saveProfileFile(profile: profile, data: normalized.data)
             statusMessage = "已导入订阅 \(profile.name)" + (normalized.note.map { "（\($0)）" } ?? "")
@@ -994,17 +1025,34 @@ final class ProfileStore: ObservableObject {
         }
     }
 
+    /// Saves a local file as a profile. `ageSecretKey` is the file
+    /// import's age path (profiles.dart _withAgeSecretKey): when the
+    /// data is age-encrypted and the core is unreachable, the
+    /// ciphertext is saved WITH the key (mirroring the link flow in
+    /// addFromURL), so a later 更新 decrypts it; the key is never
+    /// stored for a plaintext file.
     @MainActor
-    func addFromFile(name: String, data: Data) {
+    func addFromFile(name: String, data: Data, ageSecretKey: String? = nil) {
         if let problem = Self.localSanityCheck(data) {
-            lastError = "文件内容异常：\(problem)"
-            return
+            // An age-encrypted file is not YAML yet: it fails the
+            // sanity check by design, so it is exempted here when a
+            // key was supplied — the file is saved as ciphertext
+            // and decrypted on update (see addFromURL).
+            if !(Self.looksAgeEncrypted(data) && !(ageSecretKey?.isEmpty ?? true)) {
+                lastError = "文件内容异常：\(problem)"
+                return
+            }
         }
-        let profile = Profile(name: name, kind: .file, fileName: name, updatedAt: Date())
+        var profile = Profile(name: name, kind: .file, fileName: name, updatedAt: Date())
+        if Self.looksAgeEncrypted(data), let key = ageSecretKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+            profile.ageSecretKey = key
+        }
         profiles.append(profile)
         do {
             try saveProfileFile(profile: profile, data: data)
-            statusMessage = "已导入本地配置 \(name)"
+            statusMessage = profile.ageSecretKey == nil
+                ? "已导入本地配置 \(name)"
+                : "已导入本地配置 \(name)（age 加密，已保存私钥，更新时解密）"
             save()
             lastError = nil
         } catch {
@@ -1103,10 +1151,84 @@ final class ProfileStore: ObservableObject {
             } else {
                 statusMessage = "已更新 \(profile.name)"
                 lastError = nil
+                // Upstream updateProfile, non-current branch
+                // (profiles.dart:180-194): a profile that another
+                // config uses as a proxy provider is reloaded
+                // through applyIfReferenced — the core only picks
+                // the new file up when the referencing config is
+                // re-applied. Ours checks the active profile's YAML
+                // for a proxy-providers entry / group `use:` naming
+                // this profile, and re-applies the active profile
+                // when it references it.
+                await reloadReferencingActiveProfileIfNeeded(updatedProfile: profile)
             }
         } catch {
             lastError = "更新 \(profile.name) 失败：\(Self.subscriptionFailureMessage(error))"
         }
+    }
+
+    /// The non-active half of updateProfile's applyIfReferenced:
+    /// re-applies the active profile when its YAML references the
+    /// just-updated profile as a proxy provider (a
+    /// `proxy-providers:` key or a group `use:` entry with that
+    /// name). No-ops when nothing references it, when there is no
+    /// active profile, or when the active file cannot be read.
+    /// applyProfile is the single live-apply path: with the tunnel
+    /// running it live-applies, stopped it only refreshes the
+    /// shared config.yaml for the next start.
+    @MainActor
+    private func reloadReferencingActiveProfileIfNeeded(updatedProfile: Profile) async {
+        guard let active = activeProfile, active.id != updatedProfile.id,
+              let activePath = absolutePath(for: active),
+              let text = try? String(contentsOfFile: activePath, encoding: .utf8),
+              let doc = try? YamlParser.parse(text),
+              case .object(let top) = doc else { return }
+        let name = updatedProfile.name
+        var referenced = false
+        if case .object(let providers) = top["proxy-providers"], providers[name] != nil {
+            referenced = true
+        }
+        if !referenced, case .array(let groups) = top["proxy-groups"] {
+            for group in groups {
+                guard case .object(let groupObject) = group,
+                      case .array(let use) = groupObject["use"] else { continue }
+                if use.contains(where: { if case .string(let entry) = $0 { return entry == name }; return false }) {
+                    referenced = true
+                    break
+                }
+            }
+        }
+        guard referenced,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: activePath)) else { return }
+        await applyProfile(active, data: data)
+    }
+
+    /// Stat counts of the applied config, read from the shared
+    /// config.yaml on disk (upstream profile_detail.dart
+    /// _countConfigFile / configCountsOf: groups / proxies / rules
+    /// list lengths of the config the core was handed). 8 MB cap,
+    /// like upstream; nil when the file is missing, too large or
+    /// unparseable — the sheet then falls back to the live stores
+    /// and shows "—" for anything still unknown. Static so the
+    /// sheet can parse it off the main thread.
+    struct AppliedConfigCounts {
+        let groups: Int
+        let proxies: Int
+        let rules: Int
+    }
+
+    static func localAppliedConfigCounts() -> AppliedConfigCounts? {
+        guard let url = ConfigStore.sharedFileURL(name: ConfigStore.configFileName) else { return nil }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber, size.intValue <= 8 * 1024 * 1024,
+              let text = try? String(contentsOf: url, encoding: .utf8),
+              let doc = try? YamlParser.parse(text),
+              case .object(let top) = doc else { return nil }
+        func count(_ key: String) -> Int {
+            guard case .array(let items) = top[key] else { return 0 }
+            return items.count
+        }
+        return AppliedConfigCounts(groups: count("proxy-groups"), proxies: count("proxies"), rules: count("rules"))
     }
 
     /// Removes one profile's file + list entry. This is the
@@ -2088,7 +2210,8 @@ final class ProfileStore: ObservableObject {
     /// collect every missing set by TEXT (collectMissingRuleSets),
     /// then decide each one's action against the ORIGINAL text.
     /// `coreReportedMissing` is the set the core's current error
-    /// names (ProxyStore.missingRuleSetName, from testError): a
+    /// names (formerly ProxyStore.missingRuleSetName, from the
+    /// v0.2.146-removed testError): a
     /// set the text already defines is core-invisible — the core
     /// still reports it missing (v0.2.58 150G/TikTok: the core
     /// said "rule set [TikTok] not found" while the text detector

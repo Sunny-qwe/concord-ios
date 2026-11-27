@@ -9,14 +9,20 @@ import Foundation
 // 映射规则（与 ~/workspace/scratch/yaml-0.2.55/test_import.py 逐项对应，
 // 该测试已对两份夹具跑过）：
 //   * proxy-groups / proxy-providers / rule-providers / rules 映射到模型；
-//   * proxies（节点定义）是硬错误——模型存不下节点，静默丢弃 41 个节点
-//     会让导入看起来成功实则内容全失；错误信息指引用户改到「配置」页
-//     导入为普通订阅；
+//   * proxies（节点定义）无法保存——模型存不下节点：节点本身不导入，
+//     但每条的 `dialer-proxy:` 会抽成拨号器（CustomDialer，
+//     上游 readCustomProfileImport 的 dialers），并在 notes 里写明
+//     丢了几个节点（v0.2.146 起不再是硬错误：上游是整份导入的，
+//     硬错误会让一份含节点的常用订阅完全导不进来；notes 在导入
+//     界面展示，不是静默丢弃）；
+//   * dns / ntp / sniffer / tun 四个顶层区映射到自定义订阅已有的
+//     per-profile 区（CustomDnsSection 等，上游 _importOverrides）；
+//     区内无法表示的键记入 notes；
 //   * 分组/提供方对象里的未知字段是硬错误（列出字段名）；
 //   * rule-providers 的 behavior 只有 classical 可接受：它是核心默认值，
 //     未保存也不改变行为（记入 notes 向用户展示）；domain/ipcidr 会改变
 //     路由语义且模型存不下，是硬错误；
-//   * mixed-port、dns、mode 等顶层配置键与自定义订阅无关，不进模型，
+//   * mixed-port、mode 等其余顶层配置键与自定义订阅无关，不进模型，
 //     但会列入结果的 ignoredTopLevelKeys，由导入界面向用户展示——
 //     不是静默丢弃；
 //   * 规则按逗号切分（引号内的逗号保留），未知类型、缺少目标、无法识别
@@ -62,21 +68,35 @@ enum CustomSubscriptionImporter {
         guard case .object(let top) = doc else {
             throw CustomSubscriptionImportError(message: "文件顶层必须是映射（key: value 形式）")
         }
+        var dialers: [CustomDialer] = []
+        var notes: [String] = []
         if let proxies = top["proxies"] {
-            let count: Int
-            if case .array(let items) = proxies {
-                count = items.count
-            } else {
-                count = 0
+            guard case .array(let items) = proxies else {
+                throw CustomSubscriptionImportError(message: "proxies 必须是列表")
             }
-            throw CustomSubscriptionImportError(
-                message: "文件包含 \(count) 个节点定义（proxies），自定义订阅模型无法保存节点；请改到「配置」页用链接/文件导入为普通订阅")
+            // Nodes cannot be stored (no proxy storage in the
+            // model), but their dialer-proxy lines can: each one
+            // becomes a CustomDialer (upstream _importProxies'
+            // dialers map). The drop is reported in notes, never
+            // silent — and the import continues with the groups /
+            // providers / rules / overrides the file also holds.
+            for item in items {
+                guard case .object(let dict) = item,
+                      case .string(let proxyName) = dict["name"], !proxyName.isEmpty,
+                      case .string(let dialer) = dict["dialer-proxy"], !dialer.isEmpty else { continue }
+                if !dialers.contains(where: { $0.proxy == proxyName }) {
+                    dialers.append(CustomDialer(proxy: proxyName, dialer: dialer))
+                }
+            }
+            if !items.isEmpty {
+                notes.append("文件包含 \(items.count) 个节点定义（proxies），自定义订阅模型无法保存节点，未导入；其中 \(dialers.count) 个拨号器已导入")
+            }
         }
-        let knownKeys: Set<String> = ["proxy-groups", "proxy-providers", "rule-providers", "rules"]
+        let knownKeys: Set<String> = ["proxy-groups", "proxy-providers", "rule-providers", "rules",
+                                      "proxies", "dns", "ntp", "sniffer", "tun"]
         let ignored = top.keys.filter { !knownKeys.contains($0) }.sorted()
 
         var groups: [CustomGroup] = []
-        var notes: [String] = []
         if let rawGroups = top["proxy-groups"] {
             guard case .array(let items) = rawGroups else {
                 throw CustomSubscriptionImportError(message: "proxy-groups 必须是列表")
@@ -121,12 +141,62 @@ enum CustomSubscriptionImporter {
                 rules.append(try mapRule(text, index: idx))
             }
         }
-        if groups.isEmpty && proxyProviders.isEmpty && ruleProviders.isEmpty && rules.isEmpty {
-            throw CustomSubscriptionImportError(message: "文件中没有找到分组、提供方或规则，无法导入为空订阅")
+        // Per-profile scoped sections (upstream _importOverrides):
+        // only the keys the model can hold are mapped; anything
+        // else in the section is listed in notes, never silently
+        // kept or dropped without a trace.
+        var dns: CustomDnsSection?
+        var ntp: CustomNtpSection?
+        var sniffer: CustomSnifferSection?
+        var tun: CustomTunSection?
+        if let rawDns = top["dns"] {
+            guard case .object(let dict) = rawDns else {
+                throw CustomSubscriptionImportError(message: "dns 必须是映射")
+            }
+            let (section, unknown) = mapDnsSection(dict)
+            dns = section
+            if !unknown.isEmpty {
+                notes.append("dns 区有 \(unknown.count) 个无法表示的键未导入：\(unknown.joined(separator: "、"))")
+            }
+        }
+        if let rawNtp = top["ntp"] {
+            guard case .object(let dict) = rawNtp else {
+                throw CustomSubscriptionImportError(message: "ntp 必须是映射")
+            }
+            let (section, unknown) = mapNtpSection(dict)
+            ntp = section
+            if !unknown.isEmpty {
+                notes.append("ntp 区有 \(unknown.count) 个无法表示的键未导入：\(unknown.joined(separator: "、"))")
+            }
+        }
+        if let rawSniffer = top["sniffer"] {
+            guard case .object(let dict) = rawSniffer else {
+                throw CustomSubscriptionImportError(message: "sniffer 必须是映射")
+            }
+            let (section, unknown) = mapSnifferSection(dict)
+            sniffer = section
+            if !unknown.isEmpty {
+                notes.append("sniffer 区有 \(unknown.count) 个无法表示的键未导入：\(unknown.joined(separator: "、"))")
+            }
+        }
+        if let rawTun = top["tun"] {
+            guard case .object(let dict) = rawTun else {
+                throw CustomSubscriptionImportError(message: "tun 必须是映射")
+            }
+            let (section, unknown) = mapTunSection(dict)
+            tun = section
+            if !unknown.isEmpty {
+                notes.append("tun 区有 \(unknown.count) 个无法表示的键未导入：\(unknown.joined(separator: "、"))")
+            }
+        }
+        if groups.isEmpty && proxyProviders.isEmpty && ruleProviders.isEmpty && rules.isEmpty
+            && dialers.isEmpty && dns == nil && ntp == nil && sniffer == nil && tun == nil {
+            throw CustomSubscriptionImportError(message: "文件中没有找到分组、提供方、规则、拨号器或配置区，无法导入为空订阅")
         }
         let subscription = CustomSubscription(
-            name: name, groups: groups, dialers: [],
-            proxyProviders: proxyProviders, ruleProviders: ruleProviders, rules: rules)
+            name: name, groups: groups, dialers: dialers,
+            proxyProviders: proxyProviders, ruleProviders: ruleProviders, rules: rules,
+            dns: dns, ntp: ntp, sniffer: sniffer, tun: tun)
         return CustomSubscriptionImportResult(
             subscription: subscription, ignoredTopLevelKeys: ignored, notes: notes)
     }
@@ -368,6 +438,208 @@ enum CustomSubscriptionImporter {
         }
         return CustomRule(type: type, content: content, target: parts[2],
                           noResolve: flags.contains("no-resolve"), src: flags.contains("src"))
+    }
+
+    // MARK: - 配置区（dns / ntp / sniffer / tun）
+
+    /// Lenient readers for the override sections: a wrong-typed
+    /// value maps to nil (the key then lands in `unknown`) instead
+    /// of failing the whole import — upstream _knownKeys drops
+    /// what the override decoders cannot hold, the same way.
+    private static func lenientString(_ dict: [String: JSONValue], key: String) -> String? {
+        guard case .string(let text) = dict[key], !text.isEmpty else { return nil }
+        return text
+    }
+
+    private static func lenientBool(_ dict: [String: JSONValue], key: String) -> Bool? {
+        guard case .bool(let flag) = dict[key] else { return nil }
+        return flag
+    }
+
+    private static func lenientInt(_ dict: [String: JSONValue], key: String) -> Int? {
+        switch dict[key] {
+        case .int(let number): return Int(number)
+        case .double(let number) where number == number.rounded(): return Int(number)
+        default: return nil
+        }
+    }
+
+    private static func lenientStringList(_ dict: [String: JSONValue], key: String) -> [String]? {
+        guard case .array(let items) = dict[key] else { return nil }
+        var out: [String] = []
+        for item in items {
+            guard case .string(let text) = item else { return nil }
+            out.append(text)
+        }
+        return out
+    }
+
+    private static func lenientStringMap(_ dict: [String: JSONValue], key: String) -> [String: String]? {
+        guard case .object(let map) = dict[key] else { return nil }
+        var out: [String: String] = [:]
+        for (key, value) in map {
+            guard case .string(let text) = value else { return nil }
+            out[key] = text
+        }
+        return out
+    }
+
+    private static func lenientIntList(_ dict: [String: JSONValue], key: String) -> [Int]? {
+        guard case .array(let items) = dict[key] else { return nil }
+        var out: [Int] = []
+        for item in items {
+            switch item {
+            case .int(let number): out.append(Int(number))
+            case .double(let number) where number == number.rounded(): out.append(Int(number))
+            default: return nil
+            }
+        }
+        return out
+    }
+
+    private static let dnsKeys: Set<String> = [
+        "enable", "listen", "listen-routing-mark", "prefer-h3", "use-hosts",
+        "use-system-hosts", "respect-rules", "ipv6", "ipv6-timeout",
+        "cache-algorithm", "cache-max-size", "default-nameserver",
+        "enhanced-mode", "fake-ip-range", "fake-ip-range6", "fake-ip-filter",
+        "fake-ip-filter-mode", "fake-ip-ttl", "nameserver-policy",
+        "nameserver", "fallback", "fallback-lazy-query",
+        "proxy-server-nameserver", "proxy-server-nameserver-policy",
+        "direct-nameserver", "direct-nameserver-follow-policy",
+        "fallback-filter",
+    ]
+
+    /// Maps a `dns:` section (keys are the bake spellings in
+    /// CustomSubscriptionStore.dnsYAML). Returns nil when the
+    /// section sets nothing, plus the keys it could not hold.
+    private static func mapDnsSection(_ dict: [String: JSONValue]) -> (CustomDnsSection?, [String]) {
+        var filter: CustomDnsFallbackFilter?
+        if case .object(let filterDict) = dict["fallback-filter"] {
+            let mapped = CustomDnsFallbackFilter(
+                geoip: lenientBool(filterDict, key: "geoip"),
+                geoipCode: lenientString(filterDict, key: "geoip-code"),
+                geosite: lenientStringList(filterDict, key: "geosite"),
+                ipcidr: lenientStringList(filterDict, key: "ipcidr"),
+                domain: lenientStringList(filterDict, key: "domain"))
+            if mapped != CustomDnsFallbackFilter() { filter = mapped }
+        }
+        let section = CustomDnsSection(
+            enable: lenientBool(dict, key: "enable"),
+            listen: lenientString(dict, key: "listen"),
+            listenRoutingMark: lenientInt(dict, key: "listen-routing-mark"),
+            preferH3: lenientBool(dict, key: "prefer-h3"),
+            useHosts: lenientBool(dict, key: "use-hosts"),
+            useSystemHosts: lenientBool(dict, key: "use-system-hosts"),
+            respectRules: lenientBool(dict, key: "respect-rules"),
+            ipv6: lenientBool(dict, key: "ipv6"),
+            ipv6Timeout: lenientInt(dict, key: "ipv6-timeout"),
+            cacheAlgorithm: lenientString(dict, key: "cache-algorithm"),
+            cacheMaxSize: lenientInt(dict, key: "cache-max-size"),
+            defaultNameserver: lenientStringList(dict, key: "default-nameserver"),
+            enhancedMode: lenientString(dict, key: "enhanced-mode"),
+            fakeIpRange: lenientString(dict, key: "fake-ip-range"),
+            fakeIpRange6: lenientString(dict, key: "fake-ip-range6"),
+            fakeIpFilter: lenientStringList(dict, key: "fake-ip-filter"),
+            fakeIpFilterMode: lenientString(dict, key: "fake-ip-filter-mode"),
+            fakeIpTtl: lenientInt(dict, key: "fake-ip-ttl"),
+            nameserverPolicy: lenientStringMap(dict, key: "nameserver-policy"),
+            nameserver: lenientStringList(dict, key: "nameserver"),
+            fallback: lenientStringList(dict, key: "fallback"),
+            fallbackLazyQuery: lenientBool(dict, key: "fallback-lazy-query"),
+            proxyServerNameserver: lenientStringList(dict, key: "proxy-server-nameserver"),
+            proxyServerNameserverPolicy: lenientStringMap(dict, key: "proxy-server-nameserver-policy"),
+            directNameserver: lenientStringList(dict, key: "direct-nameserver"),
+            directNameserverFollowPolicy: lenientBool(dict, key: "direct-nameserver-follow-policy"),
+            fallbackFilter: filter)
+        let unknown = dict.keys.filter { !dnsKeys.contains($0) }.sorted()
+        return (section == CustomDnsSection() ? nil : section, unknown)
+    }
+
+    private static let ntpKeys: Set<String> = [
+        "enable", "server", "port", "interval", "dialer-proxy", "write-to-system",
+    ]
+
+    private static func mapNtpSection(_ dict: [String: JSONValue]) -> (CustomNtpSection?, [String]) {
+        let section = CustomNtpSection(
+            enable: lenientBool(dict, key: "enable"),
+            server: lenientString(dict, key: "server"),
+            port: lenientInt(dict, key: "port"),
+            interval: lenientInt(dict, key: "interval"),
+            dialerProxy: lenientString(dict, key: "dialer-proxy"),
+            writeToSystem: lenientBool(dict, key: "write-to-system"))
+        let unknown = dict.keys.filter { !ntpKeys.contains($0) }.sorted()
+        return (section == CustomNtpSection() ? nil : section, unknown)
+    }
+
+    private static let snifferKeys: Set<String> = [
+        "enable", "override-destination", "force-dns-mapping", "parse-pure-ip",
+        "force-domain", "skip-domain", "skip-src-address", "skip-dst-address", "sniff",
+    ]
+
+    private static func mapSniffProtocol(_ dict: [String: JSONValue], key: String) -> SniffProtocolConfig {
+        let candidates = [key, key.lowercased()]
+        for candidate in candidates {
+            guard case .object(let proto) = dict[candidate] else { continue }
+            return SniffProtocolConfig(
+                ports: lenientStringList(proto, key: "ports") ?? [],
+                overrideDest: lenientBool(proto, key: "override-destination"))
+        }
+        return SniffProtocolConfig()
+    }
+
+    private static func mapSnifferSection(_ dict: [String: JSONValue]) -> (CustomSnifferSection?, [String]) {
+        var sniffHttp = SniffProtocolConfig()
+        var sniffTls = SniffProtocolConfig()
+        var sniffQuic = SniffProtocolConfig()
+        if case .object(let sniff) = dict["sniff"] {
+            sniffHttp = mapSniffProtocol(sniff, key: "HTTP")
+            sniffTls = mapSniffProtocol(sniff, key: "TLS")
+            sniffQuic = mapSniffProtocol(sniff, key: "QUIC")
+        }
+        let section = CustomSnifferSection(
+            enable: lenientBool(dict, key: "enable"),
+            overrideDestination: lenientBool(dict, key: "override-destination"),
+            forceDnsMapping: lenientBool(dict, key: "force-dns-mapping"),
+            parsePureIp: lenientBool(dict, key: "parse-pure-ip"),
+            forceDomain: lenientStringList(dict, key: "force-domain"),
+            skipDomain: lenientStringList(dict, key: "skip-domain"),
+            skipSrcAddress: lenientStringList(dict, key: "skip-src-address"),
+            skipDstAddress: lenientStringList(dict, key: "skip-dst-address"),
+            sniffHttp: sniffHttp, sniffTls: sniffTls, sniffQuic: sniffQuic)
+        let unknown = dict.keys.filter { !snifferKeys.contains($0) }.sorted()
+        return (section == CustomSnifferSection() ? nil : section, unknown)
+    }
+
+    private static let tunKeys: Set<String> = [
+        "enable", "stack", "mtu", "congestion-controller", "strict-route",
+        "route-address", "route-exclude-address", "dns-hijack", "udp-timeout",
+        "disable-icmp-forwarding", "gso", "include-interface",
+        "exclude-interface", "include-uid", "exclude-uid",
+        "exclude-src-port", "exclude-dst-port", "loopback-address",
+    ]
+
+    private static func mapTunSection(_ dict: [String: JSONValue]) -> (CustomTunSection?, [String]) {
+        let section = CustomTunSection(
+            enable: lenientBool(dict, key: "enable"),
+            stack: lenientString(dict, key: "stack"),
+            mtu: lenientInt(dict, key: "mtu"),
+            congestionController: lenientString(dict, key: "congestion-controller"),
+            strictRoute: lenientBool(dict, key: "strict-route"),
+            routeAddress: lenientStringList(dict, key: "route-address"),
+            routeExcludeAddress: lenientStringList(dict, key: "route-exclude-address"),
+            dnsHijack: lenientStringList(dict, key: "dns-hijack"),
+            udpTimeout: lenientInt(dict, key: "udp-timeout"),
+            disableIcmpForwarding: lenientBool(dict, key: "disable-icmp-forwarding"),
+            gso: lenientBool(dict, key: "gso"),
+            includeInterface: lenientStringList(dict, key: "include-interface"),
+            excludeInterface: lenientStringList(dict, key: "exclude-interface"),
+            includeUid: lenientIntList(dict, key: "include-uid"),
+            excludeUid: lenientIntList(dict, key: "exclude-uid"),
+            excludeSrcPort: lenientIntList(dict, key: "exclude-src-port"),
+            excludeDstPort: lenientIntList(dict, key: "exclude-dst-port"),
+            loopbackAddress: lenientStringList(dict, key: "loopback-address"))
+        let unknown = dict.keys.filter { !tunKeys.contains($0) }.sorted()
+        return (section == CustomTunSection() ? nil : section, unknown)
     }
 
     // MARK: - 字段读取（缺失给默认，类型不对报错）

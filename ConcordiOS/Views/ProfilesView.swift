@@ -6,11 +6,13 @@ import CoreImage
 // MARK: - Profiles (FlClash: lib/views/profiles/profiles.dart)
 //
 // FlClash structure, 1:1 where the iOS app has an equivalent:
-// AppBar [节点来源 globe, 可视化配置 sliders, 更新 sync (only when
-// profiles exist), 排序 sort (only when profiles exist), + addCircle
-// menu (only when profiles exist)]; body is an empty state
-// (NullStatus) or a grid of profile cards (LazyVGrid adaptive min
-// 300pt -> 1 column on a 390pt iPhone). Card tap = activate/select;
+// AppBar [更新 sync (only when profiles exist), 排序 sort (only
+// when profiles exist), + addCircle menu (only when profiles
+// exist)]; body is an empty state (NullStatus) or a grid of
+// profile cards (LazyVGrid adaptive min 300pt -> 1 column on a
+// 390pt iPhone). Upstream's AppBar also carries 节点来源 /
+// 可视化配置 entries, but add.dart has no such entries — ours
+// were removed in v0.2.146 (R-D3). Card tap = activate/select;
 // long-press = context menu (编辑 / 扩展 / 同步 (URL) / 更多 submenu /
 // 删除）. Reorder lives in its own sheet (配置排序）, never as
 // long-press-to-reorder on the page. The API-tool sections that used
@@ -118,6 +120,11 @@ struct ProfilesView: View {
     @State private var isUpdatingAll = false
     @State private var copyNotice: String?
     @State private var alertMessage: String?
+    /// The + menu's 文件 importer, kept alive so the age-key
+    /// prompt (below) can retry the same file with the key.
+    @State private var fileImporter: UnifiedImporter?
+    @State private var showAgeKeyPrompt = false
+    @State private var ageKeyInput = ""
 
     private var hasProfiles: Bool { !profileStore.profiles.isEmpty }
 
@@ -167,11 +174,12 @@ struct ProfilesView: View {
                         .font(.system(size: 24, weight: .bold))
                 }
                 if hasProfiles && !picker {
-                    // MuYu (v0.2.68): ONE capsule holding refresh +
-                    // sort, plus a SEPARATE ＋ circle button. The
-                    // globe (节点来源） and slider (可视化配置） move
-                    // into the ＋ menu (see addProfileMenuItems) —
-                    // no feature is lost.
+                    // Top bar holds only the refresh+sort capsule
+                    // and the ＋ button (upstream add.dart has no
+                    // 节点来源 / 可视化配置 entries — they were
+                    // removed from the ＋ menu in v0.2.146; the
+                    // destination views still exist and stay
+                    // reachable from their own links).
                     ToolbarItem(placement: .topBarTrailing) {
                         HStack(spacing: 4) {
                             Button { Task { await updateAll() } } label: {
@@ -303,6 +311,56 @@ struct ProfilesView: View {
             .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.yaml, UTType.plainText]) { result in
                 handlePickedFile(result)
             }
+            // Age-encrypted file import (upstream _withAgeSecretKey):
+            // the picked file needs its key before it can be
+            // decrypted. A sheet, not a third .alert on this view
+            // (two .alert modifiers already fight each other here).
+            .sheet(isPresented: $showAgeKeyPrompt) {
+                NavigationStack {
+                    Form {
+                        Section {
+                            SecureField("age 私钥", text: $ageKeyInput)
+                                .autocorrectionDisabled()
+                                .textInputAutocapitalization(.never)
+                        } header: {
+                            Text("该文件是 age 加密的")
+                        } footer: {
+                            Text("输入私钥解密后导入。私钥仅保存在本机（随订阅保存，用于以后更新）。")
+                                .font(.footnote)
+                        }
+                    }
+                    .navigationTitle("age 私钥")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("取消") {
+                                fileImporter?.pendingAgeFile = nil
+                                fileImporter = nil
+                                ageKeyInput = ""
+                                showAgeKeyPrompt = false
+                            }
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("导入") {
+                                let key = ageKeyInput
+                                ageKeyInput = ""
+                                showAgeKeyPrompt = false
+                                Task { @MainActor in
+                                    guard let importer = fileImporter,
+                                          let pending = importer.pendingAgeFile else { return }
+                                    await importer.importFileData(pending.data, fileName: pending.fileName, ageSecretKey: key)
+                                    if importer.results.allSatisfy({ !$0.succeeded }) {
+                                        alertMessage = importer.summaryText ?? "profiles.notice.importFailed".l10n
+                                    }
+                                    fileImporter = nil
+                                }
+                            }
+                            .disabled(ageKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                }
+                .formSheetChrome()
+            }
             .alert("profiles.rename.title".l10n, isPresented: Binding(
                 get: { renameTarget != nil },
                 set: { if !$0 { renameTarget = nil } }
@@ -371,17 +429,6 @@ struct ProfilesView: View {
 
     @ViewBuilder
     private var addProfileMenuItems: some View {
-        // v0.2.68 (MuYu): 节点来源 / 可视化配置 moved here from
-        // the top bar — the top bar now holds only the
-        // refresh+sort capsule and the ＋ button.
-        Button { navPath.append(.nodeSources) } label: {
-            Label("profiles.addMenu.nodeSource".l10n, systemImage: "globe")
-                .font(.subheadline)
-        }
-        Button { navPath.append(.visualConfig) } label: {
-            Label("profiles.addMenu.visual".l10n, systemImage: "slider.horizontal.3")
-                .font(.subheadline)
-        }
         Button { navPath.append(.scan) } label: {
             Label("profiles.addMenu.scan".l10n, systemImage: "qrcode.viewfinder")
                 .font(.subheadline)
@@ -772,7 +819,10 @@ struct ProfilesView: View {
     /// security-scoped URL, then reuse UnifiedImporter's file path
     /// (importFileData -> importYamlDocument -> addFromFile). A
     /// failed read or a failed import surfaces in an alert with the
-    /// importer's summary text — never swallowed silently.
+    /// importer's summary text — never swallowed silently. An
+    /// age-encrypted file opens the key prompt instead (the
+    /// importer keeps the pending file); no failure alert is
+    /// shown for that case.
     private func handlePickedFile(_ result: Result<URL, Error>) {
         switch result {
         case .success(let url):
@@ -786,8 +836,14 @@ struct ProfilesView: View {
                 return
             }
             let importer = UnifiedImporter(profileStore: profileStore)
+            fileImporter = importer
             Task { @MainActor in
                 await importer.importFileData(data, fileName: url.lastPathComponent)
+                if importer.pendingAgeFile != nil {
+                    showAgeKeyPrompt = true
+                    return
+                }
+                fileImporter = nil
                 if importer.results.allSatisfy({ !$0.succeeded }) {
                     alertMessage = importer.summaryText ?? "profiles.notice.importFailed".l10n
                 }

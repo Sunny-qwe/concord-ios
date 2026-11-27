@@ -158,7 +158,7 @@ final class ProxyStore: ObservableObject {
     /// @State closure — that cannot be the cause, a closure over
     /// @State still writes the shared storage. On-device the tap
     /// gesture itself never fired, which is why both card styles
-    /// are real Buttons now; see IconGroupCard / ListGroupCard.)
+    /// are real Buttons now; see IconGroupCard / ListGroupHeader.)
     @Published var expandedGroups: Set<String> = []
 
     func toggleExpanded(_ name: String) {
@@ -170,7 +170,7 @@ final class ProxyStore: ObservableObject {
         // On-device proof (v0.2.119 FIX 2): the v0.2.118 Button
         // conversion is only proven when a tap lands here. The
         // card Button records its own line (IconGroupCard /
-        // ListGroupCard tapAction), so "button fired" without this
+        // ListGroupHeader tapAction), so "button fired" without this
         // line means the action ran but the store never saw it.
         ProxyTapDiagnostics.record("toggleExpanded \(name) → \(expandedGroups.contains(name) ? "展开" : "收起")")
     }
@@ -194,37 +194,24 @@ final class ProxyStore: ObservableObject {
     /// test runs; without this the bolt tap shows nothing at all
     /// until the result lands, which reads as "no response").
     @Published var testingNodes: Set<String> = []
-    /// The reason the last delay test failed, if it failed. The
-    /// Proxies page shows this in its notice banner: testLatency
-    /// used to write only lastError, which no view on this page
-    /// reads, so every failure was total silence (v0.2.32).
-    @Published var testError: String?
-    /// Bumps on every (re-)set of testError, so the banner
-    /// re-appears even when the new failure text is identical to
-    /// the previous one (@Published only notifies on change — a
-    /// dismissed banner would otherwise never come back for the
-    /// same error, e.g. every tap failing with the same -2
-    /// channel message).
-    @Published var testErrorNonce = 0
-    /// True when testError is a GeoSeed failure (the MMDB could not
-    /// be seeded). The Proxies banner shows a retry button only in
-    /// that case: tapping it re-seeds immediately, bypassing the
-    /// 10-minute cool-down, instead of trapping the user (v0.2.35).
-    @Published var testErrorIsGeoSeed = false
-    /// The reason the last node switch failed AND was rolled back,
-    /// if it failed (v0.2.97 gap 4). The Proxies page shows this in
-    /// its notice banner, like testError: the old lastError write
-    /// was invisible on this page, so a refused switch left the
-    /// blue checkmark disagreeing with the core's actual node in
-    /// silence. Set only when the proxy.select RPC AND its 3 s
-    /// retry both fail; cleared when a later switch succeeds.
-    @Published var selectError: String?
-    /// Bumps on every (re-)set of selectError, so the banner
-    /// re-appears even when the new failure text is identical to
-    /// the previous one (same reason as testErrorNonce).
-    @Published var selectErrorNonce = 0
-    /// True while a banner retry re-seed is running (banner spinner).
-    @Published var isRetryingGeoSeed = false
+    /// Node names queued for a delay test but not yet started
+    /// (v0.2.146, P-D3 — rs.1 DelayTestPhase.queued, card.dart:
+    /// 360-372): a group run tests in batches of 32, so targets
+    /// past the first batch wait for their turn and show a clock
+    /// glyph until their batch starts. A batch's names leave the
+    /// queue when the batch starts; the run's tail clears the
+    /// remainder for its own targets.
+    @Published var queuedNodes: Set<String> = []
+    /// The delay map frozen at the last test batch's start (v0.2.146,
+    /// P-D13 — rs.1 delaysAtLastTestBatch, providers/state/proxies
+    /// .dart:61-73): hide-timeout reads THIS map, not the live
+    /// latencies, so nodes do not drop out one by one mid-test.
+    /// Keyed "group\u{1F}node" (a node name alone is not unique
+    /// across groups, and its delay can differ per test URL).
+    /// Refreshed when a batch starts (pre-run map) and again when
+    /// it ends (post-run map); empty before the first test, in
+    /// which case hide-timeout falls back to the live latencies.
+    @Published var delaysAtLastTestBatch: [String: Int32] = [:]
     /// True while the group list itself is loading (first load).
     @Published var isLoading = false
     @Published var lastError: String?
@@ -237,34 +224,42 @@ final class ProxyStore: ObservableObject {
     @Published var startError: String?
     @Published var lastUpdated: Date?
 
-    /// The delay test that most recently ran (or failed), so the
-    /// Proxies banner's GeoSeed retry can re-run exactly that test
-    /// once the files are seeded, instead of making the user tap
-    /// the bolt again (v0.2.35).
-    private enum LastTest {
-        case all
-        case group(ProxyGroup, nodeNames: [String]?)
-        case node(ProxyNode, testURL: String?)
-    }
-    private var lastTest: LastTest?
-
-    /// Records a delay-test failure for the banner: lastError and
-    /// testError carry the reason, and testErrorIsGeoSeed marks a
-    /// GeoSeed failure so the banner can offer its retry button.
+    /// Records a delay-test failure (v0.2.146, P-D12: the Proxies
+    /// banner that used to show testError is gone, so this now
+    /// writes only lastError, which the Dashboard reads — the
+    /// per-run diagnosis still goes to the Logs export via
+    /// AppCore.recordDelayTestReport).
     private func noteTestError(_ error: Error) {
         lastError = error.localizedDescription
-        testError = error.localizedDescription
-        testErrorIsGeoSeed = Self.isGeoSeedError(error)
-        testErrorNonce += 1
     }
 
     /// Same as noteTestError, for a channel failure that is not an
     /// Error (e.g. every node returning -2 — a value, not a throw).
     private func noteTestMessage(_ message: String) {
         lastError = message
-        testError = message
-        testErrorIsGeoSeed = false
-        testErrorNonce += 1
+    }
+
+    /// The delay map frozen for hide-timeout (P-D13): the resolved
+    /// per-node latencies as they stand right now, keyed
+    /// "group\u{1F}node". Callers snapshot before clearing a batch
+    /// and again when it lands.
+    private static func snapshotLatencies(from groups: [ProxyGroup]) -> [String: Int32] {
+        var out: [String: Int32] = [:]
+        for group in groups {
+            for node in group.nodes {
+                if let ms = node.latencyMs {
+                    out["\(group.name)\u{1F}\(node.name)"] = ms
+                }
+            }
+        }
+        return out
+    }
+
+    /// The frozen delay for one node row (P-D13): the value at the
+    /// last test batch's start (or end), nil when no batch has run
+    /// yet — the view then falls back to the live latency.
+    func latencyAtLastTestBatch(for nodeName: String, inGroup groupName: String) -> Int32? {
+        delaysAtLastTestBatch["\(groupName)\u{1F}\(nodeName)"]
     }
 
     /// True once any delay test has ever returned a positive
@@ -400,302 +395,6 @@ final class ProxyStore: ObservableObject {
         return formatter.string(from: date)
     }
 
-    private static func isGeoSeedError(_ error: Error) -> Bool {
-        guard let appError = error as? AppCoreError else { return false }
-        if case .geoSeedFailed = appError { return true }
-        return false
-    }
-
-    /// The two homes GeoSeed writes to: the app core's private home
-    /// (the one AppCore.ensureStarted checks) first, and, when
-    /// available, the App Group container the extension core reads.
-    /// Mirrors AppCore.homeDirectory — that helper is private to
-    /// AppCore, so the path is reproduced here.
-    private func geoSeedHomes() -> (appHome: URL, groupHome: URL?) {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let appHome = base.appendingPathComponent("ConcordAppCore", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appHome, withIntermediateDirectories: true)
-        let groupHome = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID)
-        return (appHome, groupHome)
-    }
-
-    /// Re-seeds the geo databases immediately and re-runs the test
-    /// that failed, for the Proxies banner's retry tap. The tap is
-    /// the user explicitly asking to try again NOW, so the
-    /// 10-minute cool-down is cleared in both homes and the seed
-    /// runs with ignoreCooldown (bundle copy first, network
-    /// fallback — GeoSeed). Returns false when there is no GeoSeed
-    /// failure to retry, or the MMDB is still missing afterwards:
-    /// the banner then keeps showing the honest reason.
-    @MainActor
-    func retryGeoSeedAndRetest() async -> Bool {
-        guard testErrorIsGeoSeed else { return false }
-        isRetryingGeoSeed = true
-        defer { isRetryingGeoSeed = false }
-        let (appHome, groupHome) = geoSeedHomes()
-        GeoSeed.clearCooldown(in: appHome)
-        let appReport = await GeoSeed.ensureGeoFiles(in: appHome, perFileTimeout: 30, ignoreCooldown: true)
-        if let groupHome {
-            GeoSeed.clearCooldown(in: groupHome)
-            _ = await GeoSeed.ensureGeoFiles(in: groupHome, perFileTimeout: 30, ignoreCooldown: true)
-        }
-        guard GeoSeed.isPresent(GeoSeed.mmdbFileName, in: appHome) else {
-            // Still missing: keep the honest reason — fresh from
-            // this retry when it produced one, otherwise the
-            // original banner text.
-            if let failure = appReport.failures.first(where: { $0.file == GeoSeed.mmdbFileName }) {
-                noteTestError(AppCoreError.geoSeedFailed(failure.error.localizedDescription))
-            } else if appReport.skippedByCooldown.contains(GeoSeed.mmdbFileName) {
-                noteTestError(AppCoreError.geoSeedFailed("上次下载失败不久（\(Int(GeoSeed.cooldownSeconds / 60)) 分钟内不再重试）"))
-            }
-            return false
-        }
-        // Seeded: clear the stale banner and re-run the test that
-        // failed. If the re-run fails again, noteTestError sets a
-        // fresh testError and the banner shows the new reason.
-        testError = nil
-        testErrorIsGeoSeed = false
-        await rerunLastTest()
-        return true
-    }
-
-    // MARK: - Rule-set repair (v0.2.46 ITEM 1)
-    //
-    // The Proxies banner's 修复 button: only when the current
-    // testError names a missing rule-set (AppCoreError
-    // .configApplyFailed — the core refused the WHOLE config
-    // because a rule references an undefined rule-set). Tapping
-    // builds a plan from the ACTIVE profile's YAML (ProfileStore:
-    // complete from sibling providers, else delete the
-    // referencing RULE-SET lines); the sheet shows the exact
-    // lines and the user confirms before anything is written.
-    // The write goes through ProfileStore.updateProfileFile (the
-    // normal update path: profile file + shared config.yaml +
-    // live apply when the tunnel runs); the re-apply is then
-    // verified — AppCore.ensureStarted while the VPN is off, a
-    // fresh delay test while it runs — and a further missing set
-    // named by the next error offers repair again from the same
-    // banner. Never automatic: no repair runs on boot, on
-    // update, or on any test — only this button, only after
-    // confirmation.
-
-    /// The missing rule-set name in the current banner error, if
-    /// it names one. Nil in sample mode (no real core) and for
-    /// every other failure — the 修复 button only appears for
-    /// this exact failure.
-    var missingRuleSetName: String? {
-        guard client.mode == .live, let message = testError else { return nil }
-        return ProfileStore.missingRuleSetName(from: message)
-    }
-
-    /// The repair-ALL plan awaiting confirmation in the sheet, if
-    /// any (v0.2.49: every missing rule set in one plan).
-    @Published var ruleSetRepairOffer: RuleSetRepairAllPlan?
-    /// The outcome of the last confirmed repair, shown INLINE in
-    /// the same sheet (v0.2.49): success, or the remaining problem
-    /// verbatim. Never re-pops the banner as if nothing happened.
-    @Published var ruleSetRepairOutcome: String?
-    /// True when the outcome above is a success.
-    @Published var ruleSetRepairOutcomeIsSuccess = false
-    /// True while a repair plan is being collected or a confirmed
-    /// repair is writing + re-applying.
-    @Published var isRepairingRuleSet = false
-    /// A repair attempt that could not build a plan (or found
-    /// nothing missing) reports HERE (v0.2.58) — never by writing
-    /// into testError: overwriting testError hid the TikTok error,
-    /// dropped the 修复 button (the new message no longer matches
-    /// the `rule set [...] not found` regex), and let the next
-    /// test bring the banner back. Rendered as its own dismissible
-    /// notice in ProxiesView; the TikTok error stays visible.
-    /// The notice names the profile it was raised on: refresh()
-    /// clears it when the active profile changes (v0.2.59:
-    /// IMG_1191 showed the 150G notice still on 顺畅网络 after
-    /// a switch). testError needs no such clearing — the new
-    /// profile's own test result replaces it.
-    @Published var repairNotice: String?
-    /// Profile the last refresh() ran for (non-nil calls only —
-    /// a nil refresh from another tab must not clear the notice).
-    private var lastRefreshProfileID: UUID?
-
-    /// One timestamped repair-attempt line for
-    /// AppCore.recordRepairAttempt (names only — never a
-    /// subscription URL or a token).
-    private static func repairAttemptLine(profileName: String, missingNames: [String], result: String) -> String {
-        let names = missingNames.isEmpty ? "未知" : missingNames.map { "「\($0)」" }.joined(separator: "、")
-        return "[\(reportTimestamp(Date()))] 修复尝试：订阅「\(profileName)」，缺失：\(names)，结果：\(result)"
-    }
-
-    /// Builds the repair-ALL plan for the banner's error and
-    /// presents the confirmation sheet. Never writes anything.
-    /// Async: the plan needs one core YAML-parse sanity check
-    /// (validateCandidateText), so the banner button calls this
-    /// in a Task; the missing-set discovery itself is textual.
-    @MainActor
-    func prepareRuleSetRepair() async {
-        guard let bannerMissing = missingRuleSetName, !isRepairingRuleSet else { return }
-        guard let store = profileStore, let profile = store.activeProfile else {
-            repairNotice = "没有已激活的订阅，无法修复缺失的规则集"
-            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: "未知订阅", missingNames: [bannerMissing], result: "没有已激活的订阅，未做任何修改"))
-            return
-        }
-        ruleSetRepairOutcome = nil
-        ruleSetRepairOutcomeIsSuccess = false
-        repairNotice = nil
-        isRepairingRuleSet = true
-        defer { isRepairingRuleSet = false }
-        // The banner's name goes in as coreReportedMissing: a set
-        // the text already defines is core-invisible (v0.2.58
-        // 150G/TikTok — the text detector alone finds nothing
-        // missing, so without the name the plan is nil and this
-        // branch reports "未找到缺失的规则集"). With the name the
-        // plan offers deleting the referencing rule(s) instead.
-        guard let plan = await store.ruleSetRepairAllPlan(for: profile, coreReportedMissing: bannerMissing) else {
-            // No plan — and the diagnosis must survive: the old
-            // noteTestMessage here overwrote testError, which hid
-            // the TikTok error and its 修复 button.
-            repairNotice = "未能生成修复方案：当前订阅「\(profile.name)」没有找到缺失的规则集（或文件无法读取），未做任何修改。原来的报错还在上面，可以再点一次「修复」重试。"
-            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: [bannerMissing], result: "未找到缺失的规则集，未做任何修改"))
-            return
-        }
-        ruleSetRepairOffer = plan
-        AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: plan.items.map { $0.missingName }, result: "已生成修复方案，等待确认"))
-    }
-
-    /// Dismisses the repair sheet (clears the offer and the inline
-    /// outcome). Called by the sheet's 取消 / 完成 buttons.
-    @MainActor
-    func dismissRuleSetRepair() {
-        ruleSetRepairOffer = nil
-        ruleSetRepairOutcome = nil
-        ruleSetRepairOutcomeIsSuccess = false
-    }
-
-    /// Applies the confirmed repair-ALL plan, then re-applies +
-    /// re-tests. The sheet stays open: the outcome is written
-    /// INLINE into the sheet (ruleSetRepairOutcome) — a remaining
-    /// problem is shown there, never as a fresh banner pop. The
-    /// offer is NOT cleared here; the sheet's 完成 button
-    /// dismisses it.
-    @MainActor
-    func confirmRuleSetRepair() async {
-        guard let offer = ruleSetRepairOffer, !isRepairingRuleSet else { return }
-        guard offer.isRepairable, let offerText = offer.newText else {
-            // Unrepairable plans have no confirm button; this
-            // only fires if the sheet is dismissed another way.
-            return
-        }
-        guard let store = profileStore, let profile = store.activeProfile else {
-            ruleSetRepairOutcome = "没有已激活的订阅，无法修复"
-            ruleSetRepairOutcomeIsSuccess = false
-            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: "未知订阅", missingNames: offer.items.map { $0.missingName }, result: "没有已激活的订阅，未做任何修改"))
-            return
-        }
-        isRepairingRuleSet = true
-        defer { isRepairingRuleSet = false }
-        // Re-collect fresh: the file may have changed since the
-        // offer was built (subscription update, another edit). A
-        // plan that no longer matches is refused, never written
-        // stale — the refusal is shown inline in the sheet.
-        // The same core-reported name goes in again: the offer was
-        // built with it, so a fresh plan without it would differ
-        // (an invisible set would drop out) and be refused as a
-        // stale change. testError is still the original error
-        // here — no re-test runs until after the write.
-        guard let fresh = await store.ruleSetRepairAllPlan(for: profile, coreReportedMissing: missingRuleSetName),
-              fresh.isRepairable,
-              fresh.newText == offerText,
-              fresh.items.map({ $0.missingName }) == offer.items.map({ $0.missingName }) else {
-            ruleSetRepairOutcome = "配置文件在确认前已变化，请关闭后重新点「修复」再确认"
-            ruleSetRepairOutcomeIsSuccess = false
-            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: offer.items.map { $0.missingName }, result: "配置文件在确认前已变化，未写入"))
-            return
-        }
-        let missingNames = offer.items.map { $0.missingName }
-        // Bake-source rules must go from the subscription BEFORE
-        // the file is written: updateProfileFile re-bakes the
-        // subscription into the shared config on apply, so a
-        // file-only delete would be resurrected on the next
-        // switch / update. Only .delete items are removed from
-        // the store — a .complete item's rule stays, its provider
-        // is now defined. (The old noteTestMessage("正在修复…")
-        // here is gone: it overwrote testError with a progress
-        // line, hiding the original diagnosis; the sheet's own
-        // spinner shows progress instead.)
-        let deleteNames = offer.items.filter { if case .delete = $0.kind { return true }; return false }.map { $0.missingName }
-        let bakeRemovals = store.removeBakedRuleSetRules(deleteNames, for: profile)
-        let bakeRemovalNote = bakeRemovals.map { "同时从自定义订阅「\($0.subscriptionName)」删除了引用「\($0.name)」的 \($0.removedCount) 条规则，下次切换或更新不会再补回来。" }.joined(separator: "")
-        guard let newData = offerText.data(using: .utf8) else {
-            ruleSetRepairOutcome = "修复内容不是有效的 UTF-8 文本，无法写入"
-            ruleSetRepairOutcomeIsSuccess = false
-            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "修复内容不是有效的 UTF-8 文本，未写入"))
-            return
-        }
-        // The normal update path: sanity check + profile file +
-        // shared config.yaml + live apply when the tunnel runs.
-        // lastError carries a live-apply / validate refusal
-        // verbatim; nil means the write + apply succeeded.
-        await store.updateProfileFile(profile, data: newData)
-        if let failure = store.lastError {
-            ruleSetRepairOutcome = failure + (bakeRemovalNote.isEmpty ? "" : "（\(bakeRemovalNote)）")
-            ruleSetRepairOutcomeIsSuccess = false
-            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "写入或应用失败：\(failure)" + (bakeRemovalNote.isEmpty ? "" : "；\(bakeRemovalNote)")))
-            return
-        }
-        if TunnelManager.shared.isRunning {
-            // Live apply already succeeded inside
-            // updateProfileFile; verify end to end with the test
-            // that failed.
-            await rerunLastTest()
-            if testError == nil {
-                ruleSetRepairOutcome = offer.successMessage + bakeRemovalNote
-                ruleSetRepairOutcomeIsSuccess = true
-                AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "已修复并重新应用，测速已恢复" + (bakeRemovalNote.isEmpty ? "" : "；\(bakeRemovalNote)")))
-            } else if let error = testError {
-                ruleSetRepairOutcome = "配置已修复并应用，但测速仍有问题：\(error)"
-                ruleSetRepairOutcomeIsSuccess = false
-                AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "配置已修复并应用，但测速仍有问题：\(error)"))
-            }
-            return
-        }
-        // VPN off: the app-side core is the one that refused the
-        // config — re-apply on it now (it restarts on the changed
-        // shared config.yaml). A refusal is shown inline;
-        // success re-runs the failed test.
-        do {
-            try await AppCore.shared.ensureStarted()
-        } catch {
-            noteTestError(error)
-            ruleSetRepairOutcome = error.localizedDescription
-            ruleSetRepairOutcomeIsSuccess = false
-            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "配置已写入，但重新启动核心失败：\(error.localizedDescription)"))
-            return
-        }
-        await rerunLastTest()
-        if testError == nil {
-            ruleSetRepairOutcome = offer.successMessage + bakeRemovalNote
-            ruleSetRepairOutcomeIsSuccess = true
-            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "已修复并重新应用，测速已恢复" + (bakeRemovalNote.isEmpty ? "" : "；\(bakeRemovalNote)")))
-        } else if let error = testError {
-            ruleSetRepairOutcome = "配置已修复并应用，但测速仍有问题：\(error)"
-            ruleSetRepairOutcomeIsSuccess = false
-            AppCore.recordRepairAttempt(Self.repairAttemptLine(profileName: profile.name, missingNames: missingNames, result: "配置已修复并应用，但测速仍有问题：\(error)"))
-        }
-    }
-
-    private func rerunLastTest() async {
-        switch lastTest {
-        case .all:
-            await testLatency()
-        case .group(let group, let nodeNames):
-            await testLatency(group: group, nodeNames: nodeNames)
-        case .node(let node, let testURL):
-            await testLatency(node: node, testURL: testURL)
-        case nil:
-            break
-        }
-    }
 
     /// True when the group list on screen comes from the active
     /// profile's LOCAL YAML instead of the core (VPN off — the core
@@ -879,15 +578,6 @@ final class ProxyStore: ObservableObject {
 
     @MainActor
     func refresh(activeProfile: Profile? = nil) async {
-        // A repair notice names the profile it was raised on: a
-        // switch makes it stale (v0.2.58 IMG_1191 — the 150G
-        // notice was still showing on 顺畅网络). Clear it on the
-        // switch only; a nil refresh (another tab's onAppear) or
-        // a pull-to-refresh on the same profile keeps it.
-        if let id = activeProfile?.id, id != lastRefreshProfileID {
-            repairNotice = nil
-            lastRefreshProfileID = id
-        }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -1177,18 +867,18 @@ final class ProxyStore: ObservableObject {
     /// Rolls back a pending selection the core refused twice
     /// (v0.2.97 gap 4): restores the pre-pick local values, drops
     /// the pending so fetchCoreGroups stops preferring it over the
-    /// core's actual pick, and surfaces a visible message on the
-    /// Proxies page. The caller (applyPendingSelections) re-fetches
-    /// the core groups afterwards, so the display ends
-    /// core-confirmed even when no pre-pick was captured (e.g. the
-    /// app restarted after the tap) — dropping the pending alone
-    /// already lets the core's actual pick show.
+    /// core's actual pick, and records the reason in lastError
+    /// (shown on the Dashboard; v0.2.146 P-D12 removed the Proxies
+    /// banner that used to show it). The caller
+    /// (applyPendingSelections) re-fetches the core groups
+    /// afterwards, so the display ends core-confirmed even when no
+    /// pre-pick was captured (e.g. the app restarted after the
+    /// tap) — dropping the pending alone already lets the core's
+    /// actual pick show.
     private func rollbackFailedSelection(profileID: UUID, group: String, error: Error) {
         restorePreviousPick(profileID: profileID, group: group)
         dropPendingSelection(profileID: profileID, group: group)
-        lastError = error.localizedDescription
-        selectError = "「\(group)」切换失败，已恢复原来的节点"
-        selectErrorNonce += 1
+        lastError = "「\(group)」切换失败，已恢复原来的节点：\(error.localizedDescription)"
     }
 
     /// Applies off-VPN selections now that the tunnel is up (audit
@@ -1298,10 +988,26 @@ final class ProxyStore: ObservableObject {
     /// on and every tap rolled back to 自动选择. VPN off: the
     /// in-app core's RPC, which works. Returns whether the core
     /// applied a change (the controller's 204 counts as changed).
-    /// Note: the controller's select rejects Smart groups (400),
-    /// which the RPC accepts — but the RPC is dead with VPN on
-    /// anyway, so Smart selection with VPN on was already
-    /// impossible; no regression.
+    /// Smart groups (v0.2.146 P-D7, verified against the pinned
+    /// core chen08209/concord@382aeab): the controller's select
+    /// ACCEPTS them — its gate (routes.rs: kind == "Selector" ||
+    /// fixed.is_some()) passes because GroupView.fixed is Some("")
+    /// for Smart (views.rs), and Group::is_selectable() includes
+    /// Policy::Smart (group.rs); engine.select_as applies no
+    /// Origin restriction. The v0.2.131 note that the controller
+    /// "rejects Smart groups (400)" does NOT reproduce from the
+    /// pinned core source: the select path is identical at the
+    /// v0.2.131 pin (33904fff) and at 382aeab, and the core's own
+    /// test selects a Smart group successfully. No core patch is
+    /// warranted (a patch 11 would change nothing the pinned
+    /// source does not already do). The v0.2.131 400 was most
+    /// likely a member-not-loaded 400 ("proxy not exist": the
+    /// tapped node was not yet in the core's member list) or a
+    /// stale extension core — the Swift side records only the
+    /// status code, never the controller's error body, so the two
+    /// cannot be told apart after the fact. Smart selection with
+    /// VPN on still needs an on-device tap to confirm it sticks;
+    /// until then the honest rollback behaviour stays.
     private func selectProxy(group: String, proxy: String) async throws -> Bool {
         if isRunning {
             try await TunnelController.selectProxy(group: group, proxy: proxy)
@@ -1309,6 +1015,14 @@ final class ProxyStore: ObservableObject {
         }
         return try await client.proxySelect(group: group, proxy: proxy).changed
     }
+
+    /// Per-group debounce tasks for node selection (v0.2.146
+    /// P-D8): one Task per group name, cancelled and replaced on
+    /// each new tap for that group. Entries are left in place
+    /// after completion (at most one per group) — Task is a struct
+    /// with no identity, so a finishing task cannot safely remove
+    /// only its own entry without risking a newer task's.
+    private var selectDebounceTasks: [String: Task<Void, Never>] = [:]
 
     @MainActor
     private func applySelect(group: ProxyGroup, proxy: String, profileID: UUID? = nil) async -> String? {
@@ -1330,9 +1044,42 @@ final class ProxyStore: ObservableObject {
             savePendingSelection(profileID: profileID, group: group.name, proxy: proxy)
             // v0.2.97 gap 4: remember what the group showed before
             // this tap, so a double failure can put it back.
-            savePreviousPick(profileID: profileID, group: group)
+            // putIfAbsent (rs.1 _pendingSelectedRollback): a tap
+            // while a debounced call is still pending must NOT
+            // overwrite the pre-tap value, or a rollback would
+            // restore the middle tap instead of the original pick.
+            if previousPicks[profileID.uuidString]?[group.name] == nil {
+                savePreviousPick(profileID: profileID, group: group)
+            }
         }
         applyLocalPick(group: group, proxy: proxy)
+        // v0.2.146 P-D8 (rs.1 changeProxyDebounce, lib/common/
+        // function.dart Debouncer, 600 ms): rapid taps on the
+        // same group coalesce — only the last tap reaches the
+        // core. The local pick above already moved, so the UI
+        // stays responsive; the debounced call runs on a per-group
+        // Task, so a tap on another group is not delayed by this
+        // one. The return value is always nil (the old code
+        // returned nil on every path for selectable groups); the
+        // core result surfaces through lastError / rollback.
+        selectDebounceTasks[group.name]?.cancel()
+        let task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard let self, !Task.isCancelled else { return }
+            await self.performSelect(group: group, proxy: proxy, profileID: profileID, previousOutbound: previousOutbound)
+        }
+        selectDebounceTasks[group.name] = task
+        return nil
+    }
+
+    /// The debounced half of applySelect: the actual core call
+    /// for one (group, proxy) pick, plus the post-apply refresh,
+    /// network reset, outbound-changed probe, and the offline /
+    /// failure handling (3 s retry, then rollback). Runs 600 ms
+    /// after the tap that scheduled it, unless a newer tap on
+    /// the same group cancelled it first.
+    @MainActor
+    private func performSelect(group: ProxyGroup, proxy: String, profileID: UUID? = nil, previousOutbound: String?) async {
         do {
             let changed = try await selectProxy(group: group.name, proxy: proxy)
             if changed {
@@ -1357,7 +1104,6 @@ final class ProxyStore: ObservableObject {
                 try? await client.networkReset()
             }
             lastError = nil
-            selectError = nil
             // v0.2.86 item 16: the selected outbound changed — the
             // service checks re-probe immediately through the new
             // outbound (no backoff, no throttle). Live path only:
@@ -1367,7 +1113,6 @@ final class ProxyStore: ObservableObject {
             if selectedOutbound != previousOutbound, let outbound = selectedOutbound {
                 Task { await serviceProbeStore?.outboundChanged(proxy: outbound) }
             }
-            return nil
         } catch {
             if !isRunning {
                 // Offline: the core is unreachable; the choice is
@@ -1375,7 +1120,7 @@ final class ProxyStore: ObservableObject {
                 // the tap visibly takes effect and the pick is
                 // applied when the tunnel connects.
                 lastError = nil
-                return nil
+                return
             }
             // VPN on but the RPC failed (core not ready yet): keep
             // the optimistic pick and the pending selection, and
@@ -1391,7 +1136,6 @@ final class ProxyStore: ObservableObject {
                     await applyPendingSelections(profileID: profileID, rollbackGroups: [group.name])
                 }
             }
-            return nil
         }
     }
 
@@ -1555,27 +1299,31 @@ final class ProxyStore: ObservableObject {
     /// records -2 for that node and, after 3 such throws, stops
     /// the run — a throw means the backend is down, not that the
     /// node failed; only a returned value of -2 marks a dead node.
+    /// `nodeNames`, when given, restricts the test to those nodes
+    /// (the Proxies page passes the search-matching names while
+    /// searching — FlClash delayTestPageGroup(matchSearch: true)
+    /// tests only search matches; v0.2.146 P-F2).
     @MainActor
-    func testLatency() async {
+    func testLatency(nodeNames: [String]? = nil) async {
         // Direct mode shows no groups (MuYu providers/state/
         // proxies.dart:10), so there is nothing to test: return
-        // before touching lastTest / the report, so a bolt tap in
+        // before touching the report, so a bolt tap in
         // direct mode is a silent no-op instead of a confusing
         // empty diagnosis. In rule mode displayGroups is exactly
         // the old fetched list, so the tested set is unchanged.
         guard (settingsStore?.mode ?? .rule) != .direct else { return }
-        lastTest = .all
         // Every member of every group, resolved to the real node
         // FlClash would dial (nested groups -> their current pick,
         // audit B3) with that pick's test URL (audit B24 fallback
         // included). DIRECT is dial-tested like any other node
         // (audit B2): only a name that parses empty is skipped.
         // Targets dedupe on (testUrl, real name), as upstream does.
+        let names = nodeNames.map { Set($0) }
         var seen = Set<DelayTarget>()
         var targets: [DelayTarget] = []
         for group in displayGroups {
             let fallback = effectiveTestURL(for: group)
-            for node in group.nodes {
+            for node in group.nodes where names == nil || names!.contains(node.name) {
                 guard let target = resolveDelayTarget(memberName: node.name, fallbackTestUrl: fallback),
                       seen.insert(target).inserted else { continue }
                 targets.append(target)
@@ -1592,7 +1340,6 @@ final class ProxyStore: ObservableObject {
     /// searching — FlClash tests only search matches).
     @MainActor
     func testLatency(group: ProxyGroup, nodeNames: [String]? = nil) async {
-        lastTest = .group(group, nodeNames: nodeNames)
         let names = nodeNames.map { Set($0) }
         let fallback = effectiveTestURL(for: group)
         var seen = Set<DelayTarget>()
@@ -1620,6 +1367,17 @@ final class ProxyStore: ObservableObject {
         case value(DelayTarget, Int32)
         case guardTimedOut(DelayTarget)
         case transportFailed(DelayTarget, String)
+
+        /// The target every case carries (P-D3: the running-set
+        /// cleanup after each outcome needs the name without
+        /// re-matching the case).
+        var target: DelayTarget {
+            switch self {
+            case .value(let target, _): return target
+            case .guardTimedOut(let target): return target
+            case .transportFailed(let target, _): return target
+            }
+        }
     }
 
     /// A transport failure re-wrapped for the banner (the message
@@ -2024,11 +1782,10 @@ final class ProxyStore: ObservableObject {
     /// actions/proxies.dart _runDelayTests, :405-445): every target
     /// gets exactly ONE delay.test call (timeout = the settings
     /// delayTestTimeout, default 8000 ms — constant.dart:60), run
-    /// in parallel with at most delayTestBatchSize (32) in flight
-    /// (upstream caps iOS at 2 — TaskPool maxConcurrentDelayTests
-    /// = 2, constant.dart:99; see the note below), each
-    /// call guarded by a 30 s outer timeout (delayTestGuardDuration,
-    /// constant.dart:62, applied in lib/core/interface.dart:195).
+    /// in parallel with at most delayTestBatchSize (32) in flight,
+    /// each call guarded by a 30 s outer timeout
+    /// (delayTestGuardDuration, constant.dart:62, applied in
+    /// lib/core/interface.dart:195).
     /// There is deliberately NO delay.run batch here any more (B2
     /// second version): the batch event stream is an extra failure
     /// surface on the in-app core and upstream never uses it for
@@ -2046,14 +1803,14 @@ final class ProxyStore: ObservableObject {
     /// answer after the retries, never because the run stopped.
     /// How many delay.test calls run at once (v0.2.64, user
     /// direction 2026-11-22: "一次测多少个改的和上游一样"):
-    /// upstream FlClash caps iOS at 2 but runs 32 on
-    /// Windows/Android (lib/common/constant.dart:99:
-    /// maxConcurrentDelayTests = Platform.isIOS ? 2 : 32,
-    /// TaskPool in providers/actions/proxies.dart:30). 2 made a
-    /// 43-node run take ~9 minutes (log 2026-11-22 18:44:
-    /// 566 s) while fast nodes waited behind slow ones; 32
-    /// matches the upstream Windows/Android behaviour the user
-    /// asked for. The per-outcome applyLatencies() streaming
+    /// upstream FlClash runs 32 on every platform
+    /// (lib/common/constant.dart:143: maxConcurrentDelayTests =
+    /// 32, flat — no Platform.isIOS branch; MuYu constant.dart:111
+    /// agrees). An earlier comment here claimed upstream "caps iOS
+    /// at 2" — wrong on both trees (v0.2.146 P-D6); 32 was always
+    /// the right value, and the 2-wide run that took ~9 minutes
+    /// for 43 nodes (log 2026-11-22 18:44: 566 s) was ours, not
+    /// upstream's. The per-outcome applyLatencies() streaming
     /// (same version) shows each result as it lands.
     private static let delayTestBatchSize = 32
     /// Retry pass for transport failures (v0.2.133): small batches
@@ -2230,13 +1987,18 @@ final class ProxyStore: ObservableObject {
             noteTestError(error)
             return
         }
+        // P-D13: freeze the delay map BEFORE clearing, so
+        // hide-timeout reads the pre-run map while this run is in
+        // flight (rs.1 delaysAtLastTestBatch); the post-run map is
+        // frozen again at the tail. The snapshot is taken from
+        // `groups` (the display list applyLatencies rebuilds).
+        delaysAtLastTestBatch = Self.snapshotLatencies(from: groups)
         clearLatencies(for: targets)
         applyLatencies()
-        // A new test supersedes the old failure: clear the banner
-        // now, so a stale GeoIP error does not linger while the new
+        // A new test supersedes the old failure: clear lastError
+        // now, so a stale failure does not linger while the new
         // run is in flight (a fresh failure re-sets it below).
-        testError = nil
-        testErrorIsGeoSeed = false
+        lastError = nil
         // Backend: the extension's core while the VPN runs; the
         // app-side core (AppCore) while it is off; the sample
         // transport in sample mode. When the VPN is off and the
@@ -2290,15 +2052,27 @@ final class ProxyStore: ObservableObject {
         // between can leave the test core stale.
         unifiedDelayDiagnostic = await unifiedDelayDiagnosticLine(useAppCore: useAppCore)
         // One delay.test per target, at most delayTestBatchSize in
-        // flight (see the constant above for why 10, not
-        // upstream's iOS cap of 2). Each call carries the settings
-        // timeout and the 30 s guard; see runOneDelayTest.
+        // flight (see the constant above: 32 on every platform).
+        // Each call carries the settings timeout and the 30 s
+        // guard; see runOneDelayTest.
+        // P-D3: every target is queued until its batch starts
+        // (rs.1 DelayTestPhase.queued — a clock glyph, not a
+        // spinner); a batch's names leave the queue and enter
+        // testingNodes when the batch starts, and leave
+        // testingNodes as each outcome lands.
+        queuedNodes.formUnion(targets.map { $0.proxyName })
         var firstTransportError: Error?
         var index = 0
         let loopStart = Date()
         while index < targets.count {
             let batch = Array(targets[index..<min(index + Self.delayTestBatchSize, targets.count)])
             index += batch.count
+            // P-D3: this batch starts now — out of the queue, into
+            // the running set (spinner).
+            for target in batch {
+                queuedNodes.remove(target.proxyName)
+                testingNodes.insert(target.proxyName)
+            }
             await withTaskGroup(of: DelayTargetOutcome.self) { group in
                 for target in batch {
                     group.addTask { await self.runOneDelayTest(target: target, useAppCore: useAppCore) }
@@ -2322,6 +2096,9 @@ final class ProxyStore: ObservableObject {
                         transportFailedTargets.append(target)
                         if firstTransportError == nil { firstTransportError = DelayTransportFailure(message: message) }
                     }
+                    // P-D3: the outcome landed — no longer running
+                    // (the result itself now shows in the chip).
+                    testingNodes.remove(outcome.target.proxyName)
                     // Stream results: recordLatency only writes the
                     // dictionaries — the page reads groups, which
                     // applyLatencies() rebuilds — so without this a
@@ -2384,6 +2161,9 @@ final class ProxyStore: ObservableObject {
                                 // once more in the next pass, if any.
                                 stillFailing.append(target)
                             }
+                            // P-D3: the outcome landed — no longer
+                            // running (same as the main loop above).
+                            testingNodes.remove(outcome.target.proxyName)
                             applyLatencies()
                         }
                     }
@@ -2410,13 +2190,23 @@ final class ProxyStore: ObservableObject {
             }
         }
         if okCount > 0 { everDelaySucceeded = true }
+        // P-D13: the run landed — freeze the post-run map for
+        // hide-timeout, and clear this run's phase entries (the
+        // defer only writes the report; the sets belong to the
+        // runs that filled them — subtract only this run's
+        // targets, so a concurrent run for other groups keeps
+        // its queued/running entries).
+        delaysAtLastTestBatch = Self.snapshotLatencies(from: groups)
+        queuedNodes.subtract(targets.map { $0.proxyName })
+        testingNodes.subtract(targets.map { $0.proxyName })
         // Failure handling, FlClash _runDelayTest (:449-458): only a
         // dead core cancels the job. A transport throw is never a
         // dead node (urltest.rs test_delay returns -2, it never
         // throws) — the run finishes every target and retries the
         // transport-failed ones (v0.2.133), so any -2 left here
-        // really did not answer. The banner carries the transport
-        // reason instead of silence.
+        // really did not answer. lastError carries the transport
+        // reason instead of silence (the Proxies banner is gone
+        // in v0.2.146 P-D12; the Dashboard shows lastError).
         if transportThrowCount > 0, let firstTransportError {
             noteTestError(firstTransportError)
             channelNote = "传输层失败 \(transportThrowCount) 个节点（已重试，仍未返回）：\(firstTransportError.localizedDescription)"
@@ -2436,17 +2226,17 @@ final class ProxyStore: ObservableObject {
             if case .stillMissing = preload {
                 // The preload already explained why, with the
                 // provider.update error verbatim — keep that instead
-                // of the generic membership verdict below. (The
-                // banner was set at preload time; the validate
-                // hint is appended to it + the report line here.)
+                // of the generic membership verdict below. (lastError
+                // was set at preload time; the validate hint is
+                // appended to it + the report line here.)
                 channelNote = preloadNote.map { $0 + validateSuffix }
-                if !validateSuffix.isEmpty, let banner = testError {
+                if !validateSuffix.isEmpty, let banner = lastError {
                     noteTestMessage(banner + validateSuffix)
                 }
             } else {
                 // Channel failure vs dead nodes: -2 is a VALUE, never a
                 // throw, so a run where every node fails -2 never set
-                // testError — the page showed red cards and total silence
+                // lastError — the page showed red cards and total silence
                 // (IMG_1145). Upstream returns -2 for a name that is not
                 // part of the applied config (urltest.rs test_delay), which
                 // is exactly what happens when the subscription's provider
@@ -2491,10 +2281,10 @@ final class ProxyStore: ObservableObject {
     /// core when the VPN is off; runs through the same per-target
     /// path as the all-groups test (runOneDelayTest: settings timeout +
     /// 30 s guard) and the same provider preload first. A transport
-    /// failure only sets lastError/testError and marks the chip
+    /// failure only sets lastError and marks the chip
     /// failed (-2), never silent; a guard timeout shows as 超时
     /// (-1). A nested group with no current pick cannot be dialled:
-    /// the chip stays untested and the banner says why.
+    /// the chip stays untested and lastError says why.
     @MainActor
     func testLatency(node: ProxyNode, testURL: String? = nil) async {
         let startedAt = Date()
@@ -2524,9 +2314,7 @@ final class ProxyStore: ObservableObject {
         }
         testingNodes.insert(node.name)
         testingNodesStartedAt[node.name] = startedAt
-        testError = nil
-        testErrorIsGeoSeed = false
-        lastTest = .node(node, testURL: testURL)
+        lastError = nil
         defer {
             testingNodes.remove(node.name)
             testingNodesStartedAt.removeValue(forKey: node.name)
@@ -2535,7 +2323,6 @@ final class ProxyStore: ObservableObject {
         guard let target = resolveDelayTarget(memberName: node.name, fallbackTestUrl: fallbackURL) else {
             let reason = "该节点当前没有可测速的真实节点（策略组未选择节点）"
             lastError = reason
-            testError = reason
             // v0.2.48: the group path writes a fresh report on
             // every exit — do the same here, so this tap does not
             // leave a stale card either.
@@ -2552,6 +2339,9 @@ final class ProxyStore: ObservableObject {
             AppCore.recordDelayTestReport("单节点未测速：\(error.localizedDescription)")
             return
         }
+        // P-D13: freeze the pre-test map (same as the group path),
+        // so hide-timeout keeps the old value while this chip tests.
+        delaysAtLastTestBatch = Self.snapshotLatencies(from: groups)
         clearLatencies(for: [target])
         applyLatencies()
         let useAppCore = client.mode == .live && !TunnelManager.shared.isRunning
@@ -2607,7 +2397,7 @@ final class ProxyStore: ObservableObject {
             if value > 0 { everDelaySucceeded = true }
             let resultText = value > 0 ? "成功 \(value)ms" : value == -1 ? "超时(-1)" : "失败(-2)"
             var extra: [String] = []
-            if value == -2, client.mode == .live, testError == nil {
+            if value == -2, client.mode == .live, lastError == nil {
                 // A single -2 is usually a dead node — except when
                 // the name is not in the loaded config at all
                 // (provider never loaded), which is a channel
@@ -2625,7 +2415,7 @@ final class ProxyStore: ObservableObject {
                     // the provider list is non-empty or validate
                     // finds no issue.
                     if let hint = await validateHintIfProvidersEmpty(useAppCore: useAppCore) {
-                        if let banner = testError {
+                        if let banner = lastError {
                             noteTestMessage(banner + "（\(hint)）")
                         }
                         extra.append(hint)
@@ -2640,7 +2430,7 @@ final class ProxyStore: ObservableObject {
         case .transportFailed(_, let message):
             // A throw is a transport failure, never a dead node —
             // but the chip still shows as failed (-2) instead of
-            // silently untested, and the banner carries the real
+            // silently untested, and lastError carries the real
             // reason.
             recordLatency(name: target.proxyName, url: target.testUrl, value: -2)
             applyLatencies()
@@ -2648,6 +2438,8 @@ final class ProxyStore: ObservableObject {
             noteTestError(error)
             writeReport(resultLine: "调用失败：\(message)", preloadNote: preloadNote)
         }
+        // P-D13: the outcome landed — freeze the post-test map.
+        delaysAtLastTestBatch = Self.snapshotLatencies(from: groups)
     }
 
     private func applyLatencies() {
@@ -2668,34 +2460,6 @@ final class ProxyStore: ObservableObject {
             }
             return g
         }
-    }
-
-    /// Full node detail for the detail sheet: the configured definition
-    /// (proxy.definition, open JSON) and the live state (proxy.states:
-    /// alive / UDP / delay history). Either may be absent — the sheet
-    /// shows what it got and says what it did not.
-    struct NodeDetail {
-        var definition: JSONValue?
-        var state: ConcordProxyState?
-        var error: String?
-    }
-
-    @MainActor
-    func fetchNodeDetail(name: String) async -> NodeDetail {
-        var detail = NodeDetail()
-        do {
-            detail.definition = try await client.proxyDefinition(name: name)
-        } catch {
-            detail.error = "读取节点配置失败：\(error.localizedDescription)"
-        }
-        do {
-            detail.state = try await client.proxyStates(names: [name]).first
-        } catch {
-            if detail.error == nil {
-                detail.error = "读取节点状态失败：\(error.localizedDescription)"
-            }
-        }
-        return detail
     }
 
     // Engine lifecycle.

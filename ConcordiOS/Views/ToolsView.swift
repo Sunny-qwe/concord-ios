@@ -5,10 +5,12 @@ import SwiftUI
 // The reference Tools page is three plain white cards with grey
 // outline icons and 17pt semibold titles — no coloured tiles, no
 // subtitles:
-//   (no header)  请求 / DNS查询 / 资源 / 日志（v0.2.68 起仅当
+//   (no header)  请求 / 资源 / 日志（v0.2.68 起仅当
 //                常规 -> 日志捕获 开启时显示，见 SettingsStore.openLogs；
 //                v0.2.40–v0.2.67 曾始终显示，因用户找不到日志入口——
 //                恢复开关后默认关闭会再次隐藏入口，见 ToolsView 日志行注释）
+//                DNS查询不是独立入口：上游没有独立的 DNS 页，DNS 是
+//                请求页的一个分段（v0.2.146, 见 ConnectionsView）。
 //   设置         语言（值 "默认"）/ 主题 / 备份与恢复 / 进阶配置 /
 //                常规 — exactly upstream tools.dart _getSettingList
 //                on iOS (Locale / Theme / Backup / AdvancedConfig /
@@ -35,7 +37,6 @@ import SwiftUI
 /// .navigationDestination.
 enum ToolsDestination: Hashable {
     case requests
-    case dns
     case resources
     case logs
     case theme
@@ -93,8 +94,6 @@ struct ToolsView: View {
                         .font(.system(size: 24, weight: .bold))
                     toolSection(header: nil) {
                         ToolRow(icon: "clock", title: "tools.requests".l10n) { navPath.append(.requests) }
-                        Divider().padding(.leading, 54)
-                        ToolRow(icon: "server.rack", title: "tools.dns".l10n) { navPath.append(.dns) }
                         Divider().padding(.leading, 54)
                         ToolRow(icon: "archivebox", title: "tools.resources".l10n) { navPath.append(.resources) }
                         // v0.2.68 (MuYu): the Logs row shows only
@@ -181,7 +180,6 @@ struct ToolsView: View {
                 Group {
                     switch destination {
                     case .requests: ConnectionsView(applyTabBarClearance: true)
-                case .dns: DnsQueriesView()
                 case .resources: ResourcesView()
                 case .logs: LogsView()
                 case .theme: ThemePickerView()

@@ -1,23 +1,36 @@
 import SwiftUI
 
 // MARK: - Connections (FlClash: RequestsView, lib/views/connection/)
-// FlClash's "Requests" page is the live connection table: host, rule,
-// proxy, up/down, duration, search, sort, kill a connection
-// (connection.close) and kill all. DNS queries live on their own page
-// under Settings (FlClash DnsQueriesView).
+// FlClash's "Requests" page is one page with three segments —
+// 连接 / HTTP / DNS — sharing one search box (requests.dart).
+// The 连接 segment is a single list, newest first, live + recently
+// finished together (the core's event log, rebuilt locally here by
+// diffing snapshots — see ConnectionStore.recentConnections). The
+// HTTP segment is the all-connections MITM exchange list
+// (mitm.query); the DNS segment is the dns.watch list. There is no
+// sort control and no grouping upstream (log order, newest first).
 
 struct ConnectionsView: View {
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var proxyStore: ProxyStore
+    @EnvironmentObject private var dnsStore: DnsStore
+    @EnvironmentObject private var mitmStore: MitmStore
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var moduleStore: MitmModuleStore
     @Environment(\.dismiss) private var dismiss
     @State private var detail: LiveConnection?
     @State private var detailIsLive = true
-    /// The selected feed, persisted (upstream requests.dart persists
-    /// it in appSetting.requestFeed; ours resets to live on every
-    /// visit before this).
-    @State private var feed: ConnectionFeed = ConnectionFeed(
-        rawValue: UserDefaults.standard.string(forKey: "ConcordiOS.connections.feed.v1") ?? "live") ?? .live
+    @State private var detailOpensRequests = false
+    /// The segment shown (upstream RequestsSegment).
+    @State private var segment: RequestsSegment = .connections
+    /// The `+` condition editor (upstream
+    /// connection_condition_form.dart).
+    @State private var showConditionEditor = false
+    /// Kill-all confirmation (upstream _closeActiveConnections).
+    @State private var showKillAllConfirm = false
+    /// The HTTP segment's tapped exchange (opens its detail sheet).
+    @State private var httpDetail: MitmExchangeSummary?
 
     /// v0.2.119 (FIX 3): sheet list-drag coordination (MuYu
     /// parity) — same mechanism as DnsQueriesView. v0.2.118
@@ -84,42 +97,71 @@ struct ConnectionsView: View {
     let onSheetDragChanged: ((CGFloat) -> Void)?
     let onSheetDragEnded: ((CGFloat, CGFloat) -> Void)?
 
+    /// Where the page was opened from (the dashboard's stat cells
+    /// open it directly on live / recent). Upstream has no feeds —
+    /// the list is one log — so this only seeds the status filter
+    /// on appear: live → 活动， recent → 全部 (the default).
+    private let initialFeed: ConnectionFeed?
+
     /// Opens the page on one feed (the dashboard's stat cells open
-    /// it directly on live / recent); nil keeps the persisted feed.
-    init(initialFeed: ConnectionFeed? = nil, applyTabBarClearance: Bool = false, sheetChrome: Bool = false, onClose: (() -> Void)? = nil, onSheetDragChanged: ((CGFloat) -> Void)? = nil, onSheetDragEnded: ((CGFloat, CGFloat) -> Void)? = nil) {
+    /// it directly on live / recent); nil keeps the default filter.
+    /// `initialSegment` opens the page on a Requests segment (the
+    /// Dashboard DNS stat opens it on .dns); nil keeps .connections.
+    init(initialFeed: ConnectionFeed? = nil, initialSegment: RequestsSegment? = nil, applyTabBarClearance: Bool = false, sheetChrome: Bool = false, onClose: (() -> Void)? = nil, onSheetDragChanged: ((CGFloat) -> Void)? = nil, onSheetDragEnded: ((CGFloat, CGFloat) -> Void)? = nil) {
+        self.initialFeed = initialFeed
+        self._segment = State(initialValue: initialSegment ?? .connections)
         self.applyTabBarClearance = applyTabBarClearance
         self.sheetChrome = sheetChrome
         self.onClose = onClose
         self.onSheetDragChanged = onSheetDragChanged
         self.onSheetDragEnded = onSheetDragEnded
-        if let initialFeed {
-            _feed = State(initialValue: initialFeed)
-        }
     }
 
-    /// The two feeds of FlClash's Requests page: live connections
-    /// and recently finished ones (built locally by diffing
-    /// snapshots — see ConnectionStore.recentConnections).
+    /// The two feeds the page used to switch between (kept for the
+    /// Dashboard deep-links: ContentView passes one in). Upstream
+    /// v0.9.5 has NO live/recent feeds — the connections segment
+    /// is a single list (see ConnectionStore.displayedConnections).
     enum ConnectionFeed: String, CaseIterable {
         case live
         case recent
     }
 
-    private var feedLabel: String {
-        feed == .live ? "正在运行" : "最近请求"
+    /// The page's segments (upstream RequestsSegment,
+    /// requests.dart:27-50): connections, HTTP (only while MITM
+    /// captures), DNS.
+    enum RequestsSegment: String, CaseIterable {
+        case connections = "连接"
+        case http = "HTTP"
+        case dns = "DNS"
     }
 
-    /// Sheet-mode title (v0.2.68): the video calls the live feed
-    /// "运行中", not "正在运行".
-    private var sheetFeedTitle: String {
-        feed == .live ? "运行中" : "最近请求"
+    /// Whether MITM capture is on (upstream httpCapturing):
+    /// the HTTP segment only exists while this is true.
+    private var capturing: Bool {
+        settingsStore.mitmEnabled && settingsStore.mitmCapture
+    }
+
+    /// The segments the bar offers right now.
+    private var visibleSegments: [RequestsSegment] {
+        capturing ? RequestsSegment.allCases : [.connections, .dns]
+    }
+
+    /// Upstream httpCaptureHasNoHost (http_capture.dart:10-12):
+    /// no listed host and no enabled module — capture records
+    /// nothing. Same computation as MitmView.
+    private var httpCaptureNoHosts: Bool {
+        guard !moduleStore.modules.contains(where: { $0.enabled }) else { return false }
+        let hosts = settingsStore.mitmHostnames.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return hosts.allSatisfy { $0.hasPrefix("-") }
     }
 
     /// The MuYu sheet header (v0.2.68): drag handle, ✕ circle on
-    /// the left, centred feed-switcher title with a single ⌄, and
-    /// one action per own cardBackground circle on the right —
-    /// never a shared capsule. Live: disconnect-all (delete-sweep)
-    /// + ⋯ menu. Recent: ⋯ menu only. No refresh button (the video
+    /// the left, centred "连接" title, and one action per own
+    /// cardBackground circle on the right — never a shared capsule.
+    /// Disconnect-all (delete-sweep) + ⋯ menu on the connections
+    /// segment; ⋯ menu only elsewhere. No refresh button (the video
     /// has none on any of the three sheets).
     private var sheetHeader: some View {
         VStack(spacing: 0) {
@@ -128,21 +170,9 @@ struct ConnectionsView: View {
                 .frame(width: 36, height: 5)
                 .padding(.top, 10)
             ZStack {
-                Menu {
-                    Picker("请求", selection: $feed) {
-                        Text("运行中").tag(ConnectionFeed.live)
-                        Text("最近请求").tag(ConnectionFeed.recent)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(sheetFeedTitle)
-                            .font(.headline)
-                            .foregroundStyle(Color(.label))
-                        Image(systemName: "chevron.down")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
+                Text("连接")
+                    .font(.headline)
+                    .foregroundStyle(Color(.label))
                 HStack {
                     // v0.2.113: in the ContentView overlay there is
                     // no system presentation to dismiss, so the
@@ -158,9 +188,9 @@ struct ConnectionsView: View {
                     .accessibilityLabel("关闭")
                     Spacer()
                     HStack(spacing: 8) {
-                        if feed == .live {
+                        if segment == .connections {
                             Button {
-                                Task { await connectionStore.closeAll() }
+                                showKillAllConfirm = true
                             } label: {
                                 DeleteSweepIcon(size: 18)
                                     .frame(width: 36, height: 36)
@@ -168,6 +198,7 @@ struct ConnectionsView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("断开全部连接")
+                            .disabled(connectionStore.connections.isEmpty)
                         }
                         Menu {
                             filterMenuContent
@@ -207,25 +238,6 @@ struct ConnectionsView: View {
         )
     }
 
-    /// Relative start time for live rows ("刚刚", "5 分钟前").
-    private static func relativeTime(_ date: Date) -> String {
-        let seconds = max(0, Int64(Date().timeIntervalSince(date)))
-        if seconds < 60 { return "刚刚" }
-        if seconds < 3600 { return "\(seconds / 60) 分钟前" }
-        if seconds < 86400 { return "\(seconds / 3600) 小时前" }
-        return "\(seconds / 86400) 天前"
-    }
-
-    /// Rule with its matched payload (same shape as the detail
-    /// page's ruleText: rule + " (payload)").
-    private static func ruleText(_ connection: LiveConnection) -> String {
-        guard let rule = connection.rule else { return "—" }
-        if let payload = connection.rulePayload, !payload.isEmpty {
-            return "\(rule) (\(payload))"
-        }
-        return rule
-    }
-
     /// host:port for the bold row line (host when known, else the
     /// destination "ip:port" the store already built).
     private static func hostPort(_ connection: LiveConnection) -> String {
@@ -235,43 +247,17 @@ struct ConnectionsView: View {
         return connection.destination
     }
 
-    /// Flag emoji for the node capsule (v0.2.68): the node name
-    /// itself often already carries a flag — then nothing is added.
-    /// Otherwise a leading region name ("香港") or 2-letter code
-    /// ("HK-01") is converted with the existing flagEmoji helper.
-    private static func flagPrefix(for nodeName: String) -> String {
-        if nodeName.unicodeScalars.contains(where: { (0x1F1E6...0x1F1FF).contains($0.value) }) {
-            return ""
+    /// The detail header / summary title (upstream TrackerInfo.title):
+    /// the host, else the destination IP, else the destination.
+    /// Internal (not private): ConnectionDetailView uses it too.
+    static func detailTitle(_ connection: LiveConnection) -> String {
+        if let host = connection.host, !host.isEmpty {
+            return host
         }
-        let regions: [(String, String)] = [
-            ("香港", "HK"), ("台湾", "TW"), ("日本", "JP"), ("美国", "US"),
-            ("新加坡", "SG"), ("韩国", "KR"), ("英国", "GB"), ("德国", "DE"),
-            ("法国", "FR"), ("加拿大", "CA"), ("澳大利亚", "AU"), ("澳洲", "AU"),
-            ("荷兰", "NL"), ("俄罗斯", "RU"), ("印度", "IN"), ("巴西", "BR"),
-            ("土耳其", "TR"), ("泰国", "TH"), ("越南", "VN"),
-            ("马来西亚", "MY"), ("印尼", "ID"), ("菲律宾", "PH"),
-        ]
-        for (name, code) in regions where nodeName.hasPrefix(name) {
-            return flagEmoji(countryCode: code) ?? ""
+        if let ip = connection.destinationIp, !ip.isEmpty {
+            return ip
         }
-        let letters = String(nodeName.prefix(while: { $0.isLetter }))
-        if letters.count == 2, let flag = flagEmoji(countryCode: letters) {
-            return flag
-        }
-        return ""
-    }
-
-    /// One chain capsule; the last (node) capsule carries the
-    /// node's flag emoji in front of its name.
-    private func chainCapsule(_ name: String, isLast: Bool) -> some View {
-        let flag = isLast ? Self.flagPrefix(for: name) : ""
-        let label = flag.isEmpty ? name : "\(flag) \(name)"
-        return Text(label)
-            .font(.caption2.weight(.semibold))
-            .lineLimit(1)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.secondary.opacity(0.15), in: Capsule())
+        return connection.destination
     }
 
     var body: some View {
@@ -288,30 +274,82 @@ struct ConnectionsView: View {
                         contentStack
                     }
                     .background(ConcordTheme.pageBackground)
-                    ConnectionFloatingSearchBar(text: $connectionStore.searchText, prompt: "搜索域名、代理或规则")
+                    ConnectionFloatingSearchBar(text: $connectionStore.searchText, prompt: "搜索域名、规则、进程或 field:值") {
+                        searchSubmitted()
+                    }
                 }
             } else {
                 contentStack
                     .background(ConcordTheme.pageBackground)
                     .navigationTitle("连接")
                     .navigationBarTitleDisplayMode(.inline)
-                    .searchable(text: $connectionStore.searchText, prompt: "搜索域名、代理或规则")
+                    .searchable(text: $connectionStore.searchText, prompt: "搜索域名、规则、进程或 field:值")
+                    .onSubmit(of: .search) { searchSubmitted() }
                     .toolbar {
                         pageToolbar
                     }
             }
         }
         .sheet(item: $detail) { connection in
-            ConnectionDetailView(connection: connection, isLive: detailIsLive)
+            ConnectionDetailView(connection: connection, isLive: detailIsLive, opensRequests: detailOpensRequests)
                 // Upstream showTrackerInfoDetail → showSheet(props:
                 // nestedPagedSheetProps) + NestedPagedSheet, [9/16,
                 // 0.9], transparent bg (tracker_info_item.dart:27).
                 .presentationDetents([.fraction(0.5625), .fraction(0.9)])
                 .presentationDragIndicator(.visible)
         }
-        .refreshable { await connectionStore.refresh() }
-        .onChange(of: feed) { _, newFeed in
-            UserDefaults.standard.set(newFeed.rawValue, forKey: "ConcordiOS.connections.feed.v1")
+        .sheet(isPresented: $showConditionEditor) {
+            ConnectionConditionEditor(store: connectionStore)
+        }
+        .sheet(item: $httpDetail) { summary in
+            MitmExchangeDetailView(summary: summary)
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                .presentationDragIndicator(.visible)
+        }
+        .alert("断开全部活动连接", isPresented: $showKillAllConfirm) {
+            Button("断开", role: .destructive) {
+                Task { await connectionStore.closeAll() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            // Upstream _closeActiveConnections shows the count.
+            Text("将断开全部 \(connectionStore.connections.count) 个活动连接。")
+        }
+        .refreshable {
+            switch segment {
+            case .connections:
+                await connectionStore.refresh()
+            case .http:
+                mitmStore.queryText = connectionStore.searchText
+                await mitmStore.runQuery()
+            case .dns:
+                await dnsStore.refresh()
+            }
+        }
+        .onAppear {
+            // The Dashboard's live stat opens on 活动； recent
+            // opens on the default 全部.
+            if initialFeed == .live {
+                connectionStore.statusFilter = .active
+            }
+        }
+        .onChange(of: segment) { _, newSegment in
+            segmentChanged(newSegment)
+        }
+        .onChange(of: capturing) { _, isCapturing in
+            // The HTTP segment vanishes when capture stops.
+            if !isCapturing && segment == .http {
+                segment = .connections
+            }
+        }
+        .onChange(of: connectionStore.searchText) { _, newText in
+            // The search box is shared across segments (upstream
+            // AppBarSearchState): the DNS segment filters live as
+            // you type; the HTTP segment re-queries on submit and
+            // on the 1 s poll below.
+            if segment == .dns {
+                dnsStore.searchText = newText
+            }
         }
         // Live feed (audit B30): poll every 1 s while this page
         // is visible, like FlClash's Requests page — rows appear
@@ -332,17 +370,65 @@ struct ConnectionsView: View {
                 && (TunnelManager.shared.isRunning || AppCore.shared.isRunning || client.mode == .sample) {
                 await connectionStore.refresh()
             }
+            segmentChanged(segment)
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled else { break }
                 guard TunnelManager.shared.isRunning || AppCore.shared.isRunning else { continue }
                 await connectionStore.refresh()
+                if segment == .dns {
+                    await dnsStore.refresh()
+                }
+                if segment == .http && capturing && !mitmStore.isQuerying
+                    && mitmStore.queryNext == nil {
+                    // Upstream polls the HTTP feed every second
+                    // too; skip while the user paged deeper, so a
+                    // poll never wipes the appended pages.
+                    mitmStore.queryText = connectionStore.searchText
+                    await mitmStore.runQuery()
+                }
             }
         }
     }
 
-    /// The shared list content (stats row, facet chips, feed list),
-    /// used by both the pushed page and the MuYu sheet.
+    /// A segment change takes the shared search with it (upstream
+    /// _searchShown): the DNS list filters on the text, the HTTP
+    /// list re-queries, the connections list re-filters. Leaving a
+    /// segment clears its store's copy, so the standalone DNS page
+    /// and the MITM search do not inherit this page's text.
+    private func segmentChanged(_ newSegment: RequestsSegment) {
+        switch newSegment {
+        case .connections:
+            dnsStore.searchText = ""
+            mitmStore.queryText = ""
+        case .http:
+            dnsStore.searchText = ""
+            mitmStore.queryText = connectionStore.searchText
+            Task { await mitmStore.runQuery() }
+        case .dns:
+            mitmStore.queryText = ""
+            dnsStore.searchText = connectionStore.searchText
+            if TunnelManager.shared.isRunning || AppCore.shared.isRunning || client.mode == .sample {
+                Task { await dnsStore.refresh() }
+            }
+        }
+    }
+
+    /// The search was submitted (return key / floating-bar submit):
+    /// the HTTP segment re-queries now instead of waiting for the
+    /// next poll tick.
+    private func searchSubmitted() {
+        if segment == .http {
+            mitmStore.queryText = connectionStore.searchText
+            Task { await mitmStore.runQuery() }
+        }
+    }
+
+    /// The shared list content (segment bar, filter row, segment
+    /// list), used by both the pushed page and the MuYu sheet.
+    /// Upstream Requests has no totals card and fails silently
+    /// (log only) — no stats card, no red error text, no VPN
+    /// button here.
     private var contentStack: some View {
         VStack(spacing: 0) {
                 if client.mode == .sample {
@@ -356,137 +442,191 @@ struct ConnectionsView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 6)
                 }
-                // v0.2.100 (A7): stats row + status messages in a
-                // rounded card instead of sitting bare on the page
-                // background. The filter bar below stays bare
-                // (upstream has it bare too).
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 16) {
-                        // v0.2.121: the header used to show live
-                        // totals on both feeds, so on the recent
-                        // feed it described data that isn't shown.
-                        // Recent feed: the recent count + its totals.
-                        if feed == .recent {
-                            Text("\(connectionStore.recentConnections.count) 个最近请求")
-                            Text("上行 \(ConcordFormat.bytes(connectionStore.recentTotalUpload))")
-                            Text("下行 \(ConcordFormat.bytes(connectionStore.recentTotalDownload))")
-                        } else {
-                            Text("\(connectionStore.connections.count) 个连接")
-                            Text("上行 \(ConcordFormat.bytes(connectionStore.totalUpload))")
-                            Text("下行 \(ConcordFormat.bytes(connectionStore.totalDownload))")
-                        }
-                        Spacer()
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    if let message = connectionStore.networkUpdateMessage {
-                        Text(message)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if let error = connectionStore.lastError {
-                        Text(error)
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                // The segment bar (upstream ConnectedButtonBar):
+                // 连接 / HTTP (only while capturing) / DNS.
+                Picker("请求", selection: $segment) {
+                    ForEach(visibleSegments, id: \.self) { segment in
+                        Text(segment.rawValue).tag(segment)
                     }
                 }
-                .concordCard(padding: 12)
+                .pickerStyle(.segmented)
                 .padding(.horizontal)
-                .padding(.bottom, 4)
-                statusFilterBar
-
-                // Active facet chips (upstream RecordFilterScope
-                // keywords strip): one chip per active facet, tap x
-                // to clear it.
-                if connectionStore.hasActiveFacets {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            if let network = connectionStore.facetNetwork {
-                                facetChip("网络 \(network.uppercased())") { connectionStore.facetNetwork = nil }
-                            }
-                            if let rule = connectionStore.facetRule {
-                                facetChip("规则 \(rule)") { connectionStore.facetRule = nil }
-                            }
-                            if let proxy = connectionStore.facetProxy {
-                                facetChip("代理 \(proxy)") { connectionStore.facetProxy = nil }
-                            }
-                            if let process = connectionStore.facetProcess {
-                                facetChip("进程 \(process)") { connectionStore.facetProcess = nil }
-                            }
-                            if connectionStore.facetMitmOnly {
-                                facetChip("MITM") { connectionStore.facetMitmOnly = false }
-                            }
-                            Button("清除筛选") { connectionStore.clearFacets() }
-                                .font(.caption2)
-                                .foregroundStyle(ConcordTheme.accent)
-                        }
-                        .padding(.horizontal)
-                    }
-                    .padding(.bottom, 4)
-                }
-                if feed == .live {
-                    if !connectionStore.loaded {
-                        // First-load loading state (upstream
-                        // requests.dart _loaded): a page activity
-                        // indicator until the first read lands,
-                        // instead of the empty state.
-                        ProgressView("正在加载连接…")
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if connectionStore.filtered.isEmpty {
-                        if proxyStore.isRunning {
-                            ContentUnavailableView("暂无活动连接", systemImage: "arrow.left.arrow.right", description: Text("当前没有活动连接，产生流量后会在这里列出"))
-                        } else {
-                            ContentUnavailableView {
-                                Label("暂无活动连接", systemImage: "arrow.left.arrow.right")
-                            } description: {
-                                Text("开启 VPN 后，这里的实时连接会按 host / 规则 / 代理列出")
-                            } actions: {
-                                Button("启动 VPN") {
-                                    Task { await proxyStore.toggle() }
-                                }
-                                .buttonStyle(.borderedProminent)
-                            }
-                        }
-                    } else {
-                        connectionList(connectionStore.filtered, isLive: true)
-                    }
-                } else {
-                    if connectionStore.recentFiltered.isEmpty {
-                        ContentUnavailableView("暂无最近请求", systemImage: "clock", description: Text("已结束的连接会在这里列出（本会话内，最多 200 条）"))
-                    } else {
-                        connectionList(connectionStore.recentFiltered, isLive: false)
-                    }
+                .padding(.vertical, 4)
+                switch segment {
+                case .connections:
+                    statusFilterBar
+                    activeFilterChips
+                    connectionsSegment
+                case .http:
+                    httpSegment
+                case .dns:
+                    DnsQueriesView(mode: .segment)
                 }
         }
     }
 
-    /// The pushed page's navigation bar (feed switcher title,
-    /// filter menu, disconnect-all, refresh). The sheet header
-    /// reuses `filterMenuContent` below, not this toolbar.
-    @ToolbarContentBuilder
-    private var pageToolbar: some ToolbarContent {
-        // The feed switch is the title itself with a popup
-        // menu (upstream requests.dart: the title IS the feed
-        // label, 正在运行/最近请求, with a title popup menu).
-        ToolbarItem(placement: .principal) {
-            Menu {
-                Picker("请求", selection: $feed) {
-                    Text("正在运行").tag(ConnectionFeed.live)
-                    Text("最近请求").tag(ConnectionFeed.recent)
+    /// The connections segment: loading / empty states, else the
+    /// single newest-first list. The empty text distinguishes a
+    /// search with no matches (upstream NullStatusSwitcher).
+    private var connectionsSegment: some View {
+        Group {
+            if !connectionStore.loaded {
+                // First-load loading state (upstream requests.dart
+                // _loaded): a page activity indicator until the
+                // first read lands, instead of the empty state.
+                ProgressView("正在加载连接…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if connectionStore.displayedConnections.isEmpty {
+                if isSearching {
+                    ContentUnavailableView("没有符合筛选的连接", systemImage: "magnifyingglass", description: Text("换个搜索词或清除筛选条件再试"))
+                } else {
+                    ContentUnavailableView("暂无连接", systemImage: "arrow.left.arrow.right", description: Text("当前没有活动或最近的连接，产生流量后会在这里列出"))
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(feedLabel)
-                        .font(.headline)
-                        .foregroundStyle(Color(.label))
-                    Image(systemName: "chevron.down")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+            } else {
+                connectionList(connectionStore.displayedConnections)
+            }
+        }
+    }
+
+    /// Whether a search, facet, condition or non-default status
+    /// filter is narrowing the connections list.
+    private var isSearching: Bool {
+        !connectionStore.searchText.isEmpty
+            || connectionStore.hasActiveFacets
+            || connectionStore.statusFilter != .all
+    }
+
+    /// The HTTP segment (upstream HttpRequestList): the
+    /// all-connections MITM exchange list, newest first, with the
+    /// httpCaptureNoHosts empty hint. Tapping a row opens its
+    /// exchange detail.
+    private var httpSegment: some View {
+        Group {
+            if mitmStore.isQuerying && mitmStore.queryResults.isEmpty {
+                ProgressView("正在加载拦截记录…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if mitmStore.queryResults.isEmpty {
+                ContentUnavailableView("暂无拦截记录", systemImage: "eye.slash", description: Text(httpCaptureNoHosts ? "在“主机名”中添加主机后才会记录。" : (mitmStore.queryMessage ?? "开启抓包后，这里列出全部连接的拦截记录")))
+            } else {
+                VStack(spacing: 0) {
+                    if let matched = mitmStore.queryMatched, let held = mitmStore.queryHeld {
+                        Text("共 \(matched) 条匹配（已保留 \(held) 条）· 已加载 \(mitmStore.queryResults.count) 条")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal)
+                            .padding(.vertical, 4)
+                    }
+                    List {
+                        ForEach(mitmStore.queryResults) { exchange in
+                            Button { httpDetail = exchange } label: {
+                                httpExchangeRow(exchange)
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(ConcordTheme.cardBackground)
+                        }
+                        if mitmStore.queryNext != nil {
+                            Button("加载更多") {
+                                Task { await mitmStore.runQuery(loadMore: true) }
+                            }
+                            .disabled(mitmStore.isQuerying)
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
+                    .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
                 }
             }
         }
+    }
+
+    /// One HTTP-segment row: method + host/path, status + time.
+    /// (MitmView's exchangeRow is per-connection; this list is
+    /// cross-connection, so it shows the host too.)
+    private func httpExchangeRow(_ exchange: MitmExchangeSummary) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(exchange.method)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.15), in: Capsule())
+                Text(exchange.host ?? "")
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+                Spacer()
+                if exchange.status > 0 {
+                    Text("\(exchange.status)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(exchange.status >= 400 ? .red : .secondary)
+                }
+            }
+            HStack(spacing: 6) {
+                Text(exchange.path ?? "/")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Text(ConcordFormat.time(rfc3339: exchange.start))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = exchange.error, !error.isEmpty {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+    }
+
+    /// Active facet + condition chips (upstream RecordFilterScope
+    /// keywords strip): one chip per active facet value and per
+    /// condition, tap x to clear it. Multi-value facets get one
+    /// chip per value.
+    private var activeFilterChips: some View {
+        Group {
+            if connectionStore.hasActiveFacets {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(connectionStore.facetNetworks).sorted(), id: \.self) { network in
+                            facetChip("网络 \(network.uppercased())") { connectionStore.facetNetworks.remove(network) }
+                        }
+                        ForEach(Array(connectionStore.facetRules).sorted(), id: \.self) { rule in
+                            facetChip("规则 \(rule)") { connectionStore.facetRules.remove(rule) }
+                        }
+                        ForEach(Array(connectionStore.facetProxies).sorted(), id: \.self) { proxy in
+                            facetChip("代理 \(proxy)") { connectionStore.facetProxies.remove(proxy) }
+                        }
+                        ForEach(Array(connectionStore.facetProcesses).sorted(), id: \.self) { process in
+                            facetChip("进程 \(process)") { connectionStore.facetProcesses.remove(process) }
+                        }
+                        if connectionStore.facetMitmOnly {
+                            facetChip("MITM") { connectionStore.facetMitmOnly = false }
+                        }
+                        ForEach(connectionStore.conditions) { condition in
+                            facetChip("\(condition.excludes ? "-" : "")\(condition.field.rawValue):\(condition.isEquals ? "=" : "")\(condition.value)") {
+                                connectionStore.conditions.removeAll { $0.id == condition.id }
+                            }
+                        }
+                        Button("清除筛选") { connectionStore.clearFacets() }
+                            .font(.caption2)
+                            .foregroundStyle(ConcordTheme.accent)
+                    }
+                    .padding(.horizontal)
+                }
+                .padding(.bottom, 4)
+            }
+        }
+    }
+
+    /// The pushed page's navigation bar (⋯ menu, disconnect-all,
+    /// refresh). The sheet header reuses `filterMenuContent`
+    /// below, not this toolbar.
+    @ToolbarContentBuilder
+    private var pageToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 filterMenuContent
@@ -494,90 +634,168 @@ struct ConnectionsView: View {
                 Image(systemName: "ellipsis.circle")
             }
         }
-        // Close-all is an app-bar icon button, live feed only
-        // (upstream requests.dart:105-117).
-        if feed == .live {
+        // Close-all is an app-bar icon button on the connections
+        // segment (upstream requests.dart:105-117); it asks for
+        // confirmation and is disabled with nothing active.
+        if segment == .connections {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    Task { await connectionStore.closeAll() }
+                    showKillAllConfirm = true
                 } label: {
                     Image(systemName: "xmark.circle")
                 }
                 .accessibilityLabel("断开全部连接")
+                .disabled(connectionStore.connections.isEmpty)
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            Button { Task { await connectionStore.refresh() } } label: {
+            Button {
+                Task {
+                    switch segment {
+                    case .connections: await connectionStore.refresh()
+                    case .http:
+                        mitmStore.queryText = connectionStore.searchText
+                        await mitmStore.runQuery()
+                    case .dns: await dnsStore.refresh()
+                    }
+                }
+            } label: {
                 Image(systemName: "arrow.clockwise")
             }
         }
     }
 
     /// The ⋯ filter menu, shared by the page toolbar and the MuYu
-    /// sheet header (sort, grouping, record-filter facets, network
-    /// actions, clear-recent).
+    /// sheet header (upstream requests.dart _buildMenuItems):
+    /// multi-value record-filter facets, HTTP-capture items while
+    /// MITM is enabled, close-active on the connections segment,
+    /// clear-DNS-cache on the DNS segment.
     @ViewBuilder
     private var filterMenuContent: some View {
-        Picker("排序", selection: $connectionStore.sort) {
-            ForEach(ConnectionSort.allCases) { option in
-                Text(option.rawValue).tag(option)
+        // Record-filter facets (upstream trackerInfoFacets:
+        // network, rule, MITM, app/process, proxy chains) —
+        // multi-value: tapping toggles one value, values on one
+        // field widen each other.
+        facetMultiMenu(title: "网络", values: connectionStore.offeredNetworks, selected: connectionStore.facetNetworks) { value in
+            if connectionStore.facetNetworks.contains(value) {
+                connectionStore.facetNetworks.remove(value)
+            } else {
+                connectionStore.facetNetworks.insert(value)
             }
         }
-        Picker("分组", selection: $connectionStore.groupBy) {
-            ForEach(ConnectionGroupBy.allCases) { option in
-                Text(option.rawValue).tag(option)
+        facetMultiMenu(title: "规则", values: connectionStore.offeredRules, selected: connectionStore.facetRules) { value in
+            if connectionStore.facetRules.contains(value) {
+                connectionStore.facetRules.remove(value)
+            } else {
+                connectionStore.facetRules.insert(value)
             }
         }
-        // Record-filter facets (upstream
-        // trackerInfoFacets: network, rule, MITM,
-        // app/process, proxy chains).
-        Picker("网络", selection: Binding(
-            get: { connectionStore.facetNetwork ?? "" },
-            set: { connectionStore.facetNetwork = $0.isEmpty ? nil : $0 })) {
-                Text("全部").tag("")
-                ForEach(connectionStore.facetNetworks, id: \.self) { network in
-                    Text(network.uppercased()).tag(network)
-                }
+        facetMultiMenu(title: "代理", values: connectionStore.offeredProxies, selected: connectionStore.facetProxies) { value in
+            if connectionStore.facetProxies.contains(value) {
+                connectionStore.facetProxies.remove(value)
+            } else {
+                connectionStore.facetProxies.insert(value)
             }
-        Picker("规则", selection: Binding(
-            get: { connectionStore.facetRule ?? "" },
-            set: { connectionStore.facetRule = $0.isEmpty ? nil : $0 })) {
-                Text("全部").tag("")
-                ForEach(connectionStore.facetRules, id: \.self) { rule in
-                    Text(rule).tag(rule)
-                }
+        }
+        facetMultiMenu(title: "进程", values: connectionStore.offeredProcesses, selected: connectionStore.facetProcesses) { value in
+            if connectionStore.facetProcesses.contains(value) {
+                connectionStore.facetProcesses.remove(value)
+            } else {
+                connectionStore.facetProcesses.insert(value)
             }
-        Picker("代理", selection: Binding(
-            get: { connectionStore.facetProxy ?? "" },
-            set: { connectionStore.facetProxy = $0.isEmpty ? nil : $0 })) {
-                Text("全部").tag("")
-                ForEach(connectionStore.facetProxies, id: \.self) { proxy in
-                    Text(proxy).tag(proxy)
-                }
-            }
-        Picker("进程", selection: Binding(
-            get: { connectionStore.facetProcess ?? "" },
-            set: { connectionStore.facetProcess = $0.isEmpty ? nil : $0 })) {
-                Text("全部").tag("")
-                ForEach(connectionStore.facetProcesses, id: \.self) { process in
-                    Text(process).tag(process)
-                }
-            }
+        }
         Toggle("仅 MITM", isOn: $connectionStore.facetMitmOnly)
         if connectionStore.hasActiveFacets {
             Button("清除筛选") { connectionStore.clearFacets() }
         }
-        Button("重置解析器连接（network.reset）") {
-            Task { await connectionStore.resetNetwork() }
+        if settingsStore.mitmEnabled {
+            // HTTP capture (upstream http_capture.dart): on/off
+            // ("仅保留在内存中") + the capture-limit picker.
+            // The toggle saves like the MITM options page's 抓包
+            // row; it takes effect on the next apply / VPN restart.
+            Section("HTTP 抓包") {
+                Button {
+                    settingsStore.mitmCapture = true
+                    settingsStore.save()
+                } label: {
+                    HStack {
+                        Text("开启")
+                        Spacer()
+                        if settingsStore.mitmCapture {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                Button {
+                    settingsStore.mitmCapture = false
+                    settingsStore.save()
+                } label: {
+                    HStack {
+                        Text("关闭")
+                        Spacer()
+                        if !settingsStore.mitmCapture {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                Picker("保留条数", selection: $settingsStore.mitmCaptureEntries) {
+                    ForEach(captureLimitOptions, id: \.self) { value in
+                        Text("\(value) 条").tag(value)
+                    }
+                }
+                .onChange(of: settingsStore.mitmCaptureEntries) { _, _ in settingsStore.save() }
+            }
         }
-        Button("通知核心网络已变化（network.update）") {
-            Task { await connectionStore.networkUpdate(interfaceChanged: false) }
+        if segment == .connections {
+            Button("断开全部活动连接", role: .destructive) {
+                showKillAllConfirm = true
+            }
+            .disabled(connectionStore.connections.isEmpty)
         }
-        Button("通知核心网络接口已切换（network.update）") {
-            Task { await connectionStore.networkUpdate(interfaceChanged: true) }
+        if segment == .dns {
+            Button("清除 DNS 缓存") {
+                Task { await dnsStore.clearCache() }
+            }
         }
-        Button("清除最近请求记录", role: .destructive) {
-            connectionStore.clearRecent()
+    }
+
+    /// The capture-limit options (upstream mitmCaptureOptions,
+    /// desktop — iOS is not Android: 500…20000, default 2000).
+    /// The current value is listed even when it is not one of
+    /// the options, as upstream does.
+    private var captureLimitOptions: [Int] {
+        let options = [500, 1000, 2000, 5000, 10000, 20000]
+        let current = settingsStore.mitmCaptureEntries
+        if options.contains(current) { return options }
+        return (options + [current]).sorted()
+    }
+
+    /// One multi-value facet submenu: each value toggles with a
+    /// checkmark. Empty facets offer nothing to pick.
+    @ViewBuilder
+    private func facetMultiMenu(
+        title: String,
+        values: [String],
+        selected: Set<String>,
+        onToggle: @escaping (String) -> Void
+    ) -> some View {
+        Menu(title) {
+            if values.isEmpty {
+                Text("无")
+            }
+            ForEach(values, id: \.self) { value in
+                Button {
+                    onToggle(value)
+                } label: {
+                    HStack {
+                        Text(title == "网络" ? value.uppercased() : value)
+                        Spacer()
+                        if selected.contains(value) {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -601,9 +819,9 @@ struct ConnectionsView: View {
     /// connection_filter_row.dart): a horizontally scrollable row
     /// of compact segment buttons `全部 N` / `活动 N` / `失败 N`
     /// with the unfiltered held totals, tapping filters the list;
-    /// the `+` button opens the same filter menu as the ⋯ button
-    /// (upstream's add-condition dialog has no Swift equivalent
-    /// here — no new condition editor is invented).
+    /// the `+` button opens the add-condition editor (upstream
+    /// connection_condition_form.dart: field picker, value
+    /// suggestions with counts, exclude toggle).
     private var statusFilterBar: some View {
         HStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -613,8 +831,8 @@ struct ConnectionsView: View {
                     }
                 }
             }
-            Menu {
-                filterMenuContent
+            Button {
+                showConditionEditor = true
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .semibold))
@@ -634,7 +852,7 @@ struct ConnectionsView: View {
     private func statusSegmentButton(_ status: ConnectionStatusFilter) -> some View {
         let selected = connectionStore.statusFilter == status
         return Button { connectionStore.statusFilter = status } label: {
-            Text("\(status.rawValue) \(Self.groupedCount(connectionStore.statusCount(for: status, inRecentFeed: feed == .recent)))")
+            Text("\(status.rawValue) \(Self.groupedCount(connectionStore.statusCount(for: status)))")
                 .font(.caption.weight(selected ? .semibold : .regular))
                 .foregroundStyle(selected ? ConcordTheme.accent : Color(.label))
                 .padding(.horizontal, 10)
@@ -659,10 +877,12 @@ struct ConnectionsView: View {
         groupedNumberFormatter.string(from: NSNumber(value: count)) ?? "\(count)"
     }
 
-    /// The connection list, flat or grouped into sections
-    /// (upstream recordGroupings).
+    /// The connection list: one flat list with per-minute
+    /// separator rows (upstream RecordMinuteList). Upstream has
+    /// no sort and no grouping — the list is log order, newest
+    /// first (see ConnectionStore.displayedConnections).
     @ViewBuilder
-    private func connectionList(_ list: [LiveConnection], isLive: Bool) -> some View {
+    private func connectionList(_ list: [LiveConnection]) -> some View {
         if sheetChrome {
             // v0.2.128 item 1: the sheet's list was a SwiftUI List
             // (.insetGrouped), whose section top inset left a large
@@ -672,7 +892,7 @@ struct ConnectionsView: View {
             // layout problem (v0.2.102) — this mirrors it: no top
             // padding, one rounded card per row, the zero-height
             // drag bridge first. Live rows lose swipe-to-disconnect
-            // here (a List feature); the detail sheet's disconnect
+            // here (a List feature); the detail header's close
             // button keeps the function.
             ScrollView {
                 LazyVStack(spacing: 12) {
@@ -683,60 +903,31 @@ struct ConnectionsView: View {
                         }
                     )
                     .frame(height: 0)
-                    if connectionStore.groupBy == .none {
-                        // Flat list with per-minute separator rows
-                        // (upstream RecordMinuteList): after each
-                        // minute's records, a footnote row `HH:mm  N`
-                        // (today) or `MM-DD HH:mm  N`. Minute
-                        // separators are not shown while grouped.
-                        ForEach(Array(connectionStore.minuteGroups(list).enumerated()), id: \.offset) { item in
-                            ForEach(item.element.rows) { connection in
-                                connectionCardButton(connection, isLive: isLive)
-                            }
-                            minuteSeparatorRow(item.element)
+                    // Flat list with per-minute separator rows
+                    // (upstream RecordMinuteList): after each
+                    // minute's records, a footnote row `HH:mm  N`
+                    // (today) or `MM-DD HH:mm  N`.
+                    ForEach(Array(connectionStore.minuteGroups(list).enumerated()), id: \.offset) { item in
+                        ForEach(item.element.rows) { connection in
+                            connectionCardButton(connection, isLive: connectionStore.isLive(connection.id))
                         }
-                    } else {
-                        ForEach(connectionStore.grouped(list, by: connectionStore.groupBy), id: \.key) { group in
-                            Text("\(group.key)（\(group.rows.count)）")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            ForEach(group.rows) { connection in
-                                connectionCardButton(connection, isLive: isLive)
-                            }
-                        }
+                        minuteSeparatorRow(item.element)
                     }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 76)
             }
-        } else if connectionStore.groupBy == .none {
+        } else {
             // Flat list with per-minute separator rows (upstream
             // RecordMinuteList): after each minute's records, a
             // footnote row `HH:mm  N` (today) or `MM-DD HH:mm  N`.
-            // The grouped branch below stays unchanged — minute
-            // separators are not shown while grouped.
             List {
                 sheetListDragBridge
                 ForEach(Array(connectionStore.minuteGroups(list).enumerated()), id: \.offset) { item in
                     ForEach(item.element.rows) { connection in
-                        connectionRowButton(connection, isLive: isLive)
+                        connectionRowButton(connection, isLive: connectionStore.isLive(connection.id))
                     }
                     minuteSeparatorRow(item.element)
-                }
-            }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
-            // v0.2.66: tab-bar clearance for pushed pages.
-            .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
-        } else {
-            List {
-                sheetListDragBridge
-                ForEach(connectionStore.grouped(list, by: connectionStore.groupBy), id: \.key) { group in
-                    Section("\(group.key)（\(group.rows.count)）") {
-                        ForEach(group.rows) { connection in
-                            connectionRowButton(connection, isLive: isLive)
-                        }
-                    }
                 }
             }
             .listStyle(.insetGrouped)
@@ -746,13 +937,16 @@ struct ConnectionsView: View {
         }
     }
 
-    /// One row's Button (shared by the flat and grouped branches):
-    /// opens the detail sheet, swipe-to-disconnect on live rows.
+    /// One row's Button: opens the detail sheet, swipe-to-
+    /// disconnect on live rows, context menu (upstream
+    /// trackerInfoMenuItems).
     private func connectionRowButton(_ connection: LiveConnection, isLive: Bool) -> some View {
-        Button { detail = connection; detailIsLive = isLive } label: {
+        Button { openDetail(connection, isLive: isLive) } label: {
             connectionRow(connection, isLive: isLive)
         }
         .buttonStyle(.plain)
+        .listRowBackground(ConcordTheme.cardBackground)
+        .contextMenu { rowContextMenu(connection, isLive: isLive) }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             if isLive {
                 Button("断开", role: .destructive) {
@@ -766,16 +960,63 @@ struct ConnectionsView: View {
     /// the same Button (tap → detail) as connectionRowButton,
     /// but the row is a card (cardBackground, radius 16 — the DNS
     /// sheet's row radius) and there are no swipe actions (a List
-    /// feature). The detail sheet's disconnect button keeps the
+    /// feature). The detail header's close button keeps the
     /// disconnect function for live rows.
     private func connectionCardButton(_ connection: LiveConnection, isLive: Bool) -> some View {
-        Button { detail = connection; detailIsLive = isLive } label: {
+        Button { openDetail(connection, isLive: isLive) } label: {
             connectionRow(connection, isLive: isLive)
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16))
         }
         .buttonStyle(.plain)
+        .contextMenu { rowContextMenu(connection, isLive: isLive) }
+    }
+
+    /// Opens the detail on the 时间线 tab (the row menu's "查看
+    /// HTTP" opens it on the HTTP tab instead — see rowContextMenu).
+    private func openDetail(_ connection: LiveConnection, isLive: Bool) {
+        detail = connection
+        detailIsLive = isLive
+        detailOpensRequests = false
+    }
+
+    /// The row context menu (upstream tracker_info_item.dart
+    /// trackerInfoMenuItems): close (active only), copy host /
+    /// copy destination, only-this-app, hide-this-host, view-HTTP
+    /// (when MITM — the detail then opens on the HTTP tab).
+    @ViewBuilder
+    private func rowContextMenu(_ connection: LiveConnection, isLive: Bool) -> some View {
+        if isLive {
+            Button("断开连接", role: .destructive) {
+                Task { await connectionStore.close(connection) }
+            }
+        }
+        if let host = connection.host, !host.isEmpty {
+            Button("复制主机") {
+                UIPasteboard.general.string = host
+            }
+        }
+        Button("复制目标") {
+            UIPasteboard.general.string = connection.destination
+        }
+        if let process = connection.process, !process.isEmpty {
+            Button("仅看此应用") {
+                connectionStore.facetProcesses = [process]
+            }
+        }
+        Button("隐藏此主机") {
+            let title = connection.host ?? connection.destinationIp ?? connection.destination
+            connectionStore.conditions.append(
+                ConnectionCondition(field: .host, value: title, op: .notContains))
+        }
+        if connection.mitm {
+            Button("查看 HTTP") {
+                detail = connection
+                detailIsLive = isLive
+                detailOpensRequests = true
+            }
+        }
     }
 
     /// Per-minute separator row (upstream RecordMinuteHeader,
@@ -787,122 +1028,241 @@ struct ConnectionsView: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 2)
+            .listRowBackground(ConcordTheme.cardBackground)
     }
 
-    /// One connection row, rebuilt to the video's card style
-    /// (v0.2.68): no 64pt time column, no "TCP · 规则 · 代理"
-    /// single line, no duration/speeds third line, no trailing
-    /// chevron. Live rows: relative time + network, speeds
-    /// top-right; host:port bold; rule → chain capsules (flag on
-    /// the node capsule); source ip:port. Recent rows: full
-    /// datetime + network; host:port bold + resolved IP; rule →
-    /// [final proxy capsule]; source ip:port.
+    /// One connection row (upstream tracker_info_item.dart):
+    /// 40pt app well leading; title host (else destination
+    /// ip:port); subtitle `process · chains.last · lifetime`,
+    /// ticking every second on the 1 s poll (failed dials show
+    /// `process · failure-kind`, error-red, with no lifetime);
+    /// failure chip, `×N` repeats and MITM label after the
+    /// subtitle; trailing ONE combined (up+down)/s line + total
+    /// below while active, the total as the only line when closed.
+    /// No rule, no chain capsules, no source line on the mobile
+    /// row — those live in the detail / timeline.
     private func connectionRow(_ connection: LiveConnection, isLive: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            if isLive {
-                HStack {
-                    Text("\(Self.relativeTime(connection.start)) \(connection.network.uppercased())")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if connection.upSpeed > 0 || connection.downSpeed > 0 {
-                        // Per-second live speeds (upstream
-                        // downloadSpeed/uploadSpeed); each side
-                        // shown only while it is actually moving.
-                        HStack(spacing: 6) {
-                            if connection.upSpeed > 0 {
-                                Text("↑ \(ConcordFormat.rate(Int64(connection.upSpeed)))")
-                            }
-                            if connection.downSpeed > 0 {
-                                Text("↓ \(ConcordFormat.rate(Int64(connection.downSpeed)))")
-                            }
-                        }
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    }
-                }
+        HStack(alignment: .top, spacing: 12) {
+            ConnectionAppWell(connection: connection, isLive: isLive)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(Self.hostPort(connection))
                     .font(.footnote.weight(.semibold))
                     .lineLimit(1)
-                chainLine(connection)
-                Text(connection.source)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("\(connection.startFullText) \(connection.network.uppercased())")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 4) {
-                    Text(Self.hostPort(connection))
-                        .font(.footnote.weight(.semibold))
-                    if let resolved = connection.destinationIp, !resolved.isEmpty {
-                        Text(resolved)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+                HStack(spacing: 6) {
+                    Text(rowSubtitle(connection, isLive: isLive))
+                        .font(.caption2)
+                        .foregroundStyle(connection.failureKind != nil ? .red : .secondary)
+                        .lineLimit(1)
+                    rowLabels(connection)
                 }
-                .lineLimit(1)
-                if let failureKind = connection.failureKind {
-                    // Failed dial (upstream tracker_info_item.dart
-                    // _buildRow): the subtitle is `规则 (payload) ·
-                    // 失败原因`, the whole line error-red, with no
-                    // lifetime appended. The row shows only the kind
-                    // label — the detail page shows kind + message.
-                    HStack(spacing: 6) {
-                        Text(Self.ruleText(connection))
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                            .lineLimit(1)
-                        Text("·")
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                        Text(ConcordConnectionFailure.label(for: failureKind))
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                            .lineLimit(1)
-                    }
-                } else {
-                    HStack(spacing: 6) {
-                        Text(Self.ruleText(connection))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        Text("→")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        chainCapsule(connection.proxy ?? connection.chains.last ?? "—", isLast: true)
-                    }
-                }
-                Text(connection.source)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
+            Spacer(minLength: 8)
+            rowTraffic(connection, isLive: isLive)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
     }
 
-    /// Live chain line: rule name, arrow, then each chain element
-    /// as a capsule (upstream shows the chains reversed, group →
-    /// strategy group → node — same order as the detail page).
-    /// With no chains, the proxy itself is the single capsule.
-    private func chainLine(_ connection: LiveConnection) -> some View {
-        // The chains arrive node-first (see the detail page), so
-        // reverse them for display; the last capsule is the node.
-        let chains = Array(connection.chains.reversed())
-        return HStack(spacing: 6) {
-            Text(Self.ruleText(connection))
-                .font(.caption2)
+    /// The row subtitle (upstream tracker_info_item.dart:105-150
+    /// + tracker_texts.dart trackerLifetimeText). The lifetime
+    /// ticks because the 1 s poll re-publishes the store and this
+    /// row re-renders.
+    private func rowSubtitle(_ connection: LiveConnection, isLive: Bool) -> String {
+        if let failureKind = connection.failureKind {
+            return [connection.process, ConcordConnectionFailure.label(for: failureKind)]
+                .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        }
+        let lifetime: String
+        if isLive {
+            lifetime = timelineLiveLifetime(start: connection.start, now: Date())
+        } else {
+            let endedAt = connection.endedAt.map {
+                Date(timeIntervalSince1970: TimeInterval($0) / 1000)
+            }
+            lifetime = timelineLifetimeText(start: connection.start, endedAt: endedAt, now: Date())
+        }
+        return [connection.process, connection.chains.last, lifetime]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// The row labels (upstream tracker_texts.dart trackerLabels):
+    /// failure-kind chip, `×N` repeat count, MITM label.
+    @ViewBuilder
+    private func rowLabels(_ connection: LiveConnection) -> some View {
+        if let failureKind = connection.failureKind {
+            rowLabelChip(ConcordConnectionFailure.label(for: failureKind), tone: .red)
+        }
+        if connection.repeatCount > 1 {
+            rowLabelChip("×\(connection.repeatCount)", tone: .secondary)
+        }
+        if connection.mitm {
+            rowLabelChip("MITM", tone: .secondary)
+        }
+    }
+
+    private func rowLabelChip(_ text: String, tone: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(tone.opacity(0.12), in: Capsule())
+            .foregroundStyle(tone)
+    }
+
+    /// The trailing traffic (upstream tracker_info_item.dart
+    /// TrackerTraffic): active → ONE combined `(up+down)/s` line
+    /// (emphasized) + total below; closed → the total as the
+    /// only line.
+    @ViewBuilder
+    private func rowTraffic(_ connection: LiveConnection, isLive: Bool) -> some View {
+        let total = connection.upload + connection.download
+        if isLive {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(ConcordFormat.rate(Int64(connection.upSpeed + connection.downSpeed)))
+                    .font(.footnote.weight(.semibold))
+                    .monospacedDigit()
+                Text(ConcordFormat.bytes(total))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        } else {
+            Text(ConcordFormat.bytes(total))
+                .font(.footnote)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text("→")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            if chains.isEmpty {
-                chainCapsule(connection.proxy ?? "—", isLast: true)
-            } else {
-                ForEach(Array(chains.enumerated()), id: \.offset) { index, chain in
-                    chainCapsule(chain, isLast: index == chains.count - 1)
+                .monospacedDigit()
+        }
+    }
+}
+
+/// The row's / detail header's app well (upstream
+/// tracker_app_well.dart TrackerAppWell, size 40): the process's
+/// bundled brand mark when the compacted process name matches one
+/// (BrandIcons, the resolution already in the tree), else a letter
+/// tile with the process's (or host's) first character. A green dot
+/// marks an active connection.
+private struct ConnectionAppWell: View {
+    let connection: LiveConnection
+    let isLive: Bool
+
+    var body: some View {
+        let process = connection.process ?? ""
+        let fallback = process.isEmpty ? (connection.host ?? connection.destination) : process
+        let initial = String(fallback.prefix(1)).uppercased()
+        return ZStack(alignment: .bottomTrailing) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.secondary.opacity(0.15))
+                if let brand = !process.isEmpty ? BrandIcons.icon(for: process) : nil {
+                    BrandIcons.view(for: brand)
+                        .padding(9)
+                        .foregroundStyle(Color(.label))
+                } else {
+                    Text(initial)
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 40, height: 40)
+            if isLive {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 10, height: 10)
+                    .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
+                    .offset(x: 2, y: 2)
+            }
+        }
+    }
+}
+
+/// The add-condition editor (upstream
+/// connection_condition_form.dart): field picker, value field with
+/// suggestions (value + how many rows hold it), match picker
+/// (包含 / 不包含 / 等于 / 不等于）, and a live "将匹配 N 条" count.
+private struct ConnectionConditionEditor: View {
+    @ObservedObject var store: ConnectionStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var field: ConnectionCondition.Field = .host
+    @State private var op: ConnectionCondition.Op = .contains
+    @State private var value = ""
+
+    private var draft: ConnectionCondition {
+        ConnectionCondition(field: field, value: value.trimmingCharacters(in: .whitespaces), op: op)
+    }
+
+    private var suggestions: [(value: String, count: Int)] {
+        store.suggestedValues(for: field, matching: value)
+    }
+
+    /// Rows the draft would keep (upstream FieldDraft.countWith):
+    /// an excluding draft keeps everything it does not hold.
+    private var matchCount: Int {
+        let total = store.connections.count + store.recentConnections.count
+        let held = store.countMatching(draft)
+        return draft.excludes ? total - held : held
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("字段") {
+                    Picker("字段", selection: $field) {
+                        ForEach(ConnectionCondition.Field.allCases) { field in
+                            Text(field.label).tag(field)
+                        }
+                    }
+                }
+                Section("匹配") {
+                    Picker("方式", selection: $op) {
+                        ForEach(ConnectionCondition.Op.allCases) { op in
+                            Text(op.rawValue).tag(op)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                Section("值") {
+                    TextField("值", text: $value)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                if !suggestions.isEmpty {
+                    Section("建议") {
+                        ForEach(suggestions, id: \.value) { suggestion in
+                            Button {
+                                value = suggestion.value
+                            } label: {
+                                HStack {
+                                    Text(suggestion.value)
+                                        .foregroundStyle(Color(.label))
+                                    Spacer()
+                                    Text("\(suggestion.count)")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                if !value.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Section {
+                        Text("将匹配 \(matchCount) 条连接")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("添加筛选条件")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("添加") {
+                        store.conditions.append(draft)
+                        dismiss()
+                    }
+                    .disabled(value.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }
@@ -910,16 +1270,101 @@ struct ConnectionsView: View {
 }
 
 struct ConnectionDetailView: View {
+    /// The connection as opened. The detail is LIVE, not a frozen
+    /// snapshot (upstream TrackerSelectedDetail watches the log):
+    /// `liveConnection` below re-reads the id from the store on
+    /// every poll, so totals/speeds refresh, and the sheet drops
+    /// itself when the id leaves the log (upstream _dropGone).
     let connection: LiveConnection
-    /// False for a finished connection from 最近请求： there is
-    /// nothing to close.
+    /// False for a finished connection: there is nothing to close.
+    /// Only the opening value — liveness is re-read from the store.
     var isLive: Bool = true
+    /// Open on the HTTP tab (upstream opensRequests): the row
+    /// menu's "查看 HTTP" sets it; the tab flips once the detail
+    /// knows MITM is capturing (see the .task below).
+    var opensRequests: Bool = false
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var client: ConcordClient
     @Environment(\.dismiss) private var dismiss
+
+    /// The MITM host change awaiting confirmation (upstream
+    /// applyMitmHostChange shows a confirm dialog first).
+    @State private var pendingMitmHostChange: MitmHostChange?
+    @State private var showMitmHostConfirm = false
+
+    /// The connection as the store holds it now: the live table,
+    /// else the recent list, else the opening snapshot (a
+    /// connection cleared from the log keeps the state it was last
+    /// seen in — upstream showTrackerInfoDetail).
+    private var liveConnection: LiveConnection {
+        connectionStore.connections.first { $0.id == connection.id }
+            ?? connectionStore.recentConnections.first { $0.id == connection.id }
+            ?? connection
+    }
+
+    /// Whether the id is still open (upstream TrackerInfo.isActive).
+    private var liveIsLive: Bool {
+        connectionStore.connections.contains { $0.id == connection.id }
+    }
+
+    /// Whether the id left the log entirely (upstream _dropGone).
+    private var isGone: Bool {
+        !liveIsLive
+            && !connectionStore.recentConnections.contains { $0.id == connection.id }
+    }
+
+    /// A MITM host change (upstream tracker_mitm_host.dart
+    /// MitmHostChange): decrypt this host, or exclude it from
+    /// decryption. `exclude` puts `-host` first in the hostname
+    /// list; decrypt puts `host` first (first match decides).
+    private struct MitmHostChange {
+        let title: String
+        let tip: String
+        let exclude: Bool
+    }
+
+    /// Whether decrypting / excluding this connection's host can
+    /// be done from here (upstream mitmHostChangeOf): MITM
+    /// enabled + a host + TCP. A decrypted host (or one already
+    /// listed) offers exclusion; anything else offers decryption.
+    private func mitmHostChange(for c: LiveConnection) -> MitmHostChange? {
+        guard settingsStore.mitmEnabled,
+              let host = c.host, !host.isEmpty,
+              c.network.lowercased() == "tcp" else { return nil }
+        let hostnames = settingsStore.mitmHostnames
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let decrypted = c.mitm || c.mitmRefused
+        if !hostnames.contains("-\(host)") && (decrypted || hostnames.contains(host)) {
+            return MitmHostChange(
+                title: "排除此域名",
+                tip: "将 \(host) 加入排除列表，之后不再解密此域名的流量。",
+                exclude: true)
+        }
+        return MitmHostChange(
+            title: "解密此域名",
+            tip: "将 \(host) 加入解密列表，之后会解密此域名的流量。",
+            exclude: false)
+    }
+
+    /// Applies a confirmed host change (upstream applyMitmHostChange):
+    /// the host goes first in the hostname list, as `host` or
+    /// `-host`, and the settings save like the MITM page's own
+    /// hostname edits (takes effect on the next apply / VPN restart).
+    private func applyMitmHostChange(_ change: MitmHostChange, host: String) {
+        var hostnames = settingsStore.mitmHostnames
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        hostnames.removeAll { $0 == host || $0 == "-\(host)" }
+        hostnames.insert(change.exclude ? "-\(host)" : host, at: 0)
+        settingsStore.mitmHostnames = hostnames.joined(separator: ", ")
+        settingsStore.save()
+    }
 
     /// Upstream tracker_info_detail.dart: the detail page has
     /// three tabs in order — 时间线, HTTP 请求 (only while MITM
@@ -949,32 +1394,170 @@ struct ConnectionDetailView: View {
     /// for this connection (upstream tracker_info_item.dart:
     /// capturing = metadata.mitm && mitm.enable && mitm.capture).
     private var showHttpTab: Bool {
-        connection.mitm && settingsStore.mitmEnabled && settingsStore.mitmCapture
+        liveConnection.mitm && settingsStore.mitmEnabled && settingsStore.mitmCapture
+    }
+
+    /// The detail header (upstream tracker_selection.dart
+    /// TrackerInfoHeader): app well, headline (host; subtitle
+    /// process · exit · lifetime), close button (active only, on
+    /// every tab) + ⋯ menu.
+    private var detailHeader: some View {
+        HStack(spacing: 12) {
+            ConnectionAppWell(connection: liveConnection, isLive: liveIsLive)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(Self.detailTitle(liveConnection))
+                    .font(.headline)
+                    .lineLimit(1)
+                headlineText(liveConnection)
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if liveIsLive {
+                Button {
+                    Task {
+                        await connectionStore.close(liveConnection)
+                        dismiss()
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle")
+                        .font(.title3)
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("断开连接")
+            }
+            Menu {
+                detailMenuItems(liveConnection)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+            }
+            .accessibilityLabel("更多操作")
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    /// The headline (upstream tracker_texts.dart
+    /// trackerHeadlineParts): process, exit node, then 活动 +
+    /// ticking lifetime while open, 连接失败 (red) + lifetime on a
+    /// failed dial, 已关闭 once closed. The lifetime ticks on the
+    /// detail's 1 s poll below.
+    private func headlineText(_ c: LiveConnection) -> Text {
+        var parts: [(String, Bool)] = []
+        if let process = c.process, !process.isEmpty {
+            parts.append((process, false))
+        }
+        if let exit = c.chains.first, !exit.isEmpty {
+            parts.append((exit, false))
+        }
+        if c.failureKind != nil {
+            parts.append(("连接失败", true))
+            let endedAt = c.endedAt.map {
+                Date(timeIntervalSince1970: TimeInterval($0) / 1000)
+            }
+            parts.append((timelineLifetimeText(start: c.start, endedAt: endedAt, now: Date()), false))
+        } else if liveIsLive {
+            parts.append(("活动 \(timelineLiveLifetime(start: c.start, now: Date()))", false))
+        } else {
+            parts.append(("已关闭", false))
+        }
+        var text = Text("")
+        for (index, part) in parts.enumerated() {
+            if index > 0 {
+                text = text + Text(" · ").foregroundStyle(.secondary)
+            }
+            text = text + Text(part.0).foregroundStyle(part.1 ? .red : .secondary)
+        }
+        return text
+    }
+
+    /// The detail ⋯ menu (upstream tracker_menu.dart
+    /// trackerDetailMenuItems): copy host / destination / summary,
+    /// MITM decrypt-or-exclude host (with confirm).
+    @ViewBuilder
+    private func detailMenuItems(_ c: LiveConnection) -> some View {
+        if let host = c.host, !host.isEmpty {
+            Button("复制主机") {
+                UIPasteboard.general.string = host
+            }
+        }
+        Button("复制目标") {
+            UIPasteboard.general.string = c.destination
+        }
+        Button("复制摘要") {
+            UIPasteboard.general.string = summaryText(c)
+        }
+        if let change = mitmHostChange(for: c) {
+            Button(change.title) {
+                pendingMitmHostChange = change
+                showMitmHostConfirm = true
+            }
+        }
+    }
+
+    /// The copyable summary (upstream tracker_texts.dart
+    /// trackerSummaryText): title, headline, source, destination,
+    /// process path, rule, path, failure.
+    private func summaryText(_ c: LiveConnection) -> String {
+        var lines = [Self.detailTitle(c)]
+        var headlineParts: [String] = []
+        if let process = c.process, !process.isEmpty {
+            headlineParts.append(process)
+        }
+        if let exit = c.chains.first, !exit.isEmpty {
+            headlineParts.append(exit)
+        }
+        if c.failureKind != nil {
+            headlineParts.append("连接失败")
+        } else if liveIsLive {
+            headlineParts.append("活动 \(timelineLiveLifetime(start: c.start, now: Date()))")
+        } else {
+            headlineParts.append("已关闭")
+        }
+        lines.append(headlineParts.joined(separator: " · "))
+        for (label, value) in [
+            ("来源", "\(c.sourceIp):\(c.sourcePort)"),
+            ("目标", c.destination),
+            ("进程路径", c.processPath ?? ""),
+            ("规则", ruleText(c)),
+            ("路径", Array(c.chains.reversed()).joined(separator: " → ")),
+        ] where !value.isEmpty {
+            lines.append("\(label)：\(value)")
+        }
+        if let kind = c.failureKind {
+            lines.append("\(ConcordConnectionFailure.label(for: kind))：\(c.failureMessage ?? "")")
+        }
+        return lines.joined(separator: "\n")
     }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                detailHeader
                 Picker("详情", selection: $tab) {
                     ForEach(visibleTabs, id: \.self) { tab in
-                        Text(tab.rawValue).tag(tab)
+                        Text(tabLabel(tab)).tag(tab)
                     }
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
                 .padding(.vertical, 4)
                 if tab == .http && showHttpTab {
-                    MitmView(connectionId: connection.id)
+                    MitmView(connectionId: liveConnection.id)
                 } else if tab == .timeline {
                     ConnectionTimelineView(
-                        connection: connection,
-                        isLive: isLive,
+                        connection: liveConnection,
+                        isLive: liveIsLive,
                         dnsEntries: resolvedDnsEntries,
                         exchanges: httpExchanges,
                         nodeDelayMs: nodeDelayMs,
                         pickedGroupType: pickedGroup?.type,
                         standingRuleIndex: standingRuleIndex,
-                        onOpenRequests: showHttpTab ? { self.tab = .http } : nil
+                        // Upstream disables the HTTP step once the
+                        // connection ended (capturing && !ended).
+                        onOpenRequests: showHttpTab && liveIsLive ? { self.tab = .http } : nil
                     )
                 } else {
                     overviewList
@@ -988,36 +1571,85 @@ struct ConnectionDetailView: View {
                     Button("完成") { dismiss() }
                 }
             }
+            .alert("\(pendingMitmHostChange?.title ?? "确认")", isPresented: $showMitmHostConfirm) {
+                Button("确定") {
+                    if let change = pendingMitmHostChange,
+                       let host = liveConnection.host {
+                        applyMitmHostChange(change, host: host)
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text(pendingMitmHostChange?.tip ?? "")
+            }
+            .onChange(of: isGone) { _, gone in
+                if gone { dismiss() }
+            }
+            .onChange(of: tab) { _, newTab in
+                // Re-read the exchange count when the HTTP tab is
+                // shown, so its label stays current (upstream
+                // watches mitmExchangesProvider).
+                if newTab == .http && showHttpTab {
+                    Task {
+                        if let list = try? await client.mitmExchanges(connection: connection.id) {
+                            httpExchanges = list.result.exchanges
+                        }
+                    }
+                }
+            }
             // Load the DNS entries so the DNS 查询 row above can
             // resolve the connection's dnsQueries ids to domains,
-            // plus the timeline's once-per-open inputs.
+            // plus the timeline's once-per-open inputs. Then keep
+            // the detail live on the same 1 s poll as the page
+            // (upstream TrackerSelectedDetail watches the log);
+            // the poll stops when the sheet drops or closes.
             .task {
                 await dnsStore.refresh()
                 await loadTimelineSupport()
+                if opensRequests && showHttpTab {
+                    tab = .http
+                }
+                guard !isGone else { dismiss(); return }
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    guard !Task.isCancelled else { break }
+                    guard TunnelManager.shared.isRunning || AppCore.shared.isRunning else { continue }
+                    await connectionStore.refresh()
+                    if isGone { break }
+                }
             }
         }
+    }
+
+    /// A tab's label: the HTTP tab shows the exchange count when
+    /// above zero (upstream tracker_info_detail.dart:288-293).
+    private func tabLabel(_ tab: DetailTab) -> String {
+        if tab == .http && !httpExchanges.isEmpty {
+            return "HTTP 请求 \(httpExchanges.count)"
+        }
+        return tab.rawValue
     }
 
     /// The connection's DNS queries, newest first (upstream
     /// `_LinkedQueries.of`: the dns.watch log, newest first;
     /// DnsStore.entries is already newest-first).
     private var resolvedDnsEntries: [ConcordDnsEntry] {
-        let ids = Set(connection.dnsQueries)
+        let ids = Set(liveConnection.dnsQueries)
         return dnsStore.entries.filter { ids.contains($0.dnsId) }
     }
 
     /// The group that picked this connection's node (upstream
     /// `groupsProvider.getGroup(chains[1])`).
     private var pickedGroup: ProxyGroup? {
-        guard connection.chains.count > 1 else { return nil }
-        return proxyStore.groups.first { $0.name == connection.chains[1] }
+        guard liveConnection.chains.count > 1 else { return nil }
+        return proxyStore.groups.first { $0.name == liveConnection.chains[1] }
     }
 
     /// The picked node's last tested delay (upstream
     /// `delayProvider(proxyName: chains.first, testUrl:
     /// pickedBy?.testUrl)`), via the store's existing lookup.
     private var nodeDelayMs: Int32? {
-        guard let group = pickedGroup, let node = connection.chains.first else { return nil }
+        guard let group = pickedGroup, let node = liveConnection.chains.first else { return nil }
         return proxyStore.latency(forNodeNamed: node, inGroup: group)
     }
 
@@ -1052,10 +1684,13 @@ struct ConnectionDetailView: View {
     }
 
     /// Overview tab (upstream tracker_info_item.dart _buildOverview):
-    /// basic info, address (GeoIP/ASN/remote destination), proxies
-    /// (special proxy/rules, DNS mode, chains as chips).
+    /// path section (process / rule / per-hop chain), traffic
+    /// summary with live speeds, MITM host action, address
+    /// (GeoIP/ASN/remote destination).
     private var overviewList: some View {
-        List {
+        // The live connection, not the opening snapshot.
+        let connection = liveConnection
+        return List {
             Section("连接") {
                 LabeledContent("域名", value: connection.host ?? "—")
                 LabeledContent("目标", value: connection.destination)
@@ -1074,14 +1709,14 @@ struct ConnectionDetailView: View {
                 }
             }
             Section("路由") {
-                LabeledContent("规则", value: ruleText)
-                if let ruleIndex = connection.ruleIndex {
-                    // Upstream 0c9788f: the deciding rule's position,
-                    // from 0, in the list `rule.list` gave.
-                    LabeledContent("规则序号", value: "#\(ruleIndex)")
-                }
+                LabeledContent("规则", value: ruleText(connection))
                 LabeledContent("代理", value: connection.proxy ?? "—")
                 LabeledContent("持续", value: ConcordFormat.duration(seconds: connection.durationSeconds))
+                if liveIsLive {
+                    // Upstream TrackerTrafficSummary shows live
+                    // speeds while the connection is open.
+                    LabeledContent("实时速度", value: ConcordFormat.rate(Int64(connection.upSpeed + connection.downSpeed)))
+                }
                 LabeledContent("上行", value: ConcordFormat.bytes(connection.upload))
                 LabeledContent("下行", value: ConcordFormat.bytes(connection.download))
                 if let dnsMode = connection.dnsMode, !dnsMode.isEmpty {
@@ -1115,34 +1750,9 @@ struct ConnectionDetailView: View {
                     }
                 }
             }
-            if let timing = connection.timing {
-                // Upstream 0c9788f ConnectionTiming: each step in
-                // microseconds after the core accepted the flow.
-                Section("建立耗时") {
-                    ForEach(timingRows(timing), id: \.0) { label, microseconds in
-                        LabeledContent(label, value: Self.timingText(microseconds))
-                    }
-                }
-            }
-            if let endReason = connection.endReason {
-                // Upstream 0c9788f ConnectionDelta.ended: why this
-                // finished connection ended and when. The 上行/下行
-                // above are already the core's final totals.
-                Section("结束") {
-                    LabeledContent("原因", value: ConcordEndedConnection.label(for: endReason))
-                    if let endedAt = connection.endedAt {
-                        LabeledContent("结束时间", value: Self.fullTime(endedAt))
-                    }
-                    LabeledContent("最终上行", value: ConcordFormat.bytes(connection.upload))
-                    LabeledContent("最终下行", value: ConcordFormat.bytes(connection.download))
-                    if let message = connection.endMessage, !message.isEmpty {
-                        Text(message)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-            }
+            // Upstream shows no timing or end sections in the
+            // overview (the timing lives in the timeline; the end
+            // reason lives in the timeline's status note).
             Section("地址") {
                 if !connection.destinationGeoIp.isEmpty {
                     LabeledContent("目标 GeoIP", value: connection.destinationGeoIp.joined(separator: " "))
@@ -1166,36 +1776,51 @@ struct ConnectionDetailView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if !connection.chains.isEmpty {
-                Section("代理链") {
-                    // Upstream shows the chains reversed with arrows
-                    // between them (tracker_info_item.dart _buildChains).
-                    HStack(spacing: 6) {
-                        ForEach(Array(connection.chains.reversed().enumerated()), id: \.offset) { index, chain in
-                            if index > 0 {
-                                Text("→")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Text(chain)
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.secondary.opacity(0.15), in: Capsule())
-                        }
+            // The path (upstream tracker_info_detail.dart
+            // TrackerPathSection): process row, rule row, then one
+            // row per hop — group hops "代理组 · 类型", node hops
+            // "代理节点 · 类型" + trailing delay ms.
+            Section("路径") {
+                if connection.process != nil || (connection.uid ?? 0) != 0 {
+                    let processTitle: String = {
+                        if let process = connection.process, !process.isEmpty { return process }
+                        return "\(connection.uid ?? 0)"
+                    }()
+                    let uidSuffix: String = {
+                        if let uid = connection.uid, uid != 0 { return " · UID \(uid)" }
+                        return ""
+                    }()
+                    pathRow(title: processTitle, subtitle: "进程\(uidSuffix)")
+                }
+                pathRow(title: ruleText(connection), subtitle: "规则")
+                ForEach(Array(connection.chains.reversed().enumerated()), id: \.offset) { _, name in
+                    if let group = proxyStore.groups.first(where: { $0.name == name }) {
+                        pathRow(title: name, subtitle: "代理组 · \(group.type)")
+                    } else {
+                        let type = proxyStore.groups.flatMap { $0.nodes }.first(where: { $0.name == name })?.type
+                        let delay = name == connection.chains.first ? nodeDelayMs : nil
+                        pathRow(title: name, subtitle: type.map { "代理节点 · \($0)" } ?? "代理节点", delayMs: delay)
                     }
                 }
             }
-            Section {
-                if isLive {
-                    Button("断开此连接", role: .destructive) {
-                        Task {
-                            await connectionStore.close(connection)
-                            dismiss()
-                        }
+            if let change = mitmHostChange(for: connection) {
+                // Upstream tracker_mitm_host.dart MitmHostSection:
+                // decrypt / exclude this host (confirm first) +
+                // the refused-certificate footer.
+                Section("HTTPS 解密") {
+                    Button(change.title) {
+                        pendingMitmHostChange = change
+                        showMitmHostConfirm = true
+                    }
+                    if connection.mitmRefused {
+                        Text("客户端拒绝了证书")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
                 }
-                if showHttpTab {
+            }
+            if showHttpTab {
+                Section {
                     NavigationLink("MITM 拦截记录（mitm.exchanges）") {
                         MitmView(connectionId: connection.id)
                     }
@@ -1209,9 +1834,31 @@ struct ConnectionDetailView: View {
         .font(.footnote.weight(.semibold))
     }
 
+    /// One path row: title + subtitle, optional trailing delay.
+    private func pathRow(title: String, subtitle: String, delayMs: Int32? = nil) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if let delayMs, delayMs > 0 {
+                Text("\(delayMs) ms")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
     /// Rule with its matched payload (upstream TrackerRuleText:
     /// rule + rulePayload).
-    private var ruleText: String {
+    private func ruleText(_ connection: LiveConnection) -> String {
         guard let rule = connection.rule else { return "—" }
         if let payload = connection.rulePayload, !payload.isEmpty {
             return "\(rule) (\(payload))"
@@ -1222,42 +1869,12 @@ struct ConnectionDetailView: View {
     /// The connection's DNS queries, resolved to domain + type
     /// against the DNS store when it has loaded them.
     private var dnsQueryText: String {
-        connection.dnsQueries.map { id in
+        liveConnection.dnsQueries.map { id in
             if let entry = dnsStore.entries.first(where: { $0.dnsId == id }) {
                 return "#\(id) \(entry.domain) \(entry.type)"
             }
             return "#\(id)"
         }.joined(separator: " · ")
-    }
-
-    /// The setup steps the connection actually took, in order
-    /// (upstream ConnectionTiming: microseconds after `accepted`).
-    private func timingRows(_ timing: ConcordConnectionTiming) -> [(String, UInt32)] {
-        var rows: [(String, UInt32)] = []
-        if let value = timing.dnsStart { rows.append(("DNS 查询开始", value)) }
-        if let value = timing.dnsEnd { rows.append(("DNS 查询完成", value)) }
-        if let value = timing.routed { rows.append(("路由决定", value)) }
-        if let value = timing.dialStart { rows.append(("开始拨号", value)) }
-        if let value = timing.connected { rows.append(("首跳接通", value)) }
-        if let value = timing.tls { rows.append(("握手完成", value)) }
-        if let value = timing.dialEnd { rows.append(("拨号完成", value)) }
-        if let value = timing.targetTls { rows.append(("目标 TLS 完成", value)) }
-        if let value = timing.decrypted { rows.append(("解密就绪", value)) }
-        return rows
-    }
-
-    /// Microseconds after `accepted`, as milliseconds with one decimal.
-    private static func timingText(_ microseconds: UInt32) -> String {
-        String(format: "%.1f ms", Double(microseconds) / 1000)
-    }
-
-    /// Full date-time for the end timestamp (same shape as the
-    /// start time above).
-    private static func fullTime(_ epochMillis: Int64) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(epochMillis) / 1000))
     }
 }
 
@@ -1268,6 +1885,8 @@ struct ConnectionDetailView: View {
 private struct ConnectionFloatingSearchBar: View {
     @Binding var text: String
     let prompt: String
+    /// Runs on submit (return key): the HTTP segment re-queries.
+    var onSubmit: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1278,6 +1897,7 @@ private struct ConnectionFloatingSearchBar: View {
                 .font(.footnote)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .onSubmit { onSubmit?() }
             if !text.isEmpty {
                 Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill")

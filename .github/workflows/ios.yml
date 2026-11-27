@@ -1,6 +1,6 @@
 # Concord iOS — GitHub Actions build
 # Runs on macOS runners because iOS builds need Xcode / iOS SDK.
-# Builds the REAL Concord core: upstream chen08209/concord is checked
+# Builds the REAL Concord core: upstream Vialibrex/concord is checked
 # out at the pinned commit below, patches/ are applied, and the full
 # staticlib is built for aarch64-apple-ios and linked into the app.
 name: iOS
@@ -18,9 +18,9 @@ env:
   # TODO: replace with your real Bundle IDs / Team ID after verifying signing.
   APP_BUNDLE_ID: com.sunny-qwe.concord-ios
   TUNNEL_BUNDLE_ID: com.sunny-qwe.concord-ios.PacketTunnel
-  UPSTREAM_REPO: chen08209/concord
+  UPSTREAM_REPO: Vialibrex/concord
   # Pinned upstream commit the patches in patches/ are diffs against.
-  UPSTREAM_REF: 382aeab430ba0e1b36334bea96a69831b6d5ea5e
+  UPSTREAM_REF: debef6ec8da84e443c3f33755b2864f2ec304e60
   CONCORD_PRODUCT_NAME: FlClash
   STATICLIB_DIR: upstream/target/aarch64-apple-ios/release
   STATICLIB: upstream/target/aarch64-apple-ios/release/libconcord_ios.a

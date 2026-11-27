@@ -366,7 +366,15 @@ final class MitmModuleStore: ObservableObject {
     @MainActor
     func answerConsent(_ module: MitmModule, agreed: Bool, content: MitmModuleContent? = nil) async {
         guard let index = modules.firstIndex(where: { $0.id == module.id }) else { return }
-        let content = content ?? (await coreParsedContent(for: modules[index])) ?? parsedContent(for: modules[index])
+        // `??` right-hand sides are autoclosures and cannot contain
+        // `await` — evaluate the core call first, then fall back.
+        let coreContent: MitmModuleContent?
+        if let content {
+            coreContent = content
+        } else {
+            coreContent = await coreParsedContent(for: modules[index])
+        }
+        let content = coreContent ?? parsedContent(for: modules[index])
         modules[index].asksConsent = content.map { asksConsent(of: $0) } ?? true
         if agreed {
             modules[index].accepted = true

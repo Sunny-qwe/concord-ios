@@ -3228,8 +3228,8 @@ extension ConcordTheme {
     /// ui/delay_color.dart:5-10): <0 → error, <600 → success, else
     /// warning. (Null → no colour — the caller shows the bolt.)
     static func delayColor(for ms: Int32) -> Color {
-        if ms < 0 { return .error }
-        return ms < 600 ? .success : .warning
+        if ms < 0 { return ConcordTheme.error }
+        return ms < 600 ? ConcordTheme.success : ConcordTheme.warning
     }
 }
 

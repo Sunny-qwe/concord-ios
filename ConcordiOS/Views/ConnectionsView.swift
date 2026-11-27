@@ -1405,7 +1405,7 @@ struct ConnectionDetailView: View {
         HStack(spacing: 12) {
             ConnectionAppWell(connection: liveConnection, isLive: liveIsLive)
             VStack(alignment: .leading, spacing: 2) {
-                Text(Self.detailTitle(liveConnection))
+                Text(ConnectionsView.detailTitle(liveConnection))
                     .font(.headline)
                     .lineLimit(1)
                 headlineText(liveConnection)
@@ -1501,7 +1501,7 @@ struct ConnectionDetailView: View {
     /// trackerSummaryText): title, headline, source, destination,
     /// process path, rule, path, failure.
     private func summaryText(_ c: LiveConnection) -> String {
-        var lines = [Self.detailTitle(c)]
+        var lines = [ConnectionsView.detailTitle(c)]
         var headlineParts: [String] = []
         if let process = c.process, !process.isEmpty {
             headlineParts.append(process)

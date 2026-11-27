@@ -288,6 +288,30 @@ final class ConnectionStore: ObservableObject {
     /// but per connection id instead of per chain name).
     private var previousBytes: [UInt64: (upload: Int64, download: Int64, at: Date)] = [:]
 
+    /// System DNS servers (FlClash task.dart:314 appends the system
+    /// DNS to dns.nameserver at config build). Read from
+    /// /etc/resolv.conf: `nameserver` lines, returned as "ip:53"
+    /// socket addresses (IPv6 bracketed), deduplicated, in file
+    /// order. Returns nil when the file is unreadable or has no
+    /// nameserver lines (e.g. sandbox blocks the read) — the caller
+    /// then simply skips the append, so this never breaks a build.
+    static func systemDnsServers() -> [String]? {
+        guard let text = try? String(contentsOfFile: "/etc/resolv.conf", encoding: .utf8) else {
+            return nil
+        }
+        var servers: [String] = []
+        for line in text.split(separator: "\n") {
+            let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard fields.count >= 2, fields[0] == "nameserver" else { continue }
+            let ip = String(fields[1])
+            let socket = ip.contains(":") ? "[\(ip)]:53" : "\(ip):53"
+            if !servers.contains(socket) {
+                servers.append(socket)
+            }
+        }
+        return servers.isEmpty ? nil : servers
+    }
+
     /// Facet value lists offered by the current data (live + recent).
     var offeredNetworks: [String] {
         Array(Set((connections + recentConnections).map { $0.network.lowercased() })).sorted()

@@ -13,6 +13,45 @@ struct DnsSettingsView: View {
     // dns.json ("listen-routing-mark").
     @AppStorage("ConcordiOS.dnsListenRoutingMark") private var listenRoutingMark = 0
 
+    // v0.2.141 fix: restored — C7-d1 deleted the inline validators,
+    // but CustomSubscriptionEditorView.swift:123 still calls this
+    // static helper (scoped DNS listen validation). Verbatim from
+    // the pre-141 implementation.
+    /// "IP" or "IP:port" (FlClash validateListenAddress).
+    static func isValidListenAddress(_ value: String) -> Bool {
+        let host: String
+        if value.hasPrefix("[") {
+            // [IPv6]:port
+            guard let close = value.firstIndex(of: "]") else { return false }
+            host = String(value[value.index(after: value.startIndex)..<close])
+            let rest = value[value.index(after: close)...]
+            if !rest.isEmpty {
+                guard rest.hasPrefix(":"), let port = Int(rest.dropFirst()), (1...65535).contains(port) else { return false }
+            }
+            return !host.isEmpty
+        }
+        let parts = value.split(separator: ":")
+        if parts.count == 2 {
+            guard let port = Int(parts[1]), (1...65535).contains(port) else { return false }
+            host = String(parts[0])
+        } else if parts.count == 1 {
+            host = value
+        } else {
+            return false
+        }
+        return isValidIP(host)
+    }
+
+    private static func isValidIP(_ host: String) -> Bool {
+        if host.contains(":") { return !host.isEmpty }
+        let octets = host.split(separator: ".")
+        guard octets.count == 4 else { return false }
+        return octets.allSatisfy { octet in
+            !octet.isEmpty && octet.count <= 3 && octet.allSatisfy(\.isNumber)
+                && (Int(octet).map { (0...255).contains($0) } ?? false)
+        }
+    }
+
     var body: some View {
         List {
             Section {

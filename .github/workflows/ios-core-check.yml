@@ -2,7 +2,7 @@
 #
 # Reproduces the full core build from scratch on a macOS runner:
 #   1. check out this scaffold repo,
-#   2. check out upstream chen08209/concord at the PINNED commit below
+#   2. check out upstream Vialibrex/concord at the PINNED commit below
 #      into ./upstream (never a moving branch — the patches in patches/
 #      are diffs against exactly this commit),
 #   3. apply patches/ in order (01 bins/ios, 02 packet channel,
@@ -49,11 +49,11 @@ on:
   workflow_dispatch:
 
 env:
-  UPSTREAM_REPO: chen08209/concord
+  UPSTREAM_REPO: Vialibrex/concord
   # Pinned upstream commit the patches in patches/ are diffs against.
   # Change this ONLY together with regenerating patches/ (see
   # patches/README.md); never point it at a branch.
-  UPSTREAM_REF: 382aeab430ba0e1b36334bea96a69831b6d5ea5e
+  UPSTREAM_REF: debef6ec8da84e443c3f33755b2864f2ec304e60
   XCODE_PROJECT: ConcordiOS.xcodeproj
   APP_SCHEME: ConcordiOS
   STATICLIB_DIR: upstream/target/aarch64-apple-ios/release

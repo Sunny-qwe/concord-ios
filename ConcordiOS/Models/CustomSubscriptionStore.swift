@@ -631,12 +631,39 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
     var ntp: CustomNtpSection?
     var sniffer: CustomSnifferSection?
     var tun: CustomTunSection?
+    /// Per-group selected node (upstream Profile.selectedMap,
+    /// lib/models/profile.dart:77 — group name -> selected proxy
+    /// name; passed to the core as the selection at apply time).
+    /// On iOS the selection lives in ProxyStore's pending
+    /// selections; this map is the persisted copy that survives a
+    /// re-bake (a fresh config load resets the core's picks, so
+    /// refresh() re-fills missing pendings from here). Empty =
+    /// no stored pick for that group.
+    var selectedMap: [String: String]
+    /// The extend-script library id chosen for this subscription
+    /// (upstream Profile.scriptId; the iOS script library uses
+    /// String ids — MitmScript.id — not upstream's ints). When
+    /// the subscription is applied to a profile, applyNow copies
+    /// this into that profile's ExtendSettings.scriptId. Nil =
+    /// no library script chosen.
+    var scriptId: String?
+    /// Per-exit outbound target (upstream Profile.exitTargets,
+    /// lib/models/profile.dart:80 — exit name -> group/proxy
+    /// name; resolves added-rule custom exits and MITM module
+    /// policies at build time). Stored only in v0.2.147: iOS has
+    /// no structured exit concept yet (added rules are raw
+    /// strings, modules carry no exit policies), so no bake step
+    /// reads it — the map is persisted so a future exit surface
+    /// can use it without a migration.
+    var exitTargets: [String: String]
 
     init(id: UUID = UUID(), name: String = "", groups: [CustomGroup] = [],
          dialers: [CustomDialer] = [], proxyProviders: [CustomProvider] = [],
          ruleProviders: [CustomProvider] = [], rules: [CustomRule] = [],
          dns: CustomDnsSection? = nil, ntp: CustomNtpSection? = nil,
-         sniffer: CustomSnifferSection? = nil, tun: CustomTunSection? = nil) {
+         sniffer: CustomSnifferSection? = nil, tun: CustomTunSection? = nil,
+         selectedMap: [String: String] = [:], scriptId: String? = nil,
+         exitTargets: [String: String] = [:]) {
         self.id = id
         self.name = name
         self.groups = groups
@@ -648,6 +675,39 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
         self.ntp = ntp
         self.sniffer = sniffer
         self.tun = tun
+        self.selectedMap = selectedMap
+        self.scriptId = scriptId
+        self.exitTargets = exitTargets
+    }
+
+    // Tolerant decode (CustomGroup pattern): the struct has no
+    // custom decoder today, and synthesized decode REQUIRES every
+    // key — files saved before v0.2.147 have no selectedMap /
+    // scriptId / exitTargets keys, so without this the whole
+    // subscription list would fail to load. Every field decodes
+    // with decodeIfPresent and the init's defaults.
+    enum CodingKeys: String, CodingKey {
+        case id, name, groups, dialers, proxyProviders, ruleProviders,
+             rules, dns, ntp, sniffer, tun, selectedMap, scriptId,
+             exitTargets
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        groups = try c.decodeIfPresent([CustomGroup].self, forKey: .groups) ?? []
+        dialers = try c.decodeIfPresent([CustomDialer].self, forKey: .dialers) ?? []
+        proxyProviders = try c.decodeIfPresent([CustomProvider].self, forKey: .proxyProviders) ?? []
+        ruleProviders = try c.decodeIfPresent([CustomProvider].self, forKey: .ruleProviders) ?? []
+        rules = try c.decodeIfPresent([CustomRule].self, forKey: .rules) ?? []
+        dns = try c.decodeIfPresent(CustomDnsSection.self, forKey: .dns)
+        ntp = try c.decodeIfPresent(CustomNtpSection.self, forKey: .ntp)
+        sniffer = try c.decodeIfPresent(CustomSnifferSection.self, forKey: .sniffer)
+        tun = try c.decodeIfPresent(CustomTunSection.self, forKey: .tun)
+        selectedMap = try c.decodeIfPresent([String: String].self, forKey: .selectedMap) ?? [:]
+        scriptId = try c.decodeIfPresent(String.self, forKey: .scriptId)
+        exitTargets = try c.decodeIfPresent([String: String].self, forKey: .exitTargets) ?? [:]
     }
 }
 

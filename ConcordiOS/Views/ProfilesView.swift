@@ -761,13 +761,32 @@ struct ProfilesView: View {
         }
     }
 
-    /// Custom subscriptions that use this profile as a proxy
+    /// Custom subscriptions that use this profile as a
     /// provider (FlClash profilesAction.providerUsers): deleting
     /// the profile breaks their provider reference, so the confirm
     /// names them (profiles.dart:288-310 providerInUse).
+    ///
+    /// Upstream asks the core's reference graph (its database
+    /// profileIdsUsing / profileIdsUsingRuleProvider); the core
+    /// has no such query and no profile concept, so this is the
+    /// Swift-side equivalent over the stored custom
+    /// subscriptions: a subscription references the profile when
+    /// a group USES it (`use:` — upstream checks only proxy-kind
+    /// use, providers/actions/profiles.dart:82-92) or a RULE-SET
+    /// rule names it as its payload. DEFINING a provider of that
+    /// name is NOT use — the definition has its own URL and the
+    /// profile is never consulted for it — so the old
+    /// proxyProviders / ruleProviders name match was a false
+    /// positive (the dialog claimed the profile was in use when
+    /// nothing referenced it) and is dropped. Name-based, like
+    /// the bake linkage — a provider is referenced by name,
+    /// never by id.
     private func providerUsers(of profile: Profile) -> [String] {
         customStore.subscriptions
-            .filter { $0.proxyProviders.contains(where: { $0.name == profile.name }) }
+            .filter { sub in
+                sub.groups.contains(where: { $0.useProviders.contains(profile.name) })
+                || sub.rules.contains(where: { $0.type == "RULE-SET" && $0.content == profile.name })
+            }
             .map { $0.name }
     }
 

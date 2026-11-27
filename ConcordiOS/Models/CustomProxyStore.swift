@@ -164,6 +164,29 @@ final class CustomProxyStore: ObservableObject {
         }
     }
 
+    /// Append imported node definitions to the raw store (v0.2.147,
+    /// upstream CustomProfileImport proxies): definitions the
+    /// importer already deduped and renamed, so this only guards
+    /// against a double save (same name already held) before
+    /// writing. The definitions bake verbatim into the active
+    /// profile's `proxies:` section via bakeCurrent.
+    func addRawProxies(_ definitions: [JSONValue]) {
+        guard !definitions.isEmpty else { return }
+        var changed = false
+        for definition in definitions {
+            guard case .object(let dict) = definition,
+                  case .string(let name) = dict["name"], !name.isEmpty else { continue }
+            guard !rawProxies.contains(where: {
+                guard case .object(let held) = $0,
+                      case .string(let heldName) = held["name"] else { return false }
+                return heldName == name
+            }) else { continue }
+            rawProxies.append(definition)
+            changed = true
+        }
+        if changed { save() }
+    }
+
     /// Bake whatever is stored on disk right now (form proxies +
     /// raw definitions) into `text`. Every bake path must use this —
     /// a bake that only knew the form proxies would silently drop

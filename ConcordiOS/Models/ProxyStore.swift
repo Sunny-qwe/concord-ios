@@ -474,6 +474,114 @@ final class ProxyStore: ObservableObject {
         savePendingSelections(all)
     }
 
+    // MARK: - Custom-subscription selectedMap (v0.2.147, upstream
+    // Profile.selectedMap, lib/models/profile.dart:77)
+    //
+    // The map is the persisted copy of the per-group picks; the
+    // pending selections above are the live copy the core applies.
+    // mergeSelectedMap refills missing pendings from the map at
+    // refresh() (a fresh config load resets the core's picks);
+    // setSelectedMapEntry writes a tap back into the map so the
+    // next re-bake keeps it. Both directions only touch groups
+    // the baked subscription itself defines — a host-profile group
+    // has no entry in the map.
+
+    /// The custom subscription baked into `profileID`, if any.
+    private func bakedSubscription(for profileID: UUID) -> CustomSubscription? {
+        guard let subID = CustomSubscriptionStore.bakedSubscriptionID(for: profileID) else { return nil }
+        return CustomSubscriptionStore().subscriptions.first(where: { $0.id == subID })
+    }
+
+    /// Fill pending selections from the baked subscription's
+    /// selectedMap, for groups that have no pending yet. Skipped
+    // entries: a group the subscription does not define, a proxy
+    /// that is not one of the group's members (stale map data
+    /// must never invent a pick), or a value the live list
+    /// already shows — a confirmed pick must not be re-selected
+    /// on every refresh (that would also defeat
+    /// applyPendingSelectionsOnConnect's empty-pending exit).
+    @MainActor
+    private func mergeSelectedMap(profileID: UUID) {
+        guard let sub = bakedSubscription(for: profileID), !sub.selectedMap.isEmpty else { return }
+        var all = loadPendingSelections()
+        var profilePendings = all[profileID.uuidString] ?? [:]
+        var changed = false
+        for (groupName, proxy) in sub.selectedMap {
+            guard profilePendings[groupName] == nil else { continue }
+            guard let customGroup = sub.groups.first(where: { $0.name == groupName }) else { continue }
+            // An empty value means "no pick" (no pin on a
+            // url-test group) — it is not a pick, and merging it
+            // would send an empty proxy.select to the core. Only
+            // a real member name refills a pending.
+            guard !proxy.isEmpty, customGroup.members.contains(proxy) else { continue }
+            // Live cross-check (the live refresh path just fetched
+            // the core's groups): a member the core no longer
+            // lists is stale — skip it instead of queuing a
+            // selectProxy that fails on every refresh (refresh's
+            // applyPendingSelections keeps failures for the next
+            // attempt, so a stale entry would retry forever).
+            // When no live group exists, or it has no members yet
+            // (offline path, list not loaded), the sub's own
+            // membership above is the only check.
+            if let live = groups.first(where: { $0.name == groupName }), !live.nodes.isEmpty {
+                guard live.nodes.contains(where: { $0.name == proxy }) else { continue }
+            }
+            // Skip when the core already shows this pick. Either
+            // field counts: select groups report the pick as
+            // selectedNodeName (now), url-test / fallback / smart
+            // report it as the `fixed` pin while selectedNodeName
+            // holds the auto-selected node — comparing only the
+            // first field re-merged every pin on every refresh.
+            if let live = groups.first(where: { $0.name == groupName }) {
+                if live.selectedNodeName == proxy || live.fixed == proxy { continue }
+            }
+            profilePendings[groupName] = proxy
+            changed = true
+        }
+        if changed {
+            all[profileID.uuidString] = profilePendings
+            savePendingSelections(all)
+        }
+    }
+
+    /// Write one pick into the baked subscription's selectedMap
+    /// (nil removes the entry). No-op when the profile has no
+    /// baked subscription, or the group is not one the
+    /// subscription defines. Deliberately NOT @MainActor: the
+    /// rollback path (rollbackFailedSelection) is nonisolated,
+    /// and this touches only the subscription store on disk —
+    /// no @Published state — so it is safe from any context.
+    private func setSelectedMapEntry(profileID: UUID, group: String, proxy: String?) {
+        // An empty proxy is "no pick", never a pick (same rule as
+        // mergeSelectedMap's read side and the rollback's "" →
+        // removal): a tap that clears a pin stores no entry.
+        let proxy = (proxy?.isEmpty == true) ? nil : proxy
+        guard let subID = CustomSubscriptionStore.bakedSubscriptionID(for: profileID) else { return }
+        let store = CustomSubscriptionStore()
+        guard var sub = store.subscriptions.first(where: { $0.id == subID }),
+              sub.groups.contains(where: { $0.name == group }) else { return }
+        if let proxy {
+            guard sub.selectedMap[group] != proxy else { return }
+            sub.selectedMap[group] = proxy
+        } else {
+            guard sub.selectedMap.removeValue(forKey: group) != nil else { return }
+        }
+        store.update(sub)
+    }
+
+    /// The proxy.select argument that produced a stored
+    /// PreviousPick: select groups take the node name, url-test /
+    /// fallback / smart take the pin (fixed). Nil when nothing
+    /// was captured.
+    private func previousPickProxyArg(profileID: UUID, group: String) -> String? {
+        guard let previous = previousPicks[profileID.uuidString]?[group] else { return nil }
+        let type = groups.first(where: { $0.name == group })?.type ?? "select"
+        if type == "select" {
+            return previous.selectedNodeName ?? ""
+        }
+        return previous.fixed ?? ""
+    }
+
     /// The pre-pick local values for a group whose optimistic pick
     /// has not yet been confirmed by the core (v0.2.97 gap 4): what
     /// the group showed before applySelect's applyLocalPick.
@@ -588,6 +696,12 @@ final class ProxyStore: ObservableObject {
             // A selection made while the VPN was off is remembered in
             // UserDefaults; now that the core is reachable, apply it.
             if let profileID = activeProfile?.id {
+                // v0.2.147 (upstream Profile.selectedMap): the baked
+                // custom subscription's stored picks refill any
+                // pending the core has not confirmed yet — a fresh
+                // config load resets the core's picks, and without
+                // this the stored map would be read-only.
+                mergeSelectedMap(profileID: profileID)
                 await applyPendingSelections(profileID: profileID)
             }
         } catch {
@@ -618,6 +732,10 @@ final class ProxyStore: ObservableObject {
             }
             if let profile = activeProfile {
                 let store = profileStore
+                // v0.2.147: same selectedMap refill as the live path
+                // above, so the offline list also shows the stored
+                // picks (loadLocalGroups displays the pending pick).
+                mergeSelectedMap(profileID: profile.id)
                 let local = await Task.detached { store?.localProxyGroups(for: profile) }.value
                 if let local, loadLocalGroups(local, profileID: profile.id) {
                     lastUpdated = Date()
@@ -876,8 +994,20 @@ final class ProxyStore: ObservableObject {
     /// tap) — dropping the pending alone already lets the core's
     /// actual pick show.
     private func rollbackFailedSelection(profileID: UUID, group: String, error: Error) {
+        // v0.2.147: the rejected pick is already in the baked
+        // subscription's selectedMap (applySelect wrote it there).
+        // Restore the map to the pre-pick value too, or the next
+        // refresh would re-merge the rejected pick and fail again.
+        // Capture before restorePreviousPick drops the snapshot;
+        // no snapshot means the old pick is unknown, so drop the
+        // map entry instead of re-applying a refused value.
+        let previousArg = previousPickProxyArg(profileID: profileID, group: group)
         restorePreviousPick(profileID: profileID, group: group)
         dropPendingSelection(profileID: profileID, group: group)
+        // An empty previous arg means the group had no pick
+        // before the tap — remove the map entry rather than
+        // storing "" (an empty value is "no pick", never a pick).
+        setSelectedMapEntry(profileID: profileID, group: group, proxy: previousArg.flatMap { $0.isEmpty ? nil : $0 })
         lastError = "「\(group)」切换失败，已恢复原来的节点：\(error.localizedDescription)"
     }
 
@@ -1042,6 +1172,10 @@ final class ProxyStore: ObservableObject {
         // snapshot confirms the new pick (fetchCoreGroups).
         if let profileID {
             savePendingSelection(profileID: profileID, group: group.name, proxy: proxy)
+            // v0.2.147: write the tap back into the baked custom
+            // subscription's selectedMap, so the next re-bake
+            // keeps it (see mergeSelectedMap).
+            setSelectedMapEntry(profileID: profileID, group: group.name, proxy: proxy)
             // v0.2.97 gap 4: remember what the group showed before
             // this tap, so a double failure can put it back.
             // putIfAbsent (rs.1 _pendingSelectedRollback): a tap

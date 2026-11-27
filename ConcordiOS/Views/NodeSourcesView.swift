@@ -537,6 +537,37 @@ private struct NodeSourcesEditorView: View {
             return
         }
         CustomSubscriptionStore.noteBaked(subscriptionID: sub.id, into: active.id)
+        // v0.2.147: the subscription's chosen library script rides
+        // along to the host profile's extend settings (upstream
+        // Profile.scriptId lives on the profile itself; here the
+        // custom subscription is baked INTO a host profile, so its
+        // scriptId lands on the host). Only when the subscription
+        // names one — nil leaves the host's own script alone.
+        // The id alone is NOT enough: iOS keeps mode / enabled /
+        // content beside the id, and the script only runs when
+        // mode == .script — so copy the library's current content
+        // and switch the host to script mode too. When the library
+        // entry is gone, record the id only and leave the host's
+        // text/mode as they are (there is nothing to copy).
+        if let scriptId = sub.scriptId {
+            let extendStore = ExtendConfigStore()
+            var settings = extendStore.settings(for: active.id)
+            let scriptStore = MitmScriptStore()
+            if let script = scriptStore.scripts.first(where: { $0.id == scriptId }),
+               let content = scriptStore.content(of: script) {
+                if settings.scriptId != scriptId || settings.scriptText != content
+                    || settings.mode != .script || !settings.scriptEnabled {
+                    settings.scriptId = scriptId
+                    settings.mode = .script
+                    settings.scriptEnabled = true
+                    settings.scriptText = content
+                    extendStore.update(settings, for: active.id)
+                }
+            } else if settings.scriptId != scriptId {
+                settings.scriptId = scriptId
+                extendStore.update(settings, for: active.id)
+            }
+        }
         text = CustomSubscriptionStore.bake(sub, into: text)
         var message = await profileStore.saveActiveProfileYAML(text)
         if let live = await profileStore.reapplyActive() {

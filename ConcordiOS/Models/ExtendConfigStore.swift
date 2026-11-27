@@ -46,19 +46,28 @@ struct ExtendSettings: Codable, Equatable {
     /// `rules:` section by bakeProfileRules, ahead of the match
     /// target. Empty by default; old files decode with [].
     var profileRules: [String]
+    /// The extend-script library id chosen for this profile
+    /// (upstream Profile.scriptId; the iOS script library uses
+    /// String ids — MitmScript.id — not upstream's ints). Set
+    /// when the user picks a library script in ExtendConfigView
+    /// (alongside copying its content into scriptText); nil when
+    /// no library script is chosen. The detail sheet reads this
+    /// for the exact 扩展脚本 label instead of content-matching.
+    var scriptId: String?
 
     init(mode: ExtendMode = .standard, matchTarget: String = "",
          scriptText: String = "", scriptEnabled: Bool = false,
-         profileRules: [String] = []) {
+         profileRules: [String] = [], scriptId: String? = nil) {
         self.mode = mode
         self.matchTarget = matchTarget
         self.scriptText = scriptText
         self.scriptEnabled = scriptEnabled
         self.profileRules = profileRules
+        self.scriptId = scriptId
     }
 
     enum CodingKeys: String, CodingKey {
-        case mode, matchTarget, scriptText, scriptEnabled, profileRules
+        case mode, matchTarget, scriptText, scriptEnabled, profileRules, scriptId
     }
 
     init(from decoder: Decoder) throws {
@@ -68,6 +77,7 @@ struct ExtendSettings: Codable, Equatable {
         scriptText = try c.decodeIfPresent(String.self, forKey: .scriptText) ?? ""
         scriptEnabled = try c.decodeIfPresent(Bool.self, forKey: .scriptEnabled) ?? false
         profileRules = try c.decodeIfPresent([String].self, forKey: .profileRules) ?? []
+        scriptId = try c.decodeIfPresent(String.self, forKey: .scriptId)
     }
 }
 

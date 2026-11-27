@@ -9,12 +9,13 @@ import Foundation
 // 映射规则（与 ~/workspace/scratch/yaml-0.2.55/test_import.py 逐项对应，
 // 该测试已对两份夹具跑过）：
 //   * proxy-groups / proxy-providers / rule-providers / rules 映射到模型；
-//   * proxies（节点定义）无法保存——模型存不下节点：节点本身不导入，
-//     但每条的 `dialer-proxy:` 会抽成拨号器（CustomDialer，
-//     上游 readCustomProfileImport 的 dialers），并在 notes 里写明
-//     丢了几个节点（v0.2.146 起不再是硬错误：上游是整份导入的，
-//     硬错误会让一份含节点的常用订阅完全导不进来；notes 在导入
-//     界面展示，不是静默丢弃）；
+//   * proxies（节点定义）现在完整导入（v0.2.147，上游
+//     readCustomProfileImport 的 _importProxies）：整条定义存入
+//     CustomProxyStore.rawProxies（结果的 proxies），重名按
+//     已有节点 / 分组去重改名，相同定义复用已有节点；每条的
+//     `dialer-proxy:` 抽成拨号器（CustomDialer），定义本身去掉
+//     该键；分组的 proxies 成员、规则的目标、拨号器的两端都
+//     跟随改名；导入统计记入 notes；
 //   * dns / ntp / sniffer / tun 四个顶层区映射到自定义订阅已有的
 //     per-profile 区（CustomDnsSection 等，上游 _importOverrides）；
 //     区内无法表示的键记入 notes；
@@ -39,6 +40,13 @@ struct CustomSubscriptionImportResult {
     let ignoredTopLevelKeys: [String]
     /// 已接受但未存入模型的说明（如 behavior=classical 按核心默认值处理）。
     let notes: [String]
+    /// Imported node definitions (upstream CustomProfileImport
+    /// proxies): the full `proxies:` entries, renamed where they
+    /// collided and stripped of `dialer-proxy:` (dialers live
+    /// per-profile in CustomDialer). The caller stores them in
+    /// CustomProxyStore.rawProxies — the v0.2.146 drop-with-note
+    /// ends here: nodes now survive the import.
+    let proxies: [JSONValue]
 }
 
 enum CustomSubscriptionImporter {
@@ -70,39 +78,231 @@ enum CustomSubscriptionImporter {
         }
         var dialers: [CustomDialer] = []
         var notes: [String] = []
+        // Names the core registers before any proxy is parsed
+        // (FlClash reservedCustomProxyNames, providers/state/
+        // custom.dart:110-121): neither a proxy nor a group can
+        // take one — a file node named DIRECT would shadow the
+        // DIRECT action.
+        let reservedNames: Set<String> = ["DIRECT", "REJECT", "REJECT-DROP", "COMPATIBLE", "PASS", "PASS-RULE", "GLOBAL"]
+        // This file's group names (pre-pass): nodes must not
+        // shadow them, and the reference resolver below needs
+        // them to tell a group reference from a node reference.
+        var fileGroupNames: Set<String> = []
+        if case .array(let groupItems) = top["proxy-groups"] {
+            for item in groupItems {
+                if case .object(let dict) = item, case .string(let name) = dict["name"], !name.isEmpty {
+                    fileGroupNames.insert(name)
+                }
+            }
+        }
+        let proxyStore = CustomProxyStore()
+        // Proxy renames (upstream _importProxies): original name ->
+        // final name, for every `proxies:` entry. Applied below to
+        // group members, rule targets and dialer names, so a renamed
+        // node stays referenced. Built here, before groups are
+        // mapped (they run after this block).
+        var proxyRenames: [String: String] = [:]
+        var importedProxies: [JSONValue] = []
         if let proxies = top["proxies"] {
             guard case .array(let items) = proxies else {
                 throw CustomSubscriptionImportError(message: "proxies 必须是列表")
             }
-            // Nodes cannot be stored (no proxy storage in the
-            // model), but their dialer-proxy lines can: each one
-            // becomes a CustomDialer (upstream _importProxies'
-            // dialers map). The drop is reported in notes, never
-            // silent — and the import continues with the groups /
-            // providers / rules / overrides the file also holds.
-            for item in items {
-                guard case .object(let dict) = item,
-                      case .string(let proxyName) = dict["name"], !proxyName.isEmpty,
-                      case .string(let dialer) = dict["dialer-proxy"], !dialer.isEmpty else { continue }
-                if !dialers.contains(where: { $0.proxy == proxyName }) {
-                    dialers.append(CustomDialer(proxy: proxyName, dialer: dialer))
+            // Names already taken: the app's stored custom proxies
+            // (form + raw), the reserved names, this file's group
+            // names, and the groups of OTHER stored subscriptions
+            // (upstream groupNames, profiles.dart:238-262) — a node
+            // must not shadow any of them (upstream: proxies and
+            // groups share one namespace in mihomo).
+            var taken: Set<String> = reservedNames
+            taken.formUnion(proxyStore.proxies.map { $0.name })
+            for raw in proxyStore.rawProxies {
+                if case .object(let dict) = raw, case .string(let name) = dict["name"] {
+                    taken.insert(name)
                 }
             }
-            if !items.isEmpty {
-                notes.append("文件包含 \(items.count) 个节点定义（proxies），自定义订阅模型无法保存节点，未导入；其中 \(dialers.count) 个拨号器已导入")
+            taken.formUnion(CustomSubscriptionStore().subscriptions.flatMap { $0.groups.map { $0.name } })
+            taken.formUnion(fileGroupNames)
+            // Definitions already held (raw store, exact match):
+            // re-importing the same file reuses the stored node
+            // instead of storing a duplicate. Compared WITHOUT
+            // the name (upstream _comparable) and with numbers
+            // canonicalised (an int port and a double port are
+            // the same value — JSONValue keeps them apart): a
+            // node renamed on the first import ("name 2") must
+            // still match on re-import, or it would be stored
+            // again as "name 3". The match yields the STORED
+            // name, so references follow the rename.
+            var heldComparables: [(name: String, comparable: JSONValue)] = proxyStore.rawProxies.compactMap { held in
+                guard case .object(var dict) = held,
+                      case .string(let name) = dict["name"] else { return nil }
+                dict.removeValue(forKey: "name")
+                return (name, Self.canonicalNumber(.object(dict)))
+            }
+            var importedCount = 0
+            var reusedCount = 0
+            var renamedCount = 0
+            var skippedCount = 0
+            for item in items {
+                guard case .object(var dict) = item,
+                      case .string(let proxyName) = dict["name"],
+                      !proxyName.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    skippedCount += 1
+                    continue
+                }
+                // The dialer lives per-profile (CustomDialer), not
+                // on the stored node (upstream _withoutDialer).
+                let dialerName: String?
+                if case .string(let dialer) = dict["dialer-proxy"], !dialer.isEmpty {
+                    dialerName = dialer
+                } else {
+                    dialerName = nil
+                }
+                dict.removeValue(forKey: "dialer-proxy")
+                var comparableDict = dict
+                comparableDict.removeValue(forKey: "name")
+                let comparable = Self.canonicalNumber(.object(comparableDict))
+                // The final name for THIS occurrence. proxyRenames
+                // keeps the FIRST occurrence's mapping (upstream
+                // names.putIfAbsent): a later same-name node with
+                // a different definition gets its own final name
+                // and its own dialer, but group/rule references
+                // can only name one node, so they keep pointing
+                // at the first — overwriting the map would orphan
+                // the first stored node.
+                let finalNameForItem: String
+                // Identical definition already stored (raw store,
+                // or a form proxy with the same name/type/server/
+                // port plus account keys — upstream _identityOf
+                // includes uuid/password/…; name/type/server/port
+                // alone would silently map a node onto a form
+                // proxy with different credentials and drop its
+                // definition): reuse the existing name, store
+                // nothing.
+                if let held = heldComparables.first(where: { $0.comparable == comparable }) {
+                    finalNameForItem = held.name
+                    if proxyRenames[proxyName] == nil { proxyRenames[proxyName] = held.name }
+                    reusedCount += 1
+                } else if proxyStore.proxies.contains(where: {
+                    $0.name == proxyName
+                    && $0.type == Self.proxyStringField(dict, "type")
+                    && $0.server == Self.proxyStringField(dict, "server")
+                    && $0.port == Self.proxyIntField(dict, "port")
+                    && $0.password == Self.proxyStringField(dict, "password")
+                    && $0.uuid == Self.proxyStringField(dict, "uuid")
+                    && $0.cipher == Self.proxyStringField(dict, "cipher")
+                }) {
+                    finalNameForItem = proxyName
+                    if proxyRenames[proxyName] == nil { proxyRenames[proxyName] = proxyName }
+                    reusedCount += 1
+                } else if taken.contains(proxyName) {
+                    // Same name, different node: rename ("name 2",
+                    // "name 3", …) and keep going.
+                    var n = 2
+                    var finalName = "\(proxyName) \(n)"
+                    while taken.contains(finalName) {
+                        n += 1
+                        finalName = "\(proxyName) \(n)"
+                    }
+                    taken.insert(finalName)
+                    dict["name"] = .string(finalName)
+                    if proxyRenames[proxyName] == nil { proxyRenames[proxyName] = finalName }
+                    finalNameForItem = finalName
+                    importedProxies.append(.object(dict))
+                    heldComparables.append((finalName, comparable))
+                    importedCount += 1
+                    renamedCount += 1
+                } else {
+                    taken.insert(proxyName)
+                    if proxyRenames[proxyName] == nil { proxyRenames[proxyName] = proxyName }
+                    finalNameForItem = proxyName
+                    importedProxies.append(.object(dict))
+                    heldComparables.append((proxyName, comparable))
+                    importedCount += 1
+                }
+                // Dialer for this occurrence (upstream
+                // _importProxies' dialers map, per-index
+                // proxyNames): the proxy side is this occurrence's
+                // own final name; the dialer side is stored raw
+                // and mapped in the post-pass below — a dialer may
+                // name a node defined LATER in the file, whose
+                // rename does not exist yet here.
+                if let dialerName {
+                    if !dialers.contains(where: { $0.proxy == finalNameForItem }) {
+                        dialers.append(CustomDialer(proxy: finalNameForItem, dialer: dialerName))
+                    }
+                }
+            }
+            // Post-pass: every dialer's target through the finished
+            // rename map (forward references included). Runs once,
+            // so a target already renamed is not re-mapped.
+            for i in dialers.indices {
+                dialers[i].dialer = proxyRenames[dialers[i].dialer] ?? dialers[i].dialer
+            }
+            if importedCount > 0 || reusedCount > 0 || skippedCount > 0 {
+                var note = "已导入 \(importedCount) 个节点到本地节点"
+                if reusedCount > 0 { note += "，\(reusedCount) 个与已有节点相同，未重复导入" }
+                if renamedCount > 0 { note += "，\(renamedCount) 个重命名" }
+                if skippedCount > 0 { note += "，\(skippedCount) 个无名称，跳过" }
+                if !dialers.isEmpty { note += "；其中 \(dialers.count) 个拨号器已导入" }
+                notes.append(note)
             }
         }
         let knownKeys: Set<String> = ["proxy-groups", "proxy-providers", "rule-providers", "rules",
                                       "proxies", "dns", "ntp", "sniffer", "tun"]
         let ignored = top.keys.filter { !knownKeys.contains($0) }.sorted()
 
+        // Group renames (upstream freeName for groups): a group
+        // whose name collides with a stored proxy, an imported
+        // node's final name, or a reserved name is renamed ("name
+        // 2", …) — otherwise a member naming it could not tell
+        // the group from the node. Finals avoid every taken name,
+        // so they never equal another group's original name.
+        var proxyNameSpace: Set<String> = reservedNames
+        proxyNameSpace.formUnion(proxyStore.proxies.map { $0.name })
+        for raw in proxyStore.rawProxies {
+            if case .object(let dict) = raw, case .string(let name) = dict["name"] {
+                proxyNameSpace.insert(name)
+            }
+        }
+        proxyNameSpace.formUnion(importedProxies.compactMap { def -> String? in
+            guard case .object(let dict) = def, case .string(let name) = dict["name"] else { return nil }
+            return name
+        })
+        var groupRenames: [String: String] = [:]
+        if !fileGroupNames.isEmpty {
+            var groupTaken = proxyNameSpace
+            groupTaken.formUnion(fileGroupNames)
+            groupTaken.formUnion(CustomSubscriptionStore().subscriptions.flatMap { $0.groups.map { $0.name } })
+            for name in fileGroupNames.sorted() where proxyNameSpace.contains(name) {
+                var n = 2
+                var finalName = "\(name) \(n)"
+                while groupTaken.contains(finalName) {
+                    n += 1
+                    finalName = "\(name) \(n)"
+                }
+                groupTaken.insert(finalName)
+                groupRenames[name] = finalName
+            }
+        }
+        // Reference resolver: what a group member / rule target /
+        // default-selected string names. Reserved action names are
+        // never references; a name that is a group in this file
+        // refers to the group (renamed if it was); anything else
+        // that was renamed is a node. Without the group check, a
+        // member naming a group that shares a node's name would be
+        // rewritten to the node's rename.
+        let resolveReference: (String) -> String = { name in
+            if reservedNames.contains(name) { return name }
+            if fileGroupNames.contains(name) { return groupRenames[name] ?? name }
+            return proxyRenames[name] ?? name
+        }
         var groups: [CustomGroup] = []
         if let rawGroups = top["proxy-groups"] {
             guard case .array(let items) = rawGroups else {
                 throw CustomSubscriptionImportError(message: "proxy-groups 必须是列表")
             }
             for (idx, item) in items.enumerated() {
-                let (group, groupNotes) = try mapGroup(item, index: idx)
+                let (group, groupNotes) = try mapGroup(item, index: idx, resolve: resolveReference)
                 groups.append(group)
                 notes.append(contentsOf: groupNotes)
             }
@@ -138,7 +338,12 @@ enum CustomSubscriptionImporter {
                 guard case .string(let text) = item else {
                     throw CustomSubscriptionImportError(message: "规则 #\(idx + 1) 必须是字符串")
                 }
-                rules.append(try mapRule(text, index: idx))
+                var rule = try mapRule(text, index: idx)
+                // A rule target naming an imported node or a group
+                // follows its rename (the resolver tells the two
+                // apart; reserved actions pass through untouched).
+                rule.target = resolveReference(rule.target)
+                rules.append(rule)
             }
         }
         // Per-profile scoped sections (upstream _importOverrides):
@@ -198,7 +403,8 @@ enum CustomSubscriptionImporter {
             proxyProviders: proxyProviders, ruleProviders: ruleProviders, rules: rules,
             dns: dns, ntp: ntp, sniffer: sniffer, tun: tun)
         return CustomSubscriptionImportResult(
-            subscription: subscription, ignoredTopLevelKeys: ignored, notes: notes)
+            subscription: subscription, ignoredTopLevelKeys: ignored, notes: notes,
+            proxies: importedProxies)
     }
 
     // MARK: - 分组
@@ -230,7 +436,35 @@ enum CustomSubscriptionImporter {
         }
     }
 
-    private static func mapGroup(_ value: JSONValue, index: Int) throws -> (CustomGroup, [String]) {
+    /// Canonicalise a JSON value for identity comparison: numbers
+    /// compare by value, not representation (.int(443) ==
+    /// .double(443.0) — upstream _comparable stringifies numbers,
+    /// custom_import.dart:326-330). Only used for the comparable
+    /// form, never for storage.
+    private static func canonicalNumber(_ value: JSONValue) -> JSONValue {
+        switch value {
+        case .int(let n): return .double(Double(n))
+        case .array(let items): return .array(items.map(canonicalNumber))
+        case .object(let dict): return .object(dict.mapValues(canonicalNumber))
+        default: return value
+        }
+    }
+
+    /// A string field of a proxy definition, "" when absent or not
+    /// a string — for the form-proxy identity check.
+    private static func proxyStringField(_ dict: [String: JSONValue], _ key: String) -> String {
+        if case .string(let s) = dict[key] { return s } else { return "" }
+    }
+
+    /// An int field of a proxy definition, 0 when absent — accepts
+    /// .int and .double (a YAML `port: 443.0` is still port 443).
+    private static func proxyIntField(_ dict: [String: JSONValue], _ key: String) -> Int {
+        if case .int(let p) = dict[key] { return Int(p) }
+        if case .double(let d) = dict[key] { return Int(d) }
+        return 0
+    }
+
+    private static func mapGroup(_ value: JSONValue, index: Int, resolve: (String) -> String) throws -> (CustomGroup, [String]) {
         guard case .object(let dict) = value else {
             throw CustomSubscriptionImportError(message: "分组 #\(index + 1) 必须是映射")
         }
@@ -247,8 +481,17 @@ enum CustomSubscriptionImporter {
             throw CustomSubscriptionImportError(message: "分组「\(name)」的类型「\(type)」不受支持")
         }
         var group = CustomGroup(
-            name: name, type: type,
-            members: try stringListField(dict, key: "proxies", context: "分组「\(name)」的 proxies"),
+            // The group's own name follows its rename too (a group
+            // colliding with a stored proxy / node final was
+            // renamed by the groupRenames pass); error contexts
+            // below keep the original name so the file is
+            // recognisable.
+            name: resolve(name), type: type,
+            // Members naming an imported node or another group
+            // follow its rename (upstream _importGroup renames
+            // group members through the same names map); the
+            // resolver tells a group reference from a node one.
+            members: try stringListField(dict, key: "proxies", context: "分组「\(name)」的 proxies").map(resolve),
             useProviders: try stringListField(dict, key: "use", context: "分组「\(name)」的 use"),
             url: try stringField(dict, key: "url", context: "分组「\(name)」的 url"),
             interval: try intField(dict, key: "interval", context: "分组「\(name)」的 interval"),
@@ -271,7 +514,7 @@ enum CustomSubscriptionImporter {
             group.emptyFallback = fallback
         }
         if let selected = try optionalStringField(dict, key: "default-selected", context: "分组「\(name)」的 default-selected") {
-            group.defaultSelected = selected
+            group.defaultSelected = resolve(selected)
         }
         if let hashKey = try optionalStringField(dict, key: "hash-key", context: "分组「\(name)」的 hash-key") {
             group.hashKey = hashKey

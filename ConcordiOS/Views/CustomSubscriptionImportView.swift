@@ -215,6 +215,10 @@ struct CustomSubscriptionImportView: View {
             subscription.id = existing.id
         }
         store.update(subscription)
+        // v0.2.147: imported node definitions land in the app-wide
+        // raw proxy store (deduped by name there), so the imported
+        // groups' members resolve when the subscription is baked.
+        CustomProxyStore().addRawProxies(imported.proxies)
         result = imported
         savedSubscription = subscription
     }

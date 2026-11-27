@@ -778,10 +778,10 @@ struct ProfileDetailSheet: View {
     @EnvironmentObject private var client: ConcordClient
     /// Extend settings + the MITM script library, for the 扩展脚本
     /// row (upstream profile_detail.dart reads profile.scriptId
-    /// against the scripts library). Ours stores no script id:
-    /// ExtendConfigView copies the picked library script's CONTENT
-    /// into the settings, so the label is recovered by matching
-    /// that content against the library (see scriptLabel).
+    /// against the scripts library). Ours stores the picked
+    /// library script's id in ExtendSettings.scriptId (v0.2.147)
+    /// alongside the copied content, so the label is an exact
+    /// id lookup (see scriptLabel), not a content match.
     @StateObject private var extendStore = ExtendConfigStore()
     @StateObject private var scriptStore = MitmScriptStore()
 
@@ -930,17 +930,19 @@ struct ProfileDetailSheet: View {
     }
 
     /// The extend-script label for the 配置 section: the library
-    /// script whose content matches the active profile's extend
-    /// settings. No script set → "无"; a script with no library
-    /// match → "自定义脚本" (pasted in, or from a deleted library
-    /// entry). There is no stored script id to look up directly
-    /// — ExtendConfigView copies content, not the id.
+    /// script named by the active profile's stored script id
+    /// (v0.2.147, upstream Profile.scriptId). No script set →
+    /// "无"; an id whose library entry is gone, or text with no
+    /// id at all (pasted in), → "自定义脚本". The old
+    /// content-match mislabelled a pasted script that happened
+    /// to equal a library entry.
     private var scriptLabel: String {
         guard let active = profileStore.activeProfile else { return "无" }
         let settings = extendStore.settings(for: active.id)
         guard settings.mode == .script, settings.scriptEnabled,
               !settings.scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "无" }
-        if let match = scriptStore.scripts.first(where: { scriptStore.content(of: $0) == settings.scriptText }) {
+        if let scriptId = settings.scriptId,
+           let match = scriptStore.scripts.first(where: { $0.id == scriptId }) {
             return match.label
         }
         return "自定义脚本"

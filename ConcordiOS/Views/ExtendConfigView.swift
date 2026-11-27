@@ -188,15 +188,33 @@ struct ExtendConfigView: View {
                         ForEach(scriptStore.scripts) { script in
                             Text(script.label).tag(script.id as String?)
                         }
+                        // A dangling id (library entry deleted):
+                        // show it so the picker does not render
+                        // blank; picking anything else replaces it.
+                        if let selectedScriptID, scriptStore.scripts.first(where: { $0.id == selectedScriptID }) == nil {
+                            Text("已删除的脚本").tag(selectedScriptID as String?)
+                        }
                     }
                     .onChange(of: selectedScriptID) { _, id in
-                        guard let id,
-                              let script = scriptStore.scripts.first(where: { $0.id == id }),
-                              let content = scriptStore.content(of: script) else {
-                            setDraft { $0.scriptEnabled = false; $0.scriptText = "" }
+                        guard let id else {
+                            // The user picked "不使用脚本库": clear.
+                            setDraft { $0.scriptEnabled = false; $0.scriptText = ""; $0.scriptId = nil }
                             return
                         }
-                        setDraft { $0.scriptEnabled = true; $0.scriptText = content }
+                        guard let script = scriptStore.scripts.first(where: { $0.id == id }),
+                              let content = scriptStore.content(of: script) else {
+                            // Dangling id (library entry deleted):
+                            // leave the draft alone. Clearing here
+                            // would wipe the stored script text —
+                            // including a pasted custom script —
+                            // on merely opening the page, and
+                            // onDisappear would persist the wipe
+                            // (upstream extend/script.dart:38 shows
+                            // null for a missing id without
+                            // clearing anything).
+                            return
+                        }
+                        setDraft { $0.scriptEnabled = true; $0.scriptText = content; $0.scriptId = id }
                     }
                     NavigationLink {
                         ScriptsView().concordNavBarBackground()
@@ -294,6 +312,14 @@ struct ExtendConfigView: View {
         .task {
             if draft == nil, let profile {
                 draft = extendStore.settings(for: profile.id)
+            }
+            // v0.2.147: show the stored library script as picked
+            // (settings.scriptId). The onChange above then copies
+            // the library's current content into the draft — when
+            // the library script was updated since, that surfaces
+            // as an unapplied change through the normal flow.
+            if selectedScriptID == nil, let profile {
+                selectedScriptID = extendStore.settings(for: profile.id).scriptId
             }
             // Unapplied-on-open (FlClash _checkUnappliedOnOpen):
             // compare the stored settings with what is actually

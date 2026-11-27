@@ -1800,6 +1800,18 @@ final class TrafficStore: ObservableObject {
             }
             return
         }
+        // VPN off, live mode: the in-app core is running, but
+        // ConcordClient only talks to the tunnel core (Extension
+        // transport — there is no AppCore.coreStats), so core.stats
+        // throws on every 2 s tick, keeps a stale value and sets
+        // lastError (v0.2.145 B7). Don't poll a core that isn't
+        // there: clear the value so the card shows 核心 0 with its
+        // "核心未运行" note instead of a stale number. Sample mode
+        // keeps its mock answer below.
+        if client.mode != .sample {
+            coreMemoryBytes = nil
+            return
+        }
         do {
             coreMemoryBytes = try await client.coreStats().rss
         } catch {

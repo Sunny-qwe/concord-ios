@@ -213,7 +213,7 @@ struct DashboardView: View {
     /// opens the per-IP quality sheet for that IP.
     @State private var ipQualitySelection: IpQualitySheetTarget?
     /// Rule-providers sheet (config card, MuYu key_25).
-    @State private var showProvidersSheet = false
+    @State private var showProfileDetailSheet = false
     /// Strategy-groups sheet (groups card, v0.2.64): upstream
     /// opens ProxiesView(picker: true) here instead of jumping
     /// to the Proxies tab.
@@ -311,25 +311,25 @@ struct DashboardView: View {
     /// when a start attempt fails and cleared on success/stop).
     private var tunnelStatusText: String {
         switch tunnelManager.status {
-        case .connected: return "已连接"
-        case .connecting: return "连接中"
-        case .disconnecting: return "断开中"
+        case .connected: return "dashboard.status.connected".l10n
+        case .connecting: return "dashboard.status.connecting".l10n
+        case .disconnecting: return "dashboard.status.disconnecting".l10n
         case .disconnected:
             if let startError = proxyStore.startError, !startError.isEmpty {
-                return "已断开: \(startError)"
+                return "\("dashboard.status.disconnectedDetail".l10n): \(startError)"
             }
-            return "已断开"
-        case .reasserting: return "重新协商"
-        case .invalid: return "未配置"
-        @unknown default: return "未知"
+            return "dashboard.status.disconnected".l10n
+        case .reasserting: return "dashboard.status.reasserting".l10n
+        case .invalid: return "dashboard.status.invalid".l10n
+        @unknown default: return "common.unknown".l10n
         }
     }
 
     private func modeShortLabel(_ mode: OutboundMode) -> String {
         switch mode {
-        case .rule: return "规则"
-        case .global: return "全局"
-        case .direct: return "直连"
+        case .rule: return "common.rule".l10n
+        case .global: return "common.global".l10n
+        case .direct: return "common.direct".l10n
         }
     }
 
@@ -391,14 +391,14 @@ struct DashboardView: View {
         isCheckingUpdate = true
         defer { isCheckingUpdate = false }
         if let result = await UpdateChecker.check() {
-            updateCheckMessage = result.isNew ? "发现新提交" : "已是最新提交"
+            updateCheckMessage = result.isNew ? "dashboard.update.newCommit".l10n : "dashboard.update.latestCommit".l10n
             lastUpdateSha = result.sha
             lastUpdateMessage = result.message
             lastUpdateDate = result.date
             lastUpdateIsNew = result.isNew
             lastUpdateChecked = true
         } else {
-            updateCheckMessage = "检查更新失败（网络或 GitHub API 不可用）"
+            updateCheckMessage = "dashboard.update.checkFailed".l10n
         }
     }
 
@@ -427,9 +427,9 @@ struct DashboardView: View {
     private var profileEndText: String {
         guard let profile = profileStore.activeProfile else { return "—" }
         if let info = subscription, info.expire > 0 {
-            return "剩余 \(ConcordRelativeTime.daysUntil(epochSeconds: info.expire)) 天"
+            return String(format: "dashboard.profile.daysLeft".l10n, "\(ConcordRelativeTime.daysUntil(epochSeconds: info.expire))")
         }
-        return profile.kind == .url ? "远程" : "本地"
+        return profile.kind == .url ? "common.remote".l10n : "common.local".l10n
     }
 
     private var profileEndIsWarn: Bool {
@@ -446,7 +446,7 @@ struct DashboardView: View {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy年M月d日"
-        return "\(formatter.string(from: date)) 到期，剩余 \(days) 天"
+        return String(format: "dashboard.profile.expiresIn".l10n, formatter.string(from: date), "\(days)")
     }
 
     private var updatedText: String {
@@ -743,17 +743,17 @@ struct DashboardView: View {
                 .presentationBackground(ConcordTheme.pageBackground)
                 .presentationCornerRadius(28)
         }
-        .sheet(isPresented: $showProvidersSheet) { providersSheetContent }
+        .sheet(isPresented: $showProfileDetailSheet) { profileDetailSheetContent }
         .sheet(isPresented: $showGroupsSheet) { groupsSheetContent }
         // The dashboard's consent prompt (fork 0a55a31): the same
         // prompt the modules page uses, asked over the dashboard
         // for each module that awaits an answer in turn; an answer
         // either way takes the module off the card.
         .alert(reviewAlertTitle, isPresented: $showReviewAlert, presenting: reviewModule) { module in
-            Button("取消", role: .cancel) {
+            Button("common.cancel".l10n, role: .cancel) {
                 Task { await answerReview(module, agreed: false) }
             }
-            Button("启用") {
+            Button("dashboard.module.enable".l10n) {
                 Task { await answerReview(module, agreed: true) }
             }
         } message: { module in
@@ -778,7 +778,7 @@ struct DashboardView: View {
                 if client.mode == .sample {
                     HStack {
                         SampleDataBadge()
-                        Text("示例数据：所有数值均为内置示例，不是真实核心数据")
+                        Text("dashboard.sampleNotice".l10n)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -845,8 +845,8 @@ struct DashboardView: View {
 
     /// v0.2.56: the config card opens the rule-providers
     /// sheet (MuYu key_25).
-    private var providersSheetContent: some View {
-        ProvidersSheet(profileName: profileStore.activeProfile?.name ?? "配置", subscription: subscription)
+    private var profileDetailSheetContent: some View {
+        ProfileDetailSheet(profileName: profileStore.activeProfile?.name ?? "dashboard.profile.fallback".l10n, subscription: subscription)
             .presentationDetents([.fraction(0.5625), .fraction(0.9)])
             .presentationDragIndicator(.hidden)
             .presentationBackground(ConcordTheme.pageBackground)
@@ -892,16 +892,16 @@ struct DashboardView: View {
         if !pending.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
-                    CardTitleRow(icon: "puzzlepiece.extension", title: "模块已关闭")
+                    CardTitleRow(icon: "puzzlepiece.extension", title: "dashboard.module.closed".l10n)
                     Spacer()
-                    PillBadge(text: "\(pending.count) 个待确认", tint: .orange)
+                    PillBadge(text: String(format: "dashboard.module.pendingCount".l10n, "\(pending.count)"), tint: .orange)
                 }
                 Text(pending.count == 1
-                     ? "\(pending[0].name) 的更新带来了你未同意过的脚本或网络改动"
-                     : "\(pending.count) 个模块的更新带来了你未同意过的脚本或网络改动")
+                     ? "\(pending[0].name) \("dashboard.module.consentSingle".l10n)"
+                     : "\(pending.count) \("dashboard.module.consentMultiple".l10n)")
                     .font(.footnote)
                     .foregroundStyle(Color(.label))
-                Button("查看") { reviewNext() }
+                Button("dashboard.module.view".l10n) { reviewNext() }
                     .buttonStyle(.borderedProminent)
                     .tint(.orange)
                     .controlSize(.small)
@@ -912,7 +912,7 @@ struct DashboardView: View {
 
     /// The prompt title for the module the dashboard is asking about.
     private var reviewAlertTitle: String {
-        reviewModule.flatMap { mitmModuleStore.consentPrompt(for: $0)?.title } ?? "启用此模块？"
+        reviewModule.flatMap { mitmModuleStore.consentPrompt(for: $0)?.title } ?? "dashboard.module.consentFallback".l10n
     }
 
     /// Starts the review: the first module awaiting consent.
@@ -953,7 +953,7 @@ struct DashboardView: View {
                     HStack(alignment: .top, spacing: 6) {
                         Image(systemName: "exclamationmark.circle.fill")
                             .foregroundStyle(.red)
-                        Text("启动失败：\(startError)")
+                        Text("\("dashboard.vpn.startFailed".l10n)\(startError)")
                             .font(.footnote)
                             .foregroundStyle(.red)
                     }
@@ -1004,7 +1004,7 @@ struct DashboardView: View {
                 Button {
                     Task { await proxyStore.toggle() }
                 } label: {
-                    Label("启动", systemImage: "play.fill")
+                    Label("dashboard.start".l10n, systemImage: "play.fill")
                         .font(.footnote.weight(.semibold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
@@ -1012,7 +1012,7 @@ struct DashboardView: View {
                         .foregroundStyle(.white)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("启动 VPN")
+                .accessibilityLabel("dashboard.startVpn".l10n)
             }
             // v0.2.85: inline edit mode (upstream dashboard.dart
             // `_editing`) — the pencil toggles editing on this
@@ -1033,7 +1033,7 @@ struct DashboardView: View {
                 }
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(isEditingDashboard ? "完成编辑" : "编辑仪表盘卡片")
+            .accessibilityLabel(isEditingDashboard ? "dashboard.edit.done".l10n : "dashboard.edit.editCards".l10n)
         }
     }
 
@@ -1066,28 +1066,28 @@ struct DashboardView: View {
 
     private var dashboardEditPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("编辑仪表盘")
+            Text("dashboard.edit.title".l10n)
                 .font(.headline)
-            Text("状态卡片含启动键，不可移除。")
+            Text("dashboard.edit.unremovableNote".l10n)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Toggle("网络速度", isOn: $showSpeed)
-            Toggle("流量统计", isOn: $showTraffic)
-            Toggle("出站模式", isOn: $showMode)
+            Toggle("dashboard.card.speed".l10n, isOn: $showSpeed)
+            Toggle("dashboard.card.traffic".l10n, isOn: $showTraffic)
+            Toggle("dashboard.card.mode".l10n, isOn: $showMode)
             Toggle("VPN", isOn: $showVpn)
-            Toggle("服务状态", isOn: $showServices)
-            Toggle("配置", isOn: $showProfile)
-            Toggle("策略组", isOn: $showGroups)
-            Toggle("统计", isOn: $showStats)
-            Toggle("内存", isOn: $showMemory)
-            Toggle("更新状态", isOn: $showUpdate)
+            Toggle("dashboard.card.services".l10n, isOn: $showServices)
+            Toggle("dashboard.card.profile".l10n, isOn: $showProfile)
+            Toggle("dashboard.card.groups".l10n, isOn: $showGroups)
+            Toggle("dashboard.card.stats".l10n, isOn: $showStats)
+            Toggle("dashboard.card.memory".l10n, isOn: $showMemory)
+            Toggle("dashboard.card.update".l10n, isOn: $showUpdate)
             Divider()
-            Toggle("紧凑密度", isOn: $densityCompact)
-            Text("紧凑模式缩小字号与启动按钮、收紧卡片间距，并隐藏部分副标题（FlClash DashboardDensity.compact）。")
+            Toggle("dashboard.edit.compactDensity".l10n, isOn: $densityCompact)
+            Text("dashboard.edit.compactHint".l10n)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Divider()
-            Text("卡片顺序")
+            Text("dashboard.edit.cardOrder".l10n)
                 .font(.subheadline.weight(.semibold))
             ForEach(orderedCards, id: \.self) { id in
                 HStack(spacing: 8) {
@@ -1108,7 +1108,7 @@ struct DashboardView: View {
                     .disabled(orderedCards.last == id)
                 }
             }
-            Text("点上下箭头调整顺序，关闭的卡片会从仪表盘隐藏，可随时再打开。")
+            Text("dashboard.edit.orderHint".l10n)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -1170,11 +1170,11 @@ struct DashboardView: View {
                         // D-D3: the quality pill comes from the real
                         // IP type/level (hosting → 普通, else 优),
                         // not from the lookup latency.
-                        qualityPill(text: "质量 \(level.label)", level: level)
+                        qualityPill(text: "\("dashboard.outbound.qualityPrefix".l10n) \(level.label)", level: level)
                     } else {
                         // FlClash _IpChips: quality null and not
                         // loading shows a "类型未知" chip.
-                        PillBadge(text: "类型未知", tint: .gray)
+                        PillBadge(text: "dashboard.outbound.unknownType".l10n, tint: .gray)
                     }
                 }
             // v0.2.115: the retry hint is driven by the PROBE
@@ -1184,7 +1184,7 @@ struct DashboardView: View {
             // are still running, the chips below show the probing
             // skeletons instead of this hint.
             } else if trafficStore.outboundIpFailureSettled {
-                Text("点击图标重试")
+                Text("dashboard.outbound.retryHint".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else if ipEnrichmentFailed {
@@ -1193,7 +1193,7 @@ struct DashboardView: View {
                 // "类型未知" chip instead of pulsing skeletons
                 // forever (upstream _IpChips: quality null and not
                 // loading shows only that chip).
-                PillBadge(text: "类型未知", tint: .gray)
+                PillBadge(text: "dashboard.outbound.unknownType".l10n, tint: .gray)
             } else {
                 HStack(spacing: 6) {
                     SkeletonBar(width: 48, height: 28, animated: true)
@@ -1235,8 +1235,8 @@ struct DashboardView: View {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 8) {
-                        CardTitleRow(icon: "waveform.path.ecg", title: "状态")
-                        PillBadge(text: proxyStore.isRunning ? "运行中" : "未运行",
+                        CardTitleRow(icon: "waveform.path.ecg", title: "dashboard.status.title".l10n)
+                        PillBadge(text: proxyStore.isRunning ? "dashboard.status.running".l10n : "dashboard.status.notRunning".l10n,
                                   tint: proxyStore.isRunning ? .green : .gray,
                                   dot: proxyStore.isRunning)
                     }
@@ -1292,7 +1292,7 @@ struct DashboardView: View {
                     Spacer().frame(height: 16)
                     HStack(spacing: 24) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("运行时长")
+                            Text("dashboard.status.uptime".l10n)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                             // v0.2.69: the uptime text is its own leaf
@@ -1302,7 +1302,7 @@ struct DashboardView: View {
                             StatusUptimeText(startedAt: tunnelStartedAt)
                         }
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("组织")
+                            Text("dashboard.status.org".l10n)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                             orgValue
@@ -1325,7 +1325,7 @@ struct DashboardView: View {
                     .frame(width: playButtonSize, height: playButtonSize)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(proxyStore.isRunning ? "停止 VPN" : "启动 VPN")
+                .accessibilityLabel(proxyStore.isRunning ? "dashboard.stopVpn".l10n : "dashboard.startVpn".l10n)
                 .frame(width: playButtonSize)
             }
             .padding(EdgeInsets(top: 18, leading: 20, bottom: 18, trailing: 16))
@@ -1337,7 +1337,7 @@ struct DashboardView: View {
         // (MITM 开关开时 lineWidth 1.5),但 iOS 没有 root 概念,
         // FlClash 的卡片本身也没有这圈边框;其余卡片用的
         // .concordCard() 本来就没有描边,此处应与之一致。
-        .accessibilityLabel("状态")
+        .accessibilityLabel("dashboard.status.title".l10n)
         .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
     }
 
@@ -1384,7 +1384,7 @@ struct DashboardView: View {
 
     private var speedCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            CardTitleRow(icon: "gauge.with.dots.needle.33percent", title: "网络速度")
+            CardTitleRow(icon: "gauge.with.dots.needle.33percent", title: "dashboard.card.speed".l10n)
             HStack(spacing: 12) {
                 // v0.2.69: each panel observes TrafficStore
                 // itself — the 1 s tick re-renders only the two
@@ -1428,7 +1428,7 @@ struct DashboardView: View {
 
     private var modeCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            CardTitleRow(icon: "arrow.triangle.branch", title: "出站")
+            CardTitleRow(icon: "arrow.triangle.branch", title: "dashboard.card.outbound".l10n)
             // FlClash outbound_mode.dart DashboardConnectedGroup: one
             // connected pill — outer radius 26, height 52, icon 18,
             // selected segment primary-filled, inner radius 12.
@@ -1437,7 +1437,7 @@ struct DashboardView: View {
             // mode goes direct — show the notice instead of the
             // mode buttons.
             if profileStore.activeProfile == nil {
-                Text("未使用配置，全部直连")
+                Text("dashboard.outbound.noProfileDirect".l10n)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 8)
@@ -1525,17 +1525,17 @@ struct DashboardView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("VPN 意外断开")
+                        Text("dashboard.vpn.unexpectedDisconnect".l10n)
                             .font(.footnote.weight(.semibold))
                         // The extension's startup diagnostic (if any)
                         // names the exact stage where the start died;
                         // otherwise fall back to the app-side error.
-                        Text(tunnelManager.lastStartupDiagnostic() ?? tunnelManager.lastError ?? "隧道被系统关闭或核心停止响应。")
+                        Text(tunnelManager.lastStartupDiagnostic() ?? tunnelManager.lastError ?? "dashboard.vpn.tunnelClosed".l10n)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("重新连接") {
+                    Button("dashboard.vpn.reconnect".l10n) {
                         Task { await proxyStore.toggle() }
                     }
                     .buttonStyle(.borderedProminent)
@@ -1554,14 +1554,14 @@ struct DashboardView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("VPN 反复掉线，已暂停自动重连")
+                        Text("dashboard.vpn.flappingPaused".l10n)
                             .font(.footnote.weight(.semibold))
-                        Text(tunnelManager.lastError ?? "隧道在短时间内多次掉线，系统已暂停自动重连，请检查配置后手动重新启动。")
+                        Text(tunnelManager.lastError ?? "dashboard.vpn.flappingDetail".l10n)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("重新连接") {
+                    Button("dashboard.vpn.reconnect".l10n) {
                         Task { await proxyStore.toggle() }
                     }
                     .buttonStyle(.borderedProminent)
@@ -1579,14 +1579,14 @@ struct DashboardView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("VPN 核心无响应")
+                        Text("dashboard.vpn.coreUnresponsive".l10n)
                             .font(.footnote.weight(.semibold))
                         Text(zombieNotice)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("重新连接") {
+                    Button("dashboard.vpn.reconnect".l10n) {
                         Task { await proxyStore.toggle() }
                     }
                     .buttonStyle(.borderedProminent)
@@ -1606,14 +1606,14 @@ struct DashboardView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("TUN 数据面需要重启 VPN")
+                        Text("dashboard.vpn.tunRestart".l10n)
                             .font(.footnote.weight(.semibold))
                         Text(tunRestartNeeded)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("重启 VPN") {
+                    Button("dashboard.vpn.restart".l10n) {
                         Task {
                             await TunnelManager.shared.stop()
                             // stop() waits up to 5 s for
@@ -1715,7 +1715,7 @@ struct DashboardView: View {
             HStack(spacing: 8) {
                 Image(systemName: "doc.text")
                     .font(.callout.weight(.semibold))
-                Text("配置")
+                Text("dashboard.card.profile".l10n)
                     .font(.caption.weight(.semibold))
                 Spacer()
                 // FlClash profiles.dart _SyncButton: only for URL
@@ -1740,7 +1740,7 @@ struct DashboardView: View {
                                 .foregroundStyle(Color(.label))
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("更新订阅")
+                        .accessibilityLabel("dashboard.profile.updateSubscription".l10n)
                     }
                 }
                 Button { onSelectTab(.profiles) } label: {
@@ -1751,7 +1751,7 @@ struct DashboardView: View {
                 .buttonStyle(.plain)
             }
             HStack(spacing: 8) {
-                Text(profileStore.activeProfile?.name ?? "未选择订阅")
+                Text(profileStore.activeProfile?.name ?? "dashboard.profile.noSelection".l10n)
                     .font(.system(size: 18))
                     .fontWeight(.semibold)
                     .lineLimit(1)
@@ -1764,11 +1764,11 @@ struct DashboardView: View {
                             .foregroundStyle(Color(.label))
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("切换订阅")
+                    .accessibilityLabel("dashboard.profile.switchSubscription".l10n)
                 }
             }
             HStack {
-                Text("更新于 \(updatedText)")
+                Text("\("common.updatedAt".l10n) \(updatedText)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -1784,7 +1784,7 @@ struct DashboardView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(usedPercentText)
                     .font(.system(size: statNumberSize, weight: .bold))
-                Text("已用")
+                Text("dashboard.profile.used".l10n)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -1797,17 +1797,19 @@ struct DashboardView: View {
             // (WavyProgressBar); warn colour at ≥90% used.
             WavyProgressBar(progress: usedFraction, color: usedFraction >= 0.9 ? Color.orange : ConcordTheme.accent)
             if subscription == nil {
-                Text("订阅流量信息：核心未提供（需订阅支持 subscription-userinfo，或先启动 VPN）。")
+                Text("dashboard.profile.noTrafficInfo".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
         .concordCard()
-        // v0.2.56: tapping the card (outside the sync and
-        // chevron buttons, which keep their own taps) opens the
-        // rule-providers sheet (MuYu key_25).
+        // v0.2.145: tapping the card opens the profile-detail
+        // sheet (upstream profiles.dart:53 showProfileDetailSheet),
+        // with the stats, subscription and providers sliver — the
+        // MuYu rule-providers sheet it replaces showed rule
+        // providers only.
         .contentShape(Rectangle())
-        .onTapGesture { showProvidersSheet = true }
+        .onTapGesture { showProfileDetailSheet = true }
     }
 
     // MARK: - Proxy groups card
@@ -1822,10 +1824,10 @@ struct DashboardView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "point.3.connected.trianglepath.dotted")
                         .font(.callout.weight(.semibold))
-                    Text("策略组")
+                    Text("dashboard.card.groups".l10n)
                         .font(.caption.weight(.semibold))
                     if timeoutCount > 0 {
-                        PillBadge(text: "\(timeoutCount) 超时", tint: .orange)
+                        PillBadge(text: String(format: "dashboard.stats.timeoutCount".l10n, "\(timeoutCount)"), tint: .orange)
                     }
                     Spacer()
                     Image(systemName: "chevron.right")
@@ -1842,7 +1844,7 @@ struct DashboardView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
                     Text("\(proxyStore.nonHiddenGroups.count)")
                         .font(.system(size: bigNumberSize, weight: .bold))
-                    Text("个")
+                    Text("dashboard.groups.unit".l10n)
                         .font(.footnote)
                         .fontWeight(.semibold)
                         .foregroundStyle(.secondary)
@@ -1922,10 +1924,10 @@ struct DashboardView: View {
                     .font(.system(size: 26))
                     .foregroundStyle(.secondary)
             }
-            Text(proxyStore.isRunning ? "暂无策略组" : "内核未运行")
+            Text(proxyStore.isRunning ? "dashboard.groups.empty".l10n : "dashboard.groups.coreNotRunning".l10n)
                 .font(.subheadline.weight(.semibold))
             if !proxyStore.isRunning {
-                Text("启动后显示策略组")
+                Text("dashboard.groups.startHint".l10n)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1944,15 +1946,15 @@ struct DashboardView: View {
             // three numbers. The cells below still open their
             // destination sheets.
             HStack(spacing: 0) {
-                statCell(value: dashboardCount(connectionStore.connections.count), label: "实时连接", destination: .live)
+                statCell(value: dashboardCount(connectionStore.connections.count), label: "dashboard.stats.live".l10n, destination: .live)
                 // v0.2.121: this counted eventStore.totalEventCount
                 // (cumulative core EVENTS since launch, not requests)
                 // while the sheet lists finished connections — the
                 // two numbers could never agree (Dashboard 97 vs
                 // sheet 2). Count the same collection the sheet
                 // renders: connectionStore.recentConnections.
-                statCell(value: dashboardCount(connectionStore.recentConnections.count), label: "最近请求", destination: .recent)
-                statCell(value: dashboardCount(dnsStore.entries.count), label: "DNS查询", destination: .dns)
+                statCell(value: dashboardCount(connectionStore.recentConnections.count), label: "dashboard.stats.recent".l10n, destination: .recent)
+                statCell(value: dashboardCount(dnsStore.entries.count), label: "dashboard.stats.dns".l10n, destination: .dns)
             }
         }
         .concordCard()
@@ -2045,11 +2047,11 @@ struct DashboardView: View {
     private var updateCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                CardTitleRow(icon: "arrow.down.circle", title: "更新状态")
+                CardTitleRow(icon: "arrow.down.circle", title: "dashboard.card.update".l10n)
                 Spacer()
                 if lastUpdateChecked {
                     PillBadge(
-                        text: lastUpdateIsNew ? "发现新提交" : "已是最新",
+                        text: lastUpdateIsNew ? "dashboard.update.newCommit".l10n : "dashboard.update.latest".l10n,
                         tint: lastUpdateIsNew ? .orange : .green
                     )
                 }
@@ -2057,13 +2059,13 @@ struct DashboardView: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("v\(appVersion)")
                     .font(.system(size: bigNumberSize, weight: .bold))
-                Text("当前版本")
+                Text("dashboard.update.currentVersion".l10n)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             if lastUpdateChecked {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("最新提交 \(String(lastUpdateSha.prefix(7)))")
+                    Text("\("dashboard.update.latestCommitSha".l10n)\(String(lastUpdateSha.prefix(7)))")
                         .font(.footnote)
                         .fontWeight(.semibold)
                     Text(lastUpdateMessage)
@@ -2077,7 +2079,7 @@ struct DashboardView: View {
                     }
                 }
             } else {
-                Text("尚未检查过更新。")
+                Text("dashboard.update.neverChecked".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -2086,7 +2088,7 @@ struct DashboardView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            Button(isCheckingUpdate ? "检查中…" : "检查更新") {
+            Button(isCheckingUpdate ? "dashboard.update.checking".l10n : "dashboard.update.check".l10n) {
                 Task { await checkForUpdate() }
             }
             .buttonStyle(.borderedProminent)
@@ -2094,7 +2096,7 @@ struct DashboardView: View {
             .controlSize(.small)
             .disabled(isCheckingUpdate)
             if lastUpdateIsNew {
-                Text("点击卡片前往 GitHub Releases 下载新版本安装，本应用内无法直接更新。")
+                Text("dashboard.update.installHint".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -2362,7 +2364,7 @@ private struct CloverBadge: View {
             .frame(width: 48, height: 48)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("重新查询出口 IP")
+        .accessibilityLabel("dashboard.outbound.recheckIp".l10n)
         .onChange(of: checking) { _, isChecking in
             if isChecking {
                 withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
@@ -2395,17 +2397,17 @@ private enum DashboardCardID: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .status: return "状态"
-        case .speed: return "网络速度"
-        case .traffic: return "流量统计"
-        case .mode: return "出站模式"
+        case .status: return "dashboard.status.title".l10n
+        case .speed: return "dashboard.card.speed".l10n
+        case .traffic: return "dashboard.card.traffic".l10n
+        case .mode: return "dashboard.card.mode".l10n
         case .vpn: return "VPN"
-        case .services: return "服务状态"
-        case .profile: return "配置"
-        case .groups: return "策略组"
-        case .stats: return "连接统计"
-        case .memory: return "内存信息"
-        case .update: return "更新状态"
+        case .services: return "dashboard.card.services".l10n
+        case .profile: return "dashboard.card.profile".l10n
+        case .groups: return "dashboard.card.groups".l10n
+        case .stats: return "dashboard.stats.title".l10n
+        case .memory: return "dashboard.card.memoryTitle".l10n
+        case .update: return "dashboard.card.update".l10n
         }
     }
 }
@@ -2484,9 +2486,9 @@ private struct DashboardServiceFaultsBadge: View {
                 .foregroundStyle(.red)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("未能启动的服务")
-            .alert("未能启动的服务", isPresented: $showFaultsAlert) {
-                Button("好", role: .cancel) {}
+            .accessibilityLabel("dashboard.services.faults".l10n)
+            .alert("dashboard.services.faults".l10n, isPresented: $showFaultsAlert) {
+                Button("common.okay".l10n, role: .cancel) {}
             } message: {
                 Text(faults.map { faultLine($0) }.joined(separator: "\n\n"))
             }
@@ -2506,14 +2508,14 @@ private struct DashboardServiceFaultsBadge: View {
     private func faultServiceLabel(_ fault: ConcordServiceFault) -> String {
         let name: String
         switch fault.service {
-        case "mixed": name = "混合端口"
-        case "http": name = "HTTP端口"
-        case "socks": name = "Socks端口"
-        case "redir": name = "Redir端口"
-        case "tproxy": name = "Tproxy端口"
-        case "tun": name = "虚拟网卡"
-        case "dns": name = "DNS 服务器"
-        default: name = "其他"
+        case "mixed": name = "dashboard.ports.mixed".l10n
+        case "http": name = "dashboard.ports.http".l10n
+        case "socks": name = "dashboard.ports.socks".l10n
+        case "redir": name = "dashboard.ports.redir".l10n
+        case "tproxy": name = "dashboard.ports.tproxy".l10n
+        case "tun": name = "dashboard.ports.tun".l10n
+        case "dns": name = "dashboard.ports.dns".l10n
+        default: name = "dashboard.ports.other".l10n
         }
         if let address = fault.address, !address.isEmpty {
             return "\(name) \(address)"
@@ -2526,9 +2528,9 @@ private struct DashboardServiceFaultsBadge: View {
     /// the core's own message.
     private func faultReasonLabel(_ fault: ConcordServiceFault) -> String {
         switch fault.reason {
-        case "address_in_use": return "地址已被占用。"
-        case "address_not_available": return "本机没有这个地址。"
-        case "permission_denied": return "没有权限。"
+        case "address_in_use": return "dashboard.ports.addressInUse".l10n
+        case "address_not_available": return "dashboard.ports.addressNotAvailable".l10n
+        case "permission_denied": return "dashboard.ports.permissionDenied".l10n
         default: return fault.message
         }
     }
@@ -2561,7 +2563,7 @@ private struct DashboardWarningsPill: View {
                 .foregroundStyle(.orange)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("配置警告")
+            .accessibilityLabel("dashboard.configWarning".l10n)
             .sheet(isPresented: $showWarningsDeck) {
                 ConfigWarningsDeck(warnings: trafficStore.lastWarnings)
                     .concordCard()
@@ -2985,7 +2987,7 @@ private struct StatusIpSlotView: View {
                     .minimumScaleFactor(0.75)
             } else if isFailed {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("检测失败")
+                    Text("dashboard.outbound.probeFailed".l10n)
                         .font(.system(size: 24, weight: .bold))
                         .foregroundStyle(.red)
                         .lineLimit(1)
@@ -3060,7 +3062,7 @@ private struct SpeedPanelView: View {
                     Image(systemName: isUp ? "arrow.up" : "arrow.down")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(isUp ? Color(.label) : ConcordTheme.accent)
-                    Text(isUp ? "上传" : "下载")
+                    Text(isUp ? "dashboard.traffic.upload".l10n : "dashboard.traffic.download".l10n)
                         .font(.caption2)
                         .fontWeight(.semibold)
                 }
@@ -3078,7 +3080,7 @@ private struct SpeedPanelView: View {
                     // Reference shows "累计 0 B" (no ".0"): ConcordFormat
                     // formats 0 as "0.0 B", so special-case zero locally
                     // (the shared formatter is used elsewhere and stays).
-                    Text("累计 \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
+                    Text("\("dashboard.traffic.totalPrefix".l10n) \(total == 0 ? "0 B" : ConcordFormat.bytes(total))")
                         .font(.caption2)
                         .fontWeight(.medium)
                         .foregroundStyle(.secondary)
@@ -3105,7 +3107,7 @@ private struct TrafficCardContent: View {
         let today = trafficStore.todayTotals
         return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                CardTitleRow(icon: "chart.pie", title: "流量统计")
+                CardTitleRow(icon: "chart.pie", title: "dashboard.card.traffic".l10n)
                 Spacer()
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.semibold))
@@ -3124,8 +3126,8 @@ private struct TrafficCardContent: View {
                     // v0.2.68: 代理/直连 are TWO LINES in the
                     // video, not side-by-side in one row.
                     VStack(alignment: .leading, spacing: 4) {
-                        trafficSplitRow(dot: ConcordTheme.accent, label: "代理", value: dashboardBytesNoSpace(today.proxyBytes))
-                        trafficSplitRow(dot: ConcordTheme.accent.opacity(0.45), label: "直连", value: dashboardBytesNoSpace(today.directBytes))
+                        trafficSplitRow(dot: ConcordTheme.accent, label: "dashboard.traffic.proxy".l10n, value: dashboardBytesNoSpace(today.proxyBytes))
+                        trafficSplitRow(dot: ConcordTheme.accent.opacity(0.45), label: "common.direct".l10n, value: dashboardBytesNoSpace(today.directBytes))
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3139,7 +3141,7 @@ private struct TrafficCardContent: View {
                 // a transient probe failure too (same pattern as
                 // the status card's 运行时间).
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text("累计运行 \(trafficStore.todayUptimeText)")
+                    Text("\("dashboard.traffic.uptimePrefix".l10n) \(trafficStore.todayUptimeText)")
                         .font(.footnote)
                         .foregroundStyle(Color(.label))
                         .lineLimit(1)
@@ -3205,7 +3207,7 @@ private struct ServicesCardView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "target")
                             .font(.callout.weight(.semibold))
-                        Text("服务状态")
+                        Text("dashboard.card.services".l10n)
                             .font(.caption.weight(.semibold))
                         if let badge = serviceBadge {
                             PillBadge(text: badge.text, tint: badge.tint)
@@ -3231,7 +3233,7 @@ private struct ServicesCardView: View {
             // results are held, not shown as current, until the
             // next probe lands.
             if trafficStore.servicesHeld {
-                Text("检测结果已暂停：VPN 刚启动，等待下次检测刷新。")
+                Text("dashboard.services.pausedNote".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -3255,8 +3257,8 @@ private struct ServicesCardView: View {
     private var serviceBadge: (text: String, tint: Color)? {
         guard !trafficStore.services.isEmpty else { return nil }
         let abnormal = trafficStore.services.filter { $0.status != "available" }.count
-        if abnormal == 0 { return ("全部可用", .green) }
-        return ("\(abnormal) 项异常", .orange)
+        if abnormal == 0 { return ("dashboard.services.allOk".l10n, .green) }
+        return (String(format: "dashboard.services.abnormalCount".l10n, "\(abnormal)"), .orange)
     }
 
     private func servicePill(for service: ConcordServiceItem?) -> some View {
@@ -3323,7 +3325,7 @@ private struct MemoryCardView: View {
         Button { onOpenDetail() } label: {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
-                    CardTitleRow(icon: "memorychip", title: "内存信息")
+                    CardTitleRow(icon: "memorychip", title: "dashboard.card.memoryTitle".l10n)
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
@@ -3336,11 +3338,11 @@ private struct MemoryCardView: View {
                 }
                 MemoryBar(appBytes: appMemoryBytes, coreBytes: trafficStore.coreMemoryBytes ?? 0)
                 HStack(spacing: 16) {
-                    memoryLegend(dot: ConcordTheme.accent, label: "应用", bytes: appMemoryBytes)
-                    memoryLegend(dot: memoryCoreColor, label: "核心", bytes: trafficStore.coreMemoryBytes ?? 0)
+                    memoryLegend(dot: ConcordTheme.accent, label: "dashboard.memory.app".l10n, bytes: appMemoryBytes)
+                    memoryLegend(dot: memoryCoreColor, label: "dashboard.memory.core".l10n, bytes: trafficStore.coreMemoryBytes ?? 0)
                 }
                 if !proxyStore.isRunning {
-                    Text("核心未运行：仅应用内存为实测值，核心为 0。")
+                    Text("dashboard.memory.coreNotRunning".l10n)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -3416,9 +3418,9 @@ private struct MemoryDetailSheetHost: View {
                         appMemoryBytes = bytes
                     }
                     await trafficStore.refreshMemory()
-                    releaseMessage = "已请求核心释放内存"
+                    releaseMessage = "dashboard.memory.releaseRequested".l10n
                 } catch {
-                    releaseMessage = "释放失败：\(error.localizedDescription)"
+                    releaseMessage = "\("dashboard.memory.releaseFailed".l10n)\(error.localizedDescription)"
                 }
             },
             // v0.2.133: release works only against the in-app core

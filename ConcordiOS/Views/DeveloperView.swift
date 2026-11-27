@@ -192,22 +192,24 @@ struct DeveloperView: View {
         }
     }
 
-    /// V-D4 (v0.2.138): prune scope matches upstream's
-    /// shakingStore (lib/providers/actions/store.dart:10):
-    /// delete ORPHAN files — profile YAMLs with no profile,
-    /// provider files with no provider, script files with no
-    /// registered script. The live sets come from the app's own
-    /// stores; a directory whose live list cannot be read is
-    /// SKIPPED, never emptied on a guess (upstream's lists leave
-    /// out rows they cannot read, and the tables may not hold an
-    /// optimistic write yet). Files are matched by stem:
-    /// profiles/<uuid>.yaml, providers/<name>.yaml and
-    /// providers/proxies/<name>.yaml (a provider file may also be
-    /// extensionless — ProfileStore's candidate list), and
+    /// V-D4 (v0.2.138, aligned v0.2.145): prune scope matches upstream's
+    /// shakingStore (lib/providers/actions/store.dart:10) +
+    /// shakeOrphanFiles (lib/common/task.dart:449-520): delete ORPHAN
+    /// files — profile YAMLs with no profile, provider-cache files
+    /// with no provider, script files with no registered script.
+    /// The live sets come from the app's own stores; a directory
+    /// whose live list cannot be read is SKIPPED, never emptied on
+    /// a guess (upstream's lists leave out rows they cannot read,
+    /// and the tables may not hold an optimistic write yet). Files
+    /// are matched by stem: profiles/<uuid>.yaml (upstream: numeric
+    /// ids, ours are UUIDs), the provider cache dirs providers/ +
+    /// providers/proxies/ + rules/ + proxies/ by the core's provider
+    /// `path` stems — upstream's DB fileNames, never the display
+    /// name (a renamed provider keeps its file) — and
     /// mitm/scripts/<id>.js. Anything else — the scripts.json
     /// registry, subdirectories — is left alone. The generated
-    /// cache (snapshots + preflight.yaml) is still deleted: it is
-    /// regenerated on demand.
+    /// cache (snapshots + preflight.yaml) is NOT touched: upstream
+    /// never deletes generated cache, it is regenerated on demand.
     private func pruneCache() async {
         guard let container = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID) else {
@@ -227,14 +229,27 @@ struct DeveloperView: View {
         // first. If the list is still empty afterwards, the
         // providers dirs are SKIPPED — an empty list after a
         // failed refresh proves nothing, and emptying them would
-        // delete live files.
+        // delete live files. The live set is the providers'
+        // cached-file stems (upstream's DB fileNames): the core's
+        // provider `path` IS the cached file ("providers/
+        // example.yaml", "rules/geosite-cn.yaml", "proxies/<md5>").
+        // Empty paths and URLs carry no file to keep.
         await ruleStore.refresh()
         if !ruleStore.providers.isEmpty {
-            let liveProviders = Set(ruleStore.providers.map { $0.name })
-            removed += shakeDirectory(container.appendingPathComponent("providers"),
-                                      extensions: ["yaml", ""], liveStems: liveProviders)
-            removed += shakeDirectory(container.appendingPathComponent("providers/proxies"),
-                                      extensions: ["yaml", ""], liveStems: liveProviders)
+            let liveProviderFiles = Set(ruleStore.providers.compactMap { provider -> String? in
+                let path = provider.path
+                guard !path.isEmpty, !path.contains("://") else { return nil }
+                let stem = (path as NSString).deletingPathExtension
+                return (stem as NSString).lastPathComponent
+            })
+            // The provider cache dirs (AppCore ProviderCacheSeed
+            // .cacheDirs, plus the providers/proxies/ subdir the
+            // core uses for HTTP proxy providers): upstream shakes
+            // the provider-cache dir by fileNames.
+            for dir in ["providers", "providers/proxies", "rules", "proxies"] {
+                removed += shakeDirectory(container.appendingPathComponent(dir),
+                                          extensions: ["yaml", "yml", "mrs", "dat", ""], liveStems: liveProviderFiles)
+            }
         } else {
             skipped.append("提供方")
         }
@@ -244,16 +259,6 @@ struct DeveloperView: View {
         let liveScripts = Set(MitmScriptStore().scripts.map { $0.id })
         removed += shakeDirectory(container.appendingPathComponent("mitm/scripts"),
                                   extensions: ["js"], liveStems: liveScripts)
-
-        // Generated cache, regenerated on demand (kept from the
-        // old prune: snapshots + preflight.yaml).
-        for name in ["snapshots", "preflight.yaml"] {
-            let url = container.appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: url.path) {
-                try? FileManager.default.removeItem(at: url)
-                removed += 1
-            }
-        }
 
         if skipped.isEmpty {
             message = removed > 0 ? "已清理缓存（\(removed) 项）" : "没有可清理的缓存"
@@ -297,11 +302,27 @@ struct DeveloperView: View {
         // 1. clearEffect per numeric core-side profile id,
         // best-effort (upstream: try/catch per profile, warn and
         // continue). Our profiles are UUIDs and the app never
-        // learns numeric core ids, so ids are discovered by
-        // scanning the core homes' profiles/providers/ dirs —
-        // usually empty, in which case nothing is called.
+        // learns numeric core ids — config.apply takes no profile
+        // id, and no profile.* RPC creates or returns one — so ids
+        // are discovered by scanning the core homes'
+        // profiles/providers/ dirs (the exact path the core's
+        // clear_effect deletes, engine/src/ops.rs:122-137). The
+        // scan is usually empty, so the RPC loop usually calls
+        // nothing — but the cleanup must not be skipped on that
+        // account: clear_effect's whole effect is deleting
+        // profiles/providers/<id>, so delete the whole
+        // profiles/providers/ dir in both homes directly. That is
+        // clearEffect for every profile at once, including the
+        // in-memory ones whose numeric ids are unknowable — and it
+        // also covers the in-app core's home, which the tunnel
+        // core's RPC never reaches. Per-profile downloads are
+        // cache: the core re-downloads them on next use.
         for id in coreProfileIds() {
             try? await client.profileClearEffect(profileId: id)
+        }
+        for home in coreHomes() {
+            try? FileManager.default.removeItem(
+                at: home.appendingPathComponent("profiles/providers", isDirectory: true))
         }
         // 2. All preferences (upstream clearPreferences): every
         // ConcordiOS.* key, plus AppleLanguages (the language
@@ -331,11 +352,10 @@ struct DeveloperView: View {
         exit(0)
     }
 
-    /// Numeric core-side profile ids, from the core homes'
-    /// profiles/providers/ dirs (upstream's clearEffect takes the
-    /// profile's numeric id; ours are UUIDs, so the ids are only
-    /// discoverable from the core's own download dirs).
-    private func coreProfileIds() -> [Int64] {
+    /// Both core homes (the in-app core's Application Support dir
+    /// and the App Group container the tunnel core uses): the
+    /// per-profile provider-download dirs live under each.
+    private func coreHomes() -> [URL] {
         let fm = FileManager.default
         var homes: [URL] = []
         if let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
@@ -344,10 +364,18 @@ struct DeveloperView: View {
         if let container = fm.containerURL(forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID) {
             homes.append(container)
         }
+        return homes
+    }
+
+    /// Numeric core-side profile ids, from the core homes'
+    /// profiles/providers/ dirs (upstream's clearEffect takes the
+    /// profile's numeric id; ours are UUIDs, so the ids are only
+    /// discoverable from the core's own download dirs).
+    private func coreProfileIds() -> [Int64] {
         var ids: [Int64] = []
-        for home in homes {
+        for home in coreHomes() {
             let dir = home.appendingPathComponent("profiles/providers", isDirectory: true)
-            guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { continue }
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { continue }
             for name in names {
                 if let id = Int64(name) { ids.append(id) }
             }
@@ -361,11 +389,11 @@ struct DeveloperView: View {
     /// English too, so the mock matches what the deck shows in
     /// production.
     private static let sampleLiveStatusWarnings: [ConcordWarning] = [
-        ConcordWarning(level: "warning", code: nil, path: "mixed-port", message: "The mixed-port is the same as the socks-port"),
-        ConcordWarning(level: "warning", code: nil, path: "mixed-port", message: "The mixed-port is the same as the redir-port"),
-        ConcordWarning(level: "warning", code: nil, path: "mixed-port", message: "The mixed-port is the same as the tproxy-port"),
-        ConcordWarning(level: "warning", code: nil, path: "proxy-groups/Netflix", message: "The current proxy group has no available proxies"),
-        ConcordWarning(level: "warning", code: nil, path: "rules", message: "There are currently no rules matching any proxy group"),
+        ConcordWarning(level: "warning", code: nil, path: "proxies[12]", message: "masque is not supported, the proxy was removed"),
+        ConcordWarning(level: "warning", code: nil, path: "sniffer.override", message: "unknown key"),
+        ConcordWarning(level: "warning", code: nil, path: "rules[48]", message: "the rule names a missing group and goes to DIRECT instead"),
+        ConcordWarning(level: "warning", code: nil, path: "tun.stack", message: "mixed runs as the userspace stack"),
+        ConcordWarning(level: "warning", code: nil, path: "external-ui", message: "key is not supported by this core and is ignored"),
     ]
 }
 

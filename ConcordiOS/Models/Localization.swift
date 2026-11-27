@@ -3,11 +3,11 @@ import Combine
 
 // MARK: - Localisation
 //
-// The app's localised strings live in Localizable.xcstrings (52
-// keys) and are compiled into per-language Localizable.strings in
-// each <lang>.lproj. `"key".l10n` resolves through the language
-// the user picked in Tools -> 语言 — NOT through Bundle.main's
-// system language.
+// The app's localised strings live in Localizable.xcstrings (424
+// keys as of v0.2.145) and are compiled into per-language
+// Localizable.strings in each <lang>.lproj. `"key".l10n` resolves
+// through the language the user picked in Tools -> 语言 — NOT
+// through Bundle.main's system language.
 //
 // T-D1 (v0.2.138): the language used to be a pushed picker page
 // that wrote AppleLanguages and demanded a restart (upstream
@@ -22,10 +22,16 @@ import Combine
 // sync with AppleLanguages, so a relaunch resolves the same
 // language for anything that reads Bundle.main.
 //
-// Honest limit: only the ~50 .l10n keys switch. The rest of the
-// app's strings are hardcoded Chinese and do not change — the old
-// restart note claimed the same, and this does not pretend
-// otherwise.
+// Honest limit (v0.2.145, after the auditor-driven pass 2):
+// the 4 tabs + Tools/Settings chrome switches — titles, section
+// headers, toggles, buttons, labels, prompts, empty states,
+// short notices, validation/format messages, count strings.
+// Still hardcoded Chinese: the 11 multi-sentence explanatory
+// paragraphs in SettingsView, and every other page
+// (Connections, MITM, Developer, Logs, and the Tools/Settings
+// sub-pages not covered here). A key missing from the picked
+// language falls back to Chinese, so untranslated keys never
+// show a raw key.
 
 /// The user-picked app language, shared by .l10n and by the
 /// Tools picker. "" means "follow the system" (Bundle.main).

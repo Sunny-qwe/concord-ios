@@ -1163,14 +1163,16 @@ final class AppCore {
     /// ConcordClient.probeServices, for the Dashboard auto-check
     /// (v0.2.89): with the VPN off the tunnel core is gone, so the
     /// dashboard probes through this core (booted on demand by the
-    /// caller, like the delay test). The 60 s RPC timeout mirrors
-    /// providerUpdate: a multi-service check over a slow network
-    /// legitimately takes a while. Throws when the core is
-    /// unreachable; the caller surfaces the error, never the probe.
+    /// caller, like the delay test). The 90 s RPC timeout gives a
+    /// full slow sweep (the core's 60 s budget) 30 s of margin —
+    /// the same 90 s the VPN-on controller path allows (v0.2.145:
+    /// the old 60 s exactly equalled the budget, so a full sweep
+    /// could be cut off). Throws when the core is unreachable; the
+    /// caller surfaces the error, never the probe.
     func probeServices(proxy: String, names: [String] = concordProbeServiceNames, timeout: UInt64? = nil) async throws -> [ConcordServiceItem] {
         var params: [String: Any] = ["proxy": proxy, "names": names]
         if let timeout { params["timeout"] = timeout }
-        return try await sendRequest(method: "probe.services", params: params, resultType: ConcordServiceList.self, timeoutSeconds: 60).items
+        return try await sendRequest(method: "probe.services", params: params, resultType: ConcordServiceList.self, timeoutSeconds: 90).items
     }
 
     /// Reads the in-app core's general config (config.general) —
@@ -1740,6 +1742,30 @@ final class AppCore {
         /// Human-readable failures, e.g. "隧道 ca.key：权限不足".
         var failures: [String] = []
         var hasFailures: Bool { !failures.isEmpty }
+    }
+
+    /// Whether a CA certificate file exists in EITHER core home
+    /// (this core's home or the App Group container). v0.2.145:
+    /// the trust label's third state (upstream mitm.dart:74-85
+    /// "not installed"): SecTrust cannot tell "not installed"
+    /// from "installed but not fully trusted", but the files on
+    /// disk can — no CA file anywhere means nothing was ever
+    /// installed to trust. Only the certificate counts: the key
+    /// alone (a half-written generate) is nothing installable,
+    /// and the .bak names are stale leftovers, never a live CA.
+    static func caCertificateFileExists() -> Bool {
+        let homes: [URL?] = [
+            try? appHomeDirectory(),
+            FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
+        ]
+        for home in homes {
+            guard let home else { continue }
+            let url = home.appendingPathComponent(caDirectoryName, isDirectory: true)
+                .appendingPathComponent(caCertFileName)
+            if FileManager.default.fileExists(atPath: url.path) { return true }
+        }
+        return false
     }
 
     /// Deletes the old CA files from BOTH core homes — this core's

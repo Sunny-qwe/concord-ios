@@ -352,6 +352,7 @@ final class BackupStore: ObservableObject {
         // MITM flags stored outside settings.v1.
         "ConcordiOS.mitmH2",
         "ConcordiOS.mitmDecryptUntrusted",
+        "ConcordiOS.mitmCaTrustReady",
         // Dashboard layout / display.
         "ConcordiOS.dashboard.order",
         "ConcordiOS.dashboard.densityCompact",
@@ -509,74 +510,6 @@ final class BackupStore: ObservableObject {
             stringKeys = try c.decodeIfPresent([String].self, forKey: .stringKeys) ?? []
             plistValues = try c.decodeIfPresent([String: String].self, forKey: .plistValues) ?? [:]
         }
-    }
-
-    /// Build the backup zip in tmp and return its URL for ShareLink.
-    /// Throws with a readable message on any failure.
-    func createBackup() async throws -> URL {
-        guard let container = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID) else {
-            throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "App Group 容器不可用"])
-        }
-        var entries: [ZipArchive.Entry] = []
-        var files: [String] = []
-        let enumerator = FileManager.default.enumerator(at: container, includingPropertiesForKeys: nil)
-        while let url = enumerator?.nextObject() as? URL {
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
-                  !isDir.boolValue else { continue }
-            // Skip dotfiles (e.g. the config editor's temporary
-            // validation file) — they are working files, not data.
-            if url.lastPathComponent.hasPrefix(".") { continue }
-            let relative = url.path.replacingOccurrences(of: container.path + "/", with: "")
-            // Live snapshots regenerate on the next refresh; they are
-            // not app data and would only bloat the backup.
-            if relative == "snapshots" || relative.hasPrefix("snapshots/") { continue }
-            guard let data = try? Data(contentsOf: url) else { continue }
-            entries.append(ZipArchive.Entry(path: relative, data: data))
-            files.append(relative)
-        }
-        // UserDefaults blobs. Data and String values go in the
-        // original `values` bucket (old backups restore as before);
-        // plist scalars (Bool / Int / Double) go in `plistValues`,
-        // encoded as binary plists so their types survive.
-        var values: [String: String] = [:]
-        var plistValues: [String: String] = [:]
-        for key in Self.backupUserDefaultsKeys {
-            if Self.stringKeys.contains(key) {
-                if let string = UserDefaults.standard.string(forKey: key),
-                   let data = string.data(using: .utf8) {
-                    values[key] = data.base64EncodedString()
-                }
-            } else if Self.dataKeys.contains(key) {
-                if let data = UserDefaults.standard.data(forKey: key) {
-                    values[key] = data.base64EncodedString()
-                }
-            } else if let object = UserDefaults.standard.object(forKey: key),
-                      let plist = try? PropertyListSerialization.data(
-                        fromPropertyList: object, format: .binary, options: 0) {
-                plistValues[key] = plist.base64EncodedString()
-            }
-        }
-        let defaultsBackup = UserDefaultsBackup(
-            values: values, stringKeys: Array(Self.stringKeys), plistValues: plistValues)
-        entries.append(ZipArchive.Entry(
-            path: Self.userDefaultsFileName,
-            data: try JSONEncoder().encode(defaultsBackup)))
-        let manifest = Manifest(
-            format: "concord-ios-backup", version: 1,
-            appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?",
-            createdAt: Date().timeIntervalSince1970, files: files)
-        entries.append(ZipArchive.Entry(
-            path: Self.manifestFileName,
-            data: try JSONEncoder().encode(manifest)))
-        let zipData = try ZipArchive.create(entries: entries)
-        let stamp = BackupStore.backupFileStamp()
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("Concord-备份-\(stamp).zip")
-        try zipData.write(to: url, options: .atomic)
-        return url
     }
 
     private static func backupFileStamp() -> String {

@@ -309,7 +309,7 @@ private struct ToolGlyphRow<Icon: View>: View {
 private struct DisclaimerView: View {
     /// The sentence the user must retype to agree (FlClash
     /// disclaimerNoServiceStatement — also the page's last line).
-    static let restatement = "本软件自身不提供任何代理服务器、节点、订阅、机场或网络接入服务，也不与任何此类服务的提供者存在合作、代理或担保关系。"
+    static var restatement: String { "disclaimer.restatement".l10n }
 
     @AppStorage("ConcordiOS.disclaimer.consented") private var consented = false
     @AppStorage("ConcordiOS.disclaimer.consentedAt") private var consentedAt: Double = 0
@@ -317,26 +317,26 @@ private struct DisclaimerView: View {
     @State private var showRestateDialog = false
     @State private var restateTyped = ""
     @State private var disagreeMessage: String?
-    private static let terms: [(String, String)] = [
-        ("软件性质", "本软件是基于 Concord 内核的开源网络代理客户端，仅提供配置管理、规则分流与流量转发等本地工具功能。\n\n本软件自身不提供任何代理服务器、节点、订阅、机场或网络接入服务，也不与任何此类服务的提供者存在合作、代理或担保关系。"),
-        ("使用说明", "任何人基于本软件开展的商业活动，包括付费分发、捆绑销售或作为商业服务的组成部分，均与本软件的开发者无关，开发者不为其提供背书、支持或担保。\n\n你须自行遵守所在国家或地区的法律法规，因违法使用本软件产生的后果由你自行承担。"),
-        ("用户责任", "你应自行确认使用本软件在你所在国家或地区是合法的，并对使用本软件的全部行为及其后果独立承担法律责任。\n\n你导入的订阅、节点与配置由你自行选择和判断，其来源是否合法、内容是否安全、服务是否稳定，均由你与相关提供者自行负责。"),
-        ("第三方内容", "订阅链接、配置文件、规则集、脚本、外部资源及外部链接均由第三方提供，开发者无法也不会对其合法性、准确性、安全性和可用性进行审查或担保。\n\n因使用第三方内容导致的数据泄露、财产损失、账号封禁或其他任何损失，由你与第三方自行解决，开发者不承担任何责任。"),
-        ("无担保声明", "本软件按“现状”和“可用”的原则提供，不附带任何明示或默示的担保，包括但不限于适销性、特定用途适用性、不侵权以及持续可用、无错误、无安全漏洞的担保。\n\n开发者不保证本软件能满足你的需求，也不保证本软件的运行不会中断或不会出现错误。"),
-        ("责任限制", "在适用法律允许的最大范围内，开发者及所有贡献者均不对因使用或无法使用本软件而产生的任何直接、间接、偶然、特殊、惩罚性或后果性损害承担责任，包括但不限于数据丢失、设备损坏、网络异常、业务中断、利润损失或因此引起的任何法律纠纷，即使已被告知发生此类损害的可能性。"),
-        ("数据收集与隐私", "本软件不会收集或上传你的订阅地址、节点信息、配置内容、访问的网站、连接记录、流量内容和日志，这些数据仅保存在你的设备本地，开发者无法获取。\n\n本软件只会在你使用相应功能时访问外部网络，例如更新订阅时访问你提供的订阅地址、检查更新时访问 GitHub。\n\n本软件在所有平台上均未集成任何数据统计或崩溃上报服务。"),
-        ("开源协议", "本软件以 GPL-3.0 协议开源，你可以依该协议运行、研究、修改和分发本软件；分发本软件或其修改版本时，须同样以 GPL-3.0 协议提供源代码并保留原有的版权声明。\n\n本软件包含的第三方组件（包括 Concord 内核）分别遵循其各自的开源协议。基于本软件修改或分发的版本所产生的任何问题，与原作者无关。"),
-        ("声明变更", "本声明可能随版本更新而修订，以每个版本附带的内容为准。"),
-        ("与开源协议的关系", "本声明是对软件性质、风险与责任的说明，不是 GPL-3.0 之外的附加条款，也不限制该协议授予你的运行、复制、修改和分发等任何权利；两者不一致时，以 GPL-3.0 为准。"),
-    ]
+    private static var terms: [(String, String)] {
+        ("disclaimer.terms.nature.title".l10n, "disclaimer.terms.nature.body".l10n),
+        ("disclaimer.terms.usage.title".l10n, "disclaimer.terms.usage.body".l10n),
+        ("disclaimer.terms.responsibility.title".l10n, "disclaimer.terms.responsibility.body".l10n),
+        ("disclaimer.terms.thirdparty.title".l10n, "disclaimer.terms.thirdparty.body".l10n),
+        ("disclaimer.terms.nowarranty.title".l10n, "disclaimer.terms.nowarranty.body".l10n),
+        ("disclaimer.terms.liability.title".l10n, "disclaimer.terms.liability.body".l10n),
+        ("disclaimer.terms.privacy.title".l10n, "disclaimer.terms.privacy.body".l10n),
+        ("disclaimer.terms.license.title".l10n, "disclaimer.terms.license.body".l10n),
+        ("disclaimer.terms.changes.title".l10n, "disclaimer.terms.changes.body".l10n),
+        ("disclaimer.terms.relation.title".l10n, "disclaimer.terms.relation.body".l10n),
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("免责声明")
+                    Text("tools.disclaimer".l10n)
                         .font(.system(size: 18, weight: .bold))
-                    Text("在使用 FlClash（以下简称“本软件”）前，请仔细阅读并充分理解本声明。点击“同意”表示你已阅读并理解以下内容；如不想继续，可点击“退出”。")
+                    Text("disclaimer.intro".l10n)
                     ForEach(DisclaimerView.terms, id: \.0) { title, body in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(title)
@@ -366,12 +366,12 @@ private struct DisclaimerView: View {
                 },
                 onDisagree: {
                     consented = false
-                    disagreeMessage = "您选择了不同意：请停止使用本应用并将其卸载。"
+                    disagreeMessage = "disclaimer.disagree.message".l10n
                 }
             )
         }
         .background(ConcordTheme.pageBackground)
-        .navigationTitle("免责声明")
+        .navigationTitle("tools.disclaimer".l10n)
         .navigationBarTitleDisplayMode(.inline)
         // Upstream _handleAgree → dialogs.showCommonDialog
         // (dismissible: false, child: _RestateDialog())
@@ -379,19 +379,19 @@ private struct DisclaimerView: View {
         // Cancel + Confirm — NOT a sheet, NOT scrim-dismissible.
         // Confirm stays disabled until the typed text matches the
         // statement exactly; a non-prefix is flagged as a mismatch.
-        .alert("确认同意", isPresented: $showRestateDialog) {
-            TextField("请逐字输入声明", text: $restateTyped)
+        .alert("disclaimer.confirm.title".l10n, isPresented: $showRestateDialog) {
+            TextField("disclaimer.retype.placeholder".l10n, text: $restateTyped)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
-            Button("取消", role: .cancel) { restateTyped = "" }
-            Button("确认") {
+            Button("common.cancel".l10n, role: .cancel) { restateTyped = "" }
+            Button("common.confirm".l10n) {
                 consented = true
                 consentedAt = Date().timeIntervalSince1970
                 restateTyped = ""
             }
             .disabled(restateTyped.trimmingCharacters(in: .whitespacesAndNewlines) != DisclaimerView.restatement)
         } message: {
-            Text("请复述以下声明，以确认您已阅读并同意免责声明：\n\(DisclaimerView.restatement)\(restateMismatch ? "\n输入与声明不一致，请对照上方文字重新输入。" : "")")
+            Text("\("disclaimer.retype.prompt".l10n)\n\(DisclaimerView.restatement)\(restateMismatch ? "\n\("disclaimer.retype.mismatch".l10n)" : "")")
         }
     }
 
@@ -423,7 +423,7 @@ private struct _ConsentBar: View {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("已同意免责声明")
+                        Text("disclaimer.agreed".l10n)
                             .font(.footnote.weight(.semibold))
                         if let date = consentedDate {
                             Text(date.formatted(date: .abbreviated, time: .shortened))
@@ -437,11 +437,11 @@ private struct _ConsentBar: View {
                 .padding(.vertical, 12)
             } else {
                 HStack(spacing: 12) {
-                    Button("不同意", action: onDisagree)
+                    Button("disclaimer.disagree".l10n, action: onDisagree)
                         .buttonStyle(.bordered)
                         .controlSize(.large)
                         .frame(maxWidth: .infinity)
-                    Button("同意", action: onAgree)
+                    Button("disclaimer.agree".l10n, action: onAgree)
                         .buttonStyle(.borderedProminent)
                         .tint(ConcordTheme.accent)
                         .controlSize(.large)

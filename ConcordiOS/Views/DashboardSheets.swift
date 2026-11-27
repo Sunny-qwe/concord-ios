@@ -180,7 +180,7 @@ struct ProxyGaugeTicks: View {
 // MARK: - Sheet chrome
 
 /// One action pill for the sheet header (MuYu's top-right
-/// capsule holding the refresh/eye, bolt/sliders or
+/// capsule holding the refresh, bolt/sliders or
 /// trash/refresh buttons).
 struct SheetActionsPill<Content: View>: View {
     let content: Content
@@ -753,33 +753,37 @@ struct ServiceStatusSheet: View {
 
 // MARK: - Profile providers sheet (config card)
 //
-// MuYu key_25: the active profile's name as the title, then
-// one row per rule provider: name, "N 条规则", updated time
-// right ("15 小时前"). Data is provider.list via RuleStore
-// (ruleProviders = type == "rule"); count is the provider's
-// rule count and updatedAt is epoch seconds. Top-right:
-// refresh re-reads the list; the eye toggles between
-// rule providers only and all providers (MuYu's eye action
-// could not be verified from the frames, so it is this
-// honest scope toggle, not a dead button).
+// v0.2.145 (providers placement): the active profile's name as
+// the title, then one row per provider — ALL providers (proxy +
+// rule), like upstream's ExternalProvidersSliver. Data is
+// provider.list via RuleStore; count is the provider's item
+// count and updatedAt is epoch seconds. Top-right: refresh
+// re-reads the list; the providers section has an update-all
+// button (upstream's sliver header sync) and each HTTP provider
+// row has an update action in its context menu. There is no
+// eye toggle — upstream's sliver has no filter.
 
-struct ProvidersSheet: View {
+/// The profile-detail sheet (upstream profile_detail.dart
+/// ProfileDetailSheet, opened from the dashboard profile card):
+/// stat cells, the subscription section, the 配置 section (last
+/// updated) and the providers sliver — ALL providers, like
+/// upstream's ExternalProvidersSliver, not rule-only.
+struct ProfileDetailSheet: View {
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var profileStore: ProfileStore
+    @EnvironmentObject private var client: ConcordClient
 
     let profileName: String
     /// The active profile's subscription info, passed from the
     /// dashboard (same source as the profile card's traffic
     /// text, so the sheet and the card always agree).
     let subscription: ConcordSubscriptionInfo?
-    @State private var showAll = false
     @State private var isRefreshing = false
+    @State private var isSyncingProviders = false
 
     private var providers: [ConcordProviderInfo] {
-        let all = ruleStore.providers
-        if showAll { return all }
-        return all.filter { $0.type == "rule" }
+        ruleStore.providers
     }
 
     /// Header (v0.2.64, video sheet_2 bottom-right): four stat
@@ -854,6 +858,35 @@ struct ProvidersSheet: View {
         await ruleStore.refresh()
     }
 
+    /// Upstream's sliver header sync (providers.dart
+    /// _updateProviders): updates every provider in the sliver in
+    /// turn, then refreshes the list. Failures are reported via
+    /// ruleStore.lastError and do not stop the rest.
+    private func syncAllProviders() async {
+        isSyncingProviders = true
+        defer { isSyncingProviders = false }
+        for provider in providers {
+            do {
+                try await client.providerUpdate(name: provider.name)
+            } catch {
+                ruleStore.lastError = error.localizedDescription
+            }
+        }
+        await ruleStore.refresh()
+    }
+
+    /// Upstream ProviderItem._handleUpdateProvider: only HTTP
+    /// providers sync (file providers have no URL to pull from).
+    private func updateProvider(_ provider: ConcordProviderInfo) async {
+        guard provider.vehicleType == "HTTP" else { return }
+        do {
+            try await client.providerUpdate(name: provider.name)
+            await ruleStore.refresh()
+        } catch {
+            ruleStore.lastError = error.localizedDescription
+        }
+    }
+
     private var groupCountText: String {
         proxyStore.groups.isEmpty ? "—" : "\(proxyStore.groups.count)"
     }
@@ -900,13 +933,6 @@ struct ProvidersSheet: View {
                     SheetActionButton(systemImage: "arrow.clockwise", label: "刷新", disabled: isRefreshing) {
                         Task { await refreshProviders() }
                     }
-                    SheetActionButton(
-                        systemImage: showAll ? "eye.slash.fill" : "eye.fill",
-                        label: showAll ? "仅显示规则提供方" : "显示全部提供方",
-                        disabled: false
-                    ) {
-                        showAll.toggle()
-                    }
                 }
             }
         ) {
@@ -914,14 +940,16 @@ struct ProvidersSheet: View {
                 VStack(alignment: .leading, spacing: 0) {
                     headerSection
                     Divider().padding(.horizontal, 16)
-                    // v0.2.68: the "外部资源" section title with its
-                    // own circle refresh button (same action as the
-                    // header refresh).
+                    // v0.2.145: upstream's sliver header sync
+                    // (providers.dart _updateProviders): updates
+                    // every provider in turn, then refreshes the
+                    // list. The header pill above only reloads the
+                    // list.
                     HStack {
                         Text("外部资源")
                             .font(.headline)
                         Spacer()
-                        Button { Task { await refreshProviders() } } label: {
+                        Button { Task { await syncAllProviders() } } label: {
                             Image(systemName: "arrow.clockwise")
                                 .font(.system(size: 15, weight: .semibold))
                                 .foregroundStyle(Color(.label))
@@ -929,16 +957,16 @@ struct ProvidersSheet: View {
                                 .background(ConcordTheme.cardBackground, in: Circle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(isRefreshing)
-                        .opacity(isRefreshing ? 0.4 : 1)
-                        .accessibilityLabel("刷新提供方")
+                        .disabled(isRefreshing || isSyncingProviders)
+                        .opacity(isRefreshing || isSyncingProviders ? 0.4 : 1)
+                        .accessibilityLabel("更新全部提供方")
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
                     .padding(.bottom, 4)
                     if providers.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(ruleStore.providers.isEmpty ? "暂无提供方" : "暂无规则提供方")
+                            Text("暂无提供方")
                                 .font(.subheadline.weight(.semibold))
                             Text("核心未返回提供方列表：请先启动 VPN，或点右上角刷新。")
                                 .font(.footnote)
@@ -987,6 +1015,15 @@ struct ProvidersSheet: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        // Upstream ProviderItem menu: HTTP providers can be updated
+        // from the row (file providers have nothing to pull).
+        .contextMenu {
+            if provider.vehicleType == "HTTP" {
+                Button("更新提供方") {
+                    Task { await updateProvider(provider) }
+                }
+            }
+        }
     }
 
     private func countText(for provider: ConcordProviderInfo) -> String {

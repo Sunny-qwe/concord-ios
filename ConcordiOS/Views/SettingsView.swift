@@ -45,7 +45,7 @@ struct SettingsView: View {
     private var portIssue: String? {
         var seen: [Int: String] = [:]
         let ports: [(String, Int, Bool)] = [
-            ("混合", settingsStore.mixedPort, false),
+            ("settings.port.mixed".l10n, settingsStore.mixedPort, false),
             ("SOCKS", settingsStore.socksPort, true),
             ("HTTP", httpPort, true),
             ("redir", redirPort, true),
@@ -53,14 +53,14 @@ struct SettingsView: View {
         ]
         for (label, port, allowDisabled) in ports {
             if port == 0 {
-                if !allowDisabled { return "混合端口必填，不能为 0" }
+                if !allowDisabled { return "settings.ports.mixedRequired".l10n }
                 continue
             }
             if port < 1024 || port > 49151 {
-                return "\(label)端口应在 1024–49151 之间（0 表示停用）"
+                return "\(label)\("settings.ports.rangeError".l10n)"
             }
             if let other = seen[port] {
-                return "\(label)端口与\(other)端口冲突"
+                return "\(label)\("settings.ports.conflictWith".l10n)\(other)\("settings.ports.conflictSuffix".l10n)"
             }
             seen[port] = label
         }
@@ -74,9 +74,9 @@ struct SettingsView: View {
         guard let url = ConfigStore.sharedFileURL(name: ConfigStore.hostsFileName),
               let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            return "无"
+            return "common.none".l10n
         }
-        return json.isEmpty ? "无" : "\(json.count) 条"
+        return json.isEmpty ? "common.none".l10n : String(format: "common.count.hosts".l10n, "\(json.count)")
     }
 
     private var hostsSummary: String { hostsSummaryCache }
@@ -87,11 +87,11 @@ struct SettingsView: View {
     /// not be verified from the core code in this tree, so 0 shows
     /// "默认" rather than a guessed number.
     private var keepAliveIdleText: String {
-        settingsStore.keepAliveIdle == 0 ? "15 秒" : "\(settingsStore.keepAliveIdle) 秒"
+        settingsStore.keepAliveIdle == 0 ? "settings.keepalive.idleDefault".l10n : String(format: "common.seconds".l10n, "\(settingsStore.keepAliveIdle)")
     }
 
     private var keepAliveIntervalText: String {
-        settingsStore.keepAliveInterval == 0 ? "默认" : "\(settingsStore.keepAliveInterval) 秒"
+        settingsStore.keepAliveInterval == 0 ? "common.default".l10n : String(format: "common.seconds".l10n, "\(settingsStore.keepAliveInterval)")
     }
 
     var body: some View {
@@ -105,9 +105,9 @@ struct SettingsView: View {
             // one user's configured state, not defaults (log level
             // stays info, 自动关闭连接 stays off, …). "退出时最小化"
             // is not added: iOS has no system tray.
-            Section("启动与后台") {
-                Toggle("自动运行", isOn: $settingsStore.autoRun)
-                NavigationLink("按需运行") {
+            Section("settings.section.startup".l10n) {
+                Toggle("settings.autorun".l10n, isOn: $settingsStore.autoRun)
+                NavigationLink("settings.ondemand".l10n) {
                     OnDemandView()
                 }
                 Text("自动运行：打开应用后自动启动 VPN（需已有配置）。上游另有「退出时最小化到托盘」，iOS 没有系统托盘，退出应用即进入后台，故不设此开关。")
@@ -115,40 +115,40 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("请求与更新") {
+            Section("settings.section.request".l10n) {
                 NavigationLink {
                     UserAgentsView()
                 } label: {
                     HStack {
-                        Text("用户代理")
+                        Text("settings.userAgent".l10n)
                         Spacer()
-                        Text(settingsStore.globalUa.isEmpty ? "默认" : settingsStore.globalUa)
+                        Text(settingsStore.globalUa.isEmpty ? "common.default".l10n : settingsStore.globalUa)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
-                Toggle("校验 TLS 证书", isOn: $settingsStore.checkCertificate)
-                Toggle("自动检查更新", isOn: $settingsStore.autoCheckUpdate)
-                Text("校验 TLS 证书：关闭后订阅下载不再验证服务器证书（自签证书的订阅源可用）。")
+                Toggle("settings.checkCertificate".l10n, isOn: $settingsStore.checkCertificate)
+                Toggle("settings.autoCheckUpdate".l10n, isOn: $settingsStore.autoCheckUpdate)
+                Text("settings.checkCertificate.hint".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
-            Section("入站") {
-                Stepper("端口：\(settingsStore.mixedPort)", value: $settingsStore.mixedPort, in: 1024...49151)
-                Toggle("局域网代理", isOn: $settingsStore.allowLan)
+            Section("settings.section.inbound".l10n) {
+                Stepper("\("settings.port.label".l10n)\(settingsStore.mixedPort)", value: $settingsStore.mixedPort, in: 1024...49151)
+                Toggle("settings.allowLan".l10n, isOn: $settingsStore.allowLan)
                 NavigationLink {
                     GeneralAuthView()
                 } label: {
                     HStack {
-                        Text("外部控制器密钥")
+                        Text("settings.externalControllerSecret".l10n)
                         Spacer()
-                        Text(settingsStore.externalControllerSecret.isEmpty ? "未设置" : settingsStore.externalControllerSecret)
+                        Text(settingsStore.externalControllerSecret.isEmpty ? "common.notset".l10n : settingsStore.externalControllerSecret)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
-                Toggle("认证", isOn: $settingsStore.authEnabled)
+                Toggle("settings.auth".l10n, isOn: $settingsStore.authEnabled)
                 // v0.2.68 gap (flagged): MuYu's 入站 shows only the
                 // mixed port — the SOCKS / HTTP / redir / tproxy
                 // steppers + reset were meant to move to the 网络
@@ -156,12 +156,12 @@ struct SettingsView: View {
                 // outside this change's file ownership, so they stay
                 // here until that move lands. Removing them would
                 // orphan the settings, not dedup them.
-                Stepper("SOCKS 端口：\(settingsStore.socksPort == 0 ? "停用" : "\(settingsStore.socksPort)")", value: $settingsStore.socksPort, in: 0...49151)
-                Stepper("HTTP 端口：\(httpPort == 0 ? "停用" : "\(httpPort)")", value: $httpPort, in: 0...49151)
+                Stepper("\("settings.ports.socksLabel".l10n)\(settingsStore.socksPort == 0 ? "common.disabled".l10n : "\(settingsStore.socksPort)")", value: $settingsStore.socksPort, in: 0...49151)
+                Stepper("\("settings.ports.httpLabel".l10n)\(httpPort == 0 ? "common.disabled".l10n : "\(httpPort)")", value: $httpPort, in: 0...49151)
                     .onChange(of: httpPort) { _, _ in settingsStore.save() }
-                Stepper("redir 端口：\(redirPort == 0 ? "停用" : "\(redirPort)")", value: $redirPort, in: 0...49151)
+                Stepper("\("settings.ports.redirLabel".l10n)\(redirPort == 0 ? "common.disabled".l10n : "\(redirPort)")", value: $redirPort, in: 0...49151)
                     .onChange(of: redirPort) { _, _ in settingsStore.save() }
-                Stepper("tproxy 端口：\(tproxyPort == 0 ? "停用" : "\(tproxyPort)")", value: $tproxyPort, in: 0...49151)
+                Stepper("\("settings.ports.tproxyLabel".l10n)\(tproxyPort == 0 ? "common.disabled".l10n : "\(tproxyPort)")", value: $tproxyPort, in: 0...49151)
                     .onChange(of: tproxyPort) { _, _ in settingsStore.save() }
                 if let portIssue {
                     Text(portIssue)
@@ -173,28 +173,28 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("出站") {
+            Section("settings.section.outbound".l10n) {
                 // v0.2.141 (C1-d1): the outbound-mode picker lived
                 // here until v0.2.140; upstream has no mode switch
                 // in Settings (the mode segment is on the
                 // Dashboard). The mode itself is unchanged — the
                 // Dashboard segment still sets settingsStore.mode,
                 // and the .onChange(save) below still persists it.
-                Toggle("禁用 TCP 保活", isOn: $settingsStore.disableKeepAlive)
+                Toggle("settings.disableKeepAlive".l10n, isOn: $settingsStore.disableKeepAlive)
                 // TCP 保活（核心 keep-alive-idle / interval /
                 // disable-keep-alive；0 = 核心默认）。经
                 // general-overlay.json 下发，下次启动 VPN 或切换出站
                 // 模式时生效。
-                Stepper("TCP 保持活动空闲时间：\(keepAliveIdleText)", value: $settingsStore.keepAliveIdle, in: 0...3600, step: 15)
-                Stepper("TCP 保持活动间隔：\(keepAliveIntervalText)", value: $settingsStore.keepAliveInterval, in: 0...3600, step: 15)
+                Stepper("\("settings.keepalive.idleLabel".l10n)\(keepAliveIdleText)", value: $settingsStore.keepAliveIdle, in: 0...3600, step: 15)
+                Stepper("\("settings.keepalive.intervalLabel".l10n)\(keepAliveIntervalText)", value: $settingsStore.keepAliveInterval, in: 0...3600, step: 15)
                 Text("保活空闲 / 间隔为 0 表示用核心默认（空闲 15 秒）。改动在下次启动 VPN 时生效；切换出站模式时也会立即应用。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Toggle("IPv6", isOn: $settingsStore.ipv6)
             }
 
-            Section("连接") {
-                Picker("延迟测试超时", selection: $settingsStore.delayTestTimeout) {
+            Section("settings.section.connection".l10n) {
+                Picker("settings.delayTestTimeout".l10n, selection: $settingsStore.delayTestTimeout) {
                     Text("3000 ms").tag(3000)
                     Text("5000 ms").tag(5000)
                     Text("8000 ms").tag(8000)
@@ -214,15 +214,15 @@ struct SettingsView: View {
                 // 关闭 off) — collapsing it to a toggle would force
                 // "off" on everyone who never touched it and disable
                 // PROCESS-NAME / PROCESS-PATH rules (config B4).
-                Picker("始终查找进程", selection: $settingsStore.findProcessModeSetting) {
-                    Text("默认（strict）").tag("strict")
-                    Text("始终（always）").tag("always")
-                    Text("关闭（off）").tag("off")
+                Picker("settings.findProcess".l10n, selection: $settingsStore.findProcessModeSetting) {
+                    Text("settings.findProcess.strict".l10n).tag("strict")
+                    Text("settings.findProcess.always".l10n).tag("always")
+                    Text("settings.findProcess.off".l10n).tag("off")
                 }
-                Text("进程查找方式：默认 strict（核心默认）；always 始终按进程匹配，off 关闭进程匹配。核心当前报告：\(settingsStore.findProcessMode ?? "未知")。改动在下次启动 VPN 时生效；切换出站模式时也会立即应用。")
+                Text("\("settings.findProcess.explainerPrefix".l10n)\(settingsStore.findProcessMode ?? "common.unknown".l10n)\("settings.findProcess.explainerSuffix".l10n)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Toggle("自动关闭连接", isOn: $settingsStore.autoCloseConnections)
+                Toggle("settings.autoCloseConnections".l10n, isOn: $settingsStore.autoCloseConnections)
                 // FlClash general.dart:337 _connectionItems:
                 // only count proxy traffic in the traffic stats.
                 // Stored in SettingsStore; the traffic feed
@@ -230,11 +230,11 @@ struct SettingsView: View {
                 // so this only records the preference until
                 // ConcordClient / TrafficStore wire it — it does
                 // not change the numbers shown today.
-                Toggle("仅统计代理流量", isOn: $settingsStore.onlyStatisticsProxy)
+                Toggle("settings.onlyStatisticsProxy".l10n, isOn: $settingsStore.onlyStatisticsProxy)
                 Text("仅统计代理流量：打开后流量统计只计代理流量，直连流量不计入（上游 getTraffic 参数）。当前版本此开关只保存偏好，流量接口尚未接线，数字暂无变化。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Toggle("流量嗅探", isOn: $settingsStore.sniffing)
+                Toggle("settings.sniffing".l10n, isOn: $settingsStore.sniffing)
                     // B6: the master switch only takes effect
                     // when sniffer.json is re-saved (effective
                     // enable = master && page switch).
@@ -242,19 +242,19 @@ struct SettingsView: View {
                     // this makes the wiring explicit at the
                     // switch itself.
                     .onChange(of: settingsStore.sniffing) { _, _ in SnifferStore.shared.save() }
-                Toggle("TCP 并发", isOn: $settingsStore.tcpConcurrent)
-                Toggle("统一延迟测试", isOn: $settingsStore.unifiedDelay)
+                Toggle("settings.tcpConcurrent".l10n, isOn: $settingsStore.tcpConcurrent)
+                Toggle("settings.unifiedDelay".l10n, isOn: $settingsStore.unifiedDelay)
                 Text("统一延迟测试：打开后测速只计量热连接上的第二次请求，拨号与 TLS 握手不再计入，延迟更接近真实往返耗时。VPN 开启时切换后立即生效；VPN 关闭时，隧道核心在下次启动时读取。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
-            Section("内核") {
+            Section("settings.section.core".l10n) {
                 NavigationLink {
                     HostsView()
                 } label: {
                     HStack {
-                        Text("主机映射")
+                        Text("settings.hosts".l10n)
                         Spacer()
                         Text(hostsSummary)
                             .foregroundStyle(.secondary)
@@ -266,11 +266,11 @@ struct SettingsView: View {
                 // (task.dart:314). Wired in SettingsStore:
                 // the servers are read from /etc/resolv.conf
                 // and appended to dns.json's nameserver list.
-                Toggle("追加系统DNS", isOn: $settingsStore.appendSystemDns)
+                Toggle("settings.appendSystemDns".l10n, isOn: $settingsStore.appendSystemDns)
                 Text("追加系统 DNS：打开后，系统当前用的 DNS 服务器会追加到 DNS 上游列表末尾（订阅自带的解析服务器优先）。改动随 DNS 设置保存，下次启动 VPN 或点「应用 DNS 设置」后生效。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                NavigationLink("添加覆写项") {
+                NavigationLink("settings.addOverride".l10n) {
                     OverrideView()
                 }
             }
@@ -283,8 +283,8 @@ struct SettingsView: View {
             // 没启用的项用订阅自己的值。
             OverrideSectionEditor(section: .general, scope: .constant(nil))
 
-            Section("日志与诊断") {
-                Picker("日志等级", selection: $settingsStore.logLevel) {
+            Section("settings.section.logs".l10n) {
+                Picker("settings.logLevel".l10n, selection: $settingsStore.logLevel) {
                     ForEach(LogLevel.allCases) { level in
                         Text(level.rawValue).tag(level)
                     }
@@ -298,7 +298,7 @@ struct SettingsView: View {
                 // buttons in Settings). The store method stays:
                 // applyGeneralToCore is still called on Dashboard
                 // mode switches and at app launch.
-                Toggle("日志捕获", isOn: $settingsStore.openLogs)
+                Toggle("settings.openLogs".l10n, isOn: $settingsStore.openLogs)
             }
 
             // v0.2.68 (MuYu): the TUN + DNS sections moved out —
@@ -308,45 +308,42 @@ struct SettingsView: View {
             // Fake-IP + 保存并应用. Remaining gap (flagged): the
             // core-reported TUN state readout (refreshTunState) had
             // no host on either subpage, so it is dropped for now.
-            Section("配置") {
+            Section("settings.section.config".l10n) {
                 NavigationLink("NTP") {
                     NtpSettingsView()
                 }
-                NavigationLink("嗅探") {
+                NavigationLink("settings.sniff".l10n) {
                     SnifferSettingsView()
                 }
-                Text("覆盖：对通用、DNS、TUN、嗅探、NTP 的逐项覆盖，分全局和单个订阅两级，带 YAML 预览。")
+                Text("settings.sniff.hint".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
-            // v0.2.141 (C20-c1): upstream splits providers — proxy
-            // providers live under Proxies (their
-            // ExternalProvidersSliver is in the profile-detail
-            // sheet, which our Dashboard/Profiles phase does not
-            // have yet), rule providers under Advanced → 提供方.
-            // The hub therefore offers both pages; the caption
-            // counts the rule-provider page.
-            Section("提供方（provider.list）") {
-                NavigationLink("代理提供方") {
-                    ProxyProvidersView()
-                }
-                NavigationLink("规则提供方") {
+            // v0.2.141 (C20-c1) + v0.2.145: upstream splits providers
+            // — proxy providers live ONLY in the profile-detail
+            // sheet (their ExternalProvidersSliver), opened from
+            // the dashboard profile card; rule providers live
+            // here under Advanced → 提供方. The hub therefore
+            // offers only the rule-provider page; the caption
+            // counts it.
+            Section("settings.section.providers".l10n) {
+                NavigationLink("settings.ruleProviders".l10n) {
                     ProvidersView()
                 }
-                Text("规则提供方 \(ruleStore.ruleProviders.count) 个")
+                Text(String(format: "settings.ruleProviders.count".l10n, "\(ruleStore.ruleProviders.count)"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
-            Section("资源（core.stats）") {
-                NavigationLink("资源详情") {
+            Section("settings.section.resources".l10n) {
+                NavigationLink("settings.resourceDetail".l10n) {
                     ResourcesView()
                 }
-                LabeledContent("核心内存", value: trafficStore.coreMemoryBytes.map { ConcordFormat.bytes(Int64($0)) } ?? "—")
+                LabeledContent("settings.coreMemory".l10n, value: trafficStore.coreMemoryBytes.map { ConcordFormat.bytes(Int64($0)) } ?? "—")
             }
 
-            Section("应用") {
+            Section("settings.section.app".l10n) {
                 // v0.2.141 (C1-d1): the 自动更新订阅 toggle and the
                 // 核心模式 picker are gone (upstream has neither in
                 // Settings). The properties stay — autoUpdateProfiles
@@ -355,7 +352,7 @@ struct SettingsView: View {
                 // frozen at their persisted values. The 开发者模式
                 // toggle stays: it also gates the Developer row in
                 // ToolsView.
-                Toggle("开发者模式", isOn: $settingsStore.developerMode)
+                Toggle("settings.developerMode".l10n, isOn: $settingsStore.developerMode)
             }
 
             // Group icon pack (v0.2.53): the user pastes the URL
@@ -365,13 +362,13 @@ struct SettingsView: View {
             // The pack still wins over the bundled brands
             // (BrandIcons, v0.2.141). The field starts empty;
             // nothing is fetched until the button is tapped.
-            Section("图标源") {
-                TextField("图标源链接（JSON）", text: $iconPack.urlText)
+            Section("settings.section.iconSource".l10n) {
+                TextField("settings.iconSource.urlPlaceholder".l10n, text: $iconPack.urlText)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 HStack {
-                    Button(iconPack.iconCount > 0 ? "更新" : "导入") {
+                    Button(iconPack.iconCount > 0 ? "common.update".l10n : "common.import".l10n) {
                         Task { await iconPack.importPack() }
                     }
                     .disabled(iconPack.isImporting || iconPack.urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -379,19 +376,19 @@ struct SettingsView: View {
                     if iconPack.isImporting {
                         ProgressView()
                     } else if iconPack.iconCount > 0 {
-                        Button("删除", role: .destructive) {
+                        Button("common.delete".l10n, role: .destructive) {
                             iconPack.clearPack()
                         }
                     }
                 }
                 if let name = iconPack.packName, iconPack.iconCount > 0 {
-                    LabeledContent("图标包", value: name)
-                    LabeledContent("图标数量", value: "\(iconPack.iconCount) 个")
+                    LabeledContent("settings.iconPack.name".l10n, value: name)
+                    LabeledContent("settings.iconPack.count".l10n, value: String(format: "common.count.items".l10n, "\(iconPack.iconCount)"))
                     if let date = iconPack.fetchedAt {
-                        LabeledContent("上次更新", value: date.formatted(date: .abbreviated, time: .shortened))
+                        LabeledContent("settings.iconPack.updated".l10n, value: date.formatted(date: .abbreviated, time: .shortened))
                     }
                 } else {
-                    Text("粘贴一个图标源链接（JSON，iBL3ND 格式），导入后策略组会按名称自动匹配图标。留空表示不使用图标源。")
+                    Text("settings.iconSource.hint".l10n)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -411,19 +408,19 @@ struct SettingsView: View {
             // an unused app_icon plugin); the icon now changes at
             // install time in SideKite.
             Section("settings.theme".l10n) {
-                NavigationLink("外观与主题色") {
+                NavigationLink("settings.appearance".l10n) {
                     ThemePickerView()
                 }
-                Text("浅色 / 深色 / 跟随系统，外加 8 种主题色。")
+                Text("settings.appearance.subtitle".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             Section("settings.backup".l10n) {
-                NavigationLink("备份与恢复") {
+                NavigationLink("settings.backup".l10n) {
                     BackupView()
                 }
-                Text("把全部订阅、设置和 MITM 模块导出成一个备份文件，或从备份文件恢复。")
+                Text("settings.backup.subtitle".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -442,10 +439,10 @@ struct SettingsView: View {
             // and the crash button lose their only UI. The
             // 开发者模式 toggle in 应用 stays — it also gates the
             // Developer row in ToolsView.
-            Section("关于") {
-                LabeledContent("版本", value: "Lumen \(Self.appVersion)")
-                LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
-                LabeledContent("界面来源", value: "chen08209/FlClash（GPL-3.0）")
+            Section("tools.about".l10n) {
+                LabeledContent("settings.about.version".l10n, value: "Lumen \(Self.appVersion)")
+                LabeledContent("settings.about.core".l10n, value: "chen08209/concord（GPL-3.0-or-later）")
+                LabeledContent("settings.about.uiSource".l10n, value: "chen08209/FlClash（GPL-3.0）")
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
@@ -506,7 +503,7 @@ struct ProvidersView: View {
             if client.mode == .sample {
                 HStack {
                     SampleDataBadge()
-                    Text("提供方为示例数据")
+                    Text("providers.sampleNotice".l10n)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -514,7 +511,8 @@ struct ProvidersView: View {
             }
             // v0.2.141 (C20-c1): this page is rule providers only
             // (upstream Advanced → 提供方, advanced.dart). Proxy
-            // providers moved to ProxyProvidersView (below).
+            // providers live in the profile-detail sheet
+            // (dashboard profile card → ProfileDetailSheet).
             ForEach(ruleStore.ruleProviders) { provider in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
@@ -524,21 +522,21 @@ struct ProvidersView: View {
                         // is gone — on a rule-only page every row
                         // would say "rule".
                     }
-                    Text("\(provider.vehicleType) · \(provider.count) 条 · \(provider.path)")
+                    Text("\(provider.vehicleType) · \(String(format: "common.count.entries".l10n, "\(provider.count)")) · \(provider.path)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     if let updated = provider.updatedAt {
-                        Text("更新于 \(Date(timeIntervalSince1970: TimeInterval(updated)).formatted(date: .abbreviated, time: .shortened))")
+                        Text("\("common.updatedAt".l10n) \(Date(timeIntervalSince1970: TimeInterval(updated)).formatted(date: .abbreviated, time: .shortened))")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                 }
                 .swipeActions {
-                    Button("编辑") {
+                    Button("common.edit".l10n) {
                         editingProvider = provider
                     }
                     .tint(.purple)
-                    Button("详情") {
+                    Button("common.details".l10n) {
                         Task {
                             await ruleStore.loadProviderDetail(provider)
                             if let detail = ruleStore.providerDetail {
@@ -549,7 +547,7 @@ struct ProvidersView: View {
                         }
                     }
                     .tint(.blue)
-                    Button("更新") {
+                    Button("common.update".l10n) {
                         Task {
                             do {
                                 try await client.providerUpdate(name: provider.name)
@@ -562,7 +560,7 @@ struct ProvidersView: View {
                     .tint(.orange)
                 }
             }
-            Section("从链接导入提供方") {
+            Section("providers.section.importLink".l10n) {
                 TextEditor(text: $importURLs)
                     .frame(minHeight: 60)
                     .font(.system(.caption, design: .monospaced))
@@ -571,7 +569,7 @@ struct ProvidersView: View {
                     .scrollContentBackground(.hidden)
                     .padding(8)
                     .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
-                Button("导入") {
+                Button("common.import".l10n) {
                     Task { await importProvidersFromURLs() }
                 }
                 .disabled(importURLs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -579,8 +577,8 @@ struct ProvidersView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            Section("本地载入提供方（provider.sideLoad）") {
-                TextField("提供方名称", text: $sideLoadName)
+            Section("providers.section.sideload".l10n) {
+                TextField("providers.sideload.namePlaceholder".l10n, text: $sideLoadName)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 TextEditor(text: $sideLoadText)
@@ -591,14 +589,14 @@ struct ProvidersView: View {
                     .scrollContentBackground(.hidden)
                     .padding(8)
                     .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 12))
-                Button("载入") {
+                Button("providers.sideload.load".l10n) {
                     Task { await ruleStore.sideLoadProvider(name: sideLoadName, data: sideLoadText) }
                 }
                 .disabled(sideLoadName.trimmingCharacters(in: .whitespaces).isEmpty || sideLoadText.isEmpty)
                 // FlClash providers.dart _handleImportFromFile: pick
                 // a file, read its bytes, side-load under the file
                 // stem. Same core method as the paste box above.
-                Button("从文件导入…") {
+                Button("providers.importFile".l10n) {
                     showProviderImporter = true
                 }
                 Text("把提供方文件内容（YAML / MRS / 文本）直接贴进来，核心会把它存到该名称下。只处理本地内容，不联网拉取；从文件导入时名称取文件主名。")
@@ -624,7 +622,7 @@ struct ProvidersView: View {
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
-        .navigationTitle("规则提供方")
+        .navigationTitle("settings.ruleProviders".l10n)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
         .toolbar {
@@ -647,13 +645,13 @@ struct ProvidersView: View {
                 let accessing = url.startAccessingSecurityScopedResource()
                 defer { if accessing { url.stopAccessingSecurityScopedResource() } }
                 guard let data = try? Data(contentsOf: url), !data.isEmpty else {
-                    ruleStore.lastError = "读取文件失败或文件为空"
+                    ruleStore.lastError = "providers.import.readFailed".l10n
                     return
                 }
                 let name = uniqueProviderName(url.deletingPathExtension().lastPathComponent)
                 Task { await ruleStore.sideLoadProvider(name: name, data: String(decoding: data, as: UTF8.self)) }
             case .failure(let error):
-                ruleStore.lastError = "选择文件失败：\(error.localizedDescription)"
+                ruleStore.lastError = "\("providers.import.pickFileFailed".l10n)\(error.localizedDescription)"
             }
         }
         // Provider detail is a pushed page (upstream EditorPage),
@@ -693,7 +691,7 @@ struct ProvidersView: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         guard !lines.isEmpty else {
-            ruleStore.providerActionMessage = "请先输入提供方链接"
+            ruleStore.providerActionMessage = "providers.import.enterLinksFirst".l10n
             return
         }
         var imported: [String] = []
@@ -725,123 +723,12 @@ struct ProvidersView: View {
         }
         await ruleStore.refresh()
         if failures.isEmpty {
-            ruleStore.providerActionMessage = "已导入提供方：\(imported.joined(separator: "、"))"
+            ruleStore.providerActionMessage = "\("providers.import.imported".l10n)\(imported.joined(separator: "common.listSeparator".l10n))"
         } else if imported.isEmpty {
-            ruleStore.lastError = "导入失败：\(failures.joined(separator: "、"))"
+            ruleStore.lastError = "\("providers.import.failed".l10n)\(failures.joined(separator: "common.listSeparator".l10n))"
         } else {
-            ruleStore.providerActionMessage = "已导入提供方：\(imported.joined(separator: "、"))；失败：\(failures.joined(separator: "、"))"
+            ruleStore.providerActionMessage = "\("providers.import.imported".l10n)\(imported.joined(separator: "common.listSeparator".l10n))\("providers.import.failedSuffix".l10n)\(failures.joined(separator: "common.listSeparator".l10n))"
         }
-    }
-}
-
-// MARK: - Proxy providers (C20-c1)
-
-/// Proxy providers only. Upstream's ExternalProvidersSliver
-/// (views/proxies/providers.dart) lists proxy providers with a
-/// header sync button and per-row update; it lives in the
-/// profile-detail sheet, which our Dashboard/Profiles phase does
-/// not have yet, so the hub's 提供方 section links here instead.
-/// No delete swipe: the core has no provider.delete (C20-b3,
-/// v0.2.142). No health check either (D8 — the core returns no
-/// health state to display).
-struct ProxyProvidersView: View {
-    @EnvironmentObject private var ruleStore: RuleStore
-    @EnvironmentObject private var client: ConcordClient
-    @State private var isSyncing = false
-
-    private var proxyProviders: [ConcordProviderInfo] {
-        ruleStore.providers.filter { $0.type == "proxy" }
-    }
-
-    var body: some View {
-        List {
-            if client.mode == .sample {
-                HStack {
-                    SampleDataBadge()
-                    Text("提供方为示例数据")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .listRowBackground(Color.clear)
-            }
-            if proxyProviders.isEmpty {
-                Text("没有代理提供方。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(proxyProviders) { provider in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(provider.name).font(.footnote)
-                    Text("\(provider.vehicleType) · \(provider.count) 条 · \(provider.path)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if let updated = provider.updatedAt {
-                        Text("更新于 \(Date(timeIntervalSince1970: TimeInterval(updated)).formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .swipeActions {
-                    Button("更新") {
-                        Task {
-                            do {
-                                try await client.providerUpdate(name: provider.name)
-                                await ruleStore.refresh()
-                            } catch {
-                                ruleStore.lastError = error.localizedDescription
-                            }
-                        }
-                    }
-                    .tint(.orange)
-                }
-            }
-            if let message = ruleStore.providerActionMessage {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .listRowBackground(Color.clear)
-            }
-            if let error = ruleStore.lastError {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .listRowBackground(Color.clear)
-            }
-        }
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
-        .background(ConcordTheme.pageBackground)
-        .listStyle(.insetGrouped)
-        .navigationTitle("代理提供方")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task { await syncAll() }
-                } label: {
-                    if isSyncing { ProgressView() } else { Image(systemName: "arrow.clockwise") }
-                }
-                .disabled(isSyncing)
-            }
-        }
-        .refreshable { await ruleStore.refresh() }
-        .task { await ruleStore.refresh() }
-    }
-
-    /// Upstream's sliver header sync: updates every proxy
-    /// provider in turn, then refreshes the list.
-    private func syncAll() async {
-        isSyncing = true
-        defer { isSyncing = false }
-        for provider in proxyProviders {
-            do {
-                try await client.providerUpdate(name: provider.name)
-            } catch {
-                ruleStore.lastError = error.localizedDescription
-            }
-        }
-        await ruleStore.refresh()
     }
 }
 
@@ -903,8 +790,8 @@ struct ResourcesView: View {
             // release button) and the 已加载 section are gone
             // (upstream resources.dart has neither — memory lives
             // on the Dashboard, counts live on their own pages).
-            Section("可更新资源") {
-                Button(isUpdatingAll ? "全部更新中…" : "全部更新") {
+            Section("resources.section.updatable".l10n) {
+                Button(isUpdatingAll ? "resources.updateAll.updating".l10n : "resources.updateAll.update".l10n) {
                     Task { await updateAllResources() }
                 }
                 .disabled(isUpdatingAll)
@@ -915,16 +802,16 @@ struct ResourcesView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            Section("规则提供方") {
+            Section("settings.ruleProviders".l10n) {
                 if ruleStore.ruleProviders.isEmpty {
-                    Text("没有规则提供方。")
+                    Text("resources.noRuleProviders".l10n)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(ruleStore.ruleProviders) { provider in
                         resourceRow(
                             title: provider.name,
-                            subtitle: "\(provider.count) 条 · \(provider.vehicleType)",
+                            subtitle: "\(String(format: "common.count.entries".l10n, "\(provider.count)")) · \(provider.vehicleType)",
                             updatedAt: provider.updatedAt,
                             updatingKey: "provider:\(provider.name)",
                             onUpdate: { await updateProvider(provider) }
@@ -932,19 +819,19 @@ struct ResourcesView: View {
                     }
                 }
             }
-            // v0.2.141 (C21-d3): the 代理提供方 section is gone —
-            // proxy providers live on their own page now
-            // (ProxyProvidersView, C20-c1).
-            Section("MITM 模块") {
+            // v0.2.141 (C21-d3) + v0.2.145: the 代理提供方 section
+            // is gone — proxy providers live in the profile-detail
+            // sheet now (dashboard profile card → ProfileDetailSheet).
+            Section("resources.section.mitmModules".l10n) {
                 if mitmModuleStore.modules.isEmpty {
-                    Text("没有 MITM 模块。")
+                    Text("resources.noMitmModules".l10n)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(mitmModuleStore.modules) { module in
                         resourceRow(
                             title: module.name,
-                            subtitle: "\(module.scripts) 个脚本 · \(module.enabled ? "已启用" : "已暂停")",
+                            subtitle: "\(String(format: "common.count.scripts".l10n, "\(module.scripts)")) · \(module.enabled ? "common.enabled".l10n : "common.paused".l10n)",
                             updatedAt: Int64(module.lastUpdateTime.timeIntervalSince1970),
                             updatingKey: "module:\(module.id)",
                             onUpdate: { await mitmModuleStore.update(module) }
@@ -952,16 +839,16 @@ struct ResourcesView: View {
                     }
                 }
             }
-            Section("MITM 脚本") {
+            Section("resources.section.mitmScripts".l10n) {
                 let totalScripts = mitmModuleStore.modules.reduce(0) { $0 + $1.scripts }
-                LabeledContent("脚本总数", value: "\(totalScripts) 个")
-                Text("脚本没有独立的更新接口，随所属 MITM 模块一起更新。")
+                LabeledContent("resources.scripts.total".l10n, value: String(format: "common.count.items".l10n, "\(totalScripts)"))
+                Text("resources.scripts.hint".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            Section("图标集") {
-                LabeledContent("内置图标集", value: "默认")
-                Text("内置图标集没有远程更新；切换图标集见 工具 → 进阶配置 → 图标集。")
+            Section("resources.section.iconSets".l10n) {
+                LabeledContent("resources.iconSets.builtin".l10n, value: "common.default".l10n)
+                Text("resources.iconSets.hint".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 // FlClash resources.dart:238,568 _IconSetItem:
@@ -972,7 +859,7 @@ struct ResourcesView: View {
                     if pack.isRemote {
                         resourceRow(
                             title: pack.name,
-                            subtitle: "\(pack.icons.count) 个图标 · 远程",
+                            subtitle: "\(String(format: "common.count.icons".l10n, "\(pack.icons.count)")) · \("common.remote".l10n)",
                             updatedAt: Int64(pack.lastUpdate.timeIntervalSince1970),
                             updatingKey: "iconset:\(pack.id)",
                             onUpdate: { await iconSetStore.syncPack(pack) }
@@ -981,10 +868,10 @@ struct ResourcesView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(pack.name)
                                 .font(.footnote)
-                            Text("\(pack.icons.count) 个图标 · 本地文件（无来源链接，不可同步）")
+                            Text("\(pack.icons.count) \("settings.iconPack.iconsUnit".l10n)\("settings.iconPack.localFileNote".l10n)")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            Text("更新于 \(Date(timeIntervalSince1970: pack.lastUpdate.timeIntervalSince1970).formatted(date: .abbreviated, time: .shortened))")
+                            Text("\("common.updatedAt".l10n) \(Date(timeIntervalSince1970: pack.lastUpdate.timeIntervalSince1970).formatted(date: .abbreviated, time: .shortened))")
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                         }
@@ -997,8 +884,8 @@ struct ResourcesView: View {
                     Text(error).font(.caption2).foregroundStyle(.red)
                 }
             }
-            Section("Geo 资源") {
-                Toggle("自动更新", isOn: $geoAutoUpdate)
+            Section("resources.section.geo".l10n) {
+                Toggle("resources.geo.autoUpdate".l10n, isOn: $geoAutoUpdate)
                     // C3: the toggle writes general-overlay.json
                     // (via settingsStore.save) so the tunnel core
                     // picks the change up at the next VPN start /
@@ -1008,7 +895,7 @@ struct ResourcesView: View {
                     .onChange(of: geoAutoUpdate) { _, _ in settingsStore.save() }
                 if geoAutoUpdate {
                     HStack {
-                        Text("更新间隔")
+                        Text("resources.geo.interval".l10n)
                         Spacer()
                         TextField("24", text: $geoIntervalText)
                             .keyboardType(.numberPad)
@@ -1026,16 +913,16 @@ struct ResourcesView: View {
                                     return
                                 }
                                 if digits.isEmpty {
-                                    geoIntervalIssue = "更新间隔不能为空"
+                                    geoIntervalIssue = "resources.geo.intervalEmpty".l10n
                                 } else if let hours = Int(digits), hours > 0 {
                                     geoAutoUpdateHours = Double(hours)
                                     geoIntervalIssue = nil
                                     settingsStore.save()
                                 } else {
-                                    geoIntervalIssue = "更新间隔应为大于 0 的小时数"
+                                    geoIntervalIssue = "resources.geo.intervalInvalid".l10n
                                 }
                             }
-                        Text("小时")
+                        Text("resources.geo.hours".l10n)
                             .foregroundStyle(.secondary)
                     }
                     if let geoIntervalIssue {
@@ -1053,25 +940,25 @@ struct ResourcesView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(file.name)
                                 .font(.footnote)
-                            Text("\(ConcordFormat.bytes(file.size))\(file.modified.map { " · 更新于 \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "")")
+                            Text("\(ConcordFormat.bytes(file.size))\(file.modified.map { " · \("common.updatedAt".l10n) \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "")")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
                 }
-                Button("更新 GeoIP（MMDB）") {
+                Button("resources.geo.updateMmdb".l10n) {
                     Task { await ruleStore.geoUpdate(kind: "MMDB") }
                 }
-                Button("更新 ASN（ASN）") {
+                Button("resources.geo.updateAsn".l10n) {
                     Task { await ruleStore.geoUpdate(kind: "ASN") }
                 }
-                Button("更新 GeoSite（GEOSITE）") {
+                Button("resources.geo.updateGeosite".l10n) {
                     Task { await ruleStore.geoUpdate(kind: "GEOSITE") }
                 }
                 Text("concord 的 geo.update 支持 MMDB、ASN、GEOSITE 三种（上游 FlClash 的 GeoResource 也是这三种）。更新在后台进行，完成后文件会出现在容器里。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Text("自定义下载地址：下面填的地址会作为 geox-url 发给核心（VPN 运行时立即生效，下次启动 VPN 时也生效）；留空或填错为默认地址。")
+                Text("resources.geo.urlHint".l10n)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 GeoURLRow(title: "GeoIP（MMDB）", url: $geoURLMMDB)
@@ -1085,7 +972,7 @@ struct ResourcesView: View {
                 }
             }
             Section {
-                Button("刷新") {
+                Button("common.refresh".l10n) {
                     Task {
                         await trafficStore.refreshMemory()
                         await proxyStore.refresh()
@@ -1101,7 +988,7 @@ struct ResourcesView: View {
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
-        .navigationTitle("资源")
+        .navigationTitle("tools.resources".l10n)
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
         .toolbar {
@@ -1114,14 +1001,14 @@ struct ResourcesView: View {
             // (resources.dart:507-561); the same menu used to live
             // on the Providers toolbar.
             ToolbarItem(placement: .topBarTrailing) {
-                Menu("地理数据库") {
-                    Button("更新 GeoIP（MMDB）") {
+                Menu("resources.geo.menu".l10n) {
+                    Button("resources.geo.updateMmdb".l10n) {
                         Task { await ruleStore.geoUpdate(kind: "MMDB") }
                     }
-                    Button("更新 ASN（ASN）") {
+                    Button("resources.geo.updateAsn".l10n) {
                         Task { await ruleStore.geoUpdate(kind: "ASN") }
                     }
-                    Button("更新 GeoSite（GEOSITE）") {
+                    Button("resources.geo.updateGeosite".l10n) {
                         Task { await ruleStore.geoUpdate(kind: "GEOSITE") }
                     }
                 }
@@ -1149,22 +1036,22 @@ private struct GeoURLRow: View {
         guard let parsed = URL(string: value),
               parsed.scheme?.hasPrefix("http") == true,
               parsed.host != nil else {
-            return "地址无效，应为 http(s) 链接"
+            return "resources.geo.invalidUrl".l10n
         }
         return nil
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(title)下载地址")
+            Text("\(title)\("resources.geo.downloadUrl".l10n)")
                 .font(.footnote.weight(.semibold))
             HStack {
-                TextField("留空为默认地址", text: $url)
+                TextField("resources.geo.urlPlaceholder".l10n, text: $url)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
                 if !url.isEmpty {
-                    Button("恢复默认") { url = "" }
+                    Button("resources.geo.restoreDefault".l10n) { url = "" }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                 }
@@ -1196,7 +1083,7 @@ private struct GeoURLRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if let updatedAt {
-                    Text("更新于 \(Date(timeIntervalSince1970: TimeInterval(updatedAt)).formatted(date: .abbreviated, time: .shortened))")
+                    Text("\("common.updatedAt".l10n) \(Date(timeIntervalSince1970: TimeInterval(updatedAt)).formatted(date: .abbreviated, time: .shortened))")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -1206,7 +1093,7 @@ private struct GeoURLRow: View {
                 ProgressView()
                     .controlSize(.small)
             } else {
-                Button("更新") {
+                Button("common.update".l10n) {
                     Task {
                         updatingItems.insert(updatingKey)
                         await onUpdate()
@@ -1226,7 +1113,7 @@ private struct GeoURLRow: View {
         do {
             try await client.providerUpdate(name: provider.name)
             await ruleStore.refresh()
-            ruleStore.providerActionMessage = "已更新提供方 \(provider.name)"
+            ruleStore.providerActionMessage = "\("providers.updated".l10n) \(provider.name)"
         } catch {
             ruleStore.lastError = error.localizedDescription
         }
@@ -1263,8 +1150,8 @@ private struct GeoURLRow: View {
         await trafficStore.refreshMemory()
         scanGeoFiles()
         updateAllMessage = failures.isEmpty
-            ? "全部更新完成"
-            : "全部更新完成，\(failures.count) 项失败：\(failures.joined(separator: "、"))"
+            ? "resources.updateAll.done".l10n
+            : "\("resources.updateAll.donePrefix".l10n)\(failures.count) \("resources.updateAll.failedSuffix".l10n)\(failures.joined(separator: "common.listSeparator".l10n))"
     }
 
     /// Scan the App Group container root for Geo database files.

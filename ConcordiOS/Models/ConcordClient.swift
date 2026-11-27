@@ -751,20 +751,22 @@ struct ConcordOutboundIp: Codable {
     var hits: [ConcordRouteHit]? = nil
     var nodeHits: [ConcordRouteHit]? = nil
 
-    /// Wire keys (v0.2.120): the core's OutboundIpResult renames
-    /// the stamp to "core-epoch" / "route-version" and the node
-    /// hits to "node-hits" (crates/engine/src/probe/outbound_ip.rs).
-    /// The struct used to spell them "epoch" / "version" /
-    /// "nodeHits" with no CodingKeys, so every live probe result
-    /// threw keyNotFound before probe() could read `error` — the
-    /// 119 log's 8x NSCocoaErrorDomain 4865 "data is missing" on a
-    /// tunnel-off in-app core whose fetches all succeeded.
-    /// convertFromSnakeCase does NOT translate the hyphens.
+    /// Wire keys (v0.2.145): the core's OutboundIp is a proto DTO
+    /// (crates/proto/src/types/probe.rs:50-74, via the dto! macro's
+    /// rename_all = "camelCase", types/mod.rs:15), so the stamp
+    /// arrives as plain "epoch" / "version" and the node hits as
+    /// "nodeHits" — NOT the kebab-case "core-epoch" /
+    /// "route-version" / "node-hits" the old engine DTO used
+    /// (crates/engine/src/probe/outbound_ip.rs), which the 382aeab
+    /// rebase replaced. The old keys decoded to 0 on every live
+    /// probe (the lenient decoder below never throws, so it stayed
+    /// invisible). convertFromSnakeCase does NOT translate the
+    /// hyphens, and would not have produced camelCase either.
     enum CodingKeys: String, CodingKey {
         case url, body, delay, chains, error, hits
-        case epoch = "core-epoch"
-        case version = "route-version"
-        case nodeHits = "node-hits"
+        case epoch
+        case version
+        case nodeHits
     }
 }
 
@@ -1296,17 +1298,19 @@ struct ConcordServiceItem: Codable, Identifiable {
     /// (see the note on ConcordConnection.rematchName).
     var ip: String? = nil
 
-    /// Wire keys (v0.2.120): the same kebab-case renames as the
-    /// outbound-IP result — "checked-at", "core-epoch",
-    /// "route-version" (crates/engine/src/probe/services.rs). The
-    /// struct used to spell them checkedAt / epoch / version with
-    /// no CodingKeys, so probe.services threw keyNotFound on every
-    /// live result, exactly like probe.outboundIp.
+    /// Wire keys (v0.2.145): the same camelCase proto DTO as the
+    /// outbound-IP result — "checkedAt" / "epoch" / "version"
+    /// (crates/proto/src/types/probe.rs:92-130, dto! rename_all =
+    /// "camelCase"). The old kebab-case keys ("checked-at" /
+    /// "core-epoch" / "route-version", crates/engine/src/probe
+    /// /services.rs) died in the 382aeab rebase; the stamps
+    /// decoded to 0 on every live result, invisibly (the lenient
+    /// decoder below never throws).
     enum CodingKeys: String, CodingKey {
         case name, status, region, delay, chains, hits, ip
-        case checkedAt = "checked-at"
-        case epoch = "core-epoch"
-        case version = "route-version"
+        case checkedAt
+        case epoch
+        case version
     }
 }
 
@@ -1337,13 +1341,6 @@ struct ConcordServiceList: Codable {
 // MARK: - Remaining APIs, batch 2 (profile.clearEffect,
 // convert.decodeLinks, provider.get / sideLoad,
 // route.watch / events.watch / engine.state, network.update)
-
-/// One outbound (proxy or proxy-group) a profile declares
-/// (profile.outbounds result).
-struct ConcordOutboundRef: Codable {
-    let name: String
-    let type: String
-}
 
 struct ConcordProfileOutbounds: Codable {
 }
@@ -1521,8 +1518,6 @@ struct MitmExchangeSummary: Codable, Identifiable {
     var statusClass: String? = nil
     /// json / html / script / css / image / font / media / text / other.
     var kind: String? = nil
-    /// A rewrite, a local map or a script acted on it.
-    var rewritten: Bool? = nil
     /// The kinds of the actions that acted on it, each once, in
     /// the order they first acted (upstream 9d1f485, b678d79).
     /// Omitted when none acted.
@@ -1544,7 +1539,7 @@ struct MitmExchangeSummary: Codable, Identifiable {
         case host, path
         case contentType = "content-type"
         case statusClass = "status-class"
-        case kind, rewritten
+        case kind
         case actionKinds = "action-kinds"
         case answer
         case connectionId = "connection-id"

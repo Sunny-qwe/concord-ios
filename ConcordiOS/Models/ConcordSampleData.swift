@@ -246,8 +246,8 @@ enum ConcordSampleData {
 
     static var sampleExchangeList: MitmExchangeList {
         MitmExchangeList(capturing: true, since: nil, exchanges: [
-            MitmExchangeSummary(exchangeId: 1, start: "2026-11-17T09:00:00Z", pending: false, duration: 87, method: "GET", url: "https://www.google.com/", status: 200, requestSize: 512, responseSize: 2048, error: nil, host: "www.google.com", path: "/?gws_rd=ssl", contentType: "text/html", statusClass: "2xx", kind: "html", rewritten: false, connectionId: 1, app: ConcordMitmApp(process: "Safari", processPath: nil, uid: nil)),
-            MitmExchangeSummary(exchangeId: 2, start: "2026-11-17T09:00:05Z", pending: true, duration: 0, method: "POST", url: "https://api.github.com/user", status: 0, requestSize: 128, responseSize: 0, error: nil, host: "api.github.com", path: "/user", contentType: nil, statusClass: "pending", kind: "other", rewritten: true, connectionId: 2, app: ConcordMitmApp(process: "Safari", processPath: nil, uid: nil)),
+            MitmExchangeSummary(exchangeId: 1, start: "2026-11-17T09:00:00Z", pending: false, duration: 87, method: "GET", url: "https://www.google.com/", status: 200, requestSize: 512, responseSize: 2048, error: nil, host: "www.google.com", path: "/?gws_rd=ssl", contentType: "text/html", statusClass: "2xx", kind: "html", connectionId: 1, app: ConcordMitmApp(process: "Safari", processPath: nil, uid: nil)),
+            MitmExchangeSummary(exchangeId: 2, start: "2026-11-17T09:00:05Z", pending: true, duration: 0, method: "POST", url: "https://api.github.com/user", status: 0, requestSize: 128, responseSize: 0, error: nil, host: "api.github.com", path: "/user", contentType: nil, statusClass: "pending", kind: "other", connectionId: 2, app: ConcordMitmApp(process: "Safari", processPath: nil, uid: nil)),
         ])
     }
 

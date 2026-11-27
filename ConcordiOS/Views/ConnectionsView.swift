@@ -1195,12 +1195,14 @@ struct ConnectionDetailView: View {
                         }
                     }
                 }
-                NavigationLink("MITM 拦截记录（mitm.exchanges）") {
-                    MitmView(connectionId: connection.id)
+                if showHttpTab {
+                    NavigationLink("MITM 拦截记录（mitm.exchanges）") {
+                        MitmView(connectionId: connection.id)
+                    }
+                    Text("断开调用 connection.close；拦截记录调用 mitm.exchanges，需要 MITM 已开启并正在捕获。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-                Text("断开调用 connection.close；拦截记录调用 mitm.exchanges，需要 MITM 已开启并正在捕获。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
         .scrollContentBackground(.hidden)

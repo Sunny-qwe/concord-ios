@@ -164,7 +164,7 @@ struct MitmView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { Task { await mitmStore.loadExchanges(connection: connectionId) } } label: {
+                Button { Task { await mitmStore.loadExchanges(connection: connectionId, noHosts: httpCaptureNoHosts) } } label: {
                     Image(systemName: "arrow.clockwise")
                 }
             }
@@ -178,16 +178,30 @@ struct MitmView: View {
                 .presentationDragIndicator(.visible)
         }
         .task {
-            await mitmStore.loadExchanges(connection: connectionId)
+            await mitmStore.loadExchanges(connection: connectionId, noHosts: httpCaptureNoHosts)
             // Upstream mitmExchangesProvider: re-fetch every 2 s
             // until the connection closed and nothing is pending;
             // the task is cancelled when the page disappears.
             while !Task.isCancelled && !mitmStore.exchangesSettled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard !Task.isCancelled, !mitmStore.exchangesSettled else { break }
-                await mitmStore.loadExchanges(connection: connectionId, quiet: true)
+                await mitmStore.loadExchanges(connection: connectionId, quiet: true, noHosts: httpCaptureNoHosts)
             }
         }
+    }
+
+    /// Upstream httpCaptureHasNoHost (http_capture.dart:10-12):
+    /// no listed host and no enabled module — capture records
+    /// nothing. Hostnames are the comma-separated mitmHostnames;
+    /// a "-" line excludes a host, so only a non-empty line that
+    /// does not start with "-" counts as a host (an empty list
+    /// counts as no host, like upstream's `every` on an empty list).
+    private var httpCaptureNoHosts: Bool {
+        guard !moduleStore.modules.contains(where: { $0.enabled }) else { return false }
+        let hosts = settingsStore.mitmHostnames.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return hosts.allSatisfy { $0.hasPrefix("-") }
     }
 
     /// The capture switch lives in the MITM options page

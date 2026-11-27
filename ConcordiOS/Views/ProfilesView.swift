@@ -177,7 +177,7 @@ struct ProfilesView: View {
                             Button { Task { await updateAll() } } label: {
                                 Image(systemName: "arrow.clockwise")
                             }
-                            .accessibilityLabel("更新")
+                            .accessibilityLabel("common.update".l10n)
                             .disabled(isUpdatingAll)
                             Divider()
                                 .frame(height: 16)
@@ -187,7 +187,7 @@ struct ProfilesView: View {
                             } label: {
                                 Image(systemName: "line.3.horizontal.decrease")
                             }
-                            .accessibilityLabel("排序")
+                            .accessibilityLabel("profiles.sort".l10n)
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
@@ -208,7 +208,7 @@ struct ProfilesView: View {
                                 .frame(width: 44, height: 44)
                                 .background(ConcordTheme.cardBackground, in: Circle())
                         }
-                        .accessibilityLabel("添加配置")
+                        .accessibilityLabel("profiles.add".l10n)
                     }
                 }
             }
@@ -227,19 +227,19 @@ struct ProfilesView: View {
                     if let profile = profileStore.profiles.first(where: { $0.id == id }) {
                         ExtendConfigView(profile: profile)
                     } else {
-                        ContentUnavailableView("订阅已删除", systemImage: "trash")
+                        ContentUnavailableView("profiles.deleted".l10n, systemImage: "trash")
                     }
                 case .edit(let id):
                     if let profile = profileStore.profiles.first(where: { $0.id == id }) {
                         EditProfileView(profile: profile)
                     } else {
-                        ContentUnavailableView("订阅已删除", systemImage: "trash")
+                        ContentUnavailableView("profiles.deleted".l10n, systemImage: "trash")
                     }
                 case .preview(let id):
                     if let profile = profileStore.profiles.first(where: { $0.id == id }) {
                         ProfilePreviewView(profile: profile)
                     } else {
-                        ContentUnavailableView("订阅已删除", systemImage: "trash")
+                        ContentUnavailableView("profiles.deleted".l10n, systemImage: "trash")
                     }
                 case .scan:
                     // ScanImportView keeps its own NavigationStack
@@ -291,26 +291,26 @@ struct ProfilesView: View {
             .fileExporter(isPresented: $showFileExporter, document: exportDocument, contentType: .yaml, defaultFilename: exportFileName) { result in
                 switch result {
                 case .success:
-                    copyNotice = "导出成功"
+                    copyNotice = "profiles.notice.exportOk".l10n
                     Task { @MainActor in
                         try? await Task.sleep(for: .seconds(2.5))
                         copyNotice = nil
                     }
                 case .failure(let error):
-                    alertMessage = "导出失败：\(error.localizedDescription)"
+                    alertMessage = "\("profiles.notice.exportFailed".l10n)\(error.localizedDescription)"
                 }
             }
             .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.yaml, UTType.plainText]) { result in
                 handlePickedFile(result)
             }
-            .alert("重命名", isPresented: Binding(
+            .alert("profiles.rename.title".l10n, isPresented: Binding(
                 get: { renameTarget != nil },
                 set: { if !$0 { renameTarget = nil } }
             )) {
-                TextField("订阅名称", text: $renameText)
+                TextField("profiles.rename.namePlaceholder".l10n, text: $renameText)
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
-                Button("保存") {
+                Button("common.save".l10n) {
                     if let target = renameTarget {
                         let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !name.isEmpty {
@@ -321,19 +321,19 @@ struct ProfilesView: View {
                     }
                     renameTarget = nil
                 }
-                Button("取消", role: .cancel) { renameTarget = nil }
+                Button("common.cancel".l10n, role: .cancel) { renameTarget = nil }
             } message: {
-                Text("为自定义订阅改一个名字。")
+                Text("profiles.rename.hint".l10n)
             }
             // One alert for the whole page (two .alert modifiers on
             // the same view fight each other): it shows either the
             // delete confirmation or a plain message alert.
-            .alert("提示", isPresented: Binding(
+            .alert("profiles.notice.title".l10n, isPresented: Binding(
                 get: { alertMessage != nil || deleteTarget != nil },
                 set: { if !$0 { alertMessage = nil; deleteTarget = nil } }
             )) {
                 if deleteTarget != nil {
-                    Button("删除", role: .destructive) {
+                    Button("common.delete".l10n, role: .destructive) {
                         if let profile = deleteTarget {
                             deleteTarget = nil
                             // FlClash deleteProfile: deleting the
@@ -351,7 +351,7 @@ struct ProfilesView: View {
                             deleteTarget = nil
                         }
                     }
-                    Button("取消", role: .cancel) { deleteTarget = nil }
+                    Button("common.cancel".l10n, role: .cancel) { deleteTarget = nil }
                 } else {
                     Button("common.ok".l10n, role: .cancel) {}
                 }
@@ -375,23 +375,23 @@ struct ProfilesView: View {
         // the top bar — the top bar now holds only the
         // refresh+sort capsule and the ＋ button.
         Button { navPath.append(.nodeSources) } label: {
-            Label("节点来源", systemImage: "globe")
+            Label("profiles.addMenu.nodeSource".l10n, systemImage: "globe")
                 .font(.subheadline)
         }
         Button { navPath.append(.visualConfig) } label: {
-            Label("可视化配置", systemImage: "slider.horizontal.3")
+            Label("profiles.addMenu.visual".l10n, systemImage: "slider.horizontal.3")
                 .font(.subheadline)
         }
         Button { navPath.append(.scan) } label: {
-            Label("扫码", systemImage: "qrcode.viewfinder")
+            Label("profiles.addMenu.scan".l10n, systemImage: "qrcode.viewfinder")
                 .font(.subheadline)
         }
         Button { showFileImporter = true } label: {
-            Label("文件", systemImage: "doc")
+            Label("profiles.addMenu.file".l10n, systemImage: "doc")
                 .font(.subheadline)
         }
         Button { unifiedImportDraft = UnifiedImportDraft(text: "", autoImport: false) } label: {
-            Label("链接", systemImage: "link")
+            Label("profiles.addMenu.link".l10n, systemImage: "link")
                 .font(.subheadline)
         }
         Section {
@@ -401,17 +401,17 @@ struct ProfilesView: View {
             // still-unnamed subscription for editing, which is the
             // same flow.
             Button {
-                let sub = CustomSubscriptionStore().create(name: "自定义订阅")
+                let sub = CustomSubscriptionStore().create(name: "profiles.new.defaultName".l10n)
                 navPath.append(.customSubscription(sub.id))
             } label: {
-                Label("自定义订阅", systemImage: "doc.badge.gearshape")
+                Label("profiles.new.defaultName".l10n, systemImage: "doc.badge.gearshape")
                     .font(.subheadline)
             }
             // v0.2.55: import a Clash-style YAML file/URL as a custom
             // subscription (groups/providers/rules only; nodes are
             // rejected with an explanation — see CustomSubscriptionImport).
             Button { showCustomSubscriptionImport = true } label: {
-                Label("导入自定义订阅（YAML）", systemImage: "arrow.down.doc")
+                Label("profiles.addMenu.importCustom".l10n, systemImage: "arrow.down.doc")
                     .font(.subheadline)
             }
         }
@@ -422,14 +422,14 @@ struct ProfilesView: View {
     private var emptyState: some View {
         VStack(spacing: 16) {
             ContentUnavailableView(
-                "暂无配置",
+                "profiles.empty.title".l10n,
                 systemImage: "square.stack",
-                description: Text("添加一个配置文件后即可开始使用")
+                description: Text("profiles.empty.hint".l10n)
             )
             Menu {
                 addProfileMenuItems
             } label: {
-                Label("添加配置", systemImage: "plus.circle")
+                Label("profiles.add".l10n, systemImage: "plus.circle")
                     .font(.headline)
                     .foregroundStyle(.white)
                     .padding(.horizontal, 20)
@@ -479,12 +479,12 @@ struct ProfilesView: View {
                         .font(.headline)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text("\(sub.groups.count) 分组 · \(sub.rules.count) 规则 · \(sub.proxyProviders.count + sub.ruleProviders.count) 提供方")
+                    Text(String(format: "profiles.summary.counts".l10n, "\(sub.groups.count)", "\(sub.rules.count)", "\(sub.proxyProviders.count + sub.ruleProviders.count)"))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     if sub.groups.count > 0 {
-                        Text("\(sub.groups.count) 个分组")
+                        Text(String(format: "profiles.summary.groups".l10n, "\(sub.groups.count)"))
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -507,18 +507,18 @@ struct ProfilesView: View {
         .buttonStyle(.plain)
         .contextMenu {
             Button { navPath.append(.customSubscription(sub.id)) } label: {
-                Label("编辑", systemImage: "square.and.pencil")
+                Label("common.edit".l10n, systemImage: "square.and.pencil")
                     .font(.subheadline)
             }
             Button {
                 renameTarget = sub
                 renameText = sub.name
             } label: {
-                Label("重命名", systemImage: "pencil")
+                Label("profiles.rename.title".l10n, systemImage: "pencil")
                     .font(.subheadline)
             }
             Button(role: .destructive) { customStore.delete(sub) } label: {
-                Label("删除", systemImage: "trash")
+                Label("common.delete".l10n, systemImage: "trash")
                     .font(.subheadline)
             }
         }
@@ -588,45 +588,45 @@ struct ProfilesView: View {
         .contextMenu {
             if !updatingIDs.contains(profile.id) && !isUpdatingAll {
                 Button { navPath.append(.edit(profile.id)) } label: {
-                    Label("编辑", systemImage: "square.and.pencil")
+                    Label("common.edit".l10n, systemImage: "square.and.pencil")
                         .font(.subheadline)
                 }
                 Button { navPath.append(.extend(profile.id)) } label: {
-                    Label("扩展", systemImage: "plus.square.on.square")
+                    Label("profiles.menu.extend".l10n, systemImage: "plus.square.on.square")
                         .font(.subheadline)
                 }
                 if profile.kind == .url {
                     Button { Task { await sync(profile) } } label: {
-                        Label("同步", systemImage: "arrow.clockwise")
+                        Label("profiles.menu.sync".l10n, systemImage: "arrow.clockwise")
                             .font(.subheadline)
                     }
                 }
-                Menu("更多") {
+                Menu("common.more".l10n) {
                     // FlClash profiles.dart:532-540: 运行时配置 opens
                     // the merged-config preview (the 生效配置 tab).
                     Button {
                         navPath.append(.preview(profile.id))
                     } label: {
-                        Label("运行时配置", systemImage: "eye")
+                        Label("profiles.menu.runtimeConfig".l10n, systemImage: "eye")
                             .font(.subheadline)
                     }
                     if profile.kind == .url {
                         Button { copyLink(profile) } label: {
-                            Label("复制链接", systemImage: "doc.on.doc")
+                            Label("profiles.menu.copyLink".l10n, systemImage: "doc.on.doc")
                                 .font(.subheadline)
                         }
                         Button { qrProfile = profile } label: {
-                            Label("二维码", systemImage: "qrcode")
+                            Label("profiles.menu.qrCode".l10n, systemImage: "qrcode")
                                 .font(.subheadline)
                         }
                     }
                     Button { export(profile) } label: {
-                        Label("导出文件", systemImage: "square.and.arrow.up")
+                        Label("profiles.menu.exportFile".l10n, systemImage: "square.and.arrow.up")
                             .font(.subheadline)
                     }
                 }
                 Button(role: .destructive) { deleteTarget = profile } label: {
-                    Label("删除", systemImage: "trash")
+                    Label("common.delete".l10n, systemImage: "trash")
                         .font(.subheadline)
                 }
             }
@@ -652,11 +652,11 @@ struct ProfilesView: View {
                 }
             }
             .environment(\.editMode, .constant(.active))
-            .navigationTitle("配置排序")
+            .navigationTitle("profiles.reorder.title".l10n)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { showReorder = false }
+                    Button("common.cancel".l10n) { showReorder = false }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { 
@@ -665,7 +665,7 @@ struct ProfilesView: View {
                     } label: {
                         Image(systemName: "checkmark")
                     }
-                    .accessibilityLabel("保存")
+                    .accessibilityLabel("common.save".l10n)
                 }
             }
         }
@@ -709,7 +709,7 @@ struct ProfilesView: View {
             }
         }
         if !failures.isEmpty {
-            alertMessage = "更新失败（\(failures.count) 个）：\n"
+            alertMessage = "\("profiles.notice.updateFailedPrefix".l10n)\(failures.count)\("profiles.notice.updateFailedSuffix".l10n)\n"
                 + failures.map { "· \($0.name)：\($0.error)" }.joined(separator: "\n")
         }
     }
@@ -726,8 +726,8 @@ struct ProfilesView: View {
 
     private func deleteMessage(for profile: Profile) -> String {
         let users = providerUsers(of: profile)
-        guard !users.isEmpty else { return "确定删除当前\(profile.name)吗？" }
-        return "「\(profile.name)」正被以下自定义订阅用作提供方：\(users.joined(separator: "、"))。删除后这些订阅的提供方引用会失效。确定删除当前\(profile.name)吗？"
+        guard !users.isEmpty else { return "\("profiles.delete.confirmPrefix".l10n)\(profile.name)\("profiles.delete.confirmSuffix".l10n)" }
+        return "\("common.quote.open".l10n)\(profile.name)\("profiles.delete.usedByPrefix".l10n)\(users.joined(separator: "common.listSeparator".l10n))\("profiles.delete.usedByMiddle".l10n)\("profiles.delete.confirmPrefix".l10n)\(profile.name)\("profiles.delete.confirmSuffix".l10n)"
     }
 
     /// Card subtitle for one profile: bare "X / Y" (MuYu,
@@ -737,13 +737,13 @@ struct ProfilesView: View {
         if profile.kind == .url, let line = profile.subscriptionInfo?.usageLine {
             return line
         }
-        return profile.kind == .url ? "远程" : "本地"
+        return profile.kind == .url ? "common.remote".l10n : "common.local".l10n
     }
 
     private func copyLink(_ profile: Profile) {
         guard let urlString = profile.urlString else { return }
         UIPasteboard.general.string = urlString
-        copyNotice = "复制成功"
+        copyNotice = "profiles.notice.copyOk".l10n
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(2.5))
             copyNotice = nil
@@ -756,11 +756,11 @@ struct ProfilesView: View {
     /// fileExporter's completion.
     private func export(_ profile: Profile) {
         guard let url = profileStore.exportFileURL(for: profile) else {
-            alertMessage = "导出失败：找不到该订阅的本地文件"
+            alertMessage = "profiles.notice.exportNoFile".l10n
             return
         }
         guard let data = try? Data(contentsOf: url) else {
-            alertMessage = "导出失败：无法读取该订阅的本地文件"
+            alertMessage = "profiles.notice.exportUnreadable".l10n
             return
         }
         exportDocument = ProfileExportDocument(data: data)
@@ -782,18 +782,18 @@ struct ProfilesView: View {
             do {
                 data = try Data(contentsOf: url)
             } catch {
-                alertMessage = "读取文件失败：\(error.localizedDescription)"
+                alertMessage = "\("profiles.notice.readFailed".l10n)\(error.localizedDescription)"
                 return
             }
             let importer = UnifiedImporter(profileStore: profileStore)
             Task { @MainActor in
                 await importer.importFileData(data, fileName: url.lastPathComponent)
                 if importer.results.allSatisfy({ !$0.succeeded }) {
-                    alertMessage = importer.summaryText ?? "导入失败"
+                    alertMessage = importer.summaryText ?? "profiles.notice.importFailed".l10n
                 }
             }
         case .failure(let error):
-            alertMessage = "选择文件失败：\(error.localizedDescription)"
+            alertMessage = "\("providers.import.pickFileFailed".l10n)\(error.localizedDescription)"
         }
     }
 }
@@ -840,7 +840,7 @@ private struct ProfileQRCodeDialog: View {
                 ProgressView()
                     .frame(width: 240, height: 240)
             } else {
-                Text("无法生成二维码：该订阅没有链接")
+                Text("profiles.qr.noLink".l10n)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -851,11 +851,11 @@ private struct ProfileQRCodeDialog: View {
                     .lineLimit(3)
                     .multilineTextAlignment(.center)
             }
-            Text("在另一台设备上用 FlClash 扫码即可导入此配置。")
+            Text("profiles.qr.hint".l10n)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("关闭") { onClose() }
+            Button("common.close".l10n) { onClose() }
                 .buttonStyle(.borderedProminent)
                 .tint(ConcordTheme.accent)
         }
@@ -900,11 +900,11 @@ struct ProfilePreviewView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
-                    TextField("在配置中查找", text: $findText)
+                    TextField("profiles.editor.findPlaceholder".l10n, text: $findText)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                     if !findText.isEmpty {
-                        Text(matchCount > 0 ? "\(matchCount) 处" : "无匹配")
+                        Text(matchCount > 0 ? "\(matchCount)\("profiles.editor.matchCountSuffix".l10n)" : "profiles.editor.noMatch".l10n)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         Button { findText = "" } label: {
@@ -941,7 +941,7 @@ struct ProfilePreviewView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(copied ? "已复制" : "复制") {
+                    Button(copied ? "common.copied".l10n : "common.copy".l10n) {
                         if let built = builtText {
                             UIPasteboard.general.string = built
                             copied = true
@@ -950,7 +950,7 @@ struct ProfilePreviewView: View {
                     .disabled(builtText == nil)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
+                    Button("common.done".l10n) { dismiss() }
                 }
             }
             .task {

@@ -47,10 +47,10 @@ private enum ProxyFolder: String, CaseIterable {
     case all, strategy, nodes, leafNodes
     var label: String {
         switch self {
-        case .all: return "全部"
-        case .strategy: return "策略组"
-        case .nodes: return "节点组"
-        case .leafNodes: return "节点"
+        case .all: return "common.all".l10n
+        case .strategy: return "proxies.filter.strategy".l10n
+        case .nodes: return "proxies.filter.nodeGroups".l10n
+        case .leafNodes: return "proxies.filter.nodes".l10n
         }
     }
     /// MuYu _FolderPill glyphs: all → dashboard, strategy/nodes →
@@ -464,7 +464,7 @@ struct ProxiesView: View {
         return HStack(spacing: 6) {
             Image(systemName: "tray")
                 .font(.system(size: 13))
-            Text(searching ? "无匹配节点" : "暂无节点")
+            Text(searching ? "proxies.empty.noMatchShort".l10n : "proxies.empty.none".l10n)
                 .font(.callout)
         }
         .foregroundStyle(.secondary)
@@ -602,7 +602,7 @@ struct ProxiesView: View {
                     if client.mode == .sample {
                         HStack {
                             SampleDataBadge()
-                            Text("节点与延迟为示例数据")
+                            Text("proxies.sampleNotice".l10n)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                             Spacer()
@@ -637,12 +637,12 @@ struct ProxiesView: View {
                                     ProgressView()
                                         .controlSize(.small)
                                 } else {
-                                    Button("重试") {
+                                    Button("common.retry".l10n) {
                                         Task { await proxyStore.retryGeoSeedAndRetest() }
                                     }
                                     .buttonStyle(.plain)
                                     .font(.caption.weight(.semibold))
-                                    .accessibilityLabel("重新下载 GeoIP 数据库并重试测速")
+                                    .accessibilityLabel("proxies.geoRetry".l10n)
                                 }
                             }
                             // Rule-set repair (v0.2.46 ITEM 1): the
@@ -660,12 +660,12 @@ struct ProxiesView: View {
                                         ProgressView()
                                             .controlSize(.small)
                                     } else {
-                                        Text("修复")
+                                        Text("proxies.fix".l10n)
                                     }
                                 }
                                 .buttonStyle(.plain)
                                 .font(.caption.weight(.semibold))
-                                .accessibilityLabel("修复缺失的规则集 \(missing)")
+                                .accessibilityLabel("\("proxies.repair.label".l10n) \(missing)")
                                 .disabled(proxyStore.isRepairingRuleSet)
                             }
                             Button { self.notice = nil } label: {
@@ -697,7 +697,7 @@ struct ProxiesView: View {
                                     .font(.caption2)
                             }
                             .buttonStyle(.plain)
-                            .accessibilityLabel("关闭修复提示")
+                            .accessibilityLabel("proxies.fix.dismiss".l10n)
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
@@ -754,10 +754,10 @@ struct ProxiesView: View {
                                 .background(ConcordTheme.cardBackground, in: Circle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("关闭")
+                        .accessibilityLabel("common.close".l10n)
                     }
                     ToolbarItem(placement: .principal) {
-                        Text("代理")
+                        Text("tab.proxies".l10n)
                             .font(.headline)
                     }
                     ToolbarItem(placement: .topBarTrailing) {
@@ -997,7 +997,7 @@ struct ProxiesView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("搜索节点", text: $searchText)
+                TextField("proxies.search.placeholder".l10n, text: $searchText)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .focused($searchFieldFocused)
@@ -1008,13 +1008,13 @@ struct ProxiesView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("清除搜索")
+                    .accessibilityLabel("proxies.search.clear".l10n)
                 }
                 Button {
                     isSearching = false
                     searchText = ""
                 } label: {
-                    Text("取消")
+                    Text("common.cancel".l10n)
                         .font(.subheadline)
                 }
                 .buttonStyle(.plain)
@@ -1073,7 +1073,7 @@ struct ProxiesView: View {
                     .frame(width: 44, height: 44)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("搜索")
+            .accessibilityLabel("common.search".l10n)
             // MuYu _buildPrimaryAction: the bolt is always present.
             // Tab style tests the current group (FlClash
             // delayTestCurrentGroup); list / card style tests ALL
@@ -1110,7 +1110,7 @@ struct ProxiesView: View {
         }
         .buttonStyle(.plain)
         .disabled(proxyStore.displayGroups.isEmpty || testing)
-        .accessibilityLabel("测速全部")
+        .accessibilityLabel("proxies.testAll".l10n)
     }
 
     /// The picker header's bolt (v0.2.68, video f_018): a
@@ -1136,7 +1136,7 @@ struct ProxiesView: View {
         }
         .buttonStyle(.plain)
         .disabled(proxyStore.displayGroups.isEmpty || testing)
-        .accessibilityLabel("测速全部")
+        .accessibilityLabel("proxies.testAll".l10n)
     }
 
     /// The picker sheet's search (v0.2.68, video f_018/f_021): a
@@ -1150,7 +1150,7 @@ struct ProxiesView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
-            TextField("搜索", text: $searchText)
+            TextField("common.search".l10n, text: $searchText)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
@@ -1160,7 +1160,7 @@ struct ProxiesView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("清除搜索")
+                .accessibilityLabel("proxies.search.clear".l10n)
             }
         }
         .padding(.horizontal, 12)
@@ -1205,7 +1205,7 @@ struct ProxiesView: View {
                 .frame(width: 44, height: 44)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("更多")
+        .accessibilityLabel("common.more".l10n)
         .background(ConcordTheme.cardBackground, in: Circle())
     }
 
@@ -1234,7 +1234,7 @@ struct ProxiesView: View {
         }
         .buttonStyle(.plain)
         .disabled(group == nil || testing)
-        .accessibilityLabel("测速")
+        .accessibilityLabel("proxies.testSpeed".l10n)
     }
 
     /// The locate button (FlClash proxies.dart iconActions,
@@ -1251,7 +1251,7 @@ struct ProxiesView: View {
         }
         .buttonStyle(.plain)
         .disabled(selectedGroup?.selectedNodeName == nil)
-        .accessibilityLabel("滚动到已选")
+        .accessibilityLabel("proxies.scrollToSelected".l10n)
         .background(ConcordTheme.cardBackground, in: Circle())
     }
 
@@ -1318,7 +1318,7 @@ struct ProxiesView: View {
                 expandableMenuRow(
                     icon: Image(systemName: "list.bullet")
                         .font(.system(size: 19, weight: .semibold)),
-                    label: "风格",
+                    label: "proxies.options.style".l10n,
                     expanded: styleExpanded
                 ) {
                     withAnimation { styleExpanded.toggle() }
@@ -1339,7 +1339,7 @@ struct ProxiesView: View {
                 expandableMenuRow(
                     icon: Image(systemName: "line.3.horizontal.decrease")
                         .font(.system(size: 19, weight: .semibold)),
-                    label: "排序",
+                    label: "proxies.options.sort".l10n,
                     expanded: sortExpanded
                 ) {
                     withAnimation { sortExpanded.toggle() }
@@ -1354,7 +1354,7 @@ struct ProxiesView: View {
                 expandableMenuRow(
                     icon: Image(systemName: "square.grid.2x2")
                         .font(.system(size: 19, weight: .semibold)),
-                    label: "布局",
+                    label: "proxies.options.layout".l10n,
                     expanded: layoutExpanded
                 ) {
                     withAnimation { layoutExpanded.toggle() }
@@ -1371,7 +1371,7 @@ struct ProxiesView: View {
                 // v0.2.73: inline accordion like 风格.
                 expandableMenuRow(
                     icon: TtIcon(size: 20),
-                    label: "尺寸",
+                    label: "proxies.options.size".l10n,
                     expanded: sizeExpanded
                 ) {
                     withAnimation { sizeExpanded.toggle() }
@@ -1387,7 +1387,7 @@ struct ProxiesView: View {
                     expandableMenuRow(
                         icon: Image(systemName: "photo")
                             .font(.system(size: 19, weight: .semibold)),
-                        label: "图标样式",
+                        label: "proxies.options.iconStyle".l10n,
                         expanded: iconStyleExpanded
                     ) {
                         withAnimation { iconStyleExpanded.toggle() }
@@ -1409,7 +1409,7 @@ struct ProxiesView: View {
                         Image(systemName: "eye.slash")
                             .font(.system(size: 19, weight: .semibold))
                             .frame(width: 22)
-                        Text("隐藏超时代理")
+                        Text("proxies.options.hideTimeout".l10n)
                         Spacer()
                         if styleStore.hideTimeout {
                             Image(systemName: "checkmark")
@@ -1571,7 +1571,7 @@ struct ProxiesView: View {
                                 .frame(width: 44, height: 44)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("全部策略组")
+                        .accessibilityLabel("proxies.allGroups".l10n)
                         .background(ConcordTheme.cardBackground, in: Circle())
                         .popover(isPresented: $showGroupPicker, attachmentAnchor: .point(.bottom), arrowEdge: .top) {
                             groupPickerPopover
@@ -1621,7 +1621,7 @@ struct ProxiesView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if searching {
-                ContentUnavailableView("没有匹配的节点", systemImage: "magnifyingglass", description: Text("换个关键词试试"))
+                ContentUnavailableView("proxies.empty.noMatchTitle".l10n, systemImage: "magnifyingglass", description: Text("proxies.empty.tryAnotherKeyword".l10n))
             } else {
                 noGroupsView
             }
@@ -1692,7 +1692,7 @@ struct ProxiesView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if visibleGroups.isEmpty && searching {
-                ContentUnavailableView("没有匹配的节点", systemImage: "magnifyingglass", description: Text("换个关键词试试"))
+                ContentUnavailableView("proxies.empty.noMatchTitle".l10n, systemImage: "magnifyingglass", description: Text("proxies.empty.tryAnotherKeyword".l10n))
             } else if visibleGroups.isEmpty {
                 noGroupsView
             } else {
@@ -1736,11 +1736,11 @@ struct ProxiesView: View {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if iconFolder == .leafNodes && leafNodeEntries.isEmpty && searching {
-                    ContentUnavailableView("没有匹配的节点", systemImage: "magnifyingglass", description: Text("换个关键词试试"))
+                    ContentUnavailableView("proxies.empty.noMatchTitle".l10n, systemImage: "magnifyingglass", description: Text("proxies.empty.tryAnotherKeyword".l10n))
                 } else if iconFolder == .leafNodes && leafNodeEntries.isEmpty {
                     noGroupsView
                 } else if folderGroups.isEmpty && searching {
-                    ContentUnavailableView("没有匹配的节点", systemImage: "magnifyingglass", description: Text("换个关键词试试"))
+                    ContentUnavailableView("proxies.empty.noMatchTitle".l10n, systemImage: "magnifyingglass", description: Text("proxies.empty.tryAnotherKeyword".l10n))
                 } else if folderGroups.isEmpty {
                     noGroupsView
                 } else if iconFolder == .leafNodes {
@@ -2024,9 +2024,9 @@ struct ProxiesView: View {
     @ViewBuilder
     private var noGroupsView: some View {
         if profileStore.activeProfile == nil {
-            ContentUnavailableView("暂无代理组", systemImage: "globe", description: Text("请先在“订阅”页导入并激活一个订阅"))
+            ContentUnavailableView("proxies.empty.noGroups".l10n, systemImage: "globe", description: Text("proxies.empty.importHint".l10n))
         } else {
-            ContentUnavailableView("该订阅中没有代理组", systemImage: "globe", description: Text("当前订阅没有 proxies 或 proxy-groups，无法显示节点"))
+            ContentUnavailableView("proxies.empty.noGroupsInProfile".l10n, systemImage: "globe", description: Text("proxies.empty.noProxiesInProfile".l10n))
         }
     }
 
@@ -2172,7 +2172,7 @@ struct ProxiesView: View {
             if group.type == "select" {
                 Button { Task { await selectNode(node, in: group) } } label: {
                     HStack {
-                        Text("选择")
+                        Text("proxies.selector.select".l10n)
                         Spacer()
                         if selected { Image(systemName: "checkmark") }
                     }
@@ -2180,7 +2180,7 @@ struct ProxiesView: View {
             } else if group.type == "url-test" || group.type == "fallback" || group.type == "smart" {
                 Button { Task { await selectNode(node, in: group) } } label: {
                     HStack {
-                        Text("首选")
+                        Text("proxies.selector.preferred".l10n)
                         Spacer()
                         if pinned { Image(systemName: "checkmark") }
                     }
@@ -2188,17 +2188,17 @@ struct ProxiesView: View {
             }
             if isAddable(node) {
                 Button { Task { await addToLocal(node: node) } } label: {
-                    Label("添加到本地节点", systemImage: "plus.square.on.square")
+                    Label("proxies.menu.addLocal".l10n, systemImage: "plus.square.on.square")
                 }
             }
             Button { Task { await proxyStore.testLatency(node: node, testURL: nodeTestURL(group)) } } label: {
-                Label("测速", systemImage: "bolt")
+                Label("proxies.testSpeed".l10n, systemImage: "bolt")
             }
             Button {
                 detailTestURL = nodeTestURL(group)
                 detailNode = node
             } label: {
-                Label("节点详情", systemImage: "info.circle")
+                Label("title.nodeDetail".l10n, systemImage: "info.circle")
             }
         }
     }
@@ -2268,30 +2268,30 @@ struct ProxiesView: View {
         do {
             let definition = try await client.proxyDefinition(name: node.name)
             guard case .object(let dict) = definition, dict["name"]?.stringValue == node.name else {
-                showNotice("读取节点配置失败")
+                showNotice("proxies.notice.readFailed".l10n)
                 return
             }
             let issues = try await client.validateProxies(proxies: [definition])
             if let first = issues.first {
-                showNotice("节点校验未通过：\(first.message)")
+                showNotice("\("proxies.notice.validationFailed".l10n)\(first.message)")
                 return
             }
             if customStore.proxies.contains(where: { $0.name == node.name })
                 || customStore.rawProxies.contains(where: { $0.objectValue?["name"]?.stringValue == node.name }) {
-                showNotice("已在本地节点中")
+                showNotice("proxies.notice.alreadyLocal".l10n)
                 return
             }
             customStore.rawProxies.append(definition)
             customStore.save()
             guard var text = profileStore.activeProfileYAML() else {
-                showNotice("没有可写入的当前配置（先导入一个订阅）")
+                showNotice("proxies.notice.noWritableConfig".l10n)
                 return
             }
             text = CustomProxyStore.bakeCurrent(into: text)
             let saved = await profileStore.saveActiveProfileYAML(text)
-            showNotice("已添加到本地节点：\(saved)")
+            showNotice("\("proxies.notice.addedLocal".l10n)\(saved)")
         } catch {
-            showNotice("加入失败：\(error.localizedDescription)")
+            showNotice("\("proxies.notice.addFailed".l10n)\(error.localizedDescription)")
         }
     }
 }
@@ -2601,7 +2601,7 @@ private struct IconGroupCard: View {
                         Image(systemName: "checkmark.circle")
                             .font(.system(size: 14))
                             .foregroundStyle(.secondary)
-                        Text("负载均衡")
+                        Text("proxies.loadBalance".l10n)
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundStyle(.secondary)
@@ -2661,7 +2661,7 @@ private struct IconGroupCard: View {
         Group {
             if searchOpen {
                 HStack(spacing: 4) {
-                    TextField("搜索", text: Binding(
+                    TextField("common.search".l10n, text: Binding(
                         get: { searchKeyword },
                         set: { onSearchKeywordChange($0) }
                     ))
@@ -2676,7 +2676,7 @@ private struct IconGroupCard: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("清除搜索")
+                    .accessibilityLabel("proxies.search.clear".l10n)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -2690,7 +2690,7 @@ private struct IconGroupCard: View {
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("搜索此组")
+                .accessibilityLabel("proxies.search.thisGroup".l10n)
             }
         }
     }
@@ -2717,7 +2717,7 @@ private struct IconGroupCard: View {
                     if ms > 0 {
                         Text("\(ms)")
                     } else {
-                        Text(ms == -1 ? "超时" : "失败")
+                        Text(ms == -1 ? "proxies.latency.timeout".l10n : "common.failed".l10n)
                     }
                 } else {
                     Image(systemName: "bolt")
@@ -2922,21 +2922,21 @@ private struct ListGroupCard<ExpandedContent: View>: View {
                         .foregroundStyle(.primary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("滚动到已选")
+                .accessibilityLabel("proxies.scrollToSelected".l10n)
                 Button(action: onTestAll) {
                     Image(systemName: "bolt.fill")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.primary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("测速本组")
+                .accessibilityLabel("proxies.testGroup".l10n)
                 Button(action: onSearch) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.primary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("搜索")
+                .accessibilityLabel("common.search".l10n)
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
@@ -2949,7 +2949,7 @@ private struct ListGroupCard<ExpandedContent: View>: View {
                     .background(Color(.systemGray4), in: Circle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("收起")
+            .accessibilityLabel("proxies.collapse".l10n)
         }
     }
 }
@@ -3176,19 +3176,21 @@ private struct DelayText: View {
     var body: some View {
         Group {
             if testing {
-                // S2 (v0.2.138, upstream stable v0.9.5 card.dart):
-                // the indicator slot is the footnote text height
-                // (13pt), not caption2 — the spinner renders at
-                // ~13pt (20pt default x 0.65).
+                // S2 (v0.2.145, upstream rs.1 card.dart:258-400):
+                // the indicator slot is the caption2 text height
+                // (11pt), not footnote — the spinner renders at
+                // ~11pt (20pt default x 0.55). (v0.2.138 used
+                // footnote 13pt per the stable-v0.9.5 spec; the
+                // user decision "按照上游的改" follows rs.1.)
                 ProgressView()
-                    .frame(width: 13, height: 13)
-                    .scaleEffect(0.65)
+                    .frame(width: 11, height: 11)
+                    .scaleEffect(0.55)
             } else if let ms = latencyMs {
                 if ms > 0 {
                     Text("\(ms) ms")
                         .foregroundStyle(ms < 600 ? Color.green : Color.orange)
                 } else {
-                    Text(ms == -1 ? "超时" : "失败")
+                    Text(ms == -1 ? "proxies.latency.timeout".l10n : "common.failed".l10n)
                         .foregroundStyle(Color.red)
                 }
             } else {
@@ -3196,10 +3198,11 @@ private struct DelayText: View {
                     .foregroundStyle(.secondary)
             }
         }
-        // S2 (v0.2.138, upstream stable v0.9.5 card.dart): the
-        // delay indicator (bolt / spinner / text) is footnote
-        // (13pt), not caption2 (11pt) — rounder/larger.
-        .font(.footnote)
+        // S2 (v0.2.145, upstream rs.1 card.dart:258-400): the
+        // delay indicator (bolt / spinner / text) is caption2
+        // (11pt), emphasized — the textHeight(caption2) slot
+        // upstream sizes the spinner and glyphs by.
+        .font(.caption2)
         .fontWeight(.semibold)
     }
 }
@@ -3220,26 +3223,26 @@ struct NodeDetailView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("节点") {
-                    LabeledContent("名称", value: node.name)
-                    LabeledContent("类型", value: node.type)
-                    LabeledContent("提供方", value: node.provider ?? "—")
-                    LabeledContent("延迟", value: ConcordFormat.latency(node.latencyMs))
+                Section("proxies.detail.sectionNode".l10n) {
+                    LabeledContent("proxies.detail.name".l10n, value: node.name)
+                    LabeledContent("proxies.detail.type".l10n, value: node.type)
+                    LabeledContent("proxies.detail.provider".l10n, value: node.provider ?? "—")
+                    LabeledContent("proxies.detail.latency".l10n, value: ConcordFormat.latency(node.latencyMs))
                     if let state = detail?.state {
-                        LabeledContent("存活", value: state.alive ? "是" : "否")
-                        LabeledContent("UDP", value: state.udp ? "支持" : "不支持")
+                        LabeledContent("proxies.detail.alive".l10n, value: state.alive ? "common.yes".l10n : "common.no".l10n)
+                        LabeledContent("UDP", value: state.udp ? "common.supported".l10n : "common.unsupported".l10n)
                         if let last = state.history.last {
-                            LabeledContent("上次延迟", value: last.delay == 0 ? "失败" : "\(last.delay) ms")
+                            LabeledContent("proxies.detail.lastLatency".l10n, value: last.delay == 0 ? "common.failed".l10n : "\(last.delay) ms")
                         }
                     }
                 }
                 Section {
-                    Button("测速") {
+                    Button("proxies.testSpeed".l10n) {
                         Task { await proxyStore.testLatency(node: node, testURL: testURL) }
                     }
                 }
                 if let definition = detail?.definition {
-                    Section("配置（proxy.definition）") {
+                    Section("proxies.detail.sectionConfig".l10n) {
                         JSONValueView(value: definition)
                             .frame(minHeight: 120)
                     }
@@ -3260,7 +3263,7 @@ struct NodeDetailView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
+                    Button("common.done".l10n) { dismiss() }
                 }
             }
             .task {
@@ -3326,7 +3329,7 @@ private struct RuleSetRepairSheet: View {
                         }
                     }
                     if plan.isRepairable {
-                        Text("确认后一次性写入当前订阅文件并重新应用配置，然后重测一次；若仍有问题，结果会直接显示在这里。")
+                        Text("proxies.repair.confirmNote".l10n)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -3341,11 +3344,11 @@ private struct RuleSetRepairSheet: View {
                 }
                 .padding()
             }
-            .navigationTitle("修复缺失的规则集")
+            .navigationTitle("proxies.repair.title".l10n)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(proxyStore.ruleSetRepairOutcome == nil ? "取消" : "完成") {
+                    Button(proxyStore.ruleSetRepairOutcome == nil ? "common.cancel".l10n : "common.done".l10n) {
                         proxyStore.dismissRuleSetRepair()
                         dismiss()
                     }
@@ -3377,7 +3380,7 @@ private struct RuleSetRepairSheet: View {
                         if proxyStore.isRepairingRuleSet {
                             ProgressView()
                         } else {
-                            Button("继续修复「\(next)」") {
+                            Button("\("proxies.repair.continuePrefix".l10n)\(next)\("proxies.repair.continueSuffix".l10n)") {
                                 Task { await proxyStore.prepareRuleSetRepair() }
                             }
                             .fontWeight(.semibold)

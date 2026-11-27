@@ -16,8 +16,9 @@ import Security
 // v0.2.137: the "校验 MITM 配置" / "保存并应用" buttons and the
 // "签发叶证书" section are gone (upstream mitm.dart has neither —
 // it writes config live and has no leaf-issuance UI); the
-// validate / apply / issue functions stay in SettingsStore as
-// dead code, harmless.
+// validate / apply / issue functions were removed with them in
+// v0.2.144 (dead-code removal) — nothing of them remains in
+// SettingsStore.
 //
 // Trust check (FlClash: lib/common/mitm_trust.dart
 // IOSMitmTrustStore.check): the core signs a leaf for
@@ -27,12 +28,15 @@ import Security
 // trusted; a fail means it is missing or its "fully trust" switch
 // is still off in Settings → General → About → Certificate Trust
 // Settings. The check cannot tell those two apart — iOS does not
-// let an app list the system store — so the UI says so.
+// let an app list the system store — so the view splits them with
+// the CA files on disk (see trustStatusText).
 
-/// One trust-check outcome (FlClash MitmTrustCheck, iOS subset:
-/// ready / untrusted — iOS cannot tell "not installed" from
-/// "installed but not fully trusted", so both are "untrusted" with
-/// the explanation in the message).
+/// One trust-check outcome (FlClash MitmTrustCheck, iOS subset).
+/// Upstream has three labels (mitm.dart:74-85: ready / not fully
+/// trusted / not installed); SecTrust itself cannot tell "not
+/// installed" from "installed but not fully trusted", so the view
+/// splits them with the CA files on disk (AppCore
+/// .caCertificateFileExists) — see trustStatusText.
 private struct MitmTrustResult {
     /// The leaf the core signs for the trust store to verify
     /// (FlClash mitmCheckHost).
@@ -520,7 +524,13 @@ struct MitmOptionsView: View {
 
     private var trustStatusText: String {
         guard let trustResult else { return "未检测" }
-        return trustResult.isReady ? "已信任" : "未信任"
+        if trustResult.isReady { return "已信任" }
+        // v0.2.145: upstream's three labels (mitm.dart:74-85) —
+        // ready / 未完全信任 / 未安装. SecTrust itself cannot tell
+        // "not installed" from "installed but not fully trusted",
+        // but the CA files on disk can: no certificate file in
+        // either core home means nothing was ever installed.
+        return AppCore.caCertificateFileExists() ? "未完全信任" : "未安装"
     }
 
     var body: some View {
@@ -532,7 +542,7 @@ struct MitmOptionsView: View {
             }
             caCertificateSection
             Section("信任检测") {
-                Text("检测会请核心签发一张 mitm-check.flclash.invalid 的叶证书，再用系统信任库验证它（只在本地验证，不联网）。通过 = CA 已安装且已完全信任；不通过 = CA 还没装，或装了但没在「证书信任设置」里打开完全信任——本应用无法区分这两种情况。")
+                Text("检测会请核心签发一张 mitm-check.flclash.invalid 的叶证书，再用系统信任库验证它（只在本地验证，不联网）。通过 = CA 已安装且已完全信任；不通过时看状态：显示「未安装」是本机找不到 CA 文件，显示「未完全信任」是 CA 已装但没在「证书信任设置」里打开完全信任。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 if let trustResult {
@@ -804,6 +814,12 @@ struct MitmOptionsView: View {
     /// trust would be slow. A failed VPN-off check never overwrites
     /// a previous good ("已受信任") result.
     private func checkTrust() async {
+        // v0.2.145: the trust outcome is also the decrypt-tls gate
+        // (SettingsStore mitmCaTrustReady, upstream _record): the
+        // flag follows the FINAL trustResult on every exit — a
+        // failed check never overwrites a previous good result, so
+        // a nil re-check leaves a ready flag alone.
+        defer { settingsStore.mitmCaTrustReady = trustResult?.isReady == true }
         guard settingsStore.client.mode == .live else {
             trustResult = MitmTrustResult(
                 isReady: false,
@@ -885,6 +901,7 @@ struct MitmOptionsView: View {
         let deletion = AppCore.deleteOldCAFiles()
         settingsStore.mitmCertificate = nil
         settingsStore.mitmCaFingerprint = ""
+        settingsStore.mitmCaTrustReady = false
         settingsStore.mitmIssuedPem = nil
         settingsStore.save()
         if deletion.hasFailures {

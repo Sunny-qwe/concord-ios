@@ -136,8 +136,14 @@ final class MitmStore: ObservableObject {
     /// Loads the captured exchanges of one connection (mitm.exchanges).
     /// `quiet` skips the loading spinner: the view's 2 s refresh uses
     /// it so the list does not flash a spinner on every poll.
+    /// `noHosts` is upstream's httpCaptureHasNoHost (requests.dart
+    /// :782-795, http_capture.dart:10-12): no listed host and no
+    /// enabled module, so capture records nothing — the empty state
+    /// then shows upstream's verbatim `在“主机名”中添加主机后才会记录。`
+    /// (arb httpCaptureNoHosts) instead of the generic "正在捕获" line.
+    /// The view computes it from SettingsStore + MitmModuleStore.
     @MainActor
-    func loadExchanges(connection: UInt64, quiet: Bool = false) async {
+    func loadExchanges(connection: UInt64, quiet: Bool = false, noHosts: Bool = false) async {
         connectionId = connection
         if !quiet { isLoadingExchanges = true }
         defer { if !quiet { isLoadingExchanges = false } }
@@ -148,7 +154,7 @@ final class MitmStore: ObservableObject {
             exchangesClosed = list.closed ?? false
             exchangesSince = list.since
             exchangesMessage = list.exchanges.isEmpty
-                ? (list.capturing ? "正在捕获，暂无拦截记录" : "MITM 捕获未开启（config.apply 的 options.mitmCapture）")
+                ? (list.capturing ? (noHosts ? "在“主机名”中添加主机后才会记录。" : "正在捕获，暂无拦截记录") : "MITM 捕获未开启（config.apply 的 options.mitmCapture）")
                 : nil
             // Upstream `missing`: the connection began before
             // capture started, so requests from before `since` are

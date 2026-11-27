@@ -256,7 +256,6 @@ final class SettingsStore: ObservableObject {
     @Published var mitmEnabled: Bool = false
     @Published var mitmAvailable: Bool = false
     @Published var mitmHostnames: String = ""
-    @Published var mitmDecryptTls: Bool = true
     /// Skip verifying upstream servers' certificates (core
     /// `skip-server-cert-verify`). Off by default: with it on, a
     /// middlebox can forge a server certificate.
@@ -302,23 +301,57 @@ final class SettingsStore: ObservableObject {
     /// and this computed property is the single reader, so the
     /// formula below and the shared mitm.json always agree.
     /// FlClash: 'decrypt-tls' = decryptUntrusted || trustedFingerprint
-    /// != null (clash_config.dart:2305) — the trusted fingerprint is
-    /// the app CA's own fingerprint, synced on every CA read, so a
-    /// CA on disk means decryption is on. v0.2.137: the local
-    /// decrypt-TLS switch is gone (upstream has no such toggle), so
-    /// the formula is upstream's exactly — no mitmDecryptTls term.
+    /// != null (clash_config.dart:2305), where trustedFingerprint is
+    /// the app CA's fingerprint recorded ONLY when the trust check
+    /// says ready (providers/mitm.dart:84-91 _record). A CA that was
+    /// only generated — never installed and fully trusted — leaves
+    /// it null, so decrypt stays off. v0.2.145 gates the app-CA term
+    /// on mitmCaTrustReady (below), set by the certificate page's
+    /// trust check and cleared whenever a new CA is generated, the
+    /// CA is deleted, or the stored fingerprint changes. The
+    /// user-typed override counts as trusted on its own: typing a
+    /// fingerprint is an explicit trust assertion (the field
+    /// predates the trust gate). The old stored mitmDecryptTls
+    /// switch is gone: v0.2.137 removed its toggle and the value was
+    /// decoded but never read; removed in v0.2.145.
     private var mitmH2: Bool { UserDefaults.standard.bool(forKey: "ConcordiOS.mitmH2") }
     private var mitmDecryptUntrusted: Bool { UserDefaults.standard.bool(forKey: "ConcordiOS.mitmDecryptUntrusted") }
+    /// Whether the last trust check found the app CA installed and
+    /// fully trusted (set by MitmCertificateView checkTrust).
+    /// Backed by UserDefaults like mitmH2 / mitmDecryptUntrusted,
+    /// so it survives a restart the way upstream's persisted
+    /// trustedFingerprint does; the check re-runs whenever the
+    /// certificate page opens and on foreground.
+    var mitmCaTrustReady: Bool {
+        get { UserDefaults.standard.bool(forKey: "ConcordiOS.mitmCaTrustReady") }
+        set { UserDefaults.standard.set(newValue, forKey: "ConcordiOS.mitmCaTrustReady") }
+    }
     var mitmConfig: MitmConfig {
         let trusted = mitmTrustedFingerprint.trimmingCharacters(in: .whitespaces)
+        // Upstream's trusted fingerprint: the user-typed override
+        // when there is one, else the app CA's fingerprint — but
+        // only when trust is ready. A generated-but-untrusted CA
+        // contributes nothing, so decrypt stays off unless
+        // decrypt-untrusted is on.
+        let trustedFingerprint = trusted.isEmpty
+            ? (mitmCaTrustReady ? mitmCaFingerprint : "")
+            : trusted
         return MitmConfig(
             enable: mitmEnabled,
             hostname: mitmHostnames.split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty },
             skipServerCertVerify: mitmSkipServerCertVerify,
-            decryptTls: mitmDecryptUntrusted || !mitmCaFingerprint.isEmpty || !trusted.isEmpty,
-            caFingerprint: trusted.isEmpty ? mitmCaFingerprint : trusted,
+            decryptTls: mitmDecryptUntrusted || !trustedFingerprint.isEmpty,
+            // Upstream clash_config.dart:2306 blanks ca-fingerprint
+            // when decrypt-untrusted is on ('ca-fingerprint':
+            // decryptUntrusted ? '' : trustedFingerprint ?? ''):
+            // with decrypt-all on, a typed override fingerprint
+            // would otherwise make the core refuse decryption
+            // (authority() needs the fingerprint empty-or-matching
+            // the app CA). trustedFingerprint here is the same
+            // local as the decryptTls term above.
+            caFingerprint: mitmDecryptUntrusted ? "" : trustedFingerprint,
             h2: mitmH2,
             autoQuicBlock: mitmAutoQuicBlock,
             limits: mitmCapture ? MitmLimitsConfig(captureEntries: mitmCaptureEntries) : nil
@@ -429,7 +462,6 @@ final class SettingsStore: ObservableObject {
         var developerMode: Bool
         var mitmEnabled: Bool
         var mitmHostnames: String
-        var mitmDecryptTls: Bool
         var mitmCaFingerprint: String
         var mitmSkipServerCertVerify: Bool
         var mitmAutoQuicBlock: Bool
@@ -464,7 +496,7 @@ final class SettingsStore: ObservableObject {
 
         // The MITM fields are new: decode them leniently so settings
         // saved before they existed still load.
-        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmDecryptTls: Bool, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, updateChannel: String = "stable", openLogs: Bool = false, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftncsi.com", "www.msftncsi.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 2000, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict", keepAliveIdle: Int = 0, keepAliveInterval: Int = 0, disableKeepAlive: Bool = false, includeAllNetworks: Bool = false, excludeLocalNetworks: Bool = true, excludeAPNs: Bool = true, excludeCellularServices: Bool = true, enforceRoutes: Bool = false, excludeDeviceCommunication: Bool = true, onlyStatisticsProxy: Bool = false, appendSystemDns: Bool = false, systemProxy: Bool = false, bypassDomain: [String] = [], unifiedDelayMigrated: Bool = false) {
+        init(mode: String, logLevel: String, mixedPort: Int, socksPort: Int, allowLan: Bool, ipv6: Bool, tcpConcurrent: Bool, unifiedDelay: Bool, sniffing: Bool, globalUa: String, delayTestTimeout: Int, tunEnabled: Bool, tunStack: String, tunMtu: Int, tunDns: String, dnsEnabled: Bool, dnsNameserver: String, dnsFakeIpEnabled: Bool, dnsFakeIpRange: String, autoUpdateProfiles: Bool, developerMode: Bool, mitmEnabled: Bool, mitmHostnames: String, mitmCaFingerprint: String, autoRun: Bool = false, autoCloseConnections: Bool = false, checkCertificate: Bool = true, autoCheckUpdate: Bool = false, updateChannel: String = "stable", openLogs: Bool = false, routeExcludeAddress: [String] = [], bypassPrivateRoute: Bool = false, dnsHijack: Bool = true, dnsListen: String = "", dnsPreferH3: Bool = false, dnsUseHosts: Bool = true, dnsUseSystemHosts: Bool = true, dnsRespectRules: Bool = false, dnsIpv6Timeout: Int = 100, dnsCacheAlgorithm: String = "lru", dnsCacheMaxSize: Int = 4096, dnsEnhancedMode: String = "fake-ip", dnsFakeIpRange6: String = "", dnsFakeIpFilter: [String] = ["dns.msftncsi.com", "www.msftncsi.com", "www.msftconnecttest.com"], dnsFakeIpFilterMode: String = "blacklist", dnsFakeIpTtl: Int = 1, dnsDefaultNameserver: [String] = ["114.114.114.114", "223.5.5.5", "8.8.8.8", "1.0.0.1"], dnsNameserverPolicy: [String: String] = [:], dnsExtraNameservers: [String] = [], dnsFallback: [String] = [], dnsFallbackLazyQuery: Bool = false, dnsProxyServerNameserver: [String] = [], dnsProxyServerNameserverPolicy: [String: String] = [:], dnsDirectNameserver: [String] = [], dnsDirectNameserverFollowPolicy: Bool = false, dnsFallbackFilterGeoip: Bool = true, dnsFallbackFilterGeoipCode: String = "", dnsFallbackFilterGeosite: [String] = [], dnsFallbackFilterIpcidr: [String] = [], dnsFallbackFilterDomain: [String] = [], interfaceName: String = "", interfaceNameMode: String = "follow", userAgents: [String] = [], authEnabled: Bool = false, authUsername: String = "", authPassword: String = "", externalControllerSecret: String = "", externalControllerEnabled: Bool = false, mitmSkipServerCertVerify: Bool = false, mitmAutoQuicBlock: Bool = true, mitmTrustedFingerprint: String = "", mitmCapture: Bool = false, mitmCaptureEntries: Int = 2000, hideIp: Bool = false, dnsIpv6: Bool = false, findProcessModeSetting: String = "strict", keepAliveIdle: Int = 0, keepAliveInterval: Int = 0, disableKeepAlive: Bool = false, includeAllNetworks: Bool = false, excludeLocalNetworks: Bool = true, excludeAPNs: Bool = true, excludeCellularServices: Bool = true, enforceRoutes: Bool = false, excludeDeviceCommunication: Bool = true, onlyStatisticsProxy: Bool = false, appendSystemDns: Bool = false, systemProxy: Bool = false, bypassDomain: [String] = [], unifiedDelayMigrated: Bool = false) {
             self.mode = mode
             self.logLevel = logLevel
             self.mixedPort = mixedPort
@@ -488,7 +520,6 @@ final class SettingsStore: ObservableObject {
             self.developerMode = developerMode
             self.mitmEnabled = mitmEnabled
             self.mitmHostnames = mitmHostnames
-            self.mitmDecryptTls = mitmDecryptTls
             self.mitmCaFingerprint = mitmCaFingerprint
             self.mitmSkipServerCertVerify = mitmSkipServerCertVerify
             self.mitmAutoQuicBlock = mitmAutoQuicBlock
@@ -584,7 +615,6 @@ final class SettingsStore: ObservableObject {
             developerMode = try c.decode(Bool.self, forKey: .developerMode)
             mitmEnabled = try c.decodeIfPresent(Bool.self, forKey: .mitmEnabled) ?? false
             mitmHostnames = try c.decodeIfPresent(String.self, forKey: .mitmHostnames) ?? ""
-            mitmDecryptTls = try c.decodeIfPresent(Bool.self, forKey: .mitmDecryptTls) ?? true
             mitmCaFingerprint = try c.decodeIfPresent(String.self, forKey: .mitmCaFingerprint) ?? ""
             mitmSkipServerCertVerify = try c.decodeIfPresent(Bool.self, forKey: .mitmSkipServerCertVerify) ?? false
             mitmAutoQuicBlock = try c.decodeIfPresent(Bool.self, forKey: .mitmAutoQuicBlock) ?? true
@@ -669,7 +699,7 @@ final class SettingsStore: ObservableObject {
     }
 
     func save() {
-        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmDecryptTls: mitmDecryptTls, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, updateChannel: updateChannel.rawValue, openLogs: openLogs, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, dnsListen: dnsListen, dnsPreferH3: dnsPreferH3, dnsUseHosts: dnsUseHosts, dnsUseSystemHosts: dnsUseSystemHosts, dnsRespectRules: dnsRespectRules, dnsIpv6Timeout: dnsIpv6Timeout, dnsCacheAlgorithm: dnsCacheAlgorithm, dnsCacheMaxSize: dnsCacheMaxSize, dnsEnhancedMode: dnsEnhancedMode, dnsFakeIpRange6: dnsFakeIpRange6, dnsFakeIpFilter: dnsFakeIpFilter, dnsFakeIpFilterMode: dnsFakeIpFilterMode, dnsFakeIpTtl: dnsFakeIpTtl, dnsDefaultNameserver: dnsDefaultNameserver, dnsNameserverPolicy: dnsNameserverPolicy, dnsExtraNameservers: dnsExtraNameservers, dnsFallback: dnsFallback, dnsFallbackLazyQuery: dnsFallbackLazyQuery, dnsProxyServerNameserver: dnsProxyServerNameserver, dnsProxyServerNameserverPolicy: dnsProxyServerNameserverPolicy, dnsDirectNameserver: dnsDirectNameserver, dnsDirectNameserverFollowPolicy: dnsDirectNameserverFollowPolicy, dnsFallbackFilterGeoip: dnsFallbackFilterGeoip, dnsFallbackFilterGeoipCode: dnsFallbackFilterGeoipCode, dnsFallbackFilterGeosite: dnsFallbackFilterGeosite, dnsFallbackFilterIpcidr: dnsFallbackFilterIpcidr, dnsFallbackFilterDomain: dnsFallbackFilterDomain, interfaceName: interfaceName, interfaceNameMode: interfaceNameMode, userAgents: userAgents, authEnabled: authEnabled, authUsername: authUsername, authPassword: authPassword, externalControllerSecret: externalControllerSecret, externalControllerEnabled: externalControllerEnabled, mitmSkipServerCertVerify: mitmSkipServerCertVerify, mitmAutoQuicBlock: mitmAutoQuicBlock, mitmTrustedFingerprint: mitmTrustedFingerprint, mitmCapture: mitmCapture, mitmCaptureEntries: mitmCaptureEntries, hideIp: hideIp, dnsIpv6: dnsIpv6, findProcessModeSetting: findProcessModeSetting, keepAliveIdle: keepAliveIdle, keepAliveInterval: keepAliveInterval, disableKeepAlive: disableKeepAlive, includeAllNetworks: includeAllNetworks, excludeLocalNetworks: excludeLocalNetworks, excludeAPNs: excludeAPNs, excludeCellularServices: excludeCellularServices, enforceRoutes: enforceRoutes, excludeDeviceCommunication: excludeDeviceCommunication, onlyStatisticsProxy: onlyStatisticsProxy, appendSystemDns: appendSystemDns, systemProxy: systemProxy, bypassDomain: bypassDomain, unifiedDelayMigrated: unifiedDelayMigrated)
+        let saved = Saved(mode: mode.rawValue, logLevel: logLevel.rawValue, mixedPort: mixedPort, socksPort: socksPort, allowLan: allowLan, ipv6: ipv6, tcpConcurrent: tcpConcurrent, unifiedDelay: unifiedDelay, sniffing: sniffing, globalUa: globalUa, delayTestTimeout: delayTestTimeout, tunEnabled: tunEnabled, tunStack: tunStack, tunMtu: tunMtu, tunDns: tunDns, dnsEnabled: dnsEnabled, dnsNameserver: dnsNameserver, dnsFakeIpEnabled: dnsFakeIpEnabled, dnsFakeIpRange: dnsFakeIpRange, autoUpdateProfiles: autoUpdateProfiles, developerMode: developerMode, mitmEnabled: mitmEnabled, mitmHostnames: mitmHostnames, mitmCaFingerprint: mitmCaFingerprint, autoRun: autoRun, autoCloseConnections: autoCloseConnections, checkCertificate: checkCertificate, autoCheckUpdate: autoCheckUpdate, updateChannel: updateChannel.rawValue, openLogs: openLogs, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, dnsListen: dnsListen, dnsPreferH3: dnsPreferH3, dnsUseHosts: dnsUseHosts, dnsUseSystemHosts: dnsUseSystemHosts, dnsRespectRules: dnsRespectRules, dnsIpv6Timeout: dnsIpv6Timeout, dnsCacheAlgorithm: dnsCacheAlgorithm, dnsCacheMaxSize: dnsCacheMaxSize, dnsEnhancedMode: dnsEnhancedMode, dnsFakeIpRange6: dnsFakeIpRange6, dnsFakeIpFilter: dnsFakeIpFilter, dnsFakeIpFilterMode: dnsFakeIpFilterMode, dnsFakeIpTtl: dnsFakeIpTtl, dnsDefaultNameserver: dnsDefaultNameserver, dnsNameserverPolicy: dnsNameserverPolicy, dnsExtraNameservers: dnsExtraNameservers, dnsFallback: dnsFallback, dnsFallbackLazyQuery: dnsFallbackLazyQuery, dnsProxyServerNameserver: dnsProxyServerNameserver, dnsProxyServerNameserverPolicy: dnsProxyServerNameserverPolicy, dnsDirectNameserver: dnsDirectNameserver, dnsDirectNameserverFollowPolicy: dnsDirectNameserverFollowPolicy, dnsFallbackFilterGeoip: dnsFallbackFilterGeoip, dnsFallbackFilterGeoipCode: dnsFallbackFilterGeoipCode, dnsFallbackFilterGeosite: dnsFallbackFilterGeosite, dnsFallbackFilterIpcidr: dnsFallbackFilterIpcidr, dnsFallbackFilterDomain: dnsFallbackFilterDomain, interfaceName: interfaceName, interfaceNameMode: interfaceNameMode, userAgents: userAgents, authEnabled: authEnabled, authUsername: authUsername, authPassword: authPassword, externalControllerSecret: externalControllerSecret, externalControllerEnabled: externalControllerEnabled, mitmSkipServerCertVerify: mitmSkipServerCertVerify, mitmAutoQuicBlock: mitmAutoQuicBlock, mitmTrustedFingerprint: mitmTrustedFingerprint, mitmCapture: mitmCapture, mitmCaptureEntries: mitmCaptureEntries, hideIp: hideIp, dnsIpv6: dnsIpv6, findProcessModeSetting: findProcessModeSetting, keepAliveIdle: keepAliveIdle, keepAliveInterval: keepAliveInterval, disableKeepAlive: disableKeepAlive, includeAllNetworks: includeAllNetworks, excludeLocalNetworks: excludeLocalNetworks, excludeAPNs: excludeAPNs, excludeCellularServices: excludeCellularServices, enforceRoutes: enforceRoutes, excludeDeviceCommunication: excludeDeviceCommunication, onlyStatisticsProxy: onlyStatisticsProxy, appendSystemDns: appendSystemDns, systemProxy: systemProxy, bypassDomain: bypassDomain, unifiedDelayMigrated: unifiedDelayMigrated)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
         saveSharedFiles()
@@ -1167,7 +1197,6 @@ final class SettingsStore: ObservableObject {
         developerMode = saved.developerMode
         mitmEnabled = saved.mitmEnabled
         mitmHostnames = saved.mitmHostnames
-        mitmDecryptTls = saved.mitmDecryptTls
         mitmCaFingerprint = saved.mitmCaFingerprint
         mitmSkipServerCertVerify = saved.mitmSkipServerCertVerify
         mitmAutoQuicBlock = saved.mitmAutoQuicBlock
@@ -1540,6 +1569,10 @@ final class SettingsStore: ObservableObject {
                 // tunnel-core refresh re-reads the real value.
                 mitmAvailable = true
                 mitmCaFingerprint = info.fingerprint
+                // v0.2.145: a fresh CA is untrusted until the trust
+                // check says otherwise — the old ready flag belongs
+                // to the previous CA, not this one.
+                mitmCaTrustReady = false
                 // The CA was generated in the app core's own home;
                 // the tunnel core reads its CA from the App Group
                 // container instead, so sync the files there — or
@@ -1603,6 +1636,11 @@ final class SettingsStore: ObservableObject {
             let cert = try await client.mitmCertificate()
             mitmCertificate = cert.certificate
             if let info = cert.certificate {
+                // v0.2.145: the core reports a different CA than the
+                // stored one (regenerated elsewhere) — the old ready
+                // flag belongs to the previous CA; trust must be
+                // re-checked before decrypt uses this fingerprint.
+                if info.fingerprint != mitmCaFingerprint { mitmCaTrustReady = false }
                 mitmCaFingerprint = info.fingerprint
                 mitmStatusMessage = "CA 已就绪：\(info.subject)"
                 save()
@@ -1632,6 +1670,9 @@ final class SettingsStore: ObservableObject {
             mitmCertificate = cert.certificate
             if let info = cert.certificate {
                 mitmCaFingerprint = info.fingerprint
+                // v0.2.145: a fresh CA is untrusted until the trust
+                // check says otherwise (see ensureMitmCertificate).
+                mitmCaTrustReady = false
                 var message = "CA 已生成：\(info.subject)，指纹 \(info.fingerprint)"
                 if let deletion, deletion.hasFailures {
                     message += "。注意：旧 CA 文件未能完全删除（\(deletion.failures.joined(separator: "；"))），请重试或检查后重新生成"

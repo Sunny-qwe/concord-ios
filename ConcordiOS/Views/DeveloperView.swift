@@ -2,10 +2,12 @@ import SwiftUI
 
 // MARK: - Developer (FlClash: Tools -> 开发者模式）
 // Only shown when developerMode is on (ToolsView gates the row).
-// V-M2: there is no crash test here — the iOS staticlib was built
-// without the debug feature, so debug.crash answers "method not
-// found" and nothing crashes. The test section says so instead of
-// offering a button that cannot work.
+// v0.2.153: the crash test (upstream developer.dart crashTest)
+// and the MITM memory-pressure control (core.setPressure, no
+// upstream UI) are back here — both were cut in v0.2.141 with
+// the Settings developer section. The release core still
+// answers "method not found" to debug.crash; crashCore shows
+// the core's answer instead of pretending it crashed.
 
 struct DeveloperView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
@@ -18,6 +20,14 @@ struct DeveloperView: View {
     @EnvironmentObject private var client: ConcordClient
     @State private var message: String?
     @State private var showingClearConfirm = false
+    /// v0.2.153: the crash-test confirm (restored with the button).
+    @State private var showCrashConfirm = false
+    /// v0.2.153 audit B2: the pressure Picker binds this local
+    /// selection, NOT $settingsStore.pressureLevel — setPressure
+    /// only commits pressureLevel on success, so binding the
+    /// store directly would show a level the core never applied
+    /// after a failed apply (sample mode / tunnel stopped).
+    @State private var pressureSelection = 0
     /// V-M1 (v0.2.138): the live-status test sheet.
     @State private var showLiveStatusTest = false
     /// V-D1: the message test shows one banner per banner level
@@ -63,12 +73,28 @@ struct DeveloperView: View {
                 Button("日志测试（写入 1000 条测试日志）") {
                     runLogsTest()
                 }
-                // V-M2: no crash-test button — the core was built
-                // without the debug feature, so it cannot crash on
-                // demand. The row below explains this.
-                Text("崩溃测试不可用：iOS 核心静态库构建时未开启 debug 功能，debug.crash 会返回“方法不存在”，无法让核心崩溃。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                // v0.2.153: the crash test is back (cut in v0.2.141,
+                // restored by the full-completion order) at
+                // upstream's own location (developer.dart crashTest).
+                // The release core still answers "method not
+                // found" — crashCore surfaces the core's answer
+                // below instead of pretending it crashed.
+                Button("让核心崩溃（debug.crash）", role: .destructive) {
+                    showCrashConfirm = true
+                }
+                .alert("确定要让核心崩溃吗？", isPresented: $showCrashConfirm) {
+                    Button("崩溃", role: .destructive) {
+                        Task { await settingsStore.crashCore() }
+                    }
+                    Button("取消", role: .cancel) { }
+                } message: {
+                    Text("debug.crash 会让核心进程立即中止，VPN 隧道随之断开，仅用于调试。注意：iOS 的发布版核心没有编译 debug 功能，调用会被核心拒绝，实际不会崩溃。")
+                }
+                if let message = settingsStore.crashMessage {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 Button(isDownloadTesting ? "下载测试中…" : "更新下载测试") {
                     Task { await runDownloadTest() }
                 }
@@ -83,6 +109,37 @@ struct DeveloperView: View {
                 Button("实时状态卡片测试") {
                     showLiveStatusTest = true
                 }
+            }
+            // v0.2.153: the MITM memory-pressure control is back
+            // (cut in v0.2.141 with the Settings developer
+            // section). Upstream has no pressure UI anywhere —
+            // core.setPressure is a core debug control — so it
+            // lives here with the other developer tools instead
+            // of in Settings.
+            Section("MITM 内存压力") {
+                Picker("MITM 内存压力（core.setPressure）", selection: $pressureSelection) {
+                    Text("0 无压力").tag(0)
+                    Text("1 停止脚本").tag(1)
+                    Text("2 停止保存请求体").tag(2)
+                    Text("3 仅中继").tag(3)
+                }
+                Button("设置内存压力") {
+                    Task {
+                        await settingsStore.setPressure(level: pressureSelection)
+                        // Snap back to the applied level: on a
+                        // failed apply pressureLevel is untouched,
+                        // so the Picker shows what the core has.
+                        pressureSelection = settingsStore.pressureLevel
+                    }
+                }
+                if let message = settingsStore.pressureMessage {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Text("压力只升不降（核心在一段时间后自动解除），只影响 MITM 抓包的内存占用：等级 1 停止运行脚本、2 停止保存请求体、3 仅中继流量。MITM 关闭时不起作用。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
             Section("数据") {
                 Button("清理缓存") {
@@ -108,6 +165,7 @@ struct DeveloperView: View {
         .font(.footnote.weight(.semibold))
         .navigationTitle("开发者模式")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { pressureSelection = settingsStore.pressureLevel }
         .alert("确定要清除所有数据？", isPresented: $showingClearConfirm) {
             Button("清除", role: .destructive) { Task { await clearAllData() } }
             Button("取消", role: .cancel) {}

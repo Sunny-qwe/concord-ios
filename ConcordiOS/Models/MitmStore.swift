@@ -110,6 +110,14 @@ final class MitmStore: ObservableObject {
             if !text.isEmpty { filter.text = text }
             let answer = try await client.mitmQuery(filter: filter, before: before)
             hasQueried = true
+            // v0.2.153 audit B1: the query answer is the only
+            // source that sets this flag for the cross-connection
+            // feed — without it, a standalone capture list could
+            // never know capture is on (loadExchanges is the only
+            // other writer, and only the per-connection page calls
+            // it). MitmView's "正在捕获" indicator reads the same
+            // flag.
+            capturing = answer.capturing
             queryMatched = answer.matched
             queryHeld = answer.held
             queryNext = answer.next

@@ -253,6 +253,179 @@ struct MitmView: View {
     }
 }
 
+// MARK: - Standalone capture list (v0.2.153)
+
+// The "MITM 拦截记录" entry cut in v0.2.141 pointed at
+// MitmView(), but MitmView is per-connection only since the
+// v0.2.143 rebuild (init(connectionId:) — no standalone init,
+// and mitm.exchanges needs a connection id). The standalone
+// list is the same feed upstream's Requests page shows: the
+// cross-connection mitm.query (MitmStore.runQuery), newest
+// first, with the same search / paging / detail / context menu
+// as the Connections HTTP segment. It shares MitmStore with
+// that segment (one store, one query state). There is NO 1 s
+// poll here, unlike the Connections segment: ContentView's
+// slidingTabView keeps all four tab pages mounted (off-screen
+// HStack / opacity-0 ZStack), so a .task loop in this page
+// would keep running on other tabs and fight the Connections
+// poll over the shared query state (search wipe, paging
+// reset). The live feed stays on the Connections page; this
+// list refreshes on appear, on search submit, on
+// pull-to-refresh, and on the toolbar button.
+
+struct MitmCaptureListView: View {
+    @EnvironmentObject private var mitmStore: MitmStore
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var moduleStore: MitmModuleStore
+    /// The exchange context menu's state — same model as MitmView.
+    @StateObject private var menuModel = MitmExchangeMenuModel()
+    @State private var detailSummary: MitmExchangeSummary?
+
+    var body: some View {
+        Group {
+            if mitmStore.isQuerying && mitmStore.queryResults.isEmpty {
+                ProgressView("正在加载拦截记录…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if mitmStore.queryResults.isEmpty {
+                ContentUnavailableView("暂无拦截记录", systemImage: "eye.slash", description: Text(httpCaptureNoHosts ? "在“主机名”中添加主机后才会记录。" : (mitmStore.queryMessage ?? "开启抓包后，这里列出全部连接的拦截记录")))
+            } else {
+                VStack(spacing: 0) {
+                    if let matched = mitmStore.queryMatched, let held = mitmStore.queryHeld {
+                        Text("共 \(matched) 条匹配（已保留 \(held) 条）· 已加载 \(mitmStore.queryResults.count) 条")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal)
+                            .padding(.vertical, 4)
+                    }
+                    // v0.2.153 audit N2: a fresh query clears this
+                    // when results arrive, so a message here means
+                    // the "加载更多" page failed — show it instead
+                    // of failing silently.
+                    if let message = mitmStore.queryMessage {
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal)
+                            .padding(.vertical, 4)
+                    }
+                    List {
+                        ForEach(mitmStore.queryResults) { exchange in
+                            Button { detailSummary = exchange } label: {
+                                httpExchangeRow(exchange)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                MitmExchangeMenuButtons(summary: exchange, model: menuModel)
+                            }
+                            .listRowBackground(ConcordTheme.cardBackground)
+                        }
+                        if mitmStore.queryNext != nil {
+                            Button("加载更多") {
+                                Task { await mitmStore.runQuery(loadMore: true) }
+                            }
+                            .disabled(mitmStore.isQuerying)
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
+                    .refreshable {
+                        await mitmStore.runQuery()
+                    }
+                }
+            }
+        }
+        // v0.2.66: tab-bar clearance for pushed pages.
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .mitmExchangeMenuOverlays(menuModel, moduleStore: moduleStore)
+        .scrollContentBackground(.hidden)
+        .font(.footnote.weight(.semibold))
+        .background(ConcordTheme.pageBackground)
+        .navigationTitle("MITM 拦截记录")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $mitmStore.queryText, prompt: "搜索 URL、方法、内容类型或应用")
+        .onSubmit(of: .search) {
+            Task { await mitmStore.runQuery() }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { Task { await mitmStore.runQuery() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+            }
+        }
+        .sheet(item: $detailSummary) { summary in
+            MitmExchangeDetailView(summary: summary)
+                // Same snap sheet as MitmView / ConnectionsView.
+                .presentationDetents([.fraction(0.5625), .fraction(0.9)])
+                .presentationDragIndicator(.visible)
+        }
+        .task {
+            // No 1 s poll: the tab pages stay mounted, so a loop
+            // here would fight the Connections poll over the
+            // shared MitmStore state (see the header comment).
+            // Refresh is on appear, on search submit, on
+            // pull-to-refresh, and on the toolbar button.
+            await mitmStore.runQuery()
+        }
+    }
+
+    /// Upstream httpCaptureHasNoHost (http_capture.dart:10-12) —
+    /// same computation as MitmView's: no listed host and no
+    /// enabled module means capture records nothing.
+    private var httpCaptureNoHosts: Bool {
+        guard !moduleStore.modules.contains(where: { $0.enabled }) else { return false }
+        let hosts = settingsStore.mitmHostnames.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return hosts.allSatisfy { $0.hasPrefix("-") }
+    }
+
+    /// One cross-connection row — same shape as the Connections
+    /// HTTP segment's row (method + host/path, status + time):
+    /// unlike MitmView's per-connection rows, this list spans
+    /// connections, so it shows the host too.
+    private func httpExchangeRow(_ exchange: MitmExchangeSummary) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(exchange.method)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.15), in: Capsule())
+                Text(exchange.host ?? "")
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(1)
+                Spacer()
+                if exchange.status > 0 {
+                    Text("\(exchange.status)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(exchange.status >= 400 ? .red : .secondary)
+                }
+            }
+            HStack(spacing: 6) {
+                Text(exchange.path ?? "/")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Text(ConcordFormat.time(rfc3339: exchange.start))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = exchange.error, !error.isEmpty {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+    }
+}
+
 // MARK: - Exchange detail (mitm.exchange / mitm.body)
 
 struct MitmExchangeDetailView: View {

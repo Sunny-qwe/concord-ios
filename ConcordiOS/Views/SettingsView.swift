@@ -425,20 +425,41 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            // v0.2.141 (C1-d6): the 更多工具 section is gone
-            // (upstream has no such section in Settings). Entry
-            // points lost: 规则 (RulesView — no other entry point;
-            // Tools uses AddedRulesView, a different page), 快捷指令
-            // (ShortcutsView — no other entry point), MITM 拦截记录
-            // (MitmView — no other entry point). LogsView is still
-            // reachable from ToolsView:186.
+            // v0.2.153: the 更多工具 section is back (cut in
+            // v0.2.141, restored by the full-completion order).
+            // Upstream has no such section in Settings, and none
+            // of these three pages has an upstream standalone
+            // entry: RulesView is the global rules-in-force
+            // viewer (upstream shows rules in force only inside
+            // the profile editor / connections); ShortcutsView is
+            // iOS-only (concord:// URL actions); the MITM capture
+            // list upstream lives in the Connections/Requests
+            // HTTP segment (same mitm.query feed as
+            // MitmCaptureListView). Without this section the
+            // three pages are unreachable. Logs/IP 质量 are NOT
+            // restored here — LogsView is reachable from
+            // ToolsView:184 and IPQualityView from the Dashboard
+            // status card.
+            Section("更多工具") {
+                NavigationLink("规则") {
+                    RulesView()
+                }
+                NavigationLink("快捷指令") {
+                    ShortcutsView()
+                }
+                NavigationLink("MITM 拦截记录") {
+                    MitmCaptureListView()
+                }
+            }
             // v0.2.141 (C1-d7): the developer section is gone
             // (upstream has no developer section in Settings).
-            // The store methods stay (refreshDeveloperInfo,
-            // setPressure, crashCore); the MITM pressure picker
-            // and the crash button lose their only UI. The
-            // 开发者模式 toggle in 应用 stays — it also gates the
-            // Developer row in ToolsView.
+            // v0.2.153: its two buttons live again in DeveloperView
+            // (Tools → 开发者模式) — the crash button at upstream's
+            // own location (developer.dart crashTest), the MITM
+            // pressure picker beside it. refreshDeveloperInfo /
+            // the capabilities display stay un-restored (not in
+            // the completion order). The 开发者模式 toggle in 应用
+            // stays — it also gates the Developer row in ToolsView.
             Section("tools.about".l10n) {
                 LabeledContent("settings.about.version".l10n, value: "Lumen \(Self.appVersion)")
                 LabeledContent("settings.about.core".l10n, value: "chen08209/concord（GPL-3.0-or-later）")

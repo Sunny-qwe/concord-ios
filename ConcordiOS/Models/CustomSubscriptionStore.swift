@@ -741,6 +741,11 @@ struct CustomSubscription: Codable, Equatable, Identifiable {
     /// strings, modules carry no exit policies), so no bake step
     /// reads it — the map is persisted so a future exit surface
     /// can use it without a migration.
+    /// (v0.2.155 audit N7: values are group/proxy names, NOT
+    /// provider references — renameProviderReferences must not
+    /// rewrite them, same coincidence reasoning as selectedMap:
+    /// a value merely equalling a provider name is a group or
+    /// proxy name, not a reference to the provider.)
     var exitTargets: [String: String]
     /// Provider-name → real URL Profile (v0.2.148): a
     /// proxy-provider with a URL is a real Profile (created at
@@ -1660,8 +1665,15 @@ final class CustomSubscriptionStore: ObservableObject {
 
     /// After a subscription is saved, removes the leftovers of
     /// every provider definition that disappeared between `old`
-    /// and `new` (diffed by name, per kind) and returns the
-    /// cleaned-up names. Proxy provider: strip its
+    /// and `new` (diffed by stable provider `id`, per kind) and
+    /// returns the cleaned-up names. Deleted = the id is gone:
+    /// a RENAMED provider (same id, new name — v0.2.155) is never
+    /// "deleted", so its map entry + confined file survive the
+    /// rename (the map key moves in the draft instead; see
+    /// CustomSubscriptionEditorView.renameProviderReferences).
+    /// Name-based diffing (pre-155) misread a rename as a delete
+    /// and also deleted BOTH of two same-named providers when
+    /// only one was removed. Proxy provider: strip its
     /// providerProfileMap entry (the mapped URL Profile itself is
     /// NOT deleted — it is a standalone profile) and delete its
     /// confined file. Rule provider: strip its ruleProviderMap
@@ -1685,31 +1697,43 @@ final class CustomSubscriptionStore: ObservableObject {
         let store = CustomSubscriptionStore()
         guard var saved = store.subscriptions.first(where: { $0.id == new.id }) else { return [] }
         var cleaned: [String] = []
-        for provider in old.proxyProviders where !new.proxyProviders.contains(where: { $0.name == provider.name }) {
-            if let ref = saved.providerProfileMap[provider.name] {
-                saved.providerProfileMap.removeValue(forKey: provider.name)
-                deleteConfinedFile(relative: "providers/\(saved.id.uuidString)/proxies/\(ref.fileToken).yaml")
+        for provider in old.proxyProviders where !new.proxyProviders.contains(where: { $0.id == provider.id }) {
+            // v0.2.155 audit B1: the map is name-keyed, so two
+            // same-named providers share ONE entry + one confined
+            // file. Only strip/delete when no same-named provider
+            // survives in `new` — otherwise the survivor loses
+            // its map entry and file.
+            if !new.proxyProviders.contains(where: { $0.name == provider.name }) {
+                if let ref = saved.providerProfileMap[provider.name] {
+                    saved.providerProfileMap.removeValue(forKey: provider.name)
+                    deleteConfinedFile(relative: "providers/\(saved.id.uuidString)/proxies/\(ref.fileToken).yaml")
+                }
             }
             cleaned.append(provider.name)
         }
-        for provider in old.ruleProviders where !new.ruleProviders.contains(where: { $0.name == provider.name }) {
-            if let ref = saved.ruleProviderMap[provider.name] {
-                saved.ruleProviderMap.removeValue(forKey: provider.name)
-                deleteConfinedFile(relative: "providers/\(saved.id.uuidString)/rules/\(ref.fileToken)")
-                let clashId = ref.clashProviderId
-                // stillUsed reads the store snapshot taken at the
-                // top of this function (pre-update): the same-sub
-                // clause uses the already-stripped local `saved`
-                // map, and other subs are excluded from `saved`
-                // by id — so a record shared with another sub
-                // (or with a second provider in this sub) survives.
-                // Do not reorder the strip above this check.
-                let stillUsed = store.subscriptions.contains {
-                    $0.id != saved.id && $0.ruleProviderMap.values.contains { $0.clashProviderId == clashId }
-                } || saved.ruleProviderMap.values.contains { $0.clashProviderId == clashId }
-                if !stillUsed {
-                    let clashStore = ClashProviderStore()
-                    if let record = clashStore.provider(id: clashId) { clashStore.delete(record) }
+        for provider in old.ruleProviders where !new.ruleProviders.contains(where: { $0.id == provider.id }) {
+            // Same B1 guard as above: only strip the shared map
+            // entry / confined file / ClashProvider record when
+            // no same-named rule provider survives in `new`.
+            if !new.ruleProviders.contains(where: { $0.name == provider.name }) {
+                if let ref = saved.ruleProviderMap[provider.name] {
+                    saved.ruleProviderMap.removeValue(forKey: provider.name)
+                    deleteConfinedFile(relative: "providers/\(saved.id.uuidString)/rules/\(ref.fileToken)")
+                    let clashId = ref.clashProviderId
+                    // stillUsed reads the store snapshot taken at the
+                    // top of this function (pre-update): the same-sub
+                    // clause uses the already-stripped local `saved`
+                    // map, and other subs are excluded from `saved`
+                    // by id — so a record shared with another sub
+                    // (or with a second provider in this sub) survives.
+                    // Do not reorder the strip above this check.
+                    let stillUsed = store.subscriptions.contains {
+                        $0.id != saved.id && $0.ruleProviderMap.values.contains { $0.clashProviderId == clashId }
+                    } || saved.ruleProviderMap.values.contains { $0.clashProviderId == clashId }
+                    if !stillUsed {
+                        let clashStore = ClashProviderStore()
+                        if let record = clashStore.provider(id: clashId) { clashStore.delete(record) }
+                    }
                 }
             }
             cleaned.append(provider.name)
@@ -1717,6 +1741,31 @@ final class CustomSubscriptionStore: ObservableObject {
         guard !cleaned.isEmpty else { return [] }
         store.update(saved)
         return cleaned
+    }
+
+    /// Providers renamed between `old` and `new` (v0.2.155):
+    /// matched by stable provider `id`, name differs. The rename
+    /// itself (references + map-key move) happens in the editor
+    /// draft (CustomSubscriptionEditorView.renameProviderReferences)
+    /// as soon as the sheet saves; this only detects that a
+    /// rename happened so saveDraft can re-apply the active
+    /// profile — the baked YAML key changes, so the running
+    /// engine must re-apply, exactly like a delete cleanup.
+    static func renamedProviders(old: CustomSubscription, new: CustomSubscription) -> [(kind: String, oldName: String, newName: String)] {
+        var renamed: [(kind: String, oldName: String, newName: String)] = []
+        for provider in old.proxyProviders {
+            if let current = new.proxyProviders.first(where: { $0.id == provider.id }),
+               current.name != provider.name {
+                renamed.append((kind: "proxy", oldName: provider.name, newName: current.name))
+            }
+        }
+        for provider in old.ruleProviders {
+            if let current = new.ruleProviders.first(where: { $0.id == provider.id }),
+               current.name != provider.name {
+                renamed.append((kind: "rule", oldName: provider.name, newName: current.name))
+            }
+        }
+        return renamed
     }
 
     private static func providerYAML(_ provider: CustomProvider, in sub: CustomSubscription, isRuleProvider: Bool) -> [String] {

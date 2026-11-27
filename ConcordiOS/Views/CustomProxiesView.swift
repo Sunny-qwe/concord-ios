@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Shared form-sheet chrome + dirty-discard guard
 //
@@ -67,6 +68,13 @@ struct CustomProxiesView: View {
     @State private var message: String?
     @State private var createdSubscriptionID: UUID?
     @State private var showCreatedEditor = false
+    /// OpenVPN import (v0.2.155): link-import sheet, .ovpn
+    /// file importer, and the parse warnings shown in the form
+    /// the import opens (cleared whenever the form opens for
+    /// anything else).
+    @State private var showOpenVPNImportSheet = false
+    @State private var showOvpnFileImporter = false
+    @State private var importWarnings: [String] = []
 
     var body: some View {
         List {
@@ -86,6 +94,7 @@ struct CustomProxiesView: View {
             Section("自定义代理（\(store.proxies.count) 个）") {
                 ForEach(store.proxies) { proxy in
                     Button {
+                        importWarnings = []
                         editing = proxy
                     } label: {
                         HStack {
@@ -106,9 +115,23 @@ struct CustomProxiesView: View {
                     Task { await bakeIntoProfile() }
                 }
                 Button {
+                    importWarnings = []
                     editing = CustomProxy()
                 } label: {
                     Label("添加代理", systemImage: "plus")
+                }
+                // OpenVPN import (v0.2.155): parses a .ovpn file
+                // or an openvpn:// link into a prefilled form —
+                // never a silent save (see OpenVPNImport).
+                Button {
+                    showOpenVPNImportSheet = true
+                } label: {
+                    Label("导入 OpenVPN 链接", systemImage: "link")
+                }
+                Button {
+                    showOvpnFileImporter = true
+                } label: {
+                    Label("导入 .ovpn 文件", systemImage: "doc.badge.plus")
                 }
             }
             // "添加到本地"的节点 (rawProxies): the full definition
@@ -158,7 +181,7 @@ struct CustomProxiesView: View {
         .navigationTitle("代理")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $editing) { proxy in
-            CustomProxyFormView(proxy: proxy, isNew: !store.proxies.contains(where: { $0.id == proxy.id })) { saved in
+            CustomProxyFormView(proxy: proxy, isNew: !store.proxies.contains(where: { $0.id == proxy.id }), importWarnings: importWarnings) { saved in
                 // The form only dismisses when this returns true:
                 // a failed core validation keeps the sheet open so
                 // the user can fix the node instead of re-typing
@@ -166,6 +189,41 @@ struct CustomProxiesView: View {
                 await saveProxy(saved)
             }
             .formSheetChrome()
+        }
+        // OpenVPN link import (v0.2.155): on success the parsed
+        // node opens in the form prefilled, with its warnings.
+        .sheet(isPresented: $showOpenVPNImportSheet) {
+            OpenVPNImportSheetView { result in
+                openImported(result)
+            }
+            .formSheetChrome()
+        }
+        // .ovpn file import (v0.2.155): same prefilled-form flow
+        // as the link import (SettingsView provider import uses
+        // the same .plainText/.data fileImporter pattern).
+        .fileImporter(isPresented: $showOvpnFileImporter, allowedContentTypes: [.plainText, .data], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                guard let data = try? Data(contentsOf: url), !data.isEmpty,
+                      let text = String(data: data, encoding: .utf8) else {
+                    importWarnings = []
+                    message = "导入失败：无法读取文件内容"
+                    return
+                }
+                do {
+                    let parsed = try OpenVPNImport.parseOvpn(text, suggestedName: url.deletingPathExtension().lastPathComponent)
+                    openImported(parsed)
+                } catch {
+                    importWarnings = []
+                    message = "导入失败：\(error.localizedDescription)"
+                }
+            case .failure(let error):
+                importWarnings = []
+                message = "选择文件失败：\(error.localizedDescription)"
+            }
         }
         // Raw ("添加到本地") edit: ours-only, stays a sheet, but
         // single-item (the old Bool + index + if-let could show a
@@ -203,6 +261,32 @@ struct CustomProxiesView: View {
         store.save()
         editingRawItem = nil
         Task { await bakeIntoProfile() }
+    }
+
+    /// Opens a parsed OpenVPN import in the form, prefilled,
+    /// with its parse warnings (v0.2.155). The name is deduped
+    /// against both the form proxies and the raw ("添加到本地")
+    /// nodes — a duplicate proxy name would fail the core parse
+    /// at bake time.
+    private func openImported(_ result: OpenVPNImport.Result) {
+        var proxy = result.proxy
+        proxy.name = uniqueProxyName(proxy.name)
+        importWarnings = result.warnings
+        editing = proxy
+    }
+
+    /// A proxy name not already in the list (same style as
+    /// SettingsView.uniqueProviderName): the base name, or
+    /// base-2, base-3, …
+    private func uniqueProxyName(_ base: String) -> String {
+        let clean = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stem = clean.isEmpty ? "OpenVPN" : clean
+        let existing = Set(store.proxies.map { $0.name }
+            + store.rawProxies.compactMap { $0.objectValue?["name"]?.stringValue })
+        guard existing.contains(stem) else { return stem }
+        var index = 2
+        while existing.contains("\(stem)-\(index)") { index += 1 }
+        return "\(stem)-\(index)"
     }
 
     /// Validates against the core, then saves + re-bakes. Returns
@@ -295,6 +379,709 @@ struct CustomProxiesView: View {
     }
 }
 
+// MARK: - OpenVPN import (.ovpn file + openvpn:// link, v0.2.155)
+
+/// Parses .ovpn profiles into a CustomProxy (type openvpn).
+///
+/// The accepted `openvpn://` forms (researched 2026-11-28; there
+/// is NO standard for embedding a config or credentials in the
+/// URL itself):
+/// 1. `openvpn://import-profile/<https-url>` — the official
+///    OpenVPN Connect form (Access Server 2.11+ token URL): the
+///    inner https URL serves a .ovpn file, which is downloaded
+///    and parsed.
+/// 2. A plain `https://…` / `http://…` URL — OpenVPN Connect
+///    "Import from URL": the URL serves a .ovpn file.
+/// 3. `openvpn://<base64>` — BEST-EFFORT only: base64 / base64url
+///    of .ovpn text. No official standard documents this form;
+///    it is accepted as a fallback and the error message says so.
+/// 4. Raw .ovpn text pasted into the link field (multi-line,
+///    has a `remote` line) — parsed directly.
+///
+/// Flow: parse → the caller opens CustomProxyFormView prefilled
+/// (type openvpn) with the warnings, so the user reviews, fills
+/// username/password if needed, and saves. Save runs the existing
+/// `validate.proxies` path — a failed validation keeps the form
+/// open with the core's error. Only an unbuildable profile is a
+/// hard error (empty content, no `remote`, download failure,
+/// invalid link); everything else is a warning shown in the form
+/// (missing CA, file-referenced CA/cert/key, auth-user-pass
+/// without credentials, ignored directives) — never silently
+/// dropped.
+enum OpenVPNImport {
+    struct Result {
+        var proxy: CustomProxy
+        var warnings: [String]
+    }
+
+    enum ImportError: Error, LocalizedError {
+        case emptyFile
+        case noRemote
+        case invalidLink
+        case downloadFailed(String)
+        case notOvpnText
+
+        var errorDescription: String? {
+            switch self {
+            case .emptyFile:
+                return "文件为空"
+            case .noRemote:
+                return "没有找到 remote（服务器地址），不是有效的 .ovpn 文件"
+            case .invalidLink:
+                return "链接无效：支持 openvpn://import-profile/<https 链接>、https://… .ovpn 直链、openvpn://<base64 配置>，或直接粘贴 .ovpn 文本"
+            case .downloadFailed(let detail):
+                return "下载失败：\(detail)"
+            case .notOvpnText:
+                return "下载的内容不是有效的 .ovpn 文件"
+            }
+        }
+    }
+
+    /// Import from a link (the four accepted forms above).
+    static func importLink(_ rawLink: String) async throws -> Result {
+        let link = rawLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !link.isEmpty else { throw ImportError.invalidLink }
+        // Raw .ovpn text pasted into the field. No newline
+        // requirement (v0.2.155 audit N8): a one-line paste such
+        // as `remote vpn.example.com 1194` is still a profile —
+        // looksLikeOvpn is the discriminator, a URL never has a
+        // line starting with `remote`.
+        if looksLikeOvpn(link) {
+            return try parseOvpn(link)
+        }
+        if link.hasPrefix("openvpn://") {
+            let rest = String(link.dropFirst("openvpn://".count))
+            if rest.hasPrefix("import-profile/") {
+                var inner = String(rest.dropFirst("import-profile/".count))
+                if let decoded = inner.removingPercentEncoding { inner = decoded }
+                guard let url = URL(string: inner),
+                      url.scheme == "https" || url.scheme == "http" else {
+                    throw ImportError.invalidLink
+                }
+                let text = try await downloadOvpn(from: url)
+                return try parseOvpn(text, suggestedName: url.deletingPathExtension().lastPathComponent)
+            }
+            // `openvpn://https://…` (no import-profile prefix):
+            // treat as a plain profile URL.
+            if rest.hasPrefix("https://") || rest.hasPrefix("http://"),
+               let url = URL(string: rest) {
+                let text = try await downloadOvpn(from: url)
+                return try parseOvpn(text, suggestedName: url.deletingPathExtension().lastPathComponent)
+            }
+            // Best-effort base64 of .ovpn text (no official
+            // standard — see the header comment).
+            if let data = decodeBase64Flexible(rest),
+               let text = String(data: data, encoding: .utf8),
+               looksLikeOvpn(text) {
+                return try parseOvpn(text)
+            }
+            throw ImportError.invalidLink
+        }
+        if link.hasPrefix("https://") || link.hasPrefix("http://") {
+            guard let url = URL(string: link) else { throw ImportError.invalidLink }
+            let text = try await downloadOvpn(from: url)
+            return try parseOvpn(text, suggestedName: url.deletingPathExtension().lastPathComponent)
+        }
+        throw ImportError.invalidLink
+    }
+
+    /// Does this text look like a .ovpn profile? At least one
+    /// directive line whose first token is `remote`.
+    static func looksLikeOvpn(_ text: String) -> Bool {
+        text.components(separatedBy: "\n").contains { line in
+            tokenize(stripComment(line)).first?.lowercased() == "remote"
+        }
+    }
+
+    /// Download a .ovpn file: 2xx only, HTML error pages
+    /// rejected (same as the SettingsView provider URL import),
+    /// UTF-8 text, and it must look like a profile.
+    private static func downloadOvpn(from url: URL) async throws -> String {
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(from: url)
+        } catch {
+            throw ImportError.downloadFailed(error.localizedDescription)
+        }
+        // v0.2.155 audit N7: report the status code, and report
+        // an empty body as empty — neither is "异常状态".
+        guard let http = response as? HTTPURLResponse else {
+            throw ImportError.downloadFailed("服务器返回异常状态")
+        }
+        guard (200...299).contains(http.statusCode) else {
+            throw ImportError.downloadFailed("服务器返回状态码 \(http.statusCode)")
+        }
+        guard !data.isEmpty else {
+            throw ImportError.downloadFailed("服务器返回了空内容")
+        }
+        if let contentType = http.value(forHTTPHeaderField: "Content-Type"),
+           contentType.lowercased().contains("text/html") {
+            throw ImportError.downloadFailed("服务器返回的是网页，不是 .ovpn 文件")
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw ImportError.notOvpnText
+        }
+        guard looksLikeOvpn(text) else { throw ImportError.notOvpnText }
+        return text
+    }
+
+    /// Base64 or base64url, padding optional, inner whitespace
+    /// tolerated.
+    private static func decodeBase64Flexible(_ text: String) -> Data? {
+        var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        cleaned = cleaned.filter { !$0.isWhitespace }
+        guard !cleaned.isEmpty else { return nil }
+        let remainder = cleaned.count % 4
+        if remainder == 1 { return nil }
+        if remainder != 0 { cleaned += String(repeating: "=", count: 4 - remainder) }
+        return Data(base64Encoded: cleaned)
+    }
+
+    /// Parse .ovpn text into a prefilled openvpn proxy.
+    /// `suggestedName` is the file stem for file imports (or
+    /// empty — the remote host is used then). Throws only when
+    /// no node can be built at all (empty content / no remote).
+    static func parseOvpn(_ text: String, suggestedName: String = "") throws -> Result {
+        // Strip a UTF-8 BOM; split on \n and trim \r (CRLF).
+        let cleaned = text.hasPrefix("\u{FEFF}") ? String(text.dropFirst()) : text
+        guard !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ImportError.emptyFile
+        }
+        var remotes: [(host: String, port: Int?, proto: String?)] = []
+        var portDirective: Int?
+        var protoDirective: String?
+        var dev: String?
+        var caBlock = ""
+        var certBlock = ""
+        var keyBlock = ""
+        var tlsAuthBlock = ""
+        var tlsCryptBlock = ""
+        var tlsCryptV2Block = ""
+        var keyDirection = ""
+        var fileRefs: [(label: String, file: String)] = []
+        var authUserPass = false
+        var authUserPassFile: String?
+        var cipher = ""
+        var dataCiphers = ""
+        var dataCiphersFallback = ""
+        var auth = ""
+        var compLzo = false
+        var ping = 0
+        var pingRestart = 0
+        var tranWindow = 0
+        var handshakeTimeout = 0
+        var mtu = 0
+        var dns: [String] = []
+        var ignored: [String] = []
+        var intWarnings: [String] = []
+
+        func noteIgnored(_ key: String) {
+            if !ignored.contains(key) { ignored.append(key) }
+        }
+
+        // Walk the lines; inline blocks (<ca>…</ca> etc.) are
+        // captured verbatim, everything else is a directive.
+        // A <connection> block's inner lines are directives too
+        // (its remotes count toward first-wins).
+        let lines = cleaned.components(separatedBy: "\n")
+        var index = 0
+        while index < lines.count {
+            let rawLine = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            index += 1
+            guard !rawLine.isEmpty else { continue }
+            // A trailing comment after the tag still opens the
+            // block (v0.2.155 audit N8): `<ca> # comment`.
+            let tagLine = stripComment(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
+            if tagLine.hasPrefix("<"), tagLine.hasSuffix(">"), !tagLine.hasPrefix("</") {
+                let tag = String(tagLine.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces).lowercased()
+                var blockLines: [String] = []
+                var closed = false
+                while index < lines.count {
+                    let inner = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
+                    index += 1
+                    // A trailing comment after the closing tag
+                    // still closes the block (v0.2.155 audit N6).
+                    if stripComment(inner).trimmingCharacters(in: .whitespaces).lowercased() == "</\(tag)>" {
+                        closed = true
+                        break
+                    }
+                    blockLines.append(inner)
+                }
+                // An unclosed block swallows the rest of the file
+                // into the block (directives after it included) —
+                // never silently: warn, so the user sees why the
+                // node may be missing a remote or credentials.
+                if !closed {
+                    intWarnings.append("「<\(tag)>」块没有闭合，其后的内容已全部并入该块")
+                }
+                let block = blockLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                switch tag {
+                case "ca": caBlock = block
+                case "cert": certBlock = block
+                case "key": keyBlock = block
+                case "tls-auth": tlsAuthBlock = block
+                case "tls-crypt": tlsCryptBlock = block
+                case "tls-crypt-v2": tlsCryptV2Block = block
+                case "connection": break // handled below
+                case "pkcs12":
+                    noteIgnored("pkcs12")
+                default:
+                    noteIgnored("<\(tag)>")
+                }
+                // A <connection> block's lines are directives, so
+                // re-run them through the directive parser.
+                if tag == "connection" {
+                    for inner in blockLines {
+                        parseDirectiveLine(inner, into: &remotes, portDirective: &portDirective, protoDirective: &protoDirective, dev: &dev, fileRefs: &fileRefs, keyDirection: &keyDirection, authUserPass: &authUserPass, authUserPassFile: &authUserPassFile, cipher: &cipher, dataCiphers: &dataCiphers, dataCiphersFallback: &dataCiphersFallback, auth: &auth, compLzo: &compLzo, ping: &ping, pingRestart: &pingRestart, tranWindow: &tranWindow, handshakeTimeout: &handshakeTimeout, mtu: &mtu, dns: &dns, ignored: &ignored, intWarnings: &intWarnings)
+                    }
+                }
+                continue
+            }
+            parseDirectiveLine(rawLine, into: &remotes, portDirective: &portDirective, protoDirective: &protoDirective, dev: &dev, fileRefs: &fileRefs, keyDirection: &keyDirection, authUserPass: &authUserPass, authUserPassFile: &authUserPassFile, cipher: &cipher, dataCiphers: &dataCiphers, dataCiphersFallback: &dataCiphersFallback, auth: &auth, compLzo: &compLzo, ping: &ping, pingRestart: &pingRestart, tranWindow: &tranWindow, handshakeTimeout: &handshakeTimeout, mtu: &mtu, dns: &dns, ignored: &ignored, intWarnings: &intWarnings)
+        }
+
+        guard let firstRemote = remotes.first else { throw ImportError.noRemote }
+        // `remote [host] 1194 udp`: the host may be bracketed
+        // IPv6 ([2001:db8::1]) — the core takes the bare address.
+        let host = firstRemote.host.hasPrefix("[") && firstRemote.host.hasSuffix("]")
+            ? String(firstRemote.host.dropFirst().dropLast()) : firstRemote.host
+        let port = firstRemote.port ?? portDirective ?? 1194
+
+        var warnings: [String] = []
+        if remotes.count > 1 {
+            warnings.append("文件中有 \(remotes.count) 个 remote，只用了第一个（\(host):\(port)），其余的已忽略")
+        }
+        // Proto: the core only accepts udp / tcp (openvpn.rs) —
+        // udp6/tcp6 are mapped with a warning, tcp-server is a
+        // server config (warned, treated as tcp).
+        let rawProto = (firstRemote.proto ?? protoDirective ?? "udp").lowercased()
+        var proto = "udp"
+        switch rawProto {
+        case "udp", "udp4": proto = "udp"
+        case "udp6":
+            proto = "udp"
+            warnings.append("proto udp6 不受核心支持，已按 udp 导入")
+        case "tcp", "tcp-client", "tcp4", "tcp4-client", "tcp6", "tcp6-client":
+            proto = "tcp"
+            if rawProto.contains("6") {
+                warnings.append("proto \(rawProto) 不受核心支持，已按 tcp 导入")
+            }
+        case "tcp-server":
+            proto = "tcp"
+            warnings.append("这是服务器端配置（proto tcp-server），已按客户端导入，可能无法连接")
+        default:
+            warnings.append("proto \(rawProto) 不受支持，已按 udp 导入")
+        }
+        // A `proto` directive that loses to the remote line's
+        // own proto is dropped, not silently (v0.2.155 audit
+        // N5): in OpenVPN the remote's proto wins, but the user
+        // should know the directive was ignored.
+        if let remoteProto = firstRemote.proto, let directive = protoDirective,
+           remoteProto.lowercased() != directive.lowercased() {
+            warnings.append("remote 自带协议 \(remoteProto)，忽略了 proto 指令的 \(directive)")
+        }
+        if let dev, !dev.isEmpty {
+            if dev.lowercased() != "tun" {
+                warnings.append("dev \(dev) 不受核心支持（仅支持 tun），已按 tun 导入")
+            }
+        }
+        // Cipher / auth allow-lists (v0.2.155 audit N1 — core
+        // openvpn.rs OPENVPN_CIPHERS / OPENVPN_AUTHS at faaadad,
+        // with the core's normalization: cipher trim + upper,
+        // "" → AES-128-GCM, "AES-CBC" → AES-128-CBC; auth trim +
+        // upper, "" → SHA256, "SHA-1" → SHA1). cipher/auth ARE
+        // caught by validate.proxies at save, but the import
+        // should name the bad value up front. data-ciphers
+        // entries and data-ciphers-fallback are NEVER validated
+        // by the core (stored verbatim), so an invalid one passes
+        // save and only fails at tunnel connect — warn here.
+        let supportedCiphers: Set<String> = ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM", "AES-128-CBC", "AES-192-CBC", "AES-256-CBC", "CHACHA20-POLY1305"]
+        let supportedAuths: Set<String> = ["MD5", "SHA1", "SHA256", "SHA384", "SHA512"]
+        let cipherValue = cipher.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if !cipherValue.isEmpty {
+            let normalized = cipherValue == "AES-CBC" ? "AES-128-CBC" : cipherValue
+            if !supportedCiphers.contains(normalized) {
+                warnings.append("cipher「\(cipher)」不受核心支持，保存时会校验失败")
+            }
+        }
+        let authValue = auth.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if !authValue.isEmpty {
+            let normalized = authValue == "SHA-1" ? "SHA1" : authValue
+            if !supportedAuths.contains(normalized) {
+                warnings.append("auth「\(auth)」不受核心支持，保存时会校验失败")
+            }
+        }
+        for bad in dataCiphers.components(separatedBy: CharacterSet(charactersIn: ":,")) {
+            let entry = bad.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !entry.isEmpty && !supportedCiphers.contains(entry.uppercased()) {
+                warnings.append("data-ciphers 中的「\(entry)」不受核心支持，核心保存时不校验，连接时可能失败")
+            }
+        }
+        let fallbackValue = dataCiphersFallback.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !fallbackValue.isEmpty && !supportedCiphers.contains(fallbackValue.uppercased()) {
+            warnings.append("data-ciphers-fallback「\(dataCiphersFallback)」不受核心支持，核心保存时不校验，连接时可能失败")
+        }
+        // key-direction other than 0/1 is dropped by
+        // proxyJSONValue/yamlLines before validation ever sees
+        // it (audit N2) — warn at parse time instead of silently
+        // saving a node that differs from the .ovpn.
+        if !keyDirection.isEmpty && keyDirection != "0" && keyDirection != "1" {
+            warnings.append("key-direction「\(keyDirection)」不受核心支持（仅支持 0 / 1），已忽略")
+        }
+        // tls mutual exclusion (audit N3): the core rejects it
+        // at save, but the import should name the conflict.
+        if !tlsAuthBlock.isEmpty && !tlsCryptBlock.isEmpty {
+            warnings.append("tls-auth 与 tls-crypt 不能同时设置，保存时会校验失败")
+        }
+        if !tlsCryptV2Block.isEmpty && (!tlsAuthBlock.isEmpty || !tlsCryptBlock.isEmpty) {
+            warnings.append("tls-crypt-v2 不能与 tls-auth / tls-crypt 同时设置，保存时会校验失败")
+        }
+        // File-referenced credentials: the files are not here,
+        // so the field stays empty for the user to paste in the
+        // form (never a silent drop).
+        for ref in fileRefs {
+            // v0.2.155 audit N5: when the directive AND its inline
+            // block are both present, the block supplies the value
+            // — the file-ref warning would be spurious.
+            let hasInline: Bool
+            switch ref.label {
+            case "CA": hasInline = !caBlock.isEmpty
+            case "客户端证书": hasInline = !certBlock.isEmpty
+            case "客户端密钥": hasInline = !keyBlock.isEmpty
+            case "tls-auth": hasInline = !tlsAuthBlock.isEmpty
+            case "tls-crypt": hasInline = !tlsCryptBlock.isEmpty
+            default: hasInline = !tlsCryptV2Block.isEmpty
+            }
+            if !hasInline {
+                warnings.append("\(ref.label)是文件引用「\(ref.file)」，未导入——请在表单中粘贴证书内容")
+            }
+        }
+        // Credentials: a file-referenced item counts as present
+        // for the checks below — the file-ref warning above
+        // already tells the user to paste it, so the missing-CA
+        // warning must not double-fire (audit N4), and a lone
+        // cert or lone key must warn: the core requires the pair
+        // (audit N3 — neither branch fired for cert-without-key).
+        let hasCa = !caBlock.isEmpty || fileRefs.contains { $0.label == "CA" }
+        let hasCert = !certBlock.isEmpty || fileRefs.contains { $0.label == "客户端证书" }
+        let hasKey = !keyBlock.isEmpty || fileRefs.contains { $0.label == "客户端密钥" }
+        if !hasCa {
+            warnings.append("没有 CA 证书：请在表单中粘贴 CA 证书，否则保存时会校验失败")
+        }
+        if hasCert != hasKey {
+            warnings.append("证书与密钥不完整：只导入了\(hasCert ? "证书" : "密钥")，两者必须成对填写")
+        }
+        if authUserPass, !hasCert, !hasKey {
+            if let file = authUserPassFile {
+                warnings.append("需要用户名和密码（auth-user-pass 来自文件 \(file)）：请在表单中填写")
+            } else {
+                warnings.append("需要用户名和密码（auth-user-pass）：请在表单中填写")
+            }
+        } else if !hasCert, !hasKey {
+            warnings.append("没有认证信息：请填写证书 + 密钥，或在表单中填写用户名（需 auth-user-pass）")
+        }
+        warnings.append(contentsOf: intWarnings)
+        if !ignored.isEmpty {
+            let shown = ignored.prefix(8).joined(separator: "、")
+            let extra = ignored.count > 8 ? " 等 \(ignored.count) 条" : ""
+            warnings.append("已忽略 \(ignored.count) 条本应用不支持的指令：\(shown)\(extra)")
+        }
+
+        var proxy = CustomProxy()
+        let name = suggestedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        proxy.name = name.isEmpty ? host : name
+        proxy.type = "openvpn"
+        proxy.server = host
+        proxy.port = port
+        proxy.ovpnProto = proto
+        proxy.ovpnCa = caBlock
+        proxy.ovpnCert = certBlock
+        proxy.ovpnKey = keyBlock
+        proxy.ovpnTlsAuth = tlsAuthBlock
+        proxy.ovpnTlsCrypt = tlsCryptBlock
+        proxy.ovpnTlsCryptV2 = tlsCryptV2Block
+        proxy.ovpnKeyDirection = keyDirection
+        proxy.cipher = cipher
+        proxy.ovpnDataCiphers = dataCiphers
+        proxy.ovpnDataCiphersFallback = dataCiphersFallback
+        proxy.ovpnAuth = auth
+        proxy.ovpnCompLzo = compLzo
+        proxy.ovpnPing = ping
+        proxy.ovpnPingRestart = pingRestart
+        proxy.ovpnTranWindow = tranWindow
+        proxy.ovpnHandshakeTimeout = handshakeTimeout
+        proxy.ovpnMtu = mtu
+        proxy.ovpnDns = dns.joined(separator: ", ")
+        proxy.udp = true
+        return Result(proxy: proxy, warnings: warnings)
+    }
+
+    /// One directive line (comments already stripped by the
+    /// caller for top-level lines; connection-block lines are
+    /// stripped here). Unknown directives are recorded in
+    /// `ignored`, never silently dropped.
+    private static func parseDirectiveLine(
+        _ rawLine: String,
+        into remotes: inout [(host: String, port: Int?, proto: String?)],
+        portDirective: inout Int?,
+        protoDirective: inout String?,
+        dev: inout String?,
+        fileRefs: inout [(label: String, file: String)],
+        keyDirection: inout String,
+        authUserPass: inout Bool,
+        authUserPassFile: inout String?,
+        cipher: inout String,
+        dataCiphers: inout String,
+        dataCiphersFallback: inout String,
+        auth: inout String,
+        compLzo: inout Bool,
+        ping: inout Int,
+        pingRestart: inout Int,
+        tranWindow: inout Int,
+        handshakeTimeout: inout Int,
+        mtu: inout Int,
+        dns: inout [String],
+        ignored: inout [String],
+        intWarnings: inout [String]
+    ) {
+        let tokens = tokenize(stripComment(rawLine))
+        guard let key = tokens.first?.lowercased() else { return }
+        // (No nested closures here: a nested function may not
+        // capture an inout parameter, so both helpers take the
+        // array as an explicit inout argument.)
+        func noteIgnored(_ key: String, list: inout [String]) {
+            if !list.contains(key) { list.append(key) }
+        }
+        func intValue(_ raw: String?, name: String, warnings: inout [String]) -> Int {
+            guard let raw, let value = Int(raw), value >= 0 else {
+                warnings.append("指令 \(name) 的值无效，已忽略")
+                return 0
+            }
+            return value
+        }
+        switch key {
+        case "remote":
+            guard tokens.count >= 2 else { return }
+            let host = tokens[1]
+            // An unparseable / out-of-range port is ignored
+            // (with a warning) instead of landing as 0 — the
+            // final port then falls back to the `port` directive
+            // or 1194 (audit N2).
+            var port: Int?
+            if tokens.count >= 3 {
+                if let value = Int(tokens[2]), value > 0, value <= 65535 {
+                    port = value
+                } else {
+                    intWarnings.append("remote 的端口「\(tokens[2])」无效，已忽略")
+                }
+            }
+            let proto = tokens.count >= 4 ? tokens[3] : nil
+            remotes.append((host: host, port: port, proto: proto))
+        case "proto":
+            if tokens.count >= 2 { protoDirective = tokens[1] }
+        case "port":
+            // Invalid values must NOT land as 0 (audit N2):
+            // a 0 port would reach the form with Save disabled
+            // and no explanation. Only a valid 1–65535 value is
+            // kept; anything else is warned and ignored, so the
+            // final port falls back to the remote port or 1194.
+            if tokens.count >= 2 {
+                let value = intValue(tokens[1], name: "port", warnings: &intWarnings)
+                if value > 0, value <= 65535 {
+                    portDirective = value
+                } else if value > 65535 {
+                    intWarnings.append("指令 port 的值超出范围（1–65535），已忽略")
+                }
+            }
+        case "dev":
+            if tokens.count >= 2 { dev = tokens[1] }
+        case "dev-type":
+            if tokens.count >= 2 { dev = tokens[1] }
+        case "ca", "cert", "key", "tls-auth", "tls-crypt", "tls-crypt-v2":
+            // Inline content comes from <…> blocks; a directive
+            // with an argument is a file reference the import
+            // cannot resolve (the file is not here).
+            guard tokens.count >= 2 else { return }
+            let label: String
+            switch key {
+            case "ca": label = "CA"
+            case "cert": label = "客户端证书"
+            case "key": label = "客户端密钥"
+            case "tls-auth": label = "tls-auth"
+            case "tls-crypt": label = "tls-crypt"
+            default: label = "tls-crypt-v2"
+            }
+            fileRefs.append((label: label, file: tokens[1]))
+            if key == "tls-auth", tokens.count >= 3 {
+                keyDirection = tokens[2]
+            }
+        case "key-direction":
+            if tokens.count >= 2 { keyDirection = tokens[1] }
+        case "auth-user-pass":
+            authUserPass = true
+            if tokens.count >= 2 { authUserPassFile = tokens[1] }
+        case "cipher":
+            if tokens.count >= 2 { cipher = tokens[1] }
+        case "data-ciphers":
+            if tokens.count >= 2 {
+                // .ovpn separates with ':' (or spaces) — the
+                // form's splitList splits on ',' and ':'.
+                dataCiphers = tokens[1...].joined(separator: ":")
+            }
+        case "data-ciphers-fallback":
+            if tokens.count >= 2 { dataCiphersFallback = tokens[1] }
+        case "auth":
+            if tokens.count >= 2 { auth = tokens[1] }
+        case "comp-lzo":
+            compLzo = tokens.count < 2
+                || tokens[1].lowercased() == "yes"
+                || tokens[1].lowercased() == "adaptive"
+        case "ping":
+            if tokens.count >= 2 { ping = intValue(tokens[1], name: "ping", warnings: &intWarnings) }
+        case "ping-restart":
+            if tokens.count >= 2 { pingRestart = intValue(tokens[1], name: "ping-restart", warnings: &intWarnings) }
+        case "tran-window":
+            if tokens.count >= 2 { tranWindow = intValue(tokens[1], name: "tran-window", warnings: &intWarnings) }
+        case "handshake-timeout":
+            if tokens.count >= 2 { handshakeTimeout = intValue(tokens[1], name: "handshake-timeout", warnings: &intWarnings) }
+        case "mtu":
+            if tokens.count >= 2 { mtu = intValue(tokens[1], name: "mtu", warnings: &intWarnings) }
+        case "dhcp-option":
+            // Only DNS is mappable (ovpnDns); DOMAIN and the
+            // rest go to the ignored summary.
+            if tokens.count >= 3, tokens[1].lowercased() == "dns" {
+                dns.append(tokens[2])
+            } else {
+                noteIgnored(key, list: &ignored)
+            }
+        case "client", "nobind", "persist-key", "persist-tun", "verb", "mute",
+             "pull", "resolv-retry", "auth-nocache", "reneg-sec",
+             "explicit-exit-notify", "remote-cert-tls", "verify-x509-name",
+             "float", "fast-io", "mssfix", "fragment", "tun-mtu", "link-mtu",
+             "replay-window", "auth-retry", "connect-retry", "connect-timeout",
+             "server-poll-timeout", "inactive", "topology", "ifconfig",
+             "setenv", "script-security", "up", "down", "keysize",
+             "tls-version-min", "tls-cipher", "route", "route-ipv6",
+             "redirect-gateway", "route-delay", "route-metric",
+             "dhcp-renew", "dhcp-release", "register-dns", "block-outside-dns",
+             "allow-recursive-routing", "remap-usr1", "tls-exit",
+             "connect-retry-max", "keepalive", "replay-persist":
+            noteIgnored(key, list: &ignored)
+        default:
+            noteIgnored(key, list: &ignored)
+        }
+    }
+
+    /// Cut a `#` / `;` comment: at line start or preceded by
+    /// whitespace, and not inside double quotes. PEM blocks are
+    /// never passed through here (they are captured verbatim),
+    /// so their base64 is safe either way.
+    private static func stripComment(_ line: String) -> String {
+        var inQuotes = false
+        var previous: Character?
+        var index = line.startIndex
+        while index < line.endIndex {
+            let ch = line[index]
+            if ch == "\"" { inQuotes.toggle() }
+            if !inQuotes, (ch == "#" || ch == ";"),
+               previous == nil || previous!.isWhitespace {
+                return String(line[..<index])
+            }
+            previous = ch
+            index = line.index(after: index)
+        }
+        return line
+    }
+
+    /// Split a directive line on whitespace, respecting double
+    /// quotes (quotes are removed).
+    private static func tokenize(_ line: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var inQuotes = false
+        for ch in line {
+            if ch == "\"" {
+                inQuotes.toggle()
+                continue
+            }
+            if ch.isWhitespace, !inQuotes {
+                if !current.isEmpty {
+                    tokens.append(current)
+                    current = ""
+                }
+            } else {
+                current.append(ch)
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        return tokens
+    }
+}
+
+/// Import an OpenVPN node from a link (v0.2.155): openvpn://
+/// import-profile / plain https .ovpn URL / openvpn://base64 /
+/// raw .ovpn text. Parses into a CustomProxy and hands it to the
+/// caller, which opens the proxy form prefilled (with the parse
+/// warnings) so the user can review and save.
+private struct OpenVPNImportSheetView: View {
+    var onImport: (OpenVPNImport.Result) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var linkText = ""
+    @State private var errorMessage: String?
+    @State private var isImporting = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("OpenVPN 链接") {
+                    TextField("openvpn://… 或 https://… .ovpn", text: $linkText)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    Text("支持四种：openvpn://import-profile/<https 链接>（官方 OpenVPN Connect 格式）、https://… .ovpn 直链、openvpn://<base64 配置>、直接粘贴 .ovpn 文本。也可以用代理页的「导入 .ovpn 文件」。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                }
+                Section {
+                    Button(isImporting ? "导入中…" : "导入") {
+                        Task { await importLink() }
+                    }
+                    .disabled(isImporting || linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .font(.footnote.weight(.semibold))
+            .navigationTitle("导入 OpenVPN")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func importLink() async {
+        errorMessage = nil
+        isImporting = true
+        defer { isImporting = false }
+        do {
+            let result = try await OpenVPNImport.importLink(linkText)
+            onImport(result)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
 // MARK: - Proxy form
 
 struct CustomProxyFormView: View {
@@ -306,15 +1093,20 @@ struct CustomProxyFormView: View {
     /// Last save failure, shown in the form (v0.2.151 B2: the
     /// sheet no longer dismisses on a failed validation).
     @State private var saveError: String?
+    /// Parse warnings from an OpenVPN import (v0.2.155): shown
+    /// at the top of the form so the user reviews them before
+    /// saving. Empty for hand-written / edited nodes.
+    private let importWarnings: [String]
     let isNew: Bool
     /// Validates + saves; nil = saved (dismiss), otherwise the
     /// failure message to show in the form (stay open).
     let onSave: (CustomProxy) async -> String?
 
-    init(proxy: CustomProxy, isNew: Bool = false, onSave: @escaping (CustomProxy) async -> String?) {
+    init(proxy: CustomProxy, isNew: Bool = false, importWarnings: [String] = [], onSave: @escaping (CustomProxy) async -> String?) {
         _proxy = State(initialValue: proxy)
         self.original = proxy
         self.isNew = isNew
+        self.importWarnings = importWarnings
         self.onSave = onSave
     }
 
@@ -328,6 +1120,24 @@ struct CustomProxyFormView: View {
                         Text(saveError)
                             .font(.footnote)
                             .foregroundStyle(.red)
+                    }
+                }
+                // v0.2.155: what the .ovpn / link import could
+                // not map cleanly (missing CA, file-referenced
+                // certificates, auth-user-pass without
+                // credentials, ignored directives) — the user
+                // completes it here; save-time validate.proxies
+                // enforces the core's requirements.
+                if !importWarnings.isEmpty {
+                    Section("导入提示") {
+                        ForEach(Array(importWarnings.enumerated()), id: \.offset) { _, warning in
+                            Text(warning)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("请检查上面这些提示再保存。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 Section("基本") {

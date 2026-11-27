@@ -107,6 +107,16 @@ struct CustomSubscriptionEditorView: View {
         var issues: [String] = []
         let groupNames = sub.groups.map { $0.name }
         if Set(groupNames).count != groupNames.count { issues.append("有重名的代理组") }
+        // v0.2.155: duplicate provider names make every reference
+        // ambiguous (groups' use: / members, dialers, RULE-SET
+        // rules are all name-keyed). New duplicates are blocked
+        // at rename/save time, but data written before 155 may
+        // already have them — flag them here instead of silently
+        // keeping the ambiguity.
+        let proxyProviderNames = sub.proxyProviders.map { $0.name }
+        if Set(proxyProviderNames).count != proxyProviderNames.count { issues.append("有重名的代理提供方（重命名其中一个即可消除）") }
+        let ruleProviderNames = sub.ruleProviders.map { $0.name }
+        if Set(ruleProviderNames).count != ruleProviderNames.count { issues.append("有重名的规则提供方（重命名其中一个即可消除）") }
         for group in sub.groups {
             if group.members.isEmpty && group.useProviders.isEmpty {
                 issues.append("分组「\(group.name)」没有成员也没有提供方")
@@ -120,7 +130,7 @@ struct CustomSubscriptionEditorView: View {
             issues.append("规则「\(rule.text)」的目标「\(rule.target)」不是分组或内置策略")
         }
         for rule in sub.rules where rule.type == "RULE-SET" && !rule.content.isEmpty
-            && !sub.ruleProviders.contains(where: { $0.name == rule.content }) {
+            && !sub.ruleProviders.contains(where: { ruleSetNames(rule.content, $0.name) }) {
             issues.append("规则集「\(rule.content)」没有对应的规则提供方")
         }
         for dialer in sub.dialers where dialer.proxy.isEmpty || dialer.dialer.isEmpty || dialer.proxy == dialer.dialer {
@@ -180,7 +190,7 @@ struct CustomSubscriptionEditorView: View {
             !sub.proxyProviders.contains(where: { $0.name == name })
         }.count
         + sub.rules.filter { rule in rule.type == "RULE-SET" && !rule.content.isEmpty
-            && !sub.ruleProviders.contains(where: { $0.name == rule.content }) }.count
+            && !sub.ruleProviders.contains(where: { ruleSetNames(rule.content, $0.name) }) }.count
     }
 
     var body: some View {
@@ -573,11 +583,23 @@ struct CustomSubscriptionEditorView: View {
             Button("取消", role: .cancel) { pendingProviderDelete = nil }
         } message: {
             if let pending = pendingProviderDelete {
+                // v0.2.155 audit B2: a same-named provider that
+                // survives the delete keeps the shared references
+                // — only names that disappear entirely lose
+                // theirs, so the message says so per provider.
+                let deletedIds = Set(pending.providers.map { $0.id })
+                let remaining = pending.kind == "proxy" ? sub.proxyProviders : sub.ruleProviders
                 let lines = pending.providers.flatMap { provider in
-                    providerDeleteUsers(kind: pending.kind, name: provider.name)
-                        .map { "「\(provider.name)」正被\($0)使用" }
+                    let survives = remaining.contains { $0.name == provider.name && !deletedIds.contains($0.id) }
+                    return providerDeleteUsers(kind: pending.kind, name: provider.name).map { user in
+                        "「\(provider.name)」正被\(user)使用" + (survives ? "（同名提供方仍保留，引用会保留）" : "")
+                    }
                 }
-                Text(lines.isEmpty ? "删除后，提供方将从配置中移除。" : lines.joined(separator: "\n") + "\n删除后，这些引用会一并移除。")
+                let anyRemoved = pending.providers.contains { provider in
+                    !remaining.contains { $0.name == provider.name && !deletedIds.contains($0.id) }
+                        && !providerDeleteUsers(kind: pending.kind, name: provider.name).isEmpty
+                }
+                Text(lines.isEmpty ? "删除后，提供方将从配置中移除。" : lines.joined(separator: "\n") + (anyRemoved ? "\n删除后，消失的名称对应的引用会一并移除。" : ""))
             } else {
                 Text("")
             }
@@ -646,8 +668,14 @@ struct CustomSubscriptionEditorView: View {
             .formSheetChrome()
         }
         .sheet(item: $editingProxyProvider) { provider in
-            CustomProviderOptionsView(provider: provider) { saved in
+            CustomProviderOptionsView(provider: provider, existingNames: sub.proxyProviders.filter { $0.id != provider.id }.map { $0.name }) { saved in
                 var copy = sub
+                // v0.2.155 rename: rewrite every reference to
+                // the old name and move the map key before the
+                // provider itself is replaced (by id).
+                if saved.name != provider.name {
+                    renameProviderReferences(in: &copy, kind: "proxy", oldName: provider.name, newName: saved.name)
+                }
                 if let index = copy.proxyProviders.firstIndex(where: { $0.id == saved.id }) {
                     copy.proxyProviders[index] = saved
                 } else {
@@ -689,8 +717,13 @@ struct CustomSubscriptionEditorView: View {
             .concordNavBarBackground()
         }
         .sheet(item: $editingRuleProvider) { provider in
-            CustomProviderOptionsView(provider: provider, isRuleProvider: true, clashProviderId: sub.ruleProviderMap[provider.name]?.clashProviderId) { saved in
+            CustomProviderOptionsView(provider: provider, isRuleProvider: true, clashProviderId: sub.ruleProviderMap[provider.name]?.clashProviderId, existingNames: sub.ruleProviders.filter { $0.id != provider.id }.map { $0.name }) { saved in
                 var copy = sub
+                // v0.2.155 rename: same as the proxy-provider
+                // sheet — references + map key move first.
+                if saved.name != provider.name {
+                    renameProviderReferences(in: &copy, kind: "rule", oldName: provider.name, newName: saved.name)
+                }
                 if let index = copy.ruleProviders.firstIndex(where: { $0.id == saved.id }) {
                     copy.ruleProviders[index] = saved
                 } else {
@@ -766,10 +799,27 @@ struct CustomSubscriptionEditorView: View {
         // failure surfaces in profileStore.lastError; when the
         // tunnel is stopped the re-baked config.yaml still takes
         // effect at the next VPN start.
-        guard !CustomSubscriptionStore.cleanupDeletedProviders(old: old, new: draft).isEmpty else { return }
+        // v0.2.155: a RENAMED provider also re-applies — the
+        // baked YAML key changes (and the references were already
+        // rewritten in the draft), so the running engine must see
+        // the new name.
+        let cleaned = CustomSubscriptionStore.cleanupDeletedProviders(old: old, new: draft)
+        let renamed = CustomSubscriptionStore.renamedProviders(old: old, new: draft)
+        guard !cleaned.isEmpty || !renamed.isEmpty else { return }
         Task {
             await profileStore.reapplyActiveForSubscription(id: draft.id)
         }
+    }
+
+    /// RULE-SET rule content, matched after trimming (v0.2.155
+    /// audit N1): the free-text rule form used to save content
+    /// with stray surrounding whitespace, and such a rule must
+    /// still follow its provider through a rename / delete (and
+    /// must not be flagged as dangling when it does). Case is
+    /// NOT folded — the core / YAML keys are case-sensitive, so
+    /// a case-variant rule really names a different provider.
+    private func ruleSetNames(_ content: String, _ name: String) -> Bool {
+        content.trimmingCharacters(in: .whitespacesAndNewlines) == name
     }
 
     /// Users of a provider inside the draft, for the delete
@@ -802,7 +852,7 @@ struct CustomSubscriptionEditorView: View {
             users.append(contentsOf: sub.dialers.filter { $0.proxy == name || $0.dialer == name }.map { "拨号器「\($0.proxy) → \($0.dialer)」" })
             return users
         }
-        return sub.rules.filter { $0.type == "RULE-SET" && $0.content == name }.map { "规则「\($0.text)」" }
+        return sub.rules.filter { $0.type == "RULE-SET" && ruleSetNames($0.content, name) }.map { "规则「\($0.text)」" }
     }
 
     /// Swipe-delete for a provider: an unreferenced provider goes
@@ -821,6 +871,57 @@ struct CustomSubscriptionEditorView: View {
         }
     }
 
+    /// Renames a provider inside the draft (v0.2.155): rewrites
+    /// every reference to the old name and moves the map key.
+    /// The reference set is the same one removeProviders strips
+    /// on delete (see providerDeleteUsers): groups' `use:` AND
+    /// member entries, dialers naming the provider on either
+    /// end, RULE-SET rules naming a deleted rule provider.
+    /// - The map key moves, the value is kept: the confined file
+    ///   is named by fileToken, not by name, so no file moves
+    ///   and no re-download is needed.
+    /// - The shared ClashProvider record is NOT renamed: other
+    ///   subscriptions may reference the same record under the
+    ///   old name; only this sub's map key moves.
+    /// - The provider definition itself is replaced by the sheet
+    ///   closure (by id) after this runs; saveDraft detects the
+    ///   rename (renamedProviders, by id) and re-applies the
+    ///   active profile, since the baked YAML key changes.
+    private func renameProviderReferences(in copy: inout CustomSubscription, kind: String, oldName: String, newName: String) {
+        if kind == "proxy" {
+            for index in copy.groups.indices {
+                copy.groups[index].useProviders = copy.groups[index].useProviders.map { $0 == oldName ? newName : $0 }
+                copy.groups[index].members = copy.groups[index].members.map { $0 == oldName ? newName : $0 }
+            }
+            for index in copy.dialers.indices {
+                if copy.dialers[index].proxy == oldName { copy.dialers[index].proxy = newName }
+                if copy.dialers[index].dialer == oldName { copy.dialers[index].dialer = newName }
+            }
+            // v0.2.155 audit N6: when the old name is duplicated
+            // within the kind, the single map entry may belong to
+            // the other twin — leave the key alone rather than
+            // reassign shared state on ambiguous data (the
+            // duplicate is already flagged by validationIssues).
+            // `copy` still holds the renamed provider under
+            // oldName here (the sheet closure replaces the
+            // definition after this runs), so a unique name
+            // counts exactly 1.
+            if copy.proxyProviders.filter({ $0.name == oldName }).count <= 1,
+               let ref = copy.providerProfileMap.removeValue(forKey: oldName) {
+                copy.providerProfileMap[newName] = ref
+            }
+        } else {
+            for index in copy.rules.indices where copy.rules[index].type == "RULE-SET" && ruleSetNames(copy.rules[index].content, oldName) {
+                copy.rules[index].content = newName
+            }
+            // Same N6 guard as the proxy branch.
+            if copy.ruleProviders.filter({ $0.name == oldName }).count <= 1,
+               let ref = copy.ruleProviderMap.removeValue(forKey: oldName) {
+                copy.ruleProviderMap[newName] = ref
+            }
+        }
+    }
+
     /// Removes providers from the draft and strips the references
     /// to them — groups drop the `use:` entry AND the member
     /// entry (a provider name can sit in either list; see
@@ -836,11 +937,21 @@ struct CustomSubscriptionEditorView: View {
     /// The definition removal itself is only persisted by
     /// saveDraft, which also cleans up the map entries +
     /// confined files and re-applies.
+    /// v0.2.155: the definition is removed by stable `id`, not
+    /// by name — removing by name deleted BOTH of two
+    /// same-named providers (the 152 limitation). Reference
+    /// stripping stays name-based (references ARE names in the
+    /// baked YAML) but only runs when the name disappears from
+    /// the draft entirely: two pre-existing same-named
+    /// providers share their references, so stripping on the
+    /// first delete would orphan the survivor (audit B2 — the
+    /// same guard as cleanupDeletedProviders' B1).
     private func removeProviders(kind: String, providers: [CustomProvider]) {
         var copy = sub
         if kind == "proxy" {
             for provider in providers {
-                copy.proxyProviders.removeAll { $0.name == provider.name }
+                copy.proxyProviders.removeAll { $0.id == provider.id }
+                guard !copy.proxyProviders.contains(where: { $0.name == provider.name }) else { continue }
                 for index in copy.groups.indices {
                     copy.groups[index].useProviders.removeAll { $0 == provider.name }
                     copy.groups[index].members.removeAll { $0 == provider.name }
@@ -849,8 +960,9 @@ struct CustomSubscriptionEditorView: View {
             }
         } else {
             for provider in providers {
-                copy.ruleProviders.removeAll { $0.name == provider.name }
-                copy.rules.removeAll { $0.type == "RULE-SET" && $0.content == provider.name }
+                copy.ruleProviders.removeAll { $0.id == provider.id }
+                guard !copy.ruleProviders.contains(where: { $0.name == provider.name }) else { continue }
+                copy.rules.removeAll { $0.type == "RULE-SET" && ruleSetNames($0.content, provider.name) }
             }
         }
         draft = copy
@@ -1275,27 +1387,72 @@ private struct CustomProviderOptionsView: View {
     /// was imported from a URL (v0.2.148): its content can be
     /// re-downloaded from here. Nil for unmapped providers.
     private let clashProviderId: UUID?
+    /// Names of the other providers of the same kind (v0.2.155):
+    /// renaming to one of these is blocked — provider names are
+    /// the reference keys (groups' use: / members, dialers,
+    /// RULE-SET rules), so a duplicate would make every
+    /// reference ambiguous (the 152 "deleting one of two
+    /// same-named providers removes both" limitation).
+    private let existingNames: [String]
     @State private var showDiscardConfirm = false
     @State private var updateMessage: String?
     var onSave: (CustomProvider) -> Void
     @EnvironmentObject private var profileStore: ProfileStore
     @Environment(\.dismiss) private var dismiss
 
-    init(provider: CustomProvider, isRuleProvider: Bool = false, clashProviderId: UUID? = nil, onSave: @escaping (CustomProvider) -> Void) {
+    init(provider: CustomProvider, isRuleProvider: Bool = false, clashProviderId: UUID? = nil, existingNames: [String] = [], onSave: @escaping (CustomProvider) -> Void) {
         _provider = State(initialValue: provider)
         self.original = provider
         self.isRuleProvider = isRuleProvider
         self.clashProviderId = clashProviderId
+        self.existingNames = existingNames
         self.onSave = onSave
     }
 
     private var isDirty: Bool { provider != original }
 
+    /// The name as typed, trimmed. Empty or a duplicate of
+    /// another provider's name blocks saving (v0.2.155 rename).
+    private var trimmedName: String {
+        provider.name.trimmingCharacters(in: .whitespaces)
+    }
+
+    private var nameError: String? {
+        if trimmedName.isEmpty { return "请先输入提供方名称" }
+        // Case-insensitive (v0.2.155 audit N2): "ABC" vs an
+        // existing "abc" are distinct YAML keys to the core but
+        // near-indistinguishable in the UI/pickers. existingNames
+        // excludes this provider itself, so a case-only rename
+        // of the same provider is still allowed.
+        if trimmedName != original.name && existingNames.contains(where: { $0.lowercased() == trimmedName.lowercased() }) {
+            return "已有同名提供方「\(trimmedName)」，请换个名称"
+        }
+        return nil
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section("提供方") {
-                    Text(provider.name)
+                    // v0.2.155: the name is editable (rename).
+                    // Upstream FlClash has no rename (label is
+                    // immutable; delete + re-add is the rename
+                    // path) and the core has no rename RPC, so
+                    // the rename is Swift-side: the editor moves
+                    // the map key and rewrites every reference
+                    // (see renameProviderReferences) and saveDraft
+                    // re-applies the active profile. The confined
+                    // file is named by fileToken, not by name, so
+                    // no file moves; the shared ClashProvider
+                    // record is not renamed.
+                    TextField("提供方名称", text: $provider.name)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    if let nameError {
+                        Text(nameError)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
                     Text("\(provider.kind) · \(provider.kind == "http" ? provider.url : provider.path)")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -1470,9 +1627,17 @@ private struct CustomProviderOptionsView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") {
-                        onSave(provider)
+                        // Save the name trimmed (audit N4):
+                        // validation runs on trimmedName, so a
+                        // trailing-space name would otherwise pass
+                        // validation and land in the YAML key and
+                        // every rewritten reference.
+                        var trimmed = provider
+                        trimmed.name = trimmedName
+                        onSave(trimmed)
                         dismiss()
                     }
+                    .disabled(nameError != nil)
                 }
             }
         }
@@ -2081,7 +2246,12 @@ private struct CustomRuleFormView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") {
-                        onSave(rule)
+                        // v0.2.155 audit N1: trim the content at
+                        // the source — a RULE-SET rule saved as
+                        // "Foo " never matched its provider again.
+                        var saved = rule
+                        saved.content = saved.content.trimmingCharacters(in: .whitespacesAndNewlines)
+                        onSave(saved)
                         dismiss()
                     }
                     .disabled((rule.type != "MATCH" && rule.type != "FINAL" && rule.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) || isRuleSetProviderInvalid)

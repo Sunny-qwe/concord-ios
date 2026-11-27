@@ -45,17 +45,13 @@ import os
 //      Then subscribe to the live streams and start the stability
 //      guards.
 //
-// Packet pump (Option B, no fd involved) — PRESERVED but UNINVOKED in
-// trial v0.2.93 (the old path lives in the backup tree
-// concord-ios-ui-0.2.92-backup-packet-channel):
-//   packetFlow.readPackets -> concord_ios_packet_write(handle, packet)
-//   (returns 1 queued / 0 ring full / -1 unknown handle); poll
-//   concord_ios_packet_read(handle, buf, cap) -> packetFlow.writePackets.
-//   On ring-full (0) the packet is dropped and counted; if the ring stays
-//   full, reads pause briefly (10 ms) instead of busy-looping. Outbound
-//   packets are also drained on a 20 ms timer, so core output that is not
-//   triggered by an inbound packet (timers, retransmits) still flows.
-//   Packets are bare IP packets (no utun header) on both sides.
+// Packet pump (Option B, no fd involved) — REMOVED in v0.2.144: the
+// fd path (trial v0.2.93) replaced it and the pump was never invoked
+// after that. The old path lives in the backup tree
+// concord-ios-ui-0.2.92-backup-packet-channel. The packet channel
+// itself (concord_ios_packet_channel_open/close + tun.start on a
+// fresh channel) is still used by restartChannelTun; only the Swift
+// pump (startPump/readNextPackets/handleInbound/drainOutbound) is gone.
 //
 // Extension <-> app IPC (the app loads the core only for delay
 // tests with the VPN off; see AppCore.swift):
@@ -191,7 +187,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// All core state is mutated only on this queue. The Deliver
     /// callback runs on a core thread and hops onto it.
     private let coreQueue = DispatchQueue(label: "com.lumen.ios.core")
-    /// Guards pumpRunning / isStopping, which are read from the
+    /// Guards isStopping, which is read from the
     /// packetFlow callback thread as well as coreQueue, and the
     /// request-id counter. (A plain lock/unlock helper rather than
     /// `NSLock.withLock`, which needs a newer toolchain than this
@@ -201,11 +197,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         stateLock.lock()
         defer { stateLock.unlock() }
         return work()
-    }
-    private var _pumpRunning = false
-    private var pumpRunning: Bool {
-        get { locked { _pumpRunning } }
-        set { locked { _pumpRunning = newValue } }
     }
     private var _isStopping = false
     private var isStopping: Bool {
@@ -267,7 +258,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// `pendingSnapshotFlushes` / `snapshotFlushTimer` live on
     /// coreQueue (all stream handling does); the timer is also
     /// cancelled from stopTunnel / resetRunState, like
-    /// watchdogTimer / drainTimer.
+    /// watchdogTimer.
     private var _snapshotFlushEnabled = false
     private var snapshotFlushEnabled: Bool {
         get { locked { _snapshotFlushEnabled } }
@@ -297,10 +288,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
     private var delayRun: DelayRunAccumulator?
 
-    // Packet pump.
-    private var readBuffer = [UInt8](repeating: 0, count: 65535)
-    private var drainTimer: DispatchSourceTimer?
-    private var ringFullStreak = 0
     private var packetsIn: UInt64 = 0
     private var packetsOut: UInt64 = 0
     private var packetsDroppedFull: UInt64 = 0
@@ -652,7 +639,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         packetsIn = 0
         packetsOut = 0
         packetsDroppedFull = 0
-        ringFullStreak = 0
         // Config B1: a new run gets a fresh runner and a fresh
         // fingerprint baseline; a previous run's restart-needed flag
         // must not survive into it.
@@ -845,10 +831,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // tunnel core (empty core log, stale snapshot, DNS "no IP found"
         // even after the 198.18.0.2 fix), so this trial recovers the
         // real utun fd and hands it to the core's native Inherited TUN
-        // path. The channel helpers (startPump/handleInbound/
-        // drainOutbound) stay in place but uninvoked; the old path is
-        // preserved in the backup tree
-        // (concord-ios-ui-0.2.92-backup-packet-channel).
+        // path. The Swift packet pump was removed in v0.2.144 (never
+        // invoked since trial v0.2.93); the old path is preserved in
+        // the backup tree (concord-ios-ui-0.2.92-backup-packet-channel).
         // TUN must be enabled first: on iOS it is the only data plane,
         // and a disabled TUN fails the tunnel before any channel exists.
         let tun = readTunnelSettings(container: container)
@@ -877,11 +862,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         settings.mtu = NSNumber(value: tun.mtu)
         var ipv4 = NEIPv4Settings(addresses: [tunnelAddress], subnetMasks: ["255.255.255.252"])
         ipv4.includedRoutes = [NEIPv4Route.default()]
-        // E6: Loopback 10.7.0.1 switch — adds 10.7.0.2 + a 10.7.0.1/32
-        // route when on (no-op when off). Needs a VPN restart.
-        // apply() may rebuild the settings (addresses are get-only),
-        // so the return value must be used.
-        ipv4 = LoopbackNetworkSettings.apply(to: ipv4, enabled: tun.loopbackDevice)
         // Local network settings (FlClash: 本地网络设置）: excluded
         // routes bypass the tunnel — the standard private ranges when
         // bypass-private-route is on, plus the user's list.
@@ -987,8 +967,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             appendStartupStep("subscribeToStreams: failed: \(error)")
             throw error
         }
-        // No startPump in this trial: the core reads/writes the utun fd
-        // directly (Inherited path); the Swift packet pump is not used.
+        // The core reads/writes the utun fd directly (Inherited
+        // path); there is no Swift packet pump (removed in v0.2.144).
         startStabilityGuards()
         tunnelStartedAt = Date()
         writeVPNDiagnostics(stage: "running")
@@ -1019,9 +999,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // never read last-round logs / DNS / route / engine data as
         // if it were current after the tunnel stops.
         deleteStaleSnapshots()
-        pumpRunning = false
-        drainTimer?.cancel()
-        drainTimer = nil
         // Long-run stability guards (Batch F): stop them here; the
         // watchdog must not fire while the tunnel is tearing down.
         watchdogTimer?.cancel()
@@ -1708,98 +1685,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         try? bytes.write(to: file, options: .atomic)
     }
 
-    // MARK: - Packet pump (Option B channel)
-
-    /// Trial v0.2.93: UNINVOKED — the fd path (tun.start Inherited)
-    /// replaces the packet-channel pump. Kept in place (with
-    /// handleInbound/drainOutbound and the channel helpers) so the
-    /// channel path can be restored from the backup tree; bootCore
-    /// does not call startPump and channelHandle stays 0.
-    private func startPump() {
-        pumpRunning = true
-        readNextPackets()
-        let timer = DispatchSource.makeTimerSource(queue: coreQueue)
-        timer.schedule(deadline: .now() + .milliseconds(20), repeating: .milliseconds(20))
-        timer.setEventHandler { [weak self] in
-            guard let self, self.pumpRunning else { return }
-            self.drainOutbound()
-        }
-        timer.resume()
-        drainTimer = timer
-    }
-
-    private func readNextPackets() {
-        guard pumpRunning else { return }
-        packetFlow.readPackets { [weak self] packets, _ in
-            guard let self, self.pumpRunning else { return }
-            self.handleInbound(packets)
-            self.drainOutbound()
-            if self.ringFullStreak > 8 {
-                // Ring stayed full: pause reads briefly instead of
-                // busy-looping on a channel the core is not draining.
-                self.ringFullStreak = 0
-                self.coreQueue.asyncAfter(deadline: .now() + .milliseconds(10)) {
-                    self.readNextPackets()
-                }
-            } else {
-                self.readNextPackets()
-            }
-        }
-    }
-
-    private func handleInbound(_ packets: [Data]) {
-        guard channelHandle != 0 else { return }
-        for packet in packets where !packet.isEmpty {
-            packetsIn += 1
-            let result = packet.withUnsafeBytes { raw in
-                guard let base = raw.baseAddress else { return Int32(-1) }
-                return concord_ios_packet_write(
-                    channelHandle, base.assumingMemoryBound(to: UInt8.self), packet.count)
-            }
-            switch result {
-            case 1:
-                ringFullStreak = 0
-            case 0:
-                // Ring full: drop this packet (counted) and keep going;
-                // readNextPackets pauses if the streak grows.
-                packetsDroppedFull += 1
-                ringFullStreak += 1
-                if ringFullStreak == 10 {
-                    Self.log.error("packet channel ring full; dropping packets")
-                }
-            default:
-                Self.log.error("packet channel write failed (\(result))")
-                ringFullStreak = 0
-            }
-        }
-    }
-
-    private func drainOutbound() {
-        guard channelHandle != 0 else { return }
-        var packets: [Data] = []
-        var protocols: [NSNumber] = []
-        packets.reserveCapacity(32)
-        for _ in 0..<64 {
-            let count = readBuffer.withUnsafeMutableBufferPointer { buffer in
-                concord_ios_packet_read(channelHandle, buffer.baseAddress, buffer.count)
-            }
-            guard count > 0 else { break }
-            let bytes = Data(readBuffer.prefix(Int(count)))
-            packets.append(bytes)
-            // writePackets wants the address family per packet; read it
-            // off the IP version nibble (4 -> AF_INET, 6 -> AF_INET6).
-            let family = (readBuffer[0] >> 4) == 6 ? AF_INET6 : AF_INET
-            protocols.append(NSNumber(value: family))
-        }
-        guard !packets.isEmpty else { return }
-        packetsOut += UInt64(packets.count)
-        packetFlow.writePackets(packets, withProtocols: protocols)
-    }
-
     // MARK: - Long-run stability (Batch F)
 
     /// Starts the watchdog, memory-pressure watch and path monitor.
-    /// Called once, after the tunnel is fully up (startPump).
+    /// Called once, after the tunnel is fully up.
     private func startStabilityGuards() {
         startWatchdog()
         startMemoryPressureWatch()
@@ -2294,13 +2183,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let routeExcludeAddress: [String]
         let bypassPrivateRoute: Bool
         let dnsHijack: Bool
-        // Loopback 10.7.0.1 switch (E6, fork 89aa066 NE side):
-        // when on, bootCore adds 10.7.0.2 + a 10.7.0.1/32 route.
-        // Deliberately NOT part of the tunTripleFingerprint — the
-        // NE interface is built once at startup, so a live change
-        // needs a VPN restart and must not trigger a channel TUN
-        // restart by itself.
-        let loopbackDevice: Bool
         // TUN override (FlClash tun.dart, via overrides.json): the
         // congestion controller for tun.start. mtu is overridden the
         // same way below; the other tun override keys travel in the
@@ -2345,10 +2227,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let dnsHijack = json["dns-hijack"] as? Bool ?? true
             let congestionController = tunOverrides?["congestion-controller"] as? String
                 ?? json["congestion-controller"] as? String
-            let loopbackDevice = LoopbackNetworkSettings.isEnabled(in: json)
-            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, loopbackDevice: loopbackDevice, congestionController: congestionController)
+            return TunnelSettings(enabled: enabled, stack: stack, mtu: mtu, dns: dns, ipv6: ipv6, ipv6Address: ipv6Address, routeExcludeAddress: routeExcludeAddress, bypassPrivateRoute: bypassPrivateRoute, dnsHijack: dnsHijack, congestionController: congestionController)
         }
-        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["198.18.0.2"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true, loopbackDevice: false, congestionController: nil)
+        return TunnelSettings(enabled: true, stack: "gvisor", mtu: 1500, dns: ["198.18.0.2"], ipv6: false, ipv6Address: "fdfe:dcba:9876::1/126", routeExcludeAddress: [], bypassPrivateRoute: false, dnsHijack: true, congestionController: nil)
     }
 
     /// Parse a CIDR ("10.0.0.0/8" or "::1/128") into an excluded

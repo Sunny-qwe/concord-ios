@@ -158,14 +158,9 @@ struct DashboardView: View {
     /// fetchIPInfo already referenced this store with no
     /// declaration in scope.)
     @EnvironmentObject private var trafficStore: TrafficStore
-    /// On-Demand state (Batch F): the VPN card shows whether
-    /// auto-reconnect is on, and the unexpected-disconnect banner
-    /// reads tunnelManager.unexpectedDisconnect.
-    @ObservedObject private var onDemandStore = OnDemandStore.shared
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.openURL) private var openURL
 
-    @AppStorage("ConcordiOS.dashboard.show.status") private var showStatus = true
     @AppStorage("ConcordiOS.dashboard.show.speed") private var showSpeed = true
     @AppStorage("ConcordiOS.dashboard.show.mode") private var showMode = true
     @AppStorage("ConcordiOS.dashboard.show.vpn") private var showVpn = true

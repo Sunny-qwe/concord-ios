@@ -534,12 +534,6 @@ final class MitmModuleStore: ObservableObject {
         return out
     }
 
-    /// Enabled modules in order, parsed. A module whose text is
-    /// missing adds nothing until it is re-imported.
-    func enabledContents() -> [MitmModuleContent] {
-        modules.filter(\.enabled).compactMap { parsedContent(for: $0) }
-    }
-
     /// Enabled modules in order, parsed with the core where the
     /// tunnel is running (mitm.readModule) and the Swift parser
     /// otherwise. One RPC per module; modules are few.
@@ -1563,12 +1557,6 @@ final class MitmModuleStore: ObservableObject {
     /// in the order they were attached.
     func attachments(of module: MitmModule) -> [String] {
         module.resources.keys.filter { !isMitmResourceUrl($0) }.sorted()
-    }
-
-    /// The `attachments` map mitm.readModule takes: the file name
-    /// the module names → the stored file in the resources dir.
-    private func attachmentsParam(for module: MitmModule) -> [String: String] {
-        module.resources.filter { !isMitmResourceUrl($0.key) }
     }
 
     /// Attaches a local file to a local module: writes the bytes

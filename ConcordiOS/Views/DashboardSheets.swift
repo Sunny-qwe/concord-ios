@@ -361,26 +361,6 @@ struct DashboardBottomSheet<Content: View, Actions: View>: View {
     }
 }
 
-/// A label/value row inside a sheet info card.
-struct SheetInfoRow: View {
-    let label: String
-    let value: String
-
-    var body: some View {
-        HStack {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(value)
-                .fontWeight(.semibold)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .multilineTextAlignment(.trailing)
-        }
-        .font(.subheadline)
-    }
-}
-
 // MARK: - Outbound IP sheet (status card)
 //
 // MuYu key_3: "出站 IP" — note "依赖第三方api，仅供参考",

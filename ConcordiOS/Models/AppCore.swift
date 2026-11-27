@@ -644,19 +644,6 @@ final class AppCore {
         _ = try await sendRequest(method: "config.patch", params: ["unifiedDelay": enabled], resultType: EmptyResult.self)
     }
 
-    /// Forces the current "统一延迟测试" value into the running
-    /// in-app core (v0.2.89: the delay test calls this immediately
-    /// before each run). The boot patch and the flip observer
-    /// alone did not reach the test core — on-device, switch ON /
-    /// OFF / flip / full restart all measured the same cold
-    /// numbers — so a core that booted (or was left running) with
-    /// a stale value kept measuring cold. Best-effort and never
-    /// thrown: patchUnifiedDelay swallows failures, so a failed
-    /// patch never fails the test.
-    func applyUnifiedDelay() async {
-        await patchUnifiedDelay()
-    }
-
     /// Starts observing the "统一延迟测试" toggle (once): every
     /// change re-patches unified_delay into the running in-app
     /// core. dropFirst() skips the subscription's immediate
@@ -1681,8 +1668,7 @@ final class AppCore {
 
     /// Issues a leaf certificate for one host via the in-app core
     /// (mitm.issueCertificate) — the AppCore side of audit B38:
-    /// MitmCertificateView's trust check and
-    /// SettingsStore.issueMitmCertificate use this when the VPN is
+    /// MitmCertificateView's trust check uses this when the VPN is
     /// off, instead of reporting that no such wrapper exists. Same
     /// shape as mitmGenerateCertificate; the core must already be
     /// started (ensureStarted).
@@ -1692,25 +1678,15 @@ final class AppCore {
 
     // MARK: DNS tools (audit B16)
     //
-    // dns.query / dns.clearCache / dns.flushFakeIp via the in-app
+    // dns.clearCache via the in-app
     // core, so the DNS tools work with the VPN off. The core must
     // already be started (ensureStarted). Since v0.2.102 the query
     // history (refresh/dns.watch) has an AppCore equivalent too —
     // subscribeDnsWatch + dnsEntries() — so DnsStore reads it with
     // the VPN off instead of the (stale) extension snapshot.
 
-    func dnsQuery(name: String, qtype: String? = nil) async throws -> ConcordDnsQueryResult {
-        var params: [String: Any] = ["name": name]
-        if let qtype { params["qtype"] = qtype }
-        return try await sendRequest(method: "dns.query", params: params, resultType: ConcordDnsQueryResult.self, timeoutSeconds: 15)
-    }
-
     func dnsClearCache() async throws {
         _ = try await sendRequest(method: "dns.clearCache", params: [:], resultType: EmptyResult.self, timeoutSeconds: 15)
-    }
-
-    func dnsFlushFakeIp() async throws {
-        _ = try await sendRequest(method: "dns.flushFakeIp", params: [:], resultType: EmptyResult.self, timeoutSeconds: 15)
     }
 
     // MARK: - MITM CA sync (v0.2.35 Item C follow-up)

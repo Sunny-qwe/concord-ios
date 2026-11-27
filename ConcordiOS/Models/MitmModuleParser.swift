@@ -78,10 +78,10 @@ struct MitmModuleArgument: Codable, Equatable {
 
 enum MitmModuleSkipReason: String, Codable, CaseIterable {
     case section, setting, scriptType, event, disabled, rule, policy
-    case jq, jsonBody, rawHeader, conditional, relativeData
+    case rawHeader, conditional, relativeData
     case notDownloaded, unreadable
     case finalRule, deviceRule, managedCa, skipVerifyAll
-    case reflect, appOnly, proxies, nestedRuleSet, runtimeValue
+    case reflect, appOnly, proxies, runtimeValue
 
     /// Chinese label shown in the module detail view.
     var label: String {
@@ -93,8 +93,6 @@ enum MitmModuleSkipReason: String, Codable, CaseIterable {
         case .disabled: return "脚本已禁用"
         case .rule: return "无法转换的规则"
         case .policy: return "不支持的策略"
-        case .jq: return "不支持 jq 改写"
-        case .jsonBody: return "不支持 JSON 正文改写"
         case .rawHeader: return "不支持原始头改写"
         case .conditional: return "不支持条件写法"
         case .relativeData: return "本地数据文件未附加"
@@ -107,7 +105,6 @@ enum MitmModuleSkipReason: String, Codable, CaseIterable {
         case .reflect: return "不支持 reflect"
         case .appOnly: return "仅原 App 支持"
         case .proxies: return "模块不能改代理"
-        case .nestedRuleSet: return "嵌套规则集"
         case .runtimeValue: return "运行时才有的值"
         }
     }
@@ -137,7 +134,6 @@ struct MitmModuleContent {
     var name: String?
     var description: String?
     var system: String?
-    var argumentsDescription: String?
     var arguments: [MitmModuleArgument] = []
     /// Placed by `%INSERT%`, ahead of what other modules append.
     var insertedHostname: [String] = []
@@ -1374,7 +1370,6 @@ private final class MitmModuleParserEngine {
             name: metaValue("name"),
             description: metaValue("desc"),
             system: metaValue("system"),
-            argumentsDescription: metaValue("arguments-desc"),
             arguments: surgeArguments + loonArguments + stashArguments,
             insertedHostname: insertedHostname,
             hostname: hostname,

@@ -40,10 +40,6 @@ final class LogStore: ObservableObject {
         }
     }
 
-    var exportText: String {
-        filtered.map { "[\(ConcordFormat.time($0.time))] [\($0.level.uppercased())] \($0.text)" }.joined(separator: "\n")
-    }
-
     /// Full export for the Logs page share/copy (v0.2.35): the core
     /// log lines PLUS the diagnostic lines that explain a failure —
     /// core warnings, the app-core boot report (GeoSeed outcome per

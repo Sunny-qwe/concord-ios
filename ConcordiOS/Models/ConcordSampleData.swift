@@ -67,10 +67,9 @@ enum ConcordSampleData {
             result = AnyEncodable(ConcordServiceList(items: sampleServices))
         case "core.capabilities":
             result = AnyEncodable(ConcordCapabilities(
-                implementation: "concord", version: "示例",
-                proxyTypes: [], transports: [], ruleTypes: [], ssPlugins: [],
+                version: "示例", ruleTypes: [],
                 congestionControllers: [],
-                features: ConcordFeatures(mitm: false, ech: false, systemStack: false)))
+                features: ConcordFeatures(mitm: false)))
         case "mitm.certificate", "mitm.generateCertificate":
             result = AnyEncodable(ConcordMitmCertificate(certificate: nil))
         case "mitm.validate":
@@ -78,7 +77,7 @@ enum ConcordSampleData {
         case "mitm.readModule":
             result = AnyEncodable(ConcordMitmModuleView(
                 format: "surge",
-                meta: ConcordMitmModuleMeta(name: "示例模块", desc: nil, author: nil, icon: nil, homepage: nil, category: nil, system: nil, requirement: nil, argumentsDesc: nil),
+                meta: ConcordMitmModuleMeta(name: "示例模块", desc: nil, system: nil),
                 off: nil, arguments: [], resources: [], declaredScripts: [], asksConsent: false,
                 issues: [:], views: [:], rules: [], ruleSets: [], network: .object([:]), ignored: []))
         case "mitm.moduleStatus":
@@ -126,7 +125,7 @@ enum ConcordSampleData {
         case "delay.test":
             result = AnyEncodable(sampleDelay(paramsData: paramsData))
         case "profile.inspect":
-            result = AnyEncodable(ConcordProfileInspect(digest: "示例摘要 a1b2c3d4", matchRules: ["MATCH"], proxies: 12, proxyGroups: 4, rules: 128))
+            result = AnyEncodable(ConcordProfileInspect())
         case "provider.list":
             result = AnyEncodable(ConcordProviderList(providers: sampleProviders))
         case "rule.list":
@@ -146,13 +145,11 @@ enum ConcordSampleData {
         case "core.lastWarnings":
             result = AnyEncodable(WarningsResult(warnings: []))
         case "profile.outbounds":
-            result = AnyEncodable(ConcordProfileOutbounds(
-                proxies: [ConcordOutboundRef(name: "示例节点-香港-01", type: "vless"), ConcordOutboundRef(name: "示例节点-日本-02", type: "trojan")],
-                proxyGroups: [ConcordOutboundRef(name: "PROXY", type: "select"), ConcordOutboundRef(name: "auto", type: "url-test")]))
+            result = AnyEncodable(ConcordProfileOutbounds())
         case "profile.clearEffect":
             result = AnyEncodable(EmptyResultJSON())
         case "convert.encodeLinks":
-            result = AnyEncodable(ConcordLinkList(links: ["vless://示例@hk.example.com:443#示例节点-香港-01", "trojan://示例@jp.example.com:443#示例节点-日本-02"]))
+            result = AnyEncodable(ConcordLinkList())
         case "convert.decodeLinks":
             result = AnyEncodable(ConcordDecodedLinks(results: [
                 [.object(["name": .string("示例节点-香港-01"), "type": .string("vless"), "server": .string("hk.example.com"), "port": .int(443)])],
@@ -233,19 +230,8 @@ enum ConcordSampleData {
     }
 
     static func sampleDnsQuery(paramsData: Data) -> ConcordDnsQueryResult {
-        struct P: Decodable { let name: String; let qtype: String? }
-        let params = try? JSONDecoder().decode(P.self, from: paramsData)
-        let name = params?.name ?? "example.com"
-        let qtype = params?.qtype ?? "A"
-        let qtypeCode: UInt16 = qtype.uppercased() == "AAAA" ? 28 : 1
-        let answerData = qtype.uppercased() == "AAAA" ? "2606:2800:220:1:248:1893:25c8:1946" : "93.184.216.34"
-        return ConcordDnsQueryResult(
-            rcode: 0,
-            questions: [ConcordDnsQuestion(name: name, qtype: qtypeCode, qclass: 1)],
-            truncated: false, recursionDesired: true, recursionAvailable: true,
-            authenticData: false, checkingDisabled: false,
-            answers: [ConcordDnsRecord(name: name, rtype: qtypeCode, ttl: 300, data: answerData)],
-            authorities: [], additionals: [])
+        _ = paramsData
+        return ConcordDnsQueryResult()
     }
 
     static var sampleServices: [ConcordServiceItem] {
@@ -330,11 +316,7 @@ enum ConcordSampleData {
 
     static var sampleGeneral: ConcordGeneralState {
         var g = ConcordGeneralState()
-        g.port = 7890; g.socksPort = 7891; g.mixedPort = 7890
-        g.allowLan = false; g.mode = "rule"; g.logLevel = "info"
-        g.ipv6 = true; g.tcpConcurrent = true; g.unifiedDelay = false
-        g.sniffing = true; g.globalUa = ""; g.keepAliveIdle = 600
-        g.tun = ConcordTunState(enable: true, device: "packet-channel", stack: "gvisor", autoRoute: false, autoDetectInterface: false, dnsHijack: [], mtu: 1500)
+        g.mode = "rule"; g.unifiedDelay = false
         return g
     }
 

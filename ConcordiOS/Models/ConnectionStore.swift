@@ -200,7 +200,6 @@ final class ConnectionStore: ObservableObject {
     @Published var connections: [LiveConnection] = []
     @Published var searchText = ""
     @Published var sort: ConnectionSort = .newest
-    @Published var showOnlyActive = false
     /// Status filter (upstream ConditionFilterRow): all / active /
     /// failed. Session-only; filters in addition to search/facets.
     @Published var statusFilter: ConnectionStatusFilter = .all

@@ -295,10 +295,9 @@ struct SettingsView: View {
                 // itself is still collected by LogStore either way.
                 // v0.2.141 (C1-d2): the read-from-core / apply-to-
                 // core buttons are gone (upstream has no such
-                // buttons in Settings). The store methods stay:
+                // buttons in Settings). The store method stays:
                 // applyGeneralToCore is still called on Dashboard
-                // mode switches and at app launch, and
-                // refreshFromCore is still used by the Logs page.
+                // mode switches and at app launch.
                 Toggle("日志捕获", isOn: $settingsStore.openLogs)
             }
 

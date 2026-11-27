@@ -1,7 +1,6 @@
 import SwiftUI
 import AVFoundation
 import UIKit
-import PhotosUI
 import CoreImage
 
 // MARK: - Scan import (FlClash: lib/pages/scan.dart)

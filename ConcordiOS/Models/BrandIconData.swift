@@ -8,8 +8,6 @@
 // is rendered with .renderingMode(.template), i.e. MuYu's
 // SvgTheme(currentColor:) tinting.
 
-import Foundation
-
 /// Base64 PNG data for the bundled brand icons, keyed by the
 /// resource name ("brand-apple", …). Decoded on demand by
 /// BrandIcons; nothing is decoded until a brand is shown.

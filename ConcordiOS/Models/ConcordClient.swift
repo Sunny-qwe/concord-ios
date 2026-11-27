@@ -46,7 +46,7 @@ import Combine
 //
 // FlClash feature -> Concord method map (see also TUN_INVESTIGATION.md):
 //   Dashboard start/stop      engine.start / engine.stop, tun.start / tun.stop
-//   Dashboard traffic         traffic.watch (stream) / traffic.reset
+//   Dashboard traffic         traffic.watch (stream)
 //   Dashboard outbound IP     probe.outboundIp
 //   Dashboard core memory     core.stats (rss)
 //   Proxies                   proxy.groups, proxy.watch, proxy.select,
@@ -54,13 +54,12 @@ import Combine
 //                             delay.test / delay.run, validate.proxies
 //   Profiles                  config.apply, config.validate, config.read,
 //                             profile.inspect, profile.build,
-//                             convert.subscription, provider.list/update
+//                             provider.list/update
 //   Rules                     rule.list, provider.list, ruleSet.dump /
 //                             compile, geo.update
 //   Connections               connection.watch, connection.close, network.reset
 //   Logs                      log.watch, core.lastWarnings
-//   DNS queries               dns.watch, dns.query, dns.clearCache,
-//                             dns.flushFakeIp
+//   DNS queries               dns.watch, dns.clearCache
 //   Dashboard                 probe.outboundIp, probe.services, core.stats,
 //                             core.releaseMemory
 //   Settings (general)        config.general, config.patch
@@ -212,7 +211,6 @@ enum JSONValue: Codable, Equatable {
 // ConcordSampleData)
 
 struct JSONRPCResponse<Result: Decodable>: Decodable {
-    let jsonrpc: String
     let id: Int?
     let result: Result?
     let error: JSONRPCError?
@@ -236,11 +234,6 @@ struct EmptyResult: Codable {}
 
 // MARK: - Concord types (field names follow schema/api.json $defs;
 // wire keys are snake_case — see the header comment)
-
-struct ConcordCoreInitParams: Encodable {
-    let home: String
-    let sdkInt: Int?
-}
 
 struct ConcordWarning: Codable {
     let level: String
@@ -314,57 +307,8 @@ struct ConcordConfigPatchParams: Encodable {
 }
 
 struct ConcordGeneralState: Codable {
-    var seq: UInt64?
-    var port: Int?
-    var socksPort: Int?
-    var redirPort: Int?
-    var tproxyPort: Int?
-    var mixedPort: Int?
-    var allowLan: Bool?
-    var authentication: [String]?
-    var skipAuthPrefixes: [String]?
     var mode: String?
-    var logLevel: String?
-    var ipv6: Bool?
-    var tcpConcurrent: Bool?
     var unifiedDelay: Bool?
-    var findProcessMode: String?
-    var interfaceName: String?
-    var routingMark: UInt32?
-    var sniffing: Bool?
-    var globalUa: String?
-    var keepAliveIdle: UInt32?
-    var keepAliveInterval: UInt32?
-    /// Audit A4: the five schema-required fields config.general
-    /// used to drop (upstream crates/proto/src/types/state.rs,
-    /// GeneralState): disable_keep_alive (bool), geo_auto_update
-    /// (bool), geo_update_interval (u32 seconds), geox_url (map
-    /// keyed mmdb/asn/geosite) and selections (group -> picked
-    /// proxy). All optional: older cores may omit them.
-    var disableKeepAlive: Bool?
-    var geoAutoUpdate: Bool?
-    var geoUpdateInterval: UInt32?
-    var geoxUrl: [String: String]?
-    /// The pick of each group that has one.
-    var selections: [String: String]?
-    /// The core's TUN state (config.general `tun`, upstream
-    /// crates/proto TunState). Display-only on iOS: the PacketTunnel
-    /// extension owns the TUN device (tun.start/tun.stop +
-    /// tunnel.json), so the app never sends config.patch `tun` — it
-    /// would fight the extension's tun.start. All fields optional:
-    /// older cores may omit the whole object.
-    var tun: ConcordTunState?
-}
-
-/// The core's TUN state (upstream crates/proto TunState).
-struct ConcordTunState: Codable {
-    let enable: Bool?
-    let device: String?
-    let stack: String?
-    let autoRoute: Bool?
-    let autoDetectInterface: Bool?
-    let dnsHijack: [String]?
-    let mtu: UInt32?
 }
 
 struct ConcordCoreStats: Codable {
@@ -373,17 +317,11 @@ struct ConcordCoreStats: Codable {
 
 struct ConcordFeatures: Codable {
     let mitm: Bool
-    let ech: Bool
-    let systemStack: Bool
 }
 
 struct ConcordCapabilities: Codable {
-    let implementation: String
     let version: String
-    let proxyTypes: [String]
-    let transports: [String]
     let ruleTypes: [String]
-    let ssPlugins: [String]
     let congestionControllers: [String]
     let features: ConcordFeatures
 }
@@ -797,11 +735,6 @@ struct ConcordProviderList: Codable {
 }
 
 struct ConcordProfileInspect: Codable {
-    let digest: String
-    let matchRules: [String]
-    let proxies: UInt64
-    let proxyGroups: UInt64
-    let rules: UInt64
 }
 
 struct ConcordOutboundIp: Codable {
@@ -855,51 +788,6 @@ extension ConcordOutboundIp {
         hits = try? c.decode([ConcordRouteHit].self, forKey: .hits)
         nodeHits = try? c.decode([ConcordRouteHit].self, forKey: .nodeHits)
     }
-}
-
-enum ConcordTunSource: Codable {
-    case device(name: String?)
-    case inherited(handle: UInt64)
-    /// Option B packet channel (patched tree): the handle from
-    /// concord_ios_packet_channel_open. This is the source the
-    /// PacketTunnel extension uses; the app never builds one itself.
-    case channel(handle: UInt64)
-
-    enum CodingKeys: String, CodingKey { case kind, name, handle }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        switch try c.decode(String.self, forKey: .kind) {
-        case "device": self = .device(name: try c.decodeIfPresent(String.self, forKey: .name))
-        case "inherited": self = .inherited(handle: try c.decode(UInt64.self, forKey: .handle))
-        case "channel": self = .channel(handle: try c.decode(UInt64.self, forKey: .handle))
-        default: self = .device(name: nil)
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .device(let name):
-            try c.encode("device", forKey: .kind)
-            try c.encodeIfPresent(name, forKey: .name)
-        case .inherited(let handle):
-            try c.encode("inherited", forKey: .kind)
-            try c.encode(handle, forKey: .handle)
-        case .channel(let handle):
-            try c.encode("channel", forKey: .kind)
-            try c.encode(handle, forKey: .handle)
-        }
-    }
-}
-
-struct ConcordTunStartParams: Encodable {
-    let source: ConcordTunSource
-    let stack: String?
-    let mtu: UInt32?
-    let address: [String]
-    let dns: [String]
-    let congestionController: String?
 }
 
 // MARK: - MITM types (upstream crates/mitm/src/config.rs,
@@ -1030,13 +918,7 @@ struct ConcordMitmValidateResult: Codable {
 struct ConcordMitmModuleMeta: Codable {
     let name: String?
     let desc: String?
-    let author: String?
-    let icon: String?
-    let homepage: String?
-    let category: String?
     let system: String?
-    let requirement: String?
-    let argumentsDesc: String?
 }
 
 /// `kind` is an internally-tagged object: {"type": "text"} |
@@ -1145,7 +1027,7 @@ struct ConcordMitmModuleView: Codable {
     let ignored: [ConcordMitmModuleIgnored]
 }
 
-// MARK: - mitm.moduleStatus / mitm.fetchModule (upstream b0806a8, the 70th and 71st methods)
+// MARK: - mitm.moduleStatus (upstream b0806a8)
 //
 // mitm.moduleStatus reports, for each module the `mitm` section of the
 // profile in force names, whether it is enabled and in force, why it
@@ -1157,8 +1039,6 @@ struct ConcordMitmModuleView: Codable {
 // The handler is gated by mitm_enabled(): call it only when the core
 // is ready and MITM is on — like the other mitm.* calls it errors
 // when MITM is off or no config is applied.
-// mitm.fetchModule re-fetches a module's remote files (name nil =
-// every module's); it returns {}.
 
 struct ConcordMitmModuleStatusList: Codable {
     let modules: [ConcordMitmModuleStatus]
@@ -1274,9 +1154,6 @@ struct MitmBodyResult: Codable {
 // maps ops::validate_config's Option<String> through Issue::message).
 
 struct ConcordIssue: Codable {
-    let path: String?
-    let line: UInt32?
-    let column: UInt32?
     let message: String
     /// The position of the offending item (validate.filters /
     /// validate.proxies, upstream IndexedIssue). Nil for config
@@ -1362,30 +1239,7 @@ struct DelayRunSnapshot: Codable {
 
 // MARK: - DNS query / probe.services / geo / rule sets
 
-struct ConcordDnsQuestion: Codable {
-    let name: String
-    let qtype: UInt16
-    let qclass: UInt16
-}
-
-struct ConcordDnsRecord: Codable {
-    let name: String
-    let rtype: UInt16
-    let ttl: UInt32
-    let data: String
-}
-
 struct ConcordDnsQueryResult: Codable {
-    let rcode: UInt16
-    let questions: [ConcordDnsQuestion]
-    let truncated: Bool
-    let recursionDesired: Bool
-    let recursionAvailable: Bool
-    let authenticData: Bool
-    let checkingDisabled: Bool
-    let answers: [ConcordDnsRecord]
-    let authorities: [ConcordDnsRecord]
-    let additionals: [ConcordDnsRecord]
 }
 
 /// One routing decision a probe recorded (upstream
@@ -1480,10 +1334,9 @@ struct ConcordServiceList: Codable {
     let items: [ConcordServiceItem]
 }
 
-// MARK: - Remaining APIs, batch 2 (profile.outbounds / clearEffect,
-// convert.encodeLinks / decodeLinks, provider.get / sideLoad /
-// healthCheck, route.watch / events.watch / engine.state,
-// network.update)
+// MARK: - Remaining APIs, batch 2 (profile.clearEffect,
+// convert.decodeLinks, provider.get / sideLoad,
+// route.watch / events.watch / engine.state, network.update)
 
 /// One outbound (proxy or proxy-group) a profile declares
 /// (profile.outbounds result).
@@ -1493,13 +1346,10 @@ struct ConcordOutboundRef: Codable {
 }
 
 struct ConcordProfileOutbounds: Codable {
-    let proxies: [ConcordOutboundRef]
-    let proxyGroups: [ConcordOutboundRef]
 }
 
 /// Encoded share links (convert.encodeLinks result).
 struct ConcordLinkList: Codable {
-    let links: [String]
 }
 
 /// Decoded links (convert.decodeLinks result): one entry per input
@@ -1755,8 +1605,8 @@ struct MitmExchangeList: Codable {
 // wire keys are camelCase (upstream crates/proto/src/types/probe.rs:
 // the `dto!` macro applies `rename_all = "camelCase"`), so the
 // params must be encoded with a PLAIN encoder — the client's shared
-// requestEncoder (.convertToSnakeCase) would turn `slowMs` into
-// `slow_ms` and `rateFrom` into `rate_from`, which the core
+// requestEncoder (.convertToSnakeCase) would turn `rateFrom` into
+// `rate_from`, which the core
 // silently drops as unknown fields. mitmQuery therefore goes
 // through callRaw (see below). The answer's keys are kebab-case
 // for the multi-word ones ("median-duration") and plain words
@@ -1767,25 +1617,8 @@ struct MitmExchangeList: Codable {
 /// that match any of its items. All lists default empty, all
 /// scalars default nil — an empty filter matches everything.
 struct ConcordMitmFilter: Codable {
-    var statuses: [String] = []
-    /// Compared without case.
-    var methods: [String] = []
-    var kinds: [String] = []
-    /// The URL's host, without its port, compared whole and without case.
-    var hosts: [String] = []
-    /// The `process` of the exchange's connection as
-    /// `connection.watch` lists it, compared without case; `""` for none.
-    var apps: [String] = []
-    /// Whether a rewrite, a local map or a script acted on it.
-    var rewritten: Bool? = nil
-    /// Took at least this long, in milliseconds.
-    var slowMs: Int64? = nil
     /// Found without case in the URL, method, content type, error or app.
     var text: String? = nil
-    /// Started at or after, in Unix milliseconds.
-    var from: Int64? = nil
-    /// Started before, in Unix milliseconds.
-    var to: Int64? = nil
 }
 
 /// Params for mitm.query. To page through the capture, pass each
@@ -1823,12 +1656,6 @@ struct ConcordMitmQueryAnswer: Codable {
     let exchanges: [MitmExchangeSummary]
     /// The `before` of the next page; absent when this page holds the last match.
     let next: Int64?
-    /// Changed since `since` and no longer matching, so a client drops them.
-    /// Optional (not a defaulted array): the core omits the key when
-    /// it is empty, and on this toolchain a non-optional `var` with a
-    /// default still requires the key to decode — see the note on
-    /// ConcordConnection.rematchName.
-    var unmatched: [Int64]? = nil
     let facets: ConcordMitmFacets?
     let rate: [ConcordMitmRateBucket]?
     /// Of the finished matches, in milliseconds.
@@ -1836,7 +1663,7 @@ struct ConcordMitmQueryAnswer: Codable {
 
     enum CodingKeys: String, CodingKey {
         case capturing, since, version, oldest, held, matched,
-             exchanges, next, unmatched, facets, rate
+             exchanges, next, facets, rate
         case medianDuration = "median-duration"
     }
 }
@@ -2104,10 +1931,6 @@ final class ConcordClient: ObservableObject {
     // them over IPC); core.init / tun.start are normally driven by the
     // extension's own startTunnel, not by the UI.
 
-    func coreInit(home: String) async throws {
-        _ = try await call(method: "core.init", params: ConcordCoreInitParams(home: home, sdkInt: nil), resultType: EmptyResult.self)
-    }
-
     func coreCapabilities() async throws -> ConcordCapabilities {
         try await call(method: "core.capabilities", resultType: ConcordCapabilities.self)
     }
@@ -2159,10 +1982,6 @@ final class ConcordClient: ObservableObject {
 
     func engineStop() async throws {
         _ = try await call(method: "engine.stop", resultType: EmptyResult.self)
-    }
-
-    func tunStart(source: ConcordTunSource, stack: String? = nil, mtu: UInt32? = nil, address: [String] = [], dns: [String] = []) async throws {
-        _ = try await call(method: "tun.start", params: ConcordTunStartParams(source: source, stack: stack, mtu: mtu, address: address, dns: dns, congestionController: nil), resultType: EmptyResult.self)
     }
 
     func tunStop() async throws {
@@ -2255,13 +2074,6 @@ final class ConcordClient: ObservableObject {
         return try await call(method: "config.read", params: ConfigReadParams(profile: ConcordProfileRef(path: profilePath), output: ConcordOutputInline(inline: true)), resultType: ConcordConfigReadResult.self)
     }
 
-    /// Converts a subscription file into its proxy definitions
-    /// (convert.subscription) — the node list a profile actually yields.
-    func convertSubscription(profilePath: String) async throws -> [JSONValue] {
-        struct ConvertSubscriptionParams: Encodable { let profile: ConcordProfileRef }
-        return try await call(method: "convert.subscription", params: ConvertSubscriptionParams(profile: ConcordProfileRef(path: profilePath)), resultType: ConcordProxyList.self).proxies
-    }
-
     /// Validates proxy mappings (validate.proxies). The mappings come
     /// from config.read's `proxies` array.
     func validateProxies(proxies: [JSONValue]) async throws -> [ConcordIssue] {
@@ -2314,17 +2126,8 @@ final class ConcordClient: ObservableObject {
         return result.text ?? ""
     }
 
-    // MARK: - Remaining APIs, batch 2 (profile.outbounds /
-    // clearEffect, convert.encodeLinks / decodeLinks, provider.get /
-    // sideLoad / healthCheck, network.update)
-
-    /// Lists the outbounds (proxies + proxy-groups) a profile
-    /// declares (profile.outbounds). Same ProfileParams shape as
-    /// profile.inspect: an absolute path inside the core's home.
-    func profileOutbounds(profilePath: String) async throws -> ConcordProfileOutbounds {
-        struct ProfileOutboundsParams: Encodable { let profile: ConcordProfileRef }
-        return try await call(method: "profile.outbounds", params: ProfileOutboundsParams(profile: ConcordProfileRef(path: profilePath)), resultType: ConcordProfileOutbounds.self)
-    }
+    // MARK: - Remaining APIs, batch 2 (profile.clearEffect,
+    // convert.decodeLinks, provider.get / sideLoad, network.update)
 
     /// Clears the downloaded provider files of one core-side profile
     /// (profile.clearEffect). `profileId` is the numeric id the host
@@ -2337,14 +2140,6 @@ final class ConcordClient: ObservableObject {
     func profileClearEffect(profileId: Int64) async throws {
         struct ClearEffectParams: Encodable { let profileId: Int64 }
         _ = try await call(method: "profile.clearEffect", params: ClearEffectParams(profileId: profileId), resultType: EmptyResult.self)
-    }
-
-    /// Encodes proxy definitions into share links
-    /// (convert.encodeLinks). `proxies` are the open proxy mappings
-    /// (as in config.read's `proxies` list).
-    func convertEncodeLinks(proxies: [JSONValue]) async throws -> [String] {
-        struct EncodeLinksParams: Encodable { let proxies: [JSONValue] }
-        return try await call(method: "convert.encodeLinks", params: EncodeLinksParams(proxies: proxies), resultType: ConcordLinkList.self).links
     }
 
     /// Decodes pasted share links into proxy definitions
@@ -2371,15 +2166,6 @@ final class ConcordClient: ObservableObject {
     func providerSideLoad(name: String, data: String) async throws {
         struct ProviderSideLoadParams: Encodable { let name: String; let data: String }
         _ = try await call(method: "provider.sideLoad", params: ProviderSideLoadParams(name: name, data: data), resultType: EmptyResult.self)
-    }
-
-    /// Triggers a provider's health check (provider.healthCheck).
-    /// The check runs in the background; the call only reports
-    /// whether it could be started (upstream
-    /// crates/api/src/control.rs provider_health_check).
-    func providerHealthCheck(name: String) async throws {
-        struct ProviderNameParams: Encodable { let name: String }
-        _ = try await call(method: "provider.healthCheck", params: ProviderNameParams(name: name), resultType: EmptyResult.self)
     }
 
     /// Tells the core the system network changed (network.update).
@@ -2460,10 +2246,6 @@ final class ConcordClient: ObservableObject {
         try await call(method: "traffic.watch", resultType: ConcordTraffic.self)
     }
 
-    func trafficReset() async throws {
-        _ = try await call(method: "traffic.reset", resultType: EmptyResult.self)
-    }
-
     func connectionSnapshot() async throws -> ConcordConnectionSnapshot {
         // C9: one malformed entry must not drop the whole list —
         // decode each entry on its own and skip the ones that fail,
@@ -2524,17 +2306,6 @@ final class ConcordClient: ObservableObject {
     /// file is rewritten whenever the state or its faults change.
     func engineSnapshot() async throws -> ConcordEngineStatus {
         try await call(method: "engine.state", resultType: ConcordEngineStatus.self)
-    }
-
-    func dnsFlushFakeIp() async throws {
-        _ = try await call(method: "dns.flushFakeIp", resultType: EmptyResult.self)
-    }
-
-    /// Runs one DNS query through the core's resolver (dns.query).
-    /// `qtype` is a record type such as "A" or "AAAA" (default "A").
-    func dnsQuery(name: String, qtype: String? = nil) async throws -> ConcordDnsQueryResult {
-        struct DnsQueryParams: Encodable { let name: String; let qtype: String? }
-        return try await call(method: "dns.query", params: DnsQueryParams(name: name, qtype: qtype), resultType: ConcordDnsQueryResult.self)
     }
 
     /// Resets the resolver connections (network.reset) — drops the
@@ -2636,17 +2407,6 @@ final class ConcordClient: ObservableObject {
     /// mitm.* calls; it errors when MITM is off or no config is applied.
     func mitmModuleStatus() async throws -> ConcordMitmModuleStatusList {
         try await call(method: "mitm.moduleStatus", params: EmptyParams(), resultType: ConcordMitmModuleStatusList.self)
-    }
-
-    /// Re-fetches a module's remote files (upstream b0806a8). `name`
-    /// nil re-fetches every module's remote files. Same mitm_enabled()
-    /// gate as mitm.moduleStatus. Returns nothing (the core answers
-    /// {}), like the other empty-result calls in this client.
-    func mitmFetchModule(name: String?) async throws {
-        struct MitmFetchModuleParams: Encodable {
-            let name: String?
-        }
-        _ = try await call(method: "mitm.fetchModule", params: MitmFetchModuleParams(name: name), resultType: EmptyResult.self)
     }
 
     /// Queries the MITM capture across connections (upstream

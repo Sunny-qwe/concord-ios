@@ -1,5 +1,3 @@
-import Foundation
-
 // MARK: - JSONValue -> YAML (for baking full node definitions)
 // Renders a JSONValue as YAML lines. Used to bake a node's full
 // definition (proxy.definition) into the active profile's

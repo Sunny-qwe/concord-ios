@@ -150,7 +150,7 @@ final class SettingsStore: ObservableObject {
     @Published var updateChannel: UpdateChannel = .stable
     @Published var openLogs: Bool = false
     /// The core's find-process mode (config.general, display-only:
-    /// what the core currently reports, via refreshFromCore). The
+    /// what the core currently reports). The
     /// value the user picks lives in findProcessModeSetting below.
     /// NOTE: api.json's ConfigPatchParams HAS findProcessMode, so
     /// it IS patchable in principle — but our ConcordConfigPatchParams
@@ -681,7 +681,7 @@ final class SettingsStore: ObservableObject {
         // is already persisted, so savedSniffing() reads the new
         // value). No loop: SnifferStore.save() never touches this
         // store. Cheap (one small JSON write) and covers every
-        // path that flips the switch (view, refreshFromCore,
+        // path that flips the switch (view,
         // backup restore).
         SnifferStore.shared.save()
     }
@@ -852,11 +852,6 @@ final class SettingsStore: ObservableObject {
             "system-proxy": systemProxy,
             "bypass-domain": systemProxy ? bypassDomain : [],
         ]
-        // v0.2.136 (D2): the Loopback page is deleted, so its
-        // "loopback-device" switch is gone with it — no longer
-        // preserved here. A Settings save now drops the stale key
-        // from tunnel.json; the extension treats a missing key as
-        // OFF.
         writeSharedJSON(tunnel, name: ConfigStore.tunnelSettingsFileName, onlyIfMissing: onlyIfMissing)
         // mitm.json uses the core's RawConfig keys verbatim, so the
         // extension can pass it as the "mitm" overlay value unchanged.
@@ -1254,28 +1249,6 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    /// Pull the general config from the core (config.general) into the UI.
-    @MainActor
-    func refreshFromCore() async {
-        do {
-            let general = try await client.configGeneral()
-            if let value = general.mode, let m = OutboundMode(rawValue: value) { mode = m }
-            if let value = general.logLevel, let level = LogLevel(rawValue: value) { logLevel = level }
-            if let value = general.mixedPort { mixedPort = value }
-            if let value = general.socksPort { socksPort = value }
-            if let value = general.allowLan { allowLan = value }
-            if let value = general.ipv6 { ipv6 = value }
-            if let value = general.tcpConcurrent { tcpConcurrent = value }
-            if let value = general.unifiedDelay { unifiedDelay = value }
-            if let value = general.sniffing { sniffing = value }
-            if let value = general.globalUa { globalUa = value }
-            if let value = general.findProcessMode { findProcessMode = value }
-            save()
-        } catch {
-            // Keep the locally saved settings; the core is not linked yet.
-        }
-    }
-
     /// Starts observing the "统一延迟测试" toggle (once): every flip
     /// re-patches unified_delay into the RUNNING tunnel core. The
     /// AppCore observer only covers the in-app core, so without this
@@ -1319,20 +1292,6 @@ final class SettingsStore: ObservableObject {
             // Best-effort: the toggle keeps its old value in the tunnel
             // core for this run. Never surfaces an error.
         }
-    }
-
-    /// Forces the current "统一延迟测试" value into the RUNNING
-    /// tunnel core (v0.2.89: the delay test calls this immediately
-    /// before each run). The boot patch (general.json at VPN start)
-    /// and the flip observer alone did not reach the test core —
-    /// on-device, switch ON / OFF / flip / full restart all
-    /// measured the same cold numbers — so a core that booted (or
-    /// was left running) with a stale value kept measuring cold.
-    /// Best-effort and never thrown: patchUnifiedDelayToTunnel
-    /// swallows failures, so a failed patch never fails the test.
-    @MainActor
-    func applyUnifiedDelayToTunnel() async {
-        await patchUnifiedDelayToTunnel(unifiedDelay)
     }
 
     /// Starts observing the three custom Geo URL keys (once): every
@@ -1691,84 +1650,4 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    @MainActor
-    func validateMitmConfig() async {
-        do {
-            let result = try await client.mitmValidate(config: mitmConfig)
-            if result.issues.isEmpty {
-                mitmIssues = []
-                mitmStatusMessage = "MITM 配置校验通过"
-            } else {
-                mitmIssues = result.issues.flatMap { key, issues in
-                    issues.map { "\(key)：\($0.message)" }
-                }.sorted()
-                mitmStatusMessage = "MITM 配置有 \(mitmIssues.count) 个问题"
-            }
-        } catch {
-            mitmStatusMessage = "校验失败：\(error.localizedDescription)"
-        }
-    }
-
-    @MainActor
-    func issueMitmCertificate(host: String) async {
-        guard !host.trimmingCharacters(in: .whitespaces).isEmpty else {
-            mitmStatusMessage = "请先输入要签发证书的主机名"
-            return
-        }
-        // B38: the tunnel path below only works while the VPN is
-        // running (client talks to the extension core). When it is
-        // off in live mode, fall back to the in-app core — the same
-        // pattern as MitmCertificateView's CA generation (v0.2.35
-        // Item C): AppCore.ensureStarted() boots the core
-        // in-process, then AppCore.mitmIssueCertificate issues the
-        // leaf there. If the tunnel starts while the in-app core is
-        // booting, AppCore refuses (tunnelRunning) and the call falls
-        // through to the tunnel-core path below.
-        if client.mode == .live, !TunnelManager.shared.isRunning {
-            do {
-                try await AppCore.shared.ensureStarted()
-                let pem = try await AppCore.shared.mitmIssueCertificate(host: host)
-                mitmIssuedPem = pem.pem
-                mitmStatusMessage = "已为 \(host) 签发叶证书（应用内核心，可用于验证信任链）"
-                return
-            } catch {
-                if case AppCoreError.tunnelRunning = error {
-                    // Fall through to the tunnel-core path below.
-                } else {
-                    mitmStatusMessage = "应用内核心签发失败：\(error.localizedDescription)"
-                    return
-                }
-            }
-        }
-        do {
-            let pem = try await client.mitmIssueCertificate(host: host)
-            mitmIssuedPem = pem.pem
-            mitmStatusMessage = "已为 \(host) 签发叶证书（可用于验证信任链）"
-        } catch {
-            mitmStatusMessage = "签发失败：\(error.localizedDescription)"
-        }
-    }
-
-    /// Persists the MITM choices (mitm.json, merged by the extension
-    /// into config.apply's overlay) and re-applies the active profile
-    /// so the new overlay takes effect. When the tunnel is stopped the
-    /// settings are still saved and take effect at the next VPN start.
-    @MainActor
-    func applyMitmSettings() async {
-        save()
-        guard client.mode == .live else {
-            mitmStatusMessage = "示例模式：MITM 设置已保存在本地，切换到实时核心并重启 VPN 后生效"
-            return
-        }
-        guard TunnelManager.shared.isRunning else {
-            mitmStatusMessage = "MITM 设置已保存，下次启动 VPN 时生效"
-            return
-        }
-        do {
-            _ = try await client.configApply(profilePath: nil)
-            mitmStatusMessage = "MITM 设置已应用（立即生效）"
-        } catch {
-            mitmStatusMessage = "应用失败：\(error.localizedDescription)"
-        }
-    }
 }

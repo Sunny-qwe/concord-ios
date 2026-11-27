@@ -37,9 +37,6 @@ struct StampedCoreEvent: Identifiable {
     let event: ConcordCoreEvent
     let receivedAt: Date
 
-    /// Epoch millis for ConcordFormat.time (same "HH:mm:ss" column
-    /// as the log rows).
-    var receivedAtMillis: Int64 { Int64(receivedAt.timeIntervalSince1970 * 1000) }
 }
 
 /// One MITM script `$notification.post` ready to show as a top

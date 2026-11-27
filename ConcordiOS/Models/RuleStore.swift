@@ -180,18 +180,4 @@ final class RuleStore: ObservableObject {
             lastError = error.localizedDescription
         }
     }
-
-    /// Triggers a provider's health check (provider.healthCheck).
-    /// The check runs in the background; the call only reports
-    /// whether it could be started.
-    @MainActor
-    func healthCheckProvider(_ provider: ConcordProviderInfo) async {
-        do {
-            try await client.providerHealthCheck(name: provider.name)
-            providerActionMessage = "健康检查已触发，但核心不返回提供方健康状态，无法显示结果"
-            lastError = nil
-        } catch {
-            lastError = error.localizedDescription
-        }
-    }
 }

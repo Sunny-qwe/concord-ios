@@ -17,8 +17,8 @@ import UniformTypeIdentifiers
 // Imported icons render in this page's preview and in Resources;
 // the Proxies list still renders SF Symbols (it reads
 // symbol(for:) / color(for:), which fall back to the built-in
-// symbols for imported packs) until it is switched to
-// iconView(for:) — see that method's comment.
+// symbols for imported packs); remote images are not rendered
+// there (the iconView helper was removed as unused in v0.2.144).
 
 // MARK: - Store
 
@@ -347,65 +347,6 @@ final class IconSetStore: ObservableObject {
         saveImported()
         actionMessage = "已删除图标集 \(pack.name)"
         lastError = nil
-    }
-
-    /// The remote icon URL for a proxy / group type in the selected
-    /// imported pack, matched by name: exact, then
-    /// case-insensitive, then normalized (alphanumerics only,
-    /// lowercased), then normalized prefix / contains — the same
-    /// matching the group icon pack uses. nil when no imported pack
-    /// is selected or nothing matches.
-    func remoteIconURL(for type: String) -> URL? {
-        guard let pack = selectedImportedPack else { return nil }
-        let wanted = type.trimmingCharacters(in: .whitespaces)
-        guard !wanted.isEmpty else { return nil }
-        if let icon = pack.icons.first(where: { $0.name == wanted }) {
-            return URL(string: icon.url)
-        }
-        if let icon = pack.icons.first(where: { $0.name.lowercased() == wanted.lowercased() }) {
-            return URL(string: icon.url)
-        }
-        let norm = Self.normalize(wanted)
-        guard !norm.isEmpty else { return nil }
-        if let icon = pack.icons.first(where: { Self.normalize($0.name) == norm }) {
-            return URL(string: icon.url)
-        }
-        if let icon = pack.icons.first(where: {
-            let n = Self.normalize($0.name)
-            return !n.isEmpty && (n.hasPrefix(norm) || norm.hasPrefix(n) || n.contains(norm) || norm.contains(n))
-        }) {
-            return URL(string: icon.url)
-        }
-        return nil
-    }
-
-    private static func normalize(_ value: String) -> String {
-        value.lowercased().filter { $0.isLetter || $0.isNumber }
-    }
-
-    /// The icon view for a proxy / group type in the selected pack:
-    /// the imported remote image when the selected pack is imported
-    /// and has an icon for the type, otherwise the built-in SF
-    /// Symbol. The Proxies list still uses symbol(for:) /
-    /// color(for:) (a String + a Color), so it cannot render remote
-    /// images yet — switching it to this view is a one-spot change
-    /// in ProxiesView.
-    func iconView(for type: String, size: CGFloat = 10) -> AnyView {
-        if let url = remoteIconURL(for: type) {
-            return AnyView(
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFit()
-                    } else {
-                        Image(systemName: self.symbol(for: type))
-                            .font(.system(size: size))
-                            .foregroundStyle(self.color(for: type))
-                    }
-                }
-                .frame(width: size + 8, height: size + 8)
-            )
-        }
-        return AnyView(icon(for: type, size: size))
     }
 
     /// The SF Symbol for a proxy / group type in the selected pack.

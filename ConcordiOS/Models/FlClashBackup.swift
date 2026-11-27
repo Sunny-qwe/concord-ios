@@ -760,11 +760,6 @@ enum FlClashDDL {
         "CREATE INDEX last_accessed_url ON icon_records (last_accessed, url)",
     ]
 
-    /// SELECTs in upstream's read order (backup.dart readBackupArchive).
-    static let readOrder = [
-        "profiles", "scripts", "rules", "disabled_rules", "proxy_groups",
-        "clash_providers", "custom_proxies", "proxy_dialers", "mitm_modules",
-    ]
 }
 
 // MARK: - Decoded snapshot (MigrationData equivalent)

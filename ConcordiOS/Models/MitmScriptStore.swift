@@ -117,36 +117,6 @@ final class MitmScriptStore: ObservableObject {
         return "\(stem) \(n)"
     }
 
-    /// The `generic` script line that makes the core compile this
-    /// script: paste it into a module's [Script] section.
-    func coreScriptLine(for script: MitmScript) -> String? {
-        guard let resource = script.resourceName else { return nil }
-        let name = script.label
-            .replacingOccurrences(of: "=", with: " ")
-            .replacingOccurrences(of: ",", with: " ")
-            .trimmingCharacters(in: .whitespaces)
-        return "\(name.isEmpty ? script.id : name) = type=generic,script-path=\(resource)"
-    }
-
-    /// The core's resources directory's `.js` files (module scripts
-    /// included): the files the core actually reads scripts from.
-    /// Read-only here — modules own their files.
-    func resourceFiles() -> [MitmResourceFile] {
-        guard let dir = resourcesDirectoryURL,
-              let urls = try? FileManager.default.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]) else { return [] }
-        return urls
-            .filter { $0.pathExtension.lowercased() == "js" }
-            .compactMap { url -> MitmResourceFile? in
-                guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return nil }
-                return MitmResourceFile(
-                    name: url.lastPathComponent,
-                    size: values.fileSize ?? 0,
-                    modified: values.contentModificationDate ?? Date.distantPast)
-            }
-            .sorted { $0.modified > $1.modified }
-    }
-
     // MARK: - Mutations
 
     /// Saves content for a script (new or existing): writes the
@@ -317,9 +287,3 @@ final class MitmScriptStore: ObservableObject {
     }
 }
 
-struct MitmResourceFile: Identifiable {
-    var id: String { name }
-    var name: String
-    var size: Int
-    var modified: Date
-}

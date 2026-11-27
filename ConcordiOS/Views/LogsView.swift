@@ -752,17 +752,6 @@ private struct LogEntryDetailView: View {
     }
 }
 
-// Minimal share sheet (UIActivityViewController wrapper).
-struct ShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
-}
-
 /// Parsed log line (upstream lib/common/log_payload.dart, mirroring
 /// the wording of the routing and dial-failure lines in mihomo's
 /// tunnel/tunnel.go): a `[TAG] message` line whose message matches a

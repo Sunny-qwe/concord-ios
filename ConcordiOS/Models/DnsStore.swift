@@ -2,16 +2,14 @@ import Foundation
 import Combine
 
 // MARK: - DNS store (FlClash: DNS queries page)
-// Backed by Concord dns.watch (stream of DnsEntry), dns.query,
-// dns.clearCache and dns.flushFakeIp.
+// Backed by Concord dns.watch (stream of DnsEntry) and
+// dns.clearCache.
 
 final class DnsStore: ObservableObject {
     @Published var entries: [ConcordDnsEntry] = []
     @Published var searchText = ""
     @Published var lastError: String?
     @Published var lastActionMessage: String?
-    @Published var queriedResult: ConcordDnsQueryResult?
-    @Published var queryError: String?
 
     let client: ConcordClient
 
@@ -82,7 +80,7 @@ final class DnsStore: ObservableObject {
     /// header, MuYu cleaning_services). Entries at or before now
     /// are dropped and filtered out of later refreshes; new queries
     /// after the clear still appear. Does NOT clear the DNS cache
-    /// (that is clearCache) or the Fake-IP mappings.
+    /// (that is clearCache).
     @MainActor
     func clearEntries() {
         clearedBeforeTime = entries.map(\.time).max() ?? 0
@@ -169,39 +167,6 @@ final class DnsStore: ObservableObject {
             lastError = nil
         } catch {
             lastError = error.localizedDescription
-        }
-    }
-
-    @MainActor
-    func flushFakeIp() async {
-        do {
-            try await runDns(
-                tunnel: { try await self.client.dnsFlushFakeIp() },
-                appCore: { try await AppCore.shared.dnsFlushFakeIp() })
-            lastActionMessage = "Fake-IP 映射已清除"
-            lastError = nil
-        } catch {
-            lastError = error.localizedDescription
-        }
-    }
-
-    /// Runs one query through the core's resolver (dns.query) and keeps
-    /// the full answer for the query box.
-    @MainActor
-    func query(name: String, qtype: String) async {
-        let host = name.trimmingCharacters(in: .whitespaces)
-        guard !host.isEmpty else {
-            queryError = "请输入要查询的域名"
-            return
-        }
-        do {
-            queriedResult = try await runDns(
-                tunnel: { try await self.client.dnsQuery(name: host, qtype: qtype) },
-                appCore: { try await AppCore.shared.dnsQuery(name: host, qtype: qtype) })
-            queryError = nil
-        } catch {
-            queriedResult = nil
-            queryError = error.localizedDescription
         }
     }
 

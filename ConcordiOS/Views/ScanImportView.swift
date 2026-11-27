@@ -2,6 +2,7 @@ import SwiftUI
 import AVFoundation
 import UIKit
 import CoreImage
+import PhotosUI
 
 // MARK: - Scan import (FlClash: lib/pages/scan.dart)
 // Camera QR scanner for subscription / node-link import. A scanned

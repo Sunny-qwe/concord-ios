@@ -6,8 +6,9 @@ import UniformTypeIdentifiers
 // file) that map proxy types to custom images, synced and managed
 // in-app. The Concord core has NO icon-set interface (see
 // AdvancedConfigView.swift), so this port is CLIENT-SIDE ONLY.
-// Built-in packs map each proxy / group type to an SF Symbol (+ a
-// colour). Imported packs (v0.2.54) are the upstream format — the
+// Built-in pack (v0.2.141: only 默认 remains — the 彩色 and 线条
+// packs were deleted, C17-d1) maps each proxy / group type to an
+// SF Symbol in the theme accent. Imported packs (v0.2.54) are the upstream format — the
 // Quantumult X / Loon gallery JSON {"name": ..., "icons":
 // [{"name": ..., "url": ...}]} (FlClash parseIconSet,
 // models/common.dart:1008) — downloaded from a URL or picked from
@@ -61,39 +62,18 @@ final class IconSetStore: ObservableObject {
         "dns": "server.rack",
     ]
 
-    /// Per-type colours for the 彩色 pack.
-    static let typeColors: [String: Color] = [
-        "shadowsocks": .blue,
-        "vmess": .purple,
-        "vless": .indigo,
-        "trojan": .orange,
-        "hysteria2": .green,
-        "hysteria": .green,
-        "tuic": .teal,
-        "socks5": .gray,
-        "socks": .gray,
-        "http": .brown,
-        "snell": .pink,
-        "wireguard": .cyan,
-        "anytls": .yellow,
-        "select": .blue,
-        "url-test": .green,
-        "fallback": .yellow,
-        "load-balance": .purple,
-        "smart": .mint,
-        "relay": .gray,
-        "direct": .green,
-        "reject": .red,
-        "dns": .blue,
-    ]
-
     /// The proxy types shown in the preview grid.
     static let previewTypes = ["shadowsocks", "vmess", "vless", "trojan", "hysteria2", "tuic", "socks5", "http", "snell", "wireguard", "select", "url-test", "fallback", "load-balance", "smart", "relay", "direct", "reject", "dns"]
 
+    /// v0.2.141 (C17-d1): the built-ins are down to the single
+    /// 默认 pack — the 彩色 pack (per-type colours, typeColors)
+    /// and the 线条 pack (outline symbols) are gone. Without its
+    /// colours the 彩色 pack duplicated 默认；the 线条 pack was
+    /// ours-only (upstream has no icon-set variants). Stale
+    /// persisted ids ("color" / "outline") fall back to default
+    /// via the init / reload guards below.
     static let packs: [Pack] = [
         Pack(id: "default", name: "默认", description: "系统图标，按主题色显示", symbols: typeSymbols, colors: nil),
-        Pack(id: "color", name: "彩色", description: "每种代理类型一个颜色", symbols: typeSymbols, colors: typeColors),
-        Pack(id: "outline", name: "线条", description: "描边风格，全部用主题色", symbols: typeSymbols.mapValues { $0.replacingOccurrences(of: ".fill", with: "") }, colors: nil),
     ]
 
     @Published var selectedPackID: String {

@@ -135,9 +135,10 @@ final class ProxyStyleStore: ObservableObject {
 // The user pastes the URL of an icon-pack JSON file (iBL3ND format:
 // {"name": "...", "description": "...", "icons": [{"name": "...",
 // "url": "https://...png"}, ...]}) in Settings → 图标源 and taps
-// 导入 / 更新. There are NO bundled brand icons: the pack is the
-// only icon source besides a group's own profile icon, and the
-// monogram is the only fallback. The source URL and the downloaded
+// 导入 / 更新. Bundled brand marks (BrandIcons, v0.2.141) sit
+// below the pack in the resolution order: the pack is still the
+// first match after a group's own profile icon, and the monogram
+// is the last fallback. The source URL and the downloaded
 // name→URL map are persisted in UserDefaults under
 // "ConcordiOS.iconPack.v1" (one JSON blob). The download happens
 // ONLY when the user taps 导入 / 更新 — never on launch, never in

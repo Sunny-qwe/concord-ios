@@ -831,7 +831,7 @@ private struct CustomGroupFormView: View {
                         }
                     }
                     .font(.footnote)
-                    Text("没有图标时用订阅图标 / 图标源 / 首字。图标源在「设置 → 图标源」导入。")
+                    Text("没有图标时用订阅图标 / 图标源 / 内置品牌 / 首字。图标源在「设置 → 图标源」导入。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                     Picker("类型", selection: $group.type) {

@@ -89,6 +89,25 @@ final class OverrideStore: ObservableObject {
 
     @Published var applyMessage: String?
 
+    /// The congestion controllers the core reports (MuYu gates the
+    /// congestion-controller field on core capability —
+    /// tunCongestionAvailable). nil = never queried; an empty list
+    /// means the core reports none. Refreshed by the TUN page;
+    /// the section editor gates the key on this (C13-c2).
+    @Published var congestionControllers: [String]? = nil
+
+    /// Queries core.capabilities for the congestion-controller
+    /// list. A failed query leaves the previous value alone, so a
+    /// transient core outage never hides the field. @MainActor
+    /// like the apply methods: the @Published write must land on
+    /// the main thread.
+    @MainActor
+    func refreshCongestionCapability() async {
+        if let caps = try? await client.coreCapabilities() {
+            congestionControllers = caps.congestionControllers
+        }
+    }
+
     let client: ConcordClient
     private let storageKey = "ConcordiOS.overrides.v1"
 
@@ -511,6 +530,32 @@ final class OverrideStore: ObservableObject {
             applyMessage = "覆盖已应用（立即生效）"
         } catch {
             applyMessage = "应用失败：\(error.localizedDescription)"
+        }
+    }
+
+    /// TUN overrides (C13-c1): the same save path as
+    /// applyOverrides(), but NEVER live-applies to a running
+    /// tunnel. Upstream's tun.dart applies live; on iOS a live
+    /// config.apply touching the (tun, tun_inet4, ipv6) triple
+    /// closes the packet-channel TUN runner and never restarts
+    /// it (config B1) — and most TUN keys are iOS-dead anyway
+    /// (config B12), so a live apply would risk killing the
+    /// tunnel for nothing. What IS applied: the save itself (the
+    /// extension merges overrides.json at the next config.apply),
+    /// and MTU + congestion-controller take effect at the next VPN
+    /// start via tun.start. The message says so instead of
+    /// pretending the apply was live.
+    @MainActor
+    func applyTunOverrides() async {
+        save()
+        guard client.mode == .live else {
+            applyMessage = "示例模式：覆盖已保存在本地，切换到实时核心并重启 VPN 后生效"
+            return
+        }
+        if TunnelManager.shared.isRunning {
+            applyMessage = "已保存，下次启动 VPN 时生效（MTU 与拥塞控制）；VPN 运行时不立即应用——重载配置会关闭运行中的隧道。"
+        } else {
+            applyMessage = "覆盖已保存，下次启动 VPN 时生效"
         }
     }
 }

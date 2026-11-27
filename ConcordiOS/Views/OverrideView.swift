@@ -356,7 +356,23 @@ struct OverrideSectionEditor: View {
 
     private var remainingSpecs: [OverrideKeySpec] {
         let enabled = Set(enabledKeys)
-        return OverrideStore.specs(for: section).filter { !enabled.contains($0.key) }
+        return OverrideStore.specs(for: section).filter { spec in
+            guard !enabled.contains(spec.key) else { return false }
+            // C13-c2 (MuYu tunCongestionAvailable): the
+            // congestion-controller key is only offered when the
+            // core reports a congestion controller. Unknown (never
+            // queried — nil) still offers it: the TUN page
+            // refreshes on appear, and hiding the key before any
+            // query would orphan it for users who never open the
+            // TUN page. An already-enabled key stays editable even
+            // when the core reports none (removing it silently
+            // would lose the user's value).
+            if section == .tun, spec.key == "congestion-controller",
+               let controllers = store.congestionControllers, controllers.isEmpty {
+                return false
+            }
+            return true
+        }
     }
 
     var body: some View {
@@ -378,6 +394,57 @@ struct OverrideSectionEditor: View {
                 showAddSheet = false
             }
             .formSheetChrome()
+        }
+    }
+}
+
+// MARK: - Inline per-profile override section (C7-c1 / C9-c1 / C12-c1)
+
+/// The per-profile half of a settings page (FlClash: DnsView.profile
+/// / NtpView.profile / SnifferView.profile — each is an OverrideView
+/// with a profile target, global patch + per-profile keys on the
+/// same page). The page's own base fields are the global patch; this
+/// section edits ONE subscription's overrides in place, instead of
+/// linking out to the generic OverrideView. Pick a subscription to
+/// reveal its editor; the overrides save immediately (the store
+/// writes overrides.json on every edit) and the 应用覆盖 button
+/// re-applies them like the page's own save button does.
+struct InlineProfileOverrideSection: View {
+    let section: OverrideSection
+    @EnvironmentObject private var profileStore: ProfileStore
+    @ObservedObject private var store = OverrideStore.shared
+    @State private var scope: String? = nil
+
+    var body: some View {
+        Section("按订阅覆盖") {
+            Picker("订阅", selection: $scope) {
+                Text("选择订阅…").tag(nil as String?)
+                ForEach(profileStore.profiles) { profile in
+                    Text(profile.name).tag(profile.id.uuidString as String?)
+                }
+            }
+            .pickerStyle(.menu)
+            if scope == nil {
+                Text("选一个订阅，在这里单独覆盖\(section.label)；没有覆盖的订阅用上面的全局设置。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        if scope != nil {
+            OverrideSectionEditor(section: section, scope: $scope)
+            Section {
+                Button("应用覆盖") {
+                    Task { await store.applyOverrides() }
+                }
+                if let message = store.applyMessage {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                Text("覆盖只对该订阅生效；没有覆盖的项用上面的全局设置。VPN 运行时立即生效，否则下次启动 VPN 时生效。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }

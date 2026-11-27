@@ -58,7 +58,25 @@ struct BackupView: View {
     @AppStorage("ConcordiOS.webdav.password") private var webdavPassword = ""
     @AppStorage("ConcordiOS.webdav.fileName") private var webdavFileName = "backup.zip"
     @State private var webdavStatus: String?
-    @State private var webdavConnected: Bool?
+    /// Live WebDAV connectivity (FlClash DAVConnectionController,
+    /// a ValueNotifier<bool?>: null = testing spinner, true =
+    /// green, false = red). The extra .unconfigured covers the
+    /// no-account case — upstream shows no indicator at all
+    /// without a saved account; ours shows a grey "未配置" dot.
+    /// The manual "测试连接" button is gone (upstream has none):
+    /// the indicator re-tests itself whenever the account changes.
+    private enum WebDAVConnectionState {
+        case unconfigured, testing, connected, failed
+    }
+    @State private var webdavState: WebDAVConnectionState = .unconfigured
+    /// Request-id guard (upstream _requestId): only the newest
+    /// test may write the indicator, so a slow earlier ping can
+    /// never overwrite a newer result.
+    @State private var webdavTestID = 0
+    /// The credentials of the last completed test (upstream
+    /// _lastProps, file name excluded): unchanged credentials are
+    /// not re-pinged.
+    @State private var lastTestedWebDAVAccount: WebDAVAccount?
 
     var body: some View {
         List {
@@ -110,31 +128,55 @@ struct BackupView: View {
             }
 
             Section("WebDAV 远程备份") {
+                // Upstream _DavConnectionIndicator next to the
+                // "连接状态" label: a 12pt spinner while testing,
+                // a green dot when connected, a red dot on failure.
                 HStack {
-                    Circle()
-                        .fill(webdavConnected == nil ? Color.gray : (webdavConnected! ? Color.green : Color.red))
-                        .frame(width: 10, height: 10)
-                    Text(webdavConnected == nil ? "未测试" : (webdavConnected! ? "已连接" : "连接失败"))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    switch webdavState {
+                    case .unconfigured:
+                        Circle()
+                            .fill(Color.gray)
+                            .frame(width: 12, height: 12)
+                        Text("未配置")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    case .testing:
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("正在检测…")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    case .connected:
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 12, height: 12)
+                        Text("已连接")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    case .failed:
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 12, height: 12)
+                        Text("连接失败")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
                 }
                 TextField("WebDAV 地址，如 https://dav.example.com/backup/", text: $webdavURL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .keyboardType(.URL)
-                    .onSubmit { Task { await testWebDAV() } }
+                    .onChange(of: webdavURL) { _, _ in scheduleWebDAVTest() }
                 TextField("用户名", text: $webdavUsername)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .onChange(of: webdavUsername) { _, _ in scheduleWebDAVTest() }
                 SecureField("密码", text: $webdavPassword)
+                    .onChange(of: webdavPassword) { _, _ in scheduleWebDAVTest() }
                 TextField("备份文件名", text: $webdavFileName)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Button("测试连接") {
-                    Task { await testWebDAV() }
-                }
-                .disabled(webdavURL.trimmingCharacters(in: .whitespaces).isEmpty || backupStore.isWorking)
                 Button("上传当前备份到 WebDAV") {
                     Task { await uploadToWebDAV() }
                 }
@@ -220,8 +262,10 @@ struct BackupView: View {
         }
         .task {
             // Live WebDAV indicator (FlClash shows the account state
-            // on the page): test once on appear when an address is
-            // already filled in; the manual button stays.
+            // on the page; DAVConnectionController.update runs on
+            // page init): ping once on appear when an address is
+            // already filled in. Later edits re-test themselves
+            // through the debounced scheduleWebDAVTest.
             if !webdavURL.trimmingCharacters(in: .whitespaces).isEmpty {
                 await testWebDAV()
             }
@@ -249,19 +293,60 @@ struct BackupView: View {
         WebDAVAccount(url: webdavURL, username: webdavUsername, password: webdavPassword, fileName: webdavFileName)
     }
 
+    /// Re-tests the connection ~0.8 s after the last account edit
+    /// (upstream calls update() when the saved account changes;
+    /// the debounce keeps per-keystroke pings from spamming the
+    /// server while the user is still typing). A newer scheduled
+    /// test cancels an older one via the request id.
+    private func scheduleWebDAVTest() {
+        webdavTestID += 1
+        let requestID = webdavTestID
+        Task {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard requestID == webdavTestID else { return }
+            await testWebDAV()
+        }
+    }
+
+    /// Pings the current account and drives the live indicator
+    /// (FlClash DAVConnectionController.update): unchanged
+    /// credentials (file name excluded) are not re-pinged, and
+    /// only the newest test may write the result. @MainActor: the
+    /// @State writes after the ping await must land on the main
+    /// thread.
+    @MainActor
     private func testWebDAV() async {
-        backupStore.isWorking = true
-        defer { backupStore.isWorking = false }
+        let account = webdavAccount
+        guard !account.url.trimmingCharacters(in: .whitespaces).isEmpty else {
+            webdavState = .unconfigured
+            return
+        }
+        if let tested = lastTestedWebDAVAccount,
+           tested.url == account.url,
+           tested.username == account.username,
+           tested.password == account.password {
+            return
+        }
+        webdavTestID += 1
+        let requestID = webdavTestID
+        webdavState = .testing
         do {
-            try await WebDAVClient(account: webdavAccount).testConnection()
-            webdavConnected = true
+            try await WebDAVClient(account: account).testConnection()
+            guard requestID == webdavTestID else { return }
+            lastTestedWebDAVAccount = account
+            webdavState = .connected
             webdavStatus = "WebDAV 连接成功"
         } catch {
-            webdavConnected = false
+            guard requestID == webdavTestID else { return }
+            lastTestedWebDAVAccount = account
+            webdavState = .failed
             webdavStatus = "WebDAV 连接失败：\(error.localizedDescription)"
         }
     }
 
+    /// @MainActor like testWebDAV: the @State writes after the
+    /// upload await must land on the main thread.
+    @MainActor
     private func uploadToWebDAV() async {
         backupStore.isWorking = true
         defer { backupStore.isWorking = false }
@@ -274,13 +359,18 @@ struct BackupView: View {
             backupURL = url
             let data = try Data(contentsOf: url)
             try await WebDAVClient(account: webdavAccount).upload(data)
-            webdavConnected = true
+            // A successful upload proves the account works.
+            lastTestedWebDAVAccount = webdavAccount
+            webdavState = .connected
             webdavStatus = "已上传到 WebDAV：\(webdavFileName)"
         } catch {
             webdavStatus = "上传失败：\(error.localizedDescription)"
         }
     }
 
+    /// @MainActor like testWebDAV: the @State writes after the
+    /// download await must land on the main thread.
+    @MainActor
     private func downloadFromWebDAV() async {
         backupStore.isWorking = true
         defer { backupStore.isWorking = false }

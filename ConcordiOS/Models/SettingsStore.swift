@@ -1304,7 +1304,8 @@ final class SettingsStore: ObservableObject {
     /// must be up and the tunnel running, otherwise the patch has
     /// nowhere to go. Best-effort and never thrown: a failed patch
     /// only costs the toggle's effect for this run; the next flip or
-    /// a manual "应用通用设置到核心" retries.
+    /// a Dashboard mode switch (which calls applyGeneralToCore)
+    /// retries.
     @MainActor
     private func patchUnifiedDelayToTunnel(_ value: Bool) async {
         guard client.mode == .live, TunnelManager.shared.isRunning else { return }
@@ -1372,7 +1373,8 @@ final class SettingsStore: ObservableObject {
     /// the live transport must be up and the tunnel running,
     /// otherwise the patch has nowhere to go. Best-effort and never
     /// thrown: a failed patch only costs the URLs' effect for this
-    /// run; the next edit or a manual "应用通用设置到核心" retries.
+    /// run; the next edit or a Dashboard mode switch (which calls
+    /// applyGeneralToCore) retries.
     @MainActor
     private func applyGeoURLsToTunnel() async {
         saveSharedFiles()
@@ -1403,7 +1405,7 @@ final class SettingsStore: ObservableObject {
             return
         }
         guard TunnelManager.shared.isRunning else {
-            generalApplyMessage = "已保存在本地：启动 VPN 后会自动应用到核心（也可现在点「从核心读取当前配置」确认）"
+            generalApplyMessage = "已保存在本地：启动 VPN 后会自动应用到核心"
             return
         }
         do {

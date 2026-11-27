@@ -3440,10 +3440,12 @@ private struct MemoryDetailSheetHost: View {
     }
 }
 
-/// Brand tile from the user's imported icon pack (v0.2.68):
-/// IconPackStore matched by service/group name; the letter is
-/// the only fallback. No built-in brand icons, by standing rule.
-/// Internal so DashboardSheets' service rows can use it too.
+/// Brand tile from the user's imported icon pack (v0.2.68),
+/// then the bundled brands (v0.2.141 — the icons revert restores
+/// MuYu's map; the pack wins when both match): IconPackStore
+/// matched by service/group name, else a BrandIcons mark, else
+/// the letter. Internal so DashboardSheets' service rows can use
+/// it too.
 struct PackTileImage: View {
     @ObservedObject private var iconPack = IconPackStore.shared
     let name: String
@@ -3457,6 +3459,8 @@ struct PackTileImage: View {
                     Text(fallback)
                         .font(.system(size: fontSize, weight: .bold))
                 }
+            } else if let brand = BrandIcons.icon(for: name) {
+                BrandIcons.view(for: brand)
             } else {
                 Text(fallback)
                     .font(.system(size: fontSize, weight: .bold))

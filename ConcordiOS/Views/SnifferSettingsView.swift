@@ -95,16 +95,10 @@ struct SnifferSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            // FlClash sniffer.dart: per-profile sniffer overrides
-            // live in the override editor, not on this global page.
-            Section("按订阅覆盖") {
-                NavigationLink("按订阅覆盖嗅探设置") {
-                    OverrideView()
-                }
-                Text("每个订阅可以在这里单独覆盖嗅探；没有覆盖的订阅用上面的全局设置。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
+            // v0.2.141 (C12-c1): per-profile sniffer overrides live
+            // on this page now (FlClash SnifferView.profile), not
+            // behind a link to the generic OverrideView.
+            InlineProfileOverrideSection(section: .sniffer)
             Section {
                 Button("保存并应用") {
                     Task { await snifferStore.applySnifferSettings() }

@@ -19,7 +19,6 @@ struct SettingsView: View {
     // singleton, not an environment object: the Proxies page reads
     // it through its icon leaf views only, never at page level.
     @ObservedObject private var iconPack = IconPackStore.shared
-    @State private var showCrashConfirm = false
     /// Cached 主机映射 summary ("无" / "N 条"): hosts.json is
     /// read + parsed once here (and refreshed on appear) instead
     /// of on every body evaluation.
@@ -128,7 +127,6 @@ struct SettingsView: View {
                 }
                 Toggle("校验 TLS 证书", isOn: $settingsStore.checkCertificate)
                 Toggle("自动检查更新", isOn: $settingsStore.autoCheckUpdate)
-                Toggle("隐藏出口 IP", isOn: $settingsStore.hideIp)
                 Text("校验 TLS 证书：关闭后订阅下载不再验证服务器证书（自签证书的订阅源可用）。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -168,33 +166,26 @@ struct SettingsView: View {
                         .font(.caption2)
                         .foregroundStyle(.red)
                 }
-                Button("恢复默认端口（混合 7890、SOCKS 7891，其余停用）") {
-                    settingsStore.mixedPort = 7890
-                    settingsStore.socksPort = 7891
-                    httpPort = 0
-                    redirPort = 0
-                    tproxyPort = 0
-                    settingsStore.save()
-                }
-                Text("端口 0 表示停用；启用的端口须在 1024–49151 之间且互不冲突。HTTP / redir / tproxy 在 iOS 上一般用不到，FlClash 仍在 iOS 上提供这三项，这里同样提供。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
+                Text("端口 0 表示停用；启用的端口须在 1024–49151 之间且互不冲突。HTTP / redir / tproxy 在 iOS 上一般用不到，FlClash 仍在 iOS 上提供这三项，这里同样提供。改动在下次启动 VPN 时生效；切换出站模式时也会立即应用。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
             Section("出站") {
-                Picker("出站模式", selection: $settingsStore.mode) {
-                    ForEach(OutboundMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
+                // v0.2.141 (C1-d1): the outbound-mode picker lived
+                // here until v0.2.140; upstream has no mode switch
+                // in Settings (the mode segment is on the
+                // Dashboard). The mode itself is unchanged — the
+                // Dashboard segment still sets settingsStore.mode,
+                // and the .onChange(save) below still persists it.
                 Toggle("禁用 TCP 保活", isOn: $settingsStore.disableKeepAlive)
                 // TCP 保活（核心 keep-alive-idle / interval /
                 // disable-keep-alive；0 = 核心默认）。经
-                // general-overlay.json 下发，下次启动 VPN 或点
-                // 「应用通用设置到核心」后生效。
+                // general-overlay.json 下发，下次启动 VPN 或切换出站
+                // 模式时生效。
                 Stepper("TCP 保持活动空闲时间：\(keepAliveIdleText)", value: $settingsStore.keepAliveIdle, in: 0...3600, step: 15)
                 Stepper("TCP 保持活动间隔：\(keepAliveIntervalText)", value: $settingsStore.keepAliveInterval, in: 0...3600, step: 15)
-                Text("保活空闲 / 间隔为 0 表示用核心默认（空闲 15 秒）。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
+                Text("保活空闲 / 间隔为 0 表示用核心默认（空闲 15 秒）。改动在下次启动 VPN 时生效；切换出站模式时也会立即应用。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Toggle("IPv6", isOn: $settingsStore.ipv6)
@@ -226,7 +217,7 @@ struct SettingsView: View {
                     Text("始终（always）").tag("always")
                     Text("关闭（off）").tag("off")
                 }
-                Text("进程查找方式：默认 strict（核心默认）；always 始终按进程匹配，off 关闭进程匹配。核心当前报告：\(settingsStore.findProcessMode ?? "未知")。改动在下次启动 VPN 或点「应用通用设置到核心」后生效。")
+                Text("进程查找方式：默认 strict（核心默认）；always 始终按进程匹配，off 关闭进程匹配。核心当前报告：\(settingsStore.findProcessMode ?? "未知")。改动在下次启动 VPN 时生效；切换出站模式时也会立即应用。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Toggle("自动关闭连接", isOn: $settingsStore.autoCloseConnections)
@@ -300,18 +291,13 @@ struct SettingsView: View {
                 // v0.2.40). When it is OFF the Tools → 日志 row is
                 // hidden (ToolsView gates on openLogs); logging
                 // itself is still collected by LogStore either way.
+                // v0.2.141 (C1-d2): the read-from-core / apply-to-
+                // core buttons are gone (upstream has no such
+                // buttons in Settings). The store methods stay:
+                // applyGeneralToCore is still called on Dashboard
+                // mode switches and at app launch, and
+                // refreshFromCore is still used by the Logs page.
                 Toggle("日志捕获", isOn: $settingsStore.openLogs)
-                Button("从核心读取当前配置") {
-                    Task { await settingsStore.refreshFromCore() }
-                }
-                Button("应用通用设置到核心（config.patch）") {
-                    Task { await settingsStore.applyGeneralToCore() }
-                }
-                if let message = settingsStore.generalApplyMessage {
-                    Text(message)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
             }
 
             // v0.2.68 (MuYu): the TUN + DNS sections moved out —
@@ -333,11 +319,21 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // v0.2.141 (C20-c1): upstream splits providers — proxy
+            // providers live under Proxies (their
+            // ExternalProvidersSliver is in the profile-detail
+            // sheet, which our Dashboard/Profiles phase does not
+            // have yet), rule providers under Advanced → 提供方.
+            // The hub therefore offers both pages; the caption
+            // counts the rule-provider page.
             Section("提供方（provider.list）") {
-                NavigationLink("查看全部提供方") {
+                NavigationLink("代理提供方") {
+                    ProxyProvidersView()
+                }
+                NavigationLink("规则提供方") {
                     ProvidersView()
                 }
-                Text("代理提供方 \(ruleStore.providers.filter { $0.type == "proxy" }.count) 个 · 规则提供方 \(ruleStore.ruleProviders.count) 个")
+                Text("规则提供方 \(ruleStore.ruleProviders.count) 个")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -350,28 +346,24 @@ struct SettingsView: View {
             }
 
             Section("应用") {
-                Toggle("自动更新订阅", isOn: $settingsStore.autoUpdateProfiles)
+                // v0.2.141 (C1-d1): the 自动更新订阅 toggle and the
+                // 核心模式 picker are gone (upstream has neither in
+                // Settings). The properties stay — autoUpdateProfiles
+                // still drives ContentView's subscription refresh,
+                // client.mode still drives the sample/live badge —
+                // frozen at their persisted values. The 开发者模式
+                // toggle stays: it also gates the Developer row in
+                // ToolsView.
                 Toggle("开发者模式", isOn: $settingsStore.developerMode)
-                Picker("核心模式", selection: $client.mode) {
-                    ForEach(ConcordMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                Text(client.mode == .sample
-                     ? "示例数据模式：所有页面显示的都是内置示例数据，不是真实核心数据。"
-                     : "实时核心模式：数据来自 PacketTunnel 扩展内的真实核心（需先启动 VPN）。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
 
             // Group icon pack (v0.2.53): the user pastes the URL
             // of an icon-pack JSON file (iBL3ND format) and taps
             // 导入 / 更新; the pack is downloaded once, stored
             // locally, and group icons resolve from it by name.
-            // There are no bundled brand icons — the pack is the
-            // only icon source besides a group's own profile
-            // icon. The field starts empty; nothing is fetched
-            // until the button is tapped.
+            // The pack still wins over the bundled brands
+            // (BrandIcons, v0.2.141). The field starts empty;
+            // nothing is fetched until the button is tapped.
             Section("图标源") {
                 TextField("图标源链接（JSON）", text: $iconPack.urlText)
                     .keyboardType(.URL)
@@ -435,93 +427,24 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            // The reference Tools page (IMG_1111) has no rows for
-            // these three pages, so they moved here from ToolsView
-            // to stay reachable: 规则 / 日志 / 快捷指令.
-            // v0.2.68: MITM 拦截记录 joins them — the MITM sections
-            // moved to the 进阶配置 MITM card, and this was the
-            // only entry point to MitmView.
-            // v0.2.139 (Q-D3): the IP 质量 page is gone — upstream
-            // has no such page, only the per-IP sheet (opened by
-            // tapping an IP on the Dashboard or in the service
-            // sheet). The Tools → 常规 → IP 质量 row goes with it.
-            Section("更多工具") {
-                NavigationLink("规则") {
-                    RulesView()
-                }
-                NavigationLink("日志") {
-                    LogsView()
-                }
-                NavigationLink("快捷指令") {
-                    ShortcutsView()
-                }
-                NavigationLink("MITM 拦截记录") {
-                    MitmView()
-                }
-            }
-
-            if settingsStore.developerMode {
-                Section("开发者（core.capabilities）") {
-                    Button("读取核心能力") {
-                        Task { await settingsStore.refreshDeveloperInfo() }
-                    }
-                    if let capabilities = settingsStore.capabilities {
-                        LabeledContent("实现", value: "\(capabilities.implementation) \(capabilities.version)")
-                        LabeledContent("代理类型", value: capabilities.proxyTypes.joined(separator: ", "))
-                        LabeledContent("传输", value: capabilities.transports.joined(separator: ", "))
-                        LabeledContent("规则类型", value: capabilities.ruleTypes.joined(separator: ", "))
-                        LabeledContent("MITM", value: capabilities.features.mitm ? "支持" : "不支持")
-                        LabeledContent("ECH", value: capabilities.features.ech ? "支持" : "不支持")
-                        LabeledContent("系统协议栈", value: capabilities.features.systemStack ? "支持" : "不支持")
-                        LabeledContent("SS 插件", value: capabilities.ssPlugins.isEmpty ? "—" : capabilities.ssPlugins.joined(separator: ", "))
-                        LabeledContent("拥塞控制", value: capabilities.congestionControllers.isEmpty ? "—" : capabilities.congestionControllers.joined(separator: ", "))
-                    } else {
-                        Text("点「读取核心能力」查看核心报告的能力（需 VPN 运行）。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let message = settingsStore.developerInfoMessage {
-                        Text(message).font(.caption2).foregroundStyle(.red)
-                    }
-                    Picker("MITM 内存压力（core.setPressure）", selection: $settingsStore.pressureLevel) {
-                        Text("0 无压力").tag(0)
-                        Text("1 停止脚本").tag(1)
-                        Text("2 停止保存请求体").tag(2)
-                        Text("3 仅中继").tag(3)
-                    }
-                    Button("设置内存压力") {
-                        Task { await settingsStore.setPressure(level: settingsStore.pressureLevel) }
-                    }
-                    if let message = settingsStore.pressureMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Text("压力只升不降（核心在一段时间后自动解除），只影响 MITM 抓包的内存占用：等级 1 停止运行脚本、2 停止保存请求体、3 仅中继流量。MITM 关闭时不起作用。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Button("让核心崩溃（debug.crash）", role: .destructive) {
-                        showCrashConfirm = true
-                    }
-                    .alert("确定要让核心崩溃吗？", isPresented: $showCrashConfirm) {
-                        Button("崩溃", role: .destructive) {
-                            Task { await settingsStore.crashCore() }
-                        }
-                        Button("取消", role: .cancel) { }
-                    } message: {
-                        Text("debug.crash 会让核心进程立即中止，VPN 隧道随之断开，仅用于调试。注意：iOS 的发布版核心没有编译 debug 功能，调用会被核心拒绝，实际不会崩溃。")
-                    }
-                    if let message = settingsStore.crashMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
-                    }
-                }
-            }
-
+            // v0.2.141 (C1-d6): the 更多工具 section is gone
+            // (upstream has no such section in Settings). Entry
+            // points lost: 规则 (RulesView — no other entry point;
+            // Tools uses AddedRulesView, a different page), 快捷指令
+            // (ShortcutsView — no other entry point), MITM 拦截记录
+            // (MitmView — no other entry point). LogsView is still
+            // reachable from ToolsView:186.
+            // v0.2.141 (C1-d7): the developer section is gone
+            // (upstream has no developer section in Settings).
+            // The store methods stay (refreshDeveloperInfo,
+            // setPressure, crashCore); the MITM pressure picker
+            // and the crash button lose their only UI. The
+            // 开发者模式 toggle in 应用 stays — it also gates the
+            // Developer row in ToolsView.
             Section("关于") {
-                LabeledContent("版本", value: "Lumen \(Self.appVersion)（FlClash 风格界面）")
+                LabeledContent("版本", value: "Lumen \(Self.appVersion)")
                 LabeledContent("核心", value: "chen08209/concord（GPL-3.0-or-later）")
                 LabeledContent("界面来源", value: "chen08209/FlClash（GPL-3.0）")
-                Text("本 App 是 FlClash 界面的 SwiftUI 复刻，核心经 PacketTunnel 扩展链接（packet-channel 数据面），但静态库构建与真机数据面尚未验证，见 README 的「已上线与待办」一节。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
@@ -588,16 +511,17 @@ struct ProvidersView: View {
                 }
                 .listRowBackground(Color.clear)
             }
-            ForEach(ruleStore.providers) { provider in
+            // v0.2.141 (C20-c1): this page is rule providers only
+            // (upstream Advanced → 提供方, advanced.dart). Proxy
+            // providers moved to ProxyProvidersView (below).
+            ForEach(ruleStore.ruleProviders) { provider in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack {
                         Text(provider.name).font(.footnote)
                         Spacer()
-                        Text(provider.type)
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.purple.opacity(0.12), in: Capsule())
+                        // v0.2.141 (C20-d2): the purple type capsule
+                        // is gone — on a rule-only page every row
+                        // would say "rule".
                     }
                     Text("\(provider.vehicleType) · \(provider.count) 条 · \(provider.path)")
                         .font(.caption2)
@@ -624,10 +548,6 @@ struct ProvidersView: View {
                         }
                     }
                     .tint(.blue)
-                    Button("健康检查") {
-                        Task { await ruleStore.healthCheckProvider(provider) }
-                    }
-                    .tint(.green)
                     Button("更新") {
                         Task {
                             do {
@@ -690,17 +610,6 @@ struct ProvidersView: View {
                     .foregroundStyle(.secondary)
                     .listRowBackground(Color.clear)
             }
-            // Tools B16: the old copy here (via RuleStore's trigger
-            // message) promised "稍后刷新列表查看", but the core
-            // never returns provider health state, so no refresh
-            // can ever show a result. The trigger message itself
-            // is fixed in RuleStore (another worker) to this same
-            // wording; this footnote states it on this page too,
-            // next to the 健康检查 swipe action above.
-            Text("健康检查已触发，但核心不返回提供方健康状态，无法显示结果")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .listRowBackground(Color.clear)
             if let error = ruleStore.lastError {
                 Text(error)
                     .font(.caption2)
@@ -714,7 +623,7 @@ struct ProvidersView: View {
         .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
-        .navigationTitle("提供方")
+        .navigationTitle("规则提供方")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
         .toolbar {
@@ -824,6 +733,117 @@ struct ProvidersView: View {
     }
 }
 
+// MARK: - Proxy providers (C20-c1)
+
+/// Proxy providers only. Upstream's ExternalProvidersSliver
+/// (views/proxies/providers.dart) lists proxy providers with a
+/// header sync button and per-row update; it lives in the
+/// profile-detail sheet, which our Dashboard/Profiles phase does
+/// not have yet, so the hub's 提供方 section links here instead.
+/// No delete swipe: the core has no provider.delete (C20-b3,
+/// v0.2.142). No health check either (D8 — the core returns no
+/// health state to display).
+struct ProxyProvidersView: View {
+    @EnvironmentObject private var ruleStore: RuleStore
+    @EnvironmentObject private var client: ConcordClient
+    @State private var isSyncing = false
+
+    private var proxyProviders: [ConcordProviderInfo] {
+        ruleStore.providers.filter { $0.type == "proxy" }
+    }
+
+    var body: some View {
+        List {
+            if client.mode == .sample {
+                HStack {
+                    SampleDataBadge()
+                    Text("提供方为示例数据")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .listRowBackground(Color.clear)
+            }
+            if proxyProviders.isEmpty {
+                Text("没有代理提供方。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(proxyProviders) { provider in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(provider.name).font(.footnote)
+                    Text("\(provider.vehicleType) · \(provider.count) 条 · \(provider.path)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if let updated = provider.updatedAt {
+                        Text("更新于 \(Date(timeIntervalSince1970: TimeInterval(updated)).formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .swipeActions {
+                    Button("更新") {
+                        Task {
+                            do {
+                                try await client.providerUpdate(name: provider.name)
+                                await ruleStore.refresh()
+                            } catch {
+                                ruleStore.lastError = error.localizedDescription
+                            }
+                        }
+                    }
+                    .tint(.orange)
+                }
+            }
+            if let message = ruleStore.providerActionMessage {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .listRowBackground(Color.clear)
+            }
+            if let error = ruleStore.lastError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .listRowBackground(Color.clear)
+            }
+        }
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .scrollContentBackground(.hidden)
+        .font(.footnote.weight(.semibold))
+        .background(ConcordTheme.pageBackground)
+        .listStyle(.insetGrouped)
+        .navigationTitle("代理提供方")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await syncAll() }
+                } label: {
+                    if isSyncing { ProgressView() } else { Image(systemName: "arrow.clockwise") }
+                }
+                .disabled(isSyncing)
+            }
+        }
+        .refreshable { await ruleStore.refresh() }
+        .task { await ruleStore.refresh() }
+    }
+
+    /// Upstream's sliver header sync: updates every proxy
+    /// provider in turn, then refreshes the list.
+    private func syncAll() async {
+        isSyncing = true
+        defer { isSyncing = false }
+        for provider in proxyProviders {
+            do {
+                try await client.providerUpdate(name: provider.name)
+            } catch {
+                ruleStore.lastError = error.localizedDescription
+            }
+        }
+        await ruleStore.refresh()
+    }
+}
+
 // MARK: - Resources (FlClash: ResourcesView, lib/views/resources.dart)
 
 struct ResourcesView: View {
@@ -835,7 +855,6 @@ struct ResourcesView: View {
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var settingsStore: SettingsStore
     @ObservedObject private var iconSetStore = IconSetStore.shared
-    @State private var releaseMessage: String?
     @State private var geoFiles: [GeoFileInfo] = []
     /// Geo update interval text field (FlClash resources.dart
     /// _updateInterval: a free number input in hours, digits only,
@@ -861,10 +880,10 @@ struct ResourcesView: View {
     @AppStorage("ConcordiOS.geoAutoUpdateHours") private var geoAutoUpdateHours = 24.0
     // Custom Geo download URLs (FlClash resources.dart:661
     // UpdateGeoUrlFormDialog, with its reset-to-default). Stored per
-    // kind; the core's geo.update takes no URL parameter yet, so the
-    // saved URL is recorded here and honoured once the core /
-    // extension download path accepts one — the form says so rather
-    // than pretending the URL is already used.
+    // kind; the URLs ARE used since v0.2.119 —
+    // SettingsStore.resolvedGeoURLs() feeds them as the `geox-url`
+    // map into config apply and the live patch (C21-c2: the old
+    // comment claiming they were recorded-but-unused was stale).
     @AppStorage("ConcordiOS.geoURL.MMDB") private var geoURLMMDB = ""
     @AppStorage("ConcordiOS.geoURL.ASN") private var geoURLASN = ""
     @AppStorage("ConcordiOS.geoURL.GEOSITE") private var geoURLGeosite = ""
@@ -879,34 +898,10 @@ struct ResourcesView: View {
 
     var body: some View {
         List {
-            Section("核心") {
-                LabeledContent("内存占用", value: trafficStore.coreMemoryBytes.map { ConcordFormat.bytes(Int64($0)) } ?? "—")
-                Text("core.stats 只暴露 rss。NetworkExtension 进程内存上限很紧（历史约 15–50 MB），大规则集与 GeoIP 可能触发 Jetsam。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Button("释放核心内存（core.releaseMemory）") {
-                    Task {
-                        do {
-                            try await client.coreReleaseMemory()
-                            await trafficStore.refreshMemory()
-                            releaseMessage = "已请求核心释放内存"
-                        } catch {
-                            releaseMessage = "释放失败：\(error.localizedDescription)"
-                        }
-                    }
-                }
-                if let message = releaseMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            Section("已加载") {
-                LabeledContent("代理组", value: "\(proxyStore.nonHiddenGroups.count)")
-                LabeledContent("节点", value: "\(proxyStore.allNodes.count)")
-                LabeledContent("规则", value: "\(ruleStore.rules.count)")
-                LabeledContent("提供方", value: "\(ruleStore.providers.count)")
-                LabeledContent("规则提供方", value: "\(ruleStore.ruleProviders.count)")
-                LabeledContent("MITM 模块", value: "\(mitmModuleStore.modules.filter(\.enabled).count) / \(mitmModuleStore.modules.count) 已启用")
-            }
+            // v0.2.141 (C21-d1/d2): the 核心 section (memory +
+            // release button) and the 已加载 section are gone
+            // (upstream resources.dart has neither — memory lives
+            // on the Dashboard, counts live on their own pages).
             Section("可更新资源") {
                 Button(isUpdatingAll ? "全部更新中…" : "全部更新") {
                     Task { await updateAllResources() }
@@ -936,24 +931,9 @@ struct ResourcesView: View {
                     }
                 }
             }
-            Section("代理提供方") {
-                let proxyProviders = ruleStore.providers.filter { $0.type == "proxy" }
-                if proxyProviders.isEmpty {
-                    Text("没有代理提供方。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(proxyProviders) { provider in
-                        resourceRow(
-                            title: provider.name,
-                            subtitle: "\(provider.count) 条 · \(provider.vehicleType)",
-                            updatedAt: provider.updatedAt,
-                            updatingKey: "provider:\(provider.name)",
-                            onUpdate: { await updateProvider(provider) }
-                        )
-                    }
-                }
-            }
+            // v0.2.141 (C21-d3): the 代理提供方 section is gone —
+            // proxy providers live on their own page now
+            // (ProxyProvidersView, C20-c1).
             Section("MITM 模块") {
                 if mitmModuleStore.modules.isEmpty {
                     Text("没有 MITM 模块。")
@@ -979,7 +959,7 @@ struct ResourcesView: View {
                     .foregroundStyle(.secondary)
             }
             Section("图标集") {
-                LabeledContent("内置图标集", value: "默认 / 彩色 / 线条")
+                LabeledContent("内置图标集", value: "默认")
                 Text("内置图标集没有远程更新；切换图标集见 工具 → 进阶配置 → 图标集。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

@@ -11,13 +11,13 @@ import SwiftUI
 struct ThemePickerView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.dismiss) private var dismiss
-    /// The preview toggle is a live miniature, not a real switch:
-    /// it used to be bound to `.constant(true)`, so tapping it did
-    /// nothing and looked dead. It now flips local state.
-    @State private var previewVpnOn = true
     @State private var newCustomColor = Color.blue
     @State private var customColorMessage: String?
     @State private var showResetConfirm = false
+    /// The custom colour awaiting delete confirmation (upstream
+    /// _handleDelete asks first; the old long-press menu deleted
+    /// with no confirm).
+    @State private var deletingCustomColor: String?
 
     /// FlClash defaultPrimaryColors (common/constant.dart:196-205)
     /// not covered by the 6 ThemeAccent presets: pink, red, yellow,
@@ -36,70 +36,12 @@ struct ThemePickerView: View {
     var body: some View {
         List {
             Section("预览") {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        BlobIcon(systemName: "globe", iconColor: .white, blobColor: themeStore.accentColor, size: 56)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("仪表盘")
-                                .font(.caption.weight(.semibold))
-                            Text("这就是换主题后的样子")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        PillBadge(text: "运行中", tint: .green)
-                    }
-                    CapsuleProgressBar(fraction: 0.62)
-                    HStack(spacing: 8) {
-                        ForEach(["规则", "全局", "直连"], id: \.self) { mode in
-                            Text(mode)
-                                .font(.footnote)
-                                .fontWeight(.semibold)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 6)
-                                .background(mode == "规则" ? themeStore.accentColor : ConcordTheme.softFill, in: Capsule())
-                                .foregroundStyle(mode == "规则" ? .white : Color(.label))
-                        }
-                    }
-                    // NAGRAM-style VPN row (v0.2.46 ITEM 2): the
-                    // preview depicts the running state (its header
-                    // pill says 运行中), so it shows the blue shield
-                    // + "已连接" + an ON toggle. The toggle stays
-                    // decorative — bound to local $previewVpnOn
-                    // only, never wired to start/stop the VPN.
-                    // (VpnGlyphIcon is file-private to
-                    // DashboardView, so the preview uses the SF
-                    // shield.fill glyph: white shield on the same
-                    // blue flower badge.)
-                    HStack(spacing: 12) {
-                        ZStack {
-                            FlowerBadgeShape()
-                                .fill(Color.blue)
-                                .frame(width: 40, height: 40)
-                            Image(systemName: "shield.fill")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.white)
-                        }
-                        .frame(width: 40, height: 40)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("VPN")
-                                .font(.system(size: 14, weight: .semibold))
-                            Text("已连接")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Toggle("", isOn: $previewVpnOn)
-                            .labelsHidden()
-                            .tint(.blue)
-                    }
-                }
-                // v0.2.130: no .concordCard() here — the List's
-                // Section already paints the rounded card
-                // background, and the inner card nested a second,
-                // smaller rounded background inside it (IMG_1365).
-                // The preview content sits directly on the single
-                // section background now.
+                // v0.2.141 (C2-c3): the full live MiniScreen, not
+                // the old static card — see ThemeLivePreview.swift.
+                // The List's Section already paints the rounded
+                // card background (v0.2.130), so the preview sits
+                // directly on it.
+                ThemeLivePreview()
             }
             Section("外观") {
                 ForEach(ThemeAppearance.allCases) { appearance in
@@ -131,6 +73,15 @@ struct ThemePickerView: View {
             }
 
             Section("主题色") {
+                // v0.2.141 (C2-d1): ONE swatch row, as upstream's
+                // _ColorSwatches Wrap — the old split grids (main
+                // presets / extra presets / custom list) are merged.
+                // The presets are upstream's 8 + the teal preset
+                // this app already shipped (kept) + magenta (the
+                // MuYu video's primary); custom colours follow in
+                // the same row. The add control stays below the row
+                // (upstream's _AddColorButton opens a colour sheet;
+                // ours keeps the inline picker).
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
                     ForEach(ThemeAccent.allCases) { accent in
                         Button {
@@ -157,9 +108,6 @@ struct ThemePickerView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                }
-                .padding(.vertical, 4)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
                     ForEach(Self.extraPresets, id: \.hex) { preset in
                         Button {
                             themeStore.customAccentHex = preset.hex
@@ -184,46 +132,42 @@ struct ThemePickerView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                }
-                .padding(.vertical, 4)
-                if !themeStore.customColors.isEmpty {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
-                        ForEach(themeStore.customColors, id: \.self) { hex in
-                            Button {
-                                themeStore.customAccentHex = hex
-                                themeStore.save()
-                            } label: {
-                                VStack(spacing: 6) {
-                                    ZStack {
-                                        Circle()
-                                            .fill(Color(hex: hex) ?? .gray)
-                                            .frame(width: 44, height: 44)
-                                        if themeStore.customAccentHex == hex {
-                                            Image(systemName: "checkmark")
-                                                .font(.callout.weight(.semibold))
-                                                .fontWeight(.bold)
-                                                .foregroundStyle(.white)
-                                        }
-                                    }
-                                    Text(hex)
-                                        .font(.system(size: 9))
-                                        .foregroundStyle(themeStore.customAccentHex == hex ? Color(.label) : .secondary)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button("删除", role: .destructive) {
-                                    themeStore.customColors.removeAll { $0 == hex }
+                    ForEach(themeStore.customColors, id: \.self) { hex in
+                        Button {
+                            themeStore.customAccentHex = hex
+                            themeStore.save()
+                        } label: {
+                            VStack(spacing: 6) {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color(hex: hex) ?? .gray)
+                                        .frame(width: 44, height: 44)
                                     if themeStore.customAccentHex == hex {
-                                        themeStore.customAccentHex = nil
+                                        Image(systemName: "checkmark")
+                                            .font(.callout.weight(.semibold))
+                                            .fontWeight(.bold)
+                                            .foregroundStyle(.white)
                                     }
-                                    themeStore.save()
                                 }
+                                Text(hex)
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(themeStore.customAccentHex == hex ? Color(.label) : .secondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        // Upstream's swatch menu (theme.dart
+                        // _ColorSwatches) has 编辑 + 删除 with a
+                        // confirm dialog; ours keeps the delete
+                        // half of that menu (no edit flow exists
+                        // here), now with upstream's confirm.
+                        .contextMenu {
+                            Button("删除", role: .destructive) {
+                                deletingCustomColor = hex
                             }
                         }
                     }
-                    .padding(.vertical, 4)
                 }
+                .padding(.vertical, 4)
                 HStack {
                     ColorPicker("自定义颜色", selection: $newCustomColor)
                     Button("添加") {
@@ -243,7 +187,7 @@ struct ThemePickerView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                Text("主题色会用在按钮、开关、选中状态和进度条上。长按自定义颜色可删除。")
+                Text("主题色会用在按钮、开关、选中状态和进度条上。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 // FlClash theme.dart:109-135 _PrimaryColorItem reset:
@@ -375,6 +319,25 @@ struct ThemePickerView: View {
                     Image(systemName: "chevron.left")
                 }
             }
+        }
+        // Upstream _handleDelete confirms before removing a
+        // custom colour (and falls back to the default blue when
+        // the deleted colour was the active one).
+        .alert("删除这个自定义颜色吗？", isPresented: Binding(
+            get: { deletingCustomColor != nil },
+            set: { if !$0 { deletingCustomColor = nil } }
+        )) {
+            Button("删除", role: .destructive) {
+                if let hex = deletingCustomColor {
+                    themeStore.customColors.removeAll { $0 == hex }
+                    if themeStore.customAccentHex == hex {
+                        themeStore.customAccentHex = nil
+                    }
+                    themeStore.save()
+                }
+                deletingCustomColor = nil
+            }
+            Button("取消", role: .cancel) { deletingCustomColor = nil }
         }
     }
 

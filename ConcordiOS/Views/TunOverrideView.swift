@@ -23,6 +23,14 @@ import SwiftUI
 // enable / device / stack / auto-route stay owned by the
 // extension and are never overridden here: on iOS the device is
 // the packet channel, not a named interface.
+//
+// v0.2.141 (C13-c1): the button below routes through
+// OverrideStore.applyTunOverrides() — the same save path as the
+// sibling pages' apply buttons, but it never live-applies to a
+// running tunnel (config B1). v0.2.141 (C13-c2): the
+// congestion-controller key is gated on the core's capability
+// (MuYu tunCongestionAvailable) — see OverrideStore /
+// OverrideSectionEditor; the capability is refreshed on appear.
 
 struct TunOverrideView: View {
     @ObservedObject private var store = OverrideStore.shared
@@ -51,16 +59,22 @@ struct TunOverrideView: View {
                 .pickerStyle(.menu)
             }
             // MuYu gates the congestion-controller field on the
-            // core's capability (tunCongestionAvailable): the check
-            // lives here on the TUN page; full per-field gating is
-            // in OverrideStore / OverrideView.
+            // core's capability (tunCongestionAvailable): the
+            // check lives here on the TUN page, and the add sheet
+            // hides the key when the core reports no congestion
+            // controller (OverrideSectionEditor, C13-c2). The
+            // capability is refreshed on appear so the gate has a
+            // value before the user opens the add sheet.
             Section("拥塞控制支持") {
                 Button("检查核心是否支持拥塞控制") {
-                    Task { await settingsStore.refreshDeveloperInfo() }
+                    Task {
+                        await settingsStore.refreshDeveloperInfo()
+                        await store.refreshCongestionCapability()
+                    }
                 }
                 if let capabilities = settingsStore.capabilities {
                     if capabilities.congestionControllers.isEmpty {
-                        Text("核心没有报告可用的拥塞控制算法：这里的拥塞控制覆盖可能不会生效。")
+                        Text("核心没有报告可用的拥塞控制算法：这里的拥塞控制覆盖可能不会生效，添加页里也不会提供该项。")
                             .font(.footnote)
                             .foregroundStyle(.orange)
                     } else {
@@ -86,18 +100,13 @@ struct TunOverrideView: View {
             }
             Section {
                 // B12 + config B1: this page deliberately does NOT
-                // live-apply. applyOverrides() runs config.apply,
-                // and any live apply that touches the (tun,
-                // tun_inet4, ipv6) triple closes the packet-channel
-                // TUN runner and never restarts it — and on this
-                // page most keys are iOS-dead anyway, so a live
-                // apply would risk killing the tunnel for nothing.
-                // Save only: MTU / congestion-controller take effect
-                // at the next VPN start (via tun.start); the dead
-                // keys take effect never, as noted above.
-                Button("保存覆盖（下次启动 VPN 时生效）") {
-                    store.save()
-                    store.applyMessage = "已保存，下次启动 VPN 时生效（MTU 与拥塞控制）；其余 TUN 键在 iOS 上无效，改了也不会生效，且不会为此重载运行中的隧道。"
+                // live-apply to a running tunnel — see
+                // OverrideStore.applyTunOverrides(). Save only:
+                // MTU / congestion-controller take effect at the
+                // next VPN start (via tun.start); the dead keys
+                // take effect never, as noted above.
+                Button("应用覆盖") {
+                    Task { await store.applyTunOverrides() }
                 }
                 if let message = store.applyMessage {
                     Text(message)
@@ -114,6 +123,14 @@ struct TunOverrideView: View {
         .font(.footnote.weight(.semibold))
         .navigationTitle("TUN 覆盖")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            // C13-c2: refresh the congestion capability on appear
+            // so the add sheet's gate has a value (unknown still
+            // offers the key — see OverrideSectionEditor).
+            if store.congestionControllers == nil {
+                await store.refreshCongestionCapability()
+            }
+        }
     }
 
     private func tunYamlText() -> String {

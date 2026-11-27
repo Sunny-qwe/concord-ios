@@ -557,18 +557,23 @@ struct ProxiesView: View {
     /// card.dart _memberIconSize): only when the node is itself a
     /// group. The group's own profile icon wins; when it has none,
     /// the user-imported icon pack is checked by the subgroup's
-    /// name (IconPackStore.iconURL) — the pack is the only other
-    /// icon source (no built-in brand icons, v0.2.53). Leaf nodes
-    /// have no icon source — the Concord core exposes no per-node
-    /// icon (ConcordNodeInfo has name/type/provider only), so they
-    /// show nothing, exactly as MuYu's `if (proxy.icon.isNotEmpty)`.
+    /// name (IconPackStore.iconURL), then the bundled brands
+    /// (BrandIcons, v0.2.141 — a match returns the name so
+    /// GroupIconImageView resolves it to the brand mark there).
+    /// Leaf nodes have no icon source — the Concord core exposes
+    /// no per-node icon (ConcordNodeInfo has name/type/provider
+    /// only), so they show nothing, exactly as MuYu's
+    /// `if (proxy.icon.isNotEmpty)`.
     /// A pack URL is returned as a string: GroupIconImageView loads
     /// http(s) icon strings directly.
     private func memberIcon(for node: ProxyNode, groupsByName: [String: ProxyGroup]) -> String? {
         guard Self.groupTypes.contains(node.type),
               let sub = groupsByName[node.name] else { return nil }
         if !sub.icon.isEmpty { return sub.icon }
-        return IconPackStore.shared.iconURL(for: node.name)?.absoluteString
+        if let packURL = IconPackStore.shared.iconURL(for: node.name) {
+            return packURL.absoluteString
+        }
+        return BrandIcons.hasBrand(for: node.name) ? node.name : nil
     }
 
     private func gridColumns(width: CGFloat) -> [GridItem] {
@@ -1982,16 +1987,22 @@ struct ProxiesView: View {
     /// (MuYu _SelectedProxy: groups.getGroup(proxyName)?.icon).
     /// The group's own profile icon wins; when it has none, the
     /// user-imported icon pack is checked by the selected node's
-    /// name (IconPackStore.iconURL) — a node with no icon anywhere
-    /// shows no monogram there. A pack URL is returned as a string:
-    /// GroupIconImageView loads http(s) icon strings directly.
+    /// name (IconPackStore.iconURL), then the bundled brands
+    /// (BrandIcons, v0.2.141 — a match returns the name so
+    /// GroupIconImageView resolves it to the brand mark there).
+    /// A node with no icon anywhere shows no monogram there. A
+    /// pack URL is returned as a string: GroupIconImageView loads
+    /// http(s) icon strings directly.
     private func selectedNodeIcon(for group: ProxyGroup, groupsByName: [String: ProxyGroup]) -> String? {
         guard let selected = group.selectedNodeName else { return nil }
         if let sub = groupsByName[selected],
            !sub.icon.isEmpty {
             return sub.icon
         }
-        return IconPackStore.shared.iconURL(for: selected)?.absoluteString
+        if let packURL = IconPackStore.shared.iconURL(for: selected) {
+            return packURL.absoluteString
+        }
+        return BrandIcons.hasBrand(for: selected) ? selected : nil
     }
 
     /// The selected node's resolved delay for the latency pill
@@ -2289,10 +2300,10 @@ struct ProxiesView: View {
 /// own icon (a URL is loaded; a name is matched through the
 /// user-imported icon pack, v0.2.57; other short text such as an
 /// emoji or a letter is shown as-is), then the user-imported icon
-/// pack (IconPackStore, matched by group name), else the group's
-/// first character. There are NO bundled brand icons (v0.2.53,
-/// user direction): the pack is the only icon source besides the
-/// profile icon, and the monogram is the only fallback.
+/// pack (IconPackStore, matched by group name), then the bundled
+/// brand marks (BrandIcons, v0.2.141 — the icons revert restores
+/// MuYu's 20-entry map; the pack wins over a brand when both
+/// match), else the group's first character.
 /// Observes the pack itself, so an import re-renders only this leaf
 /// — ProxiesView never observes the store (v0.2.51 scroll fix).
 /// A failed image load falls back to the monogram: the cached
@@ -2316,16 +2327,18 @@ private struct GroupIconImageView: View {
             } else if !icon.isEmpty {
                 // A name-form icon (e.g. "YouTube" baked as the
                 // group's `icon:`) is matched through the user's
-                // icon pack first; only a pack miss falls back to
-                // showing the text itself (an emoji or a single
-                // letter). A URL never reaches here — it is handled
-                // above.
+                // icon pack first, then the bundled brands; only a
+                // miss in both falls back to showing the text
+                // itself (an emoji or a single letter). A URL never
+                // reaches here — it is handled above.
                 if let packURL = iconPack.iconURL(for: icon) {
                     CachedIconImage(url: packURL) {
                         Text(monogram)
                             .font(.subheadline)
                             .fontWeight(.semibold)
                     }
+                } else if let brand = BrandIcons.icon(for: icon) {
+                    BrandIcons.view(for: brand)
                 } else {
                     Text(icon)
                         .font(.subheadline)
@@ -2337,6 +2350,8 @@ private struct GroupIconImageView: View {
                         .font(.subheadline)
                         .fontWeight(.semibold)
                 }
+            } else if let brand = BrandIcons.icon(for: name) {
+                BrandIcons.view(for: brand)
             } else {
                 Text(monogram)
                     .font(.subheadline)
@@ -2348,9 +2363,9 @@ private struct GroupIconImageView: View {
 
 /// A group's icon at any size: the profile's icon URL (loaded) or
 /// short text, else the user-imported icon pack (matched by group
-/// name), else the group's first character. No bundled brand icons
-/// (v0.2.53, user direction). Filled = rounded tile with 6pt inner
-/// padding, plain = bare in the accent colour, hidden = nothing.
+/// name), else a bundled brand mark (v0.2.141), else the group's
+/// first character. Filled = rounded tile with 6pt inner padding,
+/// plain = bare in the accent colour, hidden = nothing.
 private struct GroupBrandIconView: View {
     let icon: String
     let name: String

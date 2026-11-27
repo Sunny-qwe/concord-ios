@@ -415,7 +415,7 @@ final class ProfileStore: ObservableObject {
     /// Error wrapper so the age-decrypt helper can return a plain
     /// message in a `Result`: `String` itself does not conform to
     /// `Error`, so `Result<Data, String>` does not compile.
-    private struct AgeDecryptError: Error, CustomStringConvertible {
+    struct AgeDecryptError: Error, CustomStringConvertible {
         let message: String
         var description: String { message }
     }
@@ -460,10 +460,10 @@ final class ProfileStore: ObservableObject {
     /// is saved with the key, like the link flow) or the key itself
     /// was wrong.
     @MainActor
-    func decryptAgeData(_ data: Data, key: String) async -> Result<Data, String> {
+    func decryptAgeData(_ data: Data, key: String) async -> Result<Data, AgeDecryptError> {
         switch await decryptAgeDataIfNeeded(data, key: key) {
         case .success(let plain): return .success(plain)
-        case .failure(let error): return .failure(error.message)
+        case .failure(let error): return .failure(error)
         }
     }
 

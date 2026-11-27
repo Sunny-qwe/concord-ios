@@ -201,9 +201,9 @@ final class UnifiedImporter: ObservableObject {
                     }
                     await importText(text, yamlName: yamlBase)
                     return
-                case .failure(let message):
-                    results = [ImportLineResult(order: 0, line: fileName, kind: .unknown, succeeded: false, message: message)]
-                    summaryText = "解密失败：\(message)"
+                case .failure(let error):
+                    results = [ImportLineResult(order: 0, line: fileName, kind: .unknown, succeeded: false, message: error.message)]
+                    summaryText = "解密失败：\(error.message)"
                     return
                 }
             }

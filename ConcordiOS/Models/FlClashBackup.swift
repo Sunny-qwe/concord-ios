@@ -1582,7 +1582,36 @@ enum FlClashExport {
             if proxy.tls { definition["tls"] = true }
             if !proxy.sni.isEmpty { definition["sni"] = proxy.sni }
             if !proxy.network.isEmpty { definition["network"] = proxy.network }
-            if proxy.udp { definition["udp"] = true }
+            if proxy.udp || proxy.type == "openvpn" { definition["udp"] = true }
+            if proxy.type == "openvpn" {
+                // OpenVPN form fields (v0.2.151, core key names):
+                // without these the backup would restore an
+                // openvpn proxy as raw (or lose the fields).
+                if proxy.ovpnProto.lowercased() == "tcp" { definition["proto"] = "tcp" }
+                if !proxy.ovpnCa.isEmpty { definition["ca"] = proxy.ovpnCa }
+                if !proxy.ovpnCert.isEmpty { definition["cert"] = proxy.ovpnCert }
+                if !proxy.ovpnKey.isEmpty { definition["key"] = proxy.ovpnKey }
+                if !proxy.ovpnTlsAuth.isEmpty { definition["tls-auth"] = proxy.ovpnTlsAuth }
+                if !proxy.ovpnTlsCrypt.isEmpty { definition["tls-crypt"] = proxy.ovpnTlsCrypt }
+                if !proxy.ovpnTlsCryptV2.isEmpty { definition["tls-crypt-v2"] = proxy.ovpnTlsCryptV2 }
+                if proxy.ovpnKeyDirection == "0" || proxy.ovpnKeyDirection == "1" {
+                    definition["key-direction"] = proxy.ovpnKeyDirection
+                }
+                if !proxy.ovpnUsername.isEmpty { definition["username"] = proxy.ovpnUsername }
+                let dataCiphers = CustomProxy.splitList(proxy.ovpnDataCiphers)
+                if !dataCiphers.isEmpty { definition["data-ciphers"] = dataCiphers }
+                if !proxy.ovpnDataCiphersFallback.isEmpty { definition["data-ciphers-fallback"] = proxy.ovpnDataCiphersFallback }
+                if !proxy.ovpnAuth.isEmpty { definition["auth"] = proxy.ovpnAuth }
+                if proxy.ovpnCompLzo { definition["comp-lzo"] = "yes" }
+                if proxy.ovpnPing > 0 { definition["ping"] = proxy.ovpnPing }
+                if proxy.ovpnPingRestart > 0 { definition["ping-restart"] = proxy.ovpnPingRestart }
+                if proxy.ovpnTranWindow > 0 { definition["tran-window"] = proxy.ovpnTranWindow }
+                if proxy.ovpnHandshakeTimeout > 0 { definition["handshake-timeout"] = proxy.ovpnHandshakeTimeout }
+                if proxy.ovpnMtu > 0 { definition["mtu"] = proxy.ovpnMtu }
+                if proxy.ovpnRemoteDnsResolve { definition["remote-dns-resolve"] = true }
+                let dns = CustomProxy.splitCommaList(proxy.ovpnDns)
+                if !dns.isEmpty { definition["dns"] = dns }
+            }
             data.customProxies.append(FlClashCustomProxyRow(
                 id: snowflake, definition: definition,
                 order: orderKey(index), emptyOptions: []))
@@ -2716,6 +2745,12 @@ enum FlClashRestore {
         let formKeys: Set<String> = [
             "name", "type", "server", "port", "password", "uuid",
             "cipher", "tls", "sni", "network", "udp",
+            // OpenVPN form fields (v0.2.151, core key names).
+            "proto", "ca", "cert", "key", "tls-auth", "tls-crypt",
+            "tls-crypt-v2", "key-direction", "username",
+            "data-ciphers", "data-ciphers-fallback", "auth",
+            "comp-lzo", "ping", "ping-restart", "tran-window",
+            "handshake-timeout", "mtu", "remote-dns-resolve", "dns",
         ]
         for row in data.customProxies {
             let keys = Set(row.definition.keys)
@@ -2735,7 +2770,27 @@ enum FlClashRestore {
                     tls: FlClashJSON.bool(row.definition["tls"]) ?? false,
                     sni: FlClashJSON.string(row.definition["sni"]) ?? "",
                     network: FlClashJSON.string(row.definition["network"]) ?? "",
-                    udp: FlClashJSON.bool(row.definition["udp"]) ?? false))
+                    udp: FlClashJSON.bool(row.definition["udp"]) ?? false,
+                    ovpnProto: ["tcp", "tcp-client", "tcp4", "tcp4-client"].contains((FlClashJSON.string(row.definition["proto"]) ?? "").lowercased()) ? "tcp" : "udp",
+                    ovpnCa: FlClashJSON.string(row.definition["ca"]) ?? "",
+                    ovpnCert: FlClashJSON.string(row.definition["cert"]) ?? "",
+                    ovpnKey: FlClashJSON.string(row.definition["key"]) ?? "",
+                    ovpnTlsAuth: FlClashJSON.string(row.definition["tls-auth"]) ?? "",
+                    ovpnTlsCrypt: FlClashJSON.string(row.definition["tls-crypt"]) ?? "",
+                    ovpnTlsCryptV2: FlClashJSON.string(row.definition["tls-crypt-v2"]) ?? "",
+                    ovpnKeyDirection: FlClashJSON.string(row.definition["key-direction"]) ?? "",
+                    ovpnUsername: FlClashJSON.string(row.definition["username"]) ?? "",
+                    ovpnDataCiphers: FlClashJSON.stringList(row.definition["data-ciphers"]).joined(separator: ", "),
+                    ovpnDataCiphersFallback: FlClashJSON.string(row.definition["data-ciphers-fallback"]) ?? "",
+                    ovpnAuth: FlClashJSON.string(row.definition["auth"]) ?? "",
+                    ovpnCompLzo: FlClashJSON.bool(row.definition["comp-lzo"]) ?? ["yes", "adaptive", "true", "1"].contains((FlClashJSON.string(row.definition["comp-lzo"]) ?? "").lowercased()),
+                    ovpnPing: FlClashJSON.int(row.definition["ping"]) ?? 0,
+                    ovpnPingRestart: FlClashJSON.int(row.definition["ping-restart"]) ?? 0,
+                    ovpnTranWindow: FlClashJSON.int(row.definition["tran-window"]) ?? 0,
+                    ovpnHandshakeTimeout: FlClashJSON.int(row.definition["handshake-timeout"]) ?? 0,
+                    ovpnMtu: FlClashJSON.int(row.definition["mtu"]) ?? 0,
+                    ovpnRemoteDnsResolve: FlClashJSON.bool(row.definition["remote-dns-resolve"]) ?? false,
+                    ovpnDns: FlClashJSON.stringList(row.definition["dns"]).joined(separator: ", ")))
             } else {
                 importedRaw.append(FlClashJSON.jsonValue(row.definition))
             }

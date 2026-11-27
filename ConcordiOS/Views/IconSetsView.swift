@@ -51,6 +51,7 @@ final class IconSetStore: ObservableObject {
         "snell": "bolt.circle",
         "wireguard": "lock.shield.fill",
         "anytls": "key.fill",
+        "openvpn": "lock.fill",
         "select": "list.bullet",
         "url-test": "speedometer",
         "fallback": "arrow.triangle.2.circlepath",
@@ -63,7 +64,7 @@ final class IconSetStore: ObservableObject {
     ]
 
     /// The proxy types shown in the preview grid.
-    static let previewTypes = ["shadowsocks", "vmess", "vless", "trojan", "hysteria2", "tuic", "socks5", "http", "snell", "wireguard", "select", "url-test", "fallback", "load-balance", "smart", "relay", "direct", "reject", "dns"]
+    static let previewTypes = ["shadowsocks", "vmess", "vless", "trojan", "hysteria2", "tuic", "socks5", "http", "snell", "wireguard", "openvpn", "select", "url-test", "fallback", "load-balance", "smart", "relay", "direct", "reject", "dns"]
 
     /// v0.2.141 (C17-d1): the built-ins are down to the single
     /// 默认 pack — the 彩色 pack (per-type colours, typeColors)

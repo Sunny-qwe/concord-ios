@@ -29,11 +29,46 @@ struct CustomProxy: Codable, Equatable, Identifiable {
     var sni: String
     var network: String
     var udp: Bool
+    // OpenVPN (v0.2.151, core crates/config/src/proxy/openvpn.rs):
+    // `cipher` above is reused for the OpenVPN cipher (empty =
+    // core default AES-128-GCM) and `password` for auth-user-pass.
+    // All fields below carry declaration defaults, so the
+    // synthesized Codable decoder tolerates files saved before
+    // they existed. `peer-info` / `ip-stack` are NOT exposed in
+    // the form (reachable via raw definitions, kept verbatim).
+    var ovpnProto: String = "udp"
+    var ovpnCa: String = ""
+    var ovpnCert: String = ""
+    var ovpnKey: String = ""
+    var ovpnTlsAuth: String = ""
+    var ovpnTlsCrypt: String = ""
+    var ovpnTlsCryptV2: String = ""
+    var ovpnKeyDirection: String = ""
+    var ovpnUsername: String = ""
+    var ovpnDataCiphers: String = ""
+    var ovpnDataCiphersFallback: String = ""
+    var ovpnAuth: String = ""
+    var ovpnCompLzo: Bool = false
+    var ovpnPing: Int = 0
+    var ovpnPingRestart: Int = 0
+    var ovpnTranWindow: Int = 0
+    var ovpnHandshakeTimeout: Int = 0
+    var ovpnMtu: Int = 0
+    var ovpnRemoteDnsResolve: Bool = false
+    var ovpnDns: String = ""
 
     init(id: String = UUID().uuidString, name: String = "", type: String = "ss",
          server: String = "", port: Int = 0, password: String = "",
          uuid: String = "", cipher: String = "", tls: Bool = false,
-         sni: String = "", network: String = "", udp: Bool = false) {
+         sni: String = "", network: String = "", udp: Bool = false,
+         ovpnProto: String = "udp", ovpnCa: String = "", ovpnCert: String = "",
+         ovpnKey: String = "", ovpnTlsAuth: String = "", ovpnTlsCrypt: String = "",
+         ovpnTlsCryptV2: String = "", ovpnKeyDirection: String = "",
+         ovpnUsername: String = "", ovpnDataCiphers: String = "",
+         ovpnDataCiphersFallback: String = "", ovpnAuth: String = "",
+         ovpnCompLzo: Bool = false, ovpnPing: Int = 0, ovpnPingRestart: Int = 0,
+         ovpnTranWindow: Int = 0, ovpnHandshakeTimeout: Int = 0, ovpnMtu: Int = 0,
+         ovpnRemoteDnsResolve: Bool = false, ovpnDns: String = "") {
         self.id = id
         self.name = name
         self.type = type
@@ -46,9 +81,38 @@ struct CustomProxy: Codable, Equatable, Identifiable {
         self.sni = sni
         self.network = network
         self.udp = udp
+        self.ovpnProto = ovpnProto
+        self.ovpnCa = ovpnCa
+        self.ovpnCert = ovpnCert
+        self.ovpnKey = ovpnKey
+        self.ovpnTlsAuth = ovpnTlsAuth
+        self.ovpnTlsCrypt = ovpnTlsCrypt
+        self.ovpnTlsCryptV2 = ovpnTlsCryptV2
+        self.ovpnKeyDirection = ovpnKeyDirection
+        self.ovpnUsername = ovpnUsername
+        self.ovpnDataCiphers = ovpnDataCiphers
+        self.ovpnDataCiphersFallback = ovpnDataCiphersFallback
+        self.ovpnAuth = ovpnAuth
+        self.ovpnCompLzo = ovpnCompLzo
+        self.ovpnPing = ovpnPing
+        self.ovpnPingRestart = ovpnPingRestart
+        self.ovpnTranWindow = ovpnTranWindow
+        self.ovpnHandshakeTimeout = ovpnHandshakeTimeout
+        self.ovpnMtu = ovpnMtu
+        self.ovpnRemoteDnsResolve = ovpnRemoteDnsResolve
+        self.ovpnDns = ovpnDns
     }
 
-    static let types = ["ss", "vmess", "vless", "trojan", "socks5", "http", "hysteria2", "tuic"]
+    static let types = ["ss", "vmess", "vless", "trojan", "socks5", "http", "hysteria2", "tuic", "openvpn"]
+
+    /// OpenVPN ciphers the core accepts (openvpn.rs
+    /// OPENVPN_CIPHERS). Empty = core default AES-128-GCM.
+    static let openvpnCiphers = ["AES-128-GCM", "AES-192-GCM", "AES-256-GCM",
+                                  "AES-128-CBC", "AES-192-CBC", "AES-256-CBC",
+                                  "CHACHA20-POLY1305"]
+    /// OpenVPN auth digests the core accepts (OPENVPN_AUTHS).
+    /// Empty = core default SHA256.
+    static let openvpnAuths = ["MD5", "SHA1", "SHA256", "SHA384", "SHA512"]
 
     /// The YAML mapping for this proxy, as it appears under
     /// `proxies:` in the profile (2-space indent, list item).
@@ -74,11 +138,91 @@ struct CustomProxy: Codable, Equatable, Identifiable {
         case "hysteria2", "tuic":
             if !password.isEmpty { lines.append("    password: \(Self.quote(password))") }
             if !sni.isEmpty { lines.append("    sni: \(Self.quote(sni))") }
+        case "openvpn":
+            // Core crates/config/src/proxy/openvpn.rs: proto udp
+            // (default) / tcp; `ca` is inline PEM and REQUIRED;
+            // cert+key together, or a username (auth-user-pass),
+            // is REQUIRED — both are checked by validate.proxies
+            // before save, so a bad node never reaches the
+            // profile silently. Only non-default values are
+            // emitted (0 durations / mtu = core default).
+            if ovpnProto.lowercased() == "tcp" { lines.append("    proto: tcp") }
+            lines.append(contentsOf: Self.blockLines("ca", value: ovpnCa))
+            lines.append(contentsOf: Self.blockLines("cert", value: ovpnCert))
+            lines.append(contentsOf: Self.blockLines("key", value: ovpnKey))
+            lines.append(contentsOf: Self.blockLines("tls-auth", value: ovpnTlsAuth))
+            lines.append(contentsOf: Self.blockLines("tls-crypt", value: ovpnTlsCrypt))
+            lines.append(contentsOf: Self.blockLines("tls-crypt-v2", value: ovpnTlsCryptV2))
+            if ovpnKeyDirection == "0" || ovpnKeyDirection == "1" {
+                lines.append("    key-direction: \(ovpnKeyDirection)")
+            }
+            if !ovpnUsername.isEmpty { lines.append("    username: \(Self.quote(ovpnUsername))") }
+            if !password.isEmpty { lines.append("    password: \(Self.quote(password))") }
+            if !cipher.isEmpty { lines.append("    cipher: \(cipher)") }
+            let dataCiphers = Self.splitList(ovpnDataCiphers)
+            if !dataCiphers.isEmpty {
+                lines.append("    data-ciphers:")
+                for item in dataCiphers { lines.append("      - \(Self.quote(item))") }
+            }
+            if !ovpnDataCiphersFallback.isEmpty { lines.append("    data-ciphers-fallback: \(Self.quote(ovpnDataCiphersFallback))") }
+            if !ovpnAuth.isEmpty { lines.append("    auth: \(ovpnAuth)") }
+            if ovpnCompLzo { lines.append("    comp-lzo: yes") }
+            if ovpnPing > 0 { lines.append("    ping: \(ovpnPing)") }
+            if ovpnPingRestart > 0 { lines.append("    ping-restart: \(ovpnPingRestart)") }
+            if ovpnTranWindow > 0 { lines.append("    tran-window: \(ovpnTranWindow)") }
+            if ovpnHandshakeTimeout > 0 { lines.append("    handshake-timeout: \(ovpnHandshakeTimeout)") }
+            if ovpnMtu > 0 { lines.append("    mtu: \(ovpnMtu)") }
+            if ovpnRemoteDnsResolve { lines.append("    remote-dns-resolve: true") }
+            let dns = Self.splitCommaList(ovpnDns)
+            if !dns.isEmpty {
+                lines.append("    dns:")
+                for item in dns { lines.append("      - \(Self.quote(item))") }
+            }
         default:
             break
         }
-        if udp { lines.append("    udp: true") }
+        // An OpenVPN node always carries UDP (core warns when
+        // `udp: false` is written), so it is always emitted.
+        if udp || type == "openvpn" { lines.append("    udp: true") }
         return lines
+    }
+
+    /// A multi-line value as a YAML literal block scalar
+    /// (`key: |-` + indented lines). `quote()` would double-quote
+    /// it, and YAML folds the newlines inside double quotes to
+    /// spaces — which corrupts PEM blocks (ca/cert/key,
+    /// tls-auth, tls-crypt, tls-crypt-v2). The `|-` form keeps
+    /// every line verbatim; the core reads the exact text back.
+    static func blockLines(_ key: String, value: String) -> [String] {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var out = ["    \(key): |-"]
+        for line in trimmed.components(separatedBy: "\n") {
+            out.append("      \(line.trimmingCharacters(in: .whitespaces))")
+        }
+        return out
+    }
+
+    /// Split a comma- or colon-separated list field
+    /// (data-ciphers) into trimmed non-empty items. The core
+    /// splits data-ciphers on ':' too, so both separators are
+    /// accepted on input.
+    static func splitList(_ value: String) -> [String] {
+        value.components(separatedBy: CharacterSet(charactersIn: ",:"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Split a comma-separated list field (dns) into trimmed
+    /// non-empty items. DNS entries KEEP their colons: IPv6
+    /// literals, `host:port`, `tcp://host:port` are all valid
+    /// core DNS forms (remote_dns) — splitting on ':' would
+    /// shred them into junk. data-ciphers uses splitList, where
+    /// the core itself splits on ':' too.
+    static func splitCommaList(_ value: String) -> [String] {
+        value.components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
     }
 
     /// Quote a YAML scalar when it needs it (special characters,

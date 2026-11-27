@@ -2,12 +2,12 @@
 
 These patches are the ONLY upstream changes. The upstream tree itself is
 never copied into this repo: the GitHub workflow checks out
-`chen08209/concord` at the pinned commit below and applies these patches at
+`Vialibrex/concord` at the pinned commit below and applies these patches at
 build time. A local inspection copy lives at `../upstream/` (gitignored,
 never uploaded).
 
-- **Pinned upstream commit:** `382aeab430ba0e1b36334bea96a69831b6d5ea5e`
-  (`perf(proxy,transport): pass VMess Security::None TCP writes through and align gun and XHTTP packet-up with mihomo`, 2026-11-27)
+- **Pinned upstream commit:** `debef6ec8da84e443c3f33755b2864f2ec304e60`
+  (`chore: point repository links at Vialibrex/concord`, 2026-11-27)
 - **Produced from:** the rebase tree at `/home/hatch/workspace/scratch/v0.2.142/regen` (fresh clone at
   `382aeab`, the 10 patches below applied in order), rebased
   2026-11-27 from the previous pin `78e16c10550b87d43aec203fd828241215ddc8b0`.
@@ -15,6 +15,8 @@ never uploaded).
   with zero rejects (see the "Rebase to 382aeab" section). The local inspection copy at `../upstream/` (branch `ios-port`)
   still points at the old pin until it is refreshed; the patches in this
   directory are the authority for the new pin.
+  Rebased again 2026-11-27 to `debef6e` (v0.2.149): all 10 patches
+  apply clean with no rework, API unchanged (72 methods).
 - **Apply order:** `01`, then `02`, then `03`, then `04`, then `05`, then `06`, then `07`, then `08`, then `09`, then `10` (filenames sort in order). The OLD patch `09` (driver-coop-budget) was removed in this rebase: its content (`2e2cc02`) is now in the core. A NEW patch `09` (ios-resident-memory) was added in v0.2.134; the number was reused because the slot was free. Patch `10` (controller /services route) was added in v0.2.135.
 
 ## The patches

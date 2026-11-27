@@ -1319,6 +1319,30 @@ final class ProfileStore: ObservableObject {
         await applyProfile(active, data: data)
     }
 
+    /// Re-applies the active profile when it bakes `id`
+    /// (v0.2.152: after a provider definition was deleted from
+    /// the custom subscription, the running engine only drops it
+    /// when the config is re-applied — apply rebuilds the
+    /// provider sets fresh). Returns false (no-op) when the
+    /// active profile bakes a different subscription or none —
+    /// callers only read lastError when it returns true, since
+    /// a no-op leaves a stale lastError untouched. Failure
+    /// surfaces in lastError via applyProfile — the caller never
+    /// silently assumes the provider is gone. When the tunnel is
+    /// stopped, applyProfile still re-bakes + rewrites the shared
+    /// config.yaml, so the deletion takes effect at the next VPN
+    /// start.
+    @discardableResult
+    func reapplyActiveForSubscription(id: UUID) async -> Bool {
+        guard let active = activeProfile,
+              let subID = CustomSubscriptionStore.bakedSubscriptionID(for: active.id),
+              subID == id,
+              let activePath = absolutePath(for: active),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: activePath)) else { return false }
+        await applyProfile(active, data: data)
+        return true
+    }
+
     /// Stat counts of the applied config, read from the shared
     /// config.yaml on disk (upstream profile_detail.dart
     /// _countConfigFile / configCountsOf: groups / proxies / rules
@@ -1365,6 +1389,11 @@ final class ProfileStore: ObservableObject {
         // to this profile (providerProfileMap). Strip those entries
         // so bake falls back to http instead of confining a deleted
         // profile's file (which no longer exists).
+        // v0.2.152 (148 leftover #3): delete the confined files
+        // FIRST — the strip below discards the fileTokens, and
+        // the orphaned files would otherwise linger under
+        // providers/<subID>/proxies/ with nothing referencing them.
+        CustomSubscriptionStore.deleteConfinedProxyFiles(forProfileID: profile.id)
         let store = CustomSubscriptionStore()
         for var sub in store.subscriptions where sub.providerProfileMap.values.contains(where: { $0.profileId == profile.id }) {
             sub.providerProfileMap = sub.providerProfileMap.filter { $0.value.profileId != profile.id }

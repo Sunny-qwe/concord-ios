@@ -895,6 +895,31 @@ final class CustomSubscriptionStore: ObservableObject {
     }
 
     func delete(_ sub: CustomSubscription) {
+        // v0.2.152 (audit j): a deleted subscription leaves its
+        // confined files + mapped ClashProvider records orphaned
+        // — clean them up the same way provider delete does.
+        // Confined files are per-sub-UUID, so they can never be
+        // shared; records are deleted only when no OTHER sub
+        // references them (same-sub duplicates delete once —
+        // provider(id:) returns nil the second time). Runs BEFORE
+        // the sub leaves the list, so the stillUsed check can see
+        // the other subs. Orphaned files/records cannot resurrect
+        // anything (the bake map is dropped below), so this is a
+        // storage leak fix, not a correctness fix.
+        for ref in sub.providerProfileMap.values {
+            Self.deleteConfinedFile(relative: "providers/\(sub.id.uuidString)/proxies/\(ref.fileToken).yaml")
+        }
+        for ref in sub.ruleProviderMap.values {
+            Self.deleteConfinedFile(relative: "providers/\(sub.id.uuidString)/rules/\(ref.fileToken)")
+            let clashId = ref.clashProviderId
+            let stillUsed = subscriptions.contains {
+                $0.id != sub.id && $0.ruleProviderMap.values.contains { $0.clashProviderId == clashId }
+            }
+            if !stillUsed {
+                let clashStore = ClashProviderStore()
+                if let record = clashStore.provider(id: clashId) { clashStore.delete(record) }
+            }
+        }
         subscriptions.removeAll { $0.id == sub.id }
         save()
         // Drop bake-map entries pointing at the deleted
@@ -1579,6 +1604,119 @@ final class CustomSubscriptionStore: ObservableObject {
             try data.write(to: dest, options: .atomic)
         } catch { return nil }
         return relative
+    }
+
+    // MARK: - Provider delete cleanup (v0.2.152, C20-b3)
+
+    /// Deletes one confined file under the app group home
+    /// (providers/<subID>/proxies|rules/<fileToken>[.yaml]).
+    /// Missing file = already gone; never an error.
+    private static func deleteConfinedFile(relative: String) {
+        guard let root = appGroupURL else { return }
+        try? FileManager.default.removeItem(at: root.appendingPathComponent(relative))
+    }
+
+    /// Resolves a core-reported provider path to the custom
+    /// subscription + rule-provider definition that owns it, when
+    /// the path is a confined file this app wrote. The core
+    /// confines relative paths against its home (platform/home
+    /// confine: relative → home.join), so provider.path is the
+    /// ABSOLUTE path <home>/providers/<uuid>/rules/<token> — match
+    /// the trailing four components, then confirm the token in
+    /// the owning sub's ruleProviderMap (the map key is the
+    /// provider name). Nil for any other path: profile-defined /
+    /// http-cache providers have no delete here (upstream
+    /// proxies/providers.dart has no delete either). Takes the
+    /// subscriptions to scan so a list page does not re-read the
+    /// file once per row.
+    static func ownerOfConfinedRuleProvider(path: String, in subscriptions: [CustomSubscription]) -> (sub: CustomSubscription, provider: CustomProvider)? {
+        let parts = path.split(separator: "/").map(String.init)
+        guard parts.count >= 4,
+              parts[parts.count - 4] == "providers",
+              parts[parts.count - 2] == "rules",
+              let subID = UUID(uuidString: parts[parts.count - 3]) else { return nil }
+        let token = parts[parts.count - 1]
+        guard let sub = subscriptions.first(where: { $0.id == subID }),
+              let name = sub.ruleProviderMap.first(where: { $0.value.fileToken == token })?.key,
+              let provider = sub.ruleProviders.first(where: { $0.name == name }) else { return nil }
+        return (sub, provider)
+    }
+
+    /// Deletes the confined proxy files whose providerProfileMap
+    /// entry pointed at `profileID` (v0.2.152; 148 leftover #3).
+    /// Call BEFORE stripping those map entries — afterwards the
+    /// fileTokens are gone. The bake already falls back to http
+    /// for a deleted profile (ProfileStore.delete); this only
+    /// stops the orphaned files accumulating under
+    /// providers/<subID>/proxies/.
+    static func deleteConfinedProxyFiles(forProfileID profileID: UUID) {
+        let store = CustomSubscriptionStore()
+        for sub in store.subscriptions {
+            for ref in sub.providerProfileMap.values where ref.profileId == profileID {
+                deleteConfinedFile(relative: "providers/\(sub.id.uuidString)/proxies/\(ref.fileToken).yaml")
+            }
+        }
+    }
+
+    /// After a subscription is saved, removes the leftovers of
+    /// every provider definition that disappeared between `old`
+    /// and `new` (diffed by name, per kind) and returns the
+    /// cleaned-up names. Proxy provider: strip its
+    /// providerProfileMap entry (the mapped URL Profile itself is
+    /// NOT deleted — it is a standalone profile) and delete its
+    /// confined file. Rule provider: strip its ruleProviderMap
+    /// entry, delete its confined file, and delete the
+    /// ClashProvider record (record + content file) only when no
+    /// other subscription still references the same record.
+    /// The running engine drops the provider at the next
+    /// config.apply — apply rebuilds both provider sets fresh
+    /// from the profile and carry_rule_sets only carries
+    /// providers in the new list (core apply.rs:578/601-602/
+    /// 695-705). No core RPC exists or is needed: the engine has
+    /// no provider registry independent of the applied config
+    /// (providers.rs: list/get/update/sideLoad/healthCheck only),
+    /// and the core http cache (proxies/<md5(url)>) is keyed by
+    /// URL and shared across profiles, so it must NOT be deleted
+    /// — initial() only loads it for providers in the current
+    /// config, so a stale cache file cannot resurrect a deleted
+    /// provider.
+    @discardableResult
+    static func cleanupDeletedProviders(old: CustomSubscription, new: CustomSubscription) -> [String] {
+        let store = CustomSubscriptionStore()
+        guard var saved = store.subscriptions.first(where: { $0.id == new.id }) else { return [] }
+        var cleaned: [String] = []
+        for provider in old.proxyProviders where !new.proxyProviders.contains(where: { $0.name == provider.name }) {
+            if let ref = saved.providerProfileMap[provider.name] {
+                saved.providerProfileMap.removeValue(forKey: provider.name)
+                deleteConfinedFile(relative: "providers/\(saved.id.uuidString)/proxies/\(ref.fileToken).yaml")
+            }
+            cleaned.append(provider.name)
+        }
+        for provider in old.ruleProviders where !new.ruleProviders.contains(where: { $0.name == provider.name }) {
+            if let ref = saved.ruleProviderMap[provider.name] {
+                saved.ruleProviderMap.removeValue(forKey: provider.name)
+                deleteConfinedFile(relative: "providers/\(saved.id.uuidString)/rules/\(ref.fileToken)")
+                let clashId = ref.clashProviderId
+                // stillUsed reads the store snapshot taken at the
+                // top of this function (pre-update): the same-sub
+                // clause uses the already-stripped local `saved`
+                // map, and other subs are excluded from `saved`
+                // by id — so a record shared with another sub
+                // (or with a second provider in this sub) survives.
+                // Do not reorder the strip above this check.
+                let stillUsed = store.subscriptions.contains {
+                    $0.id != saved.id && $0.ruleProviderMap.values.contains { $0.clashProviderId == clashId }
+                } || saved.ruleProviderMap.values.contains { $0.clashProviderId == clashId }
+                if !stillUsed {
+                    let clashStore = ClashProviderStore()
+                    if let record = clashStore.provider(id: clashId) { clashStore.delete(record) }
+                }
+            }
+            cleaned.append(provider.name)
+        }
+        guard !cleaned.isEmpty else { return [] }
+        store.update(saved)
+        return cleaned
     }
 
     private static func providerYAML(_ provider: CustomProvider, in sub: CustomSubscription, isRuleProvider: Bool) -> [String] {

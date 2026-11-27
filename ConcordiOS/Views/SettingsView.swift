@@ -479,6 +479,20 @@ struct ProvidersView: View {
     @EnvironmentObject private var ruleStore: RuleStore
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var client: ConcordClient
+    @EnvironmentObject private var profileStore: ProfileStore
+    /// Custom subscriptions, loaded once — the delete swipe
+    /// action maps a confined-path row back to its owning
+    /// definition (v0.2.152).
+    @StateObject private var customStore = CustomSubscriptionStore()
+    /// A confined rule provider awaiting delete confirm.
+    @State private var pendingRuleProviderDelete: PendingRuleProviderDelete?
+    @State private var showRuleProviderDeleteAlert = false
+
+    /// A confined rule provider awaiting delete confirm (v0.2.152).
+    private struct PendingRuleProviderDelete {
+        var sub: CustomSubscription
+        var provider: CustomProvider
+    }
     @State private var sideLoadName = ""
     @State private var sideLoadText = ""
     @State private var editingProvider: ConcordProviderInfo?
@@ -558,6 +572,21 @@ struct ProvidersView: View {
                         }
                     }
                     .tint(.orange)
+                    // v0.2.152 (C20-b3): delete, only for rows
+                    // this app owns — a rule provider baked from
+                    // a custom subscription via a confined file
+                    // (path <home>/providers/<subID>/rules/
+                    // <token>). All other rows are profile-defined
+                    // / http-cache providers with no delete here,
+                    // matching upstream (proxies/providers.dart
+                    // has no delete; config/providers.dart deletes
+                    // only its own ClashProvider records).
+                    if let owned = CustomSubscriptionStore.ownerOfConfinedRuleProvider(path: provider.path, in: customStore.subscriptions) {
+                        Button("common.delete".l10n) {
+                            requestDeleteRuleProvider(sub: owned.sub, provider: owned.provider)
+                        }
+                        .tint(.red)
+                    }
                 }
             }
             Section("providers.section.importLink".l10n) {
@@ -638,6 +667,25 @@ struct ProvidersView: View {
             }
         }
         .refreshable { await ruleStore.refresh() }
+        // v0.2.152: referenced-provider delete confirm (see
+        // requestDeleteRuleProvider) — the message names the
+        // RULE-SET rules stripped along with the provider.
+        .alert("删除提供方？", isPresented: $showRuleProviderDeleteAlert) {
+            Button("common.delete".l10n, role: .destructive) {
+                if let pending = pendingRuleProviderDelete {
+                    deleteRuleProvider(sub: pending.sub, provider: pending.provider)
+                }
+                pendingRuleProviderDelete = nil
+            }
+            Button("取消", role: .cancel) { pendingRuleProviderDelete = nil }
+        } message: {
+            if let pending = pendingRuleProviderDelete {
+                let users = ruleProviderDeleteUsers(sub: pending.sub, name: pending.provider.name)
+                Text(users.isEmpty ? "删除后，提供方将从配置中移除。" : users.map { "「\(pending.provider.name)」正被\($0)使用" }.joined(separator: "\n") + "\n删除后，这些引用会一并移除。")
+            } else {
+                Text("")
+            }
+        }
         .fileImporter(isPresented: $showProviderImporter, allowedContentTypes: [.plainText, .data], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
@@ -728,6 +776,62 @@ struct ProvidersView: View {
             ruleStore.lastError = "\("providers.import.failed".l10n)\(failures.joined(separator: "common.listSeparator".l10n))"
         } else {
             ruleStore.providerActionMessage = "\("providers.import.imported".l10n)\(imported.joined(separator: "common.listSeparator".l10n))\("providers.import.failedSuffix".l10n)\(failures.joined(separator: "common.listSeparator".l10n))"
+        }
+    }
+
+    // MARK: - Confined rule-provider delete (v0.2.152, C20-b3)
+
+    /// RULE-SET rules naming a rule provider inside its owning
+    /// subscription (groups never use rule providers).
+    private func ruleProviderDeleteUsers(sub: CustomSubscription, name: String) -> [String] {
+        sub.rules.filter { $0.type == "RULE-SET" && $0.content == name }.map { "规则「\($0.text)」" }
+    }
+
+    /// Delete swipe action: an unreferenced provider goes
+    /// straight away; a referenced one asks first, because the
+    /// delete also strips the RULE-SET rules naming it.
+    private func requestDeleteRuleProvider(sub: CustomSubscription, provider: CustomProvider) {
+        if ruleProviderDeleteUsers(sub: sub, name: provider.name).isEmpty {
+            deleteRuleProvider(sub: sub, provider: provider)
+        } else {
+            pendingRuleProviderDelete = PendingRuleProviderDelete(sub: sub, provider: provider)
+            showRuleProviderDeleteAlert = true
+        }
+    }
+
+    /// Removes the definition + its RULE-SET rules, persists,
+    /// then cleans up the map entry / confined file /
+    /// ClashProvider record and re-applies the active profile
+    /// when it bakes this subscription — the same path as the
+    /// editor's saveDraft. The row is refreshed afterwards; a
+    /// re-apply failure surfaces in ruleStore.lastError (only
+    /// read when a re-apply actually ran — see
+    /// reapplyActiveForSubscription) so the provider does not
+    /// silently survive.
+    private func deleteRuleProvider(sub: CustomSubscription, provider: CustomProvider) {
+        var copy = sub
+        copy.ruleProviders.removeAll { $0.name == provider.name }
+        copy.rules.removeAll { $0.type == "RULE-SET" && $0.content == provider.name }
+        let store = CustomSubscriptionStore()
+        store.update(copy)
+        _ = CustomSubscriptionStore.cleanupDeletedProviders(old: sub, new: copy)
+        customStore.load()
+        Task {
+            let reapplied = await profileStore.reapplyActiveForSubscription(id: sub.id)
+            // Capture the re-apply failure BEFORE refresh():
+            // refresh() clears lastError on success, which would
+            // wipe the failure message (audit g). Restore it
+            // afterwards, combined with a refresh failure when
+            // both happened.
+            let reapplyError = reapplied ? profileStore.lastError : nil
+            await ruleStore.refresh()
+            if let error = reapplyError {
+                if let refreshError = ruleStore.lastError {
+                    ruleStore.lastError = "删除「\(provider.name)」后重新应用配置失败：\(error)；刷新列表失败：\(refreshError)"
+                } else {
+                    ruleStore.lastError = "删除「\(provider.name)」后重新应用配置失败：\(error)"
+                }
+            }
         }
     }
 }

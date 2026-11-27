@@ -28,6 +28,14 @@ struct CustomSubscriptionEditorView: View {
     @State private var showRenameAlert = false
     @State private var renameText = ""
     @State private var showDeleteConfirm = false
+    /// Provider swipe-delete awaiting confirm (v0.2.152): the
+    /// provider is only removed from the draft once the user
+    /// confirms, because deleting a referenced provider also
+    /// strips the references (groups' use: / RULE-SET rules) —
+    /// required, else the next config.apply fails with
+    /// GroupError::NotFound (core build.rs resolve_providers).
+    @State private var pendingProviderDelete: PendingProviderDelete?
+    @State private var showProviderDeleteAlert = false
     @State private var showPreview = false
     /// Rules multi-select batch delete (FlClash custom/rules.dart).
     @State private var ruleSelectionMode = false
@@ -41,6 +49,12 @@ struct CustomSubscriptionEditorView: View {
     private enum ProviderPickerDestination: Hashable {
         case proxyProviders
         case ruleProviders
+    }
+
+    /// A provider swipe-delete awaiting confirm (v0.2.152).
+    private struct PendingProviderDelete {
+        var kind: String // "proxy" or "rule"
+        var providers: [CustomProvider]
     }
     /// Rule providers defined in the active profile's YAML, loaded
     /// once in .task — the existing providers a rule provider can
@@ -283,9 +297,7 @@ struct CustomSubscriptionEditorView: View {
                     .buttonStyle(.plain)
                 }
                 .onDelete { offsets in
-                    var copy = sub
-                    copy.proxyProviders.remove(atOffsets: offsets)
-                    draft = copy
+                    requestDeleteProviders(kind: "proxy", providers: offsets.map { sub.proxyProviders[$0] })
                 }
                 Button { pickerDestination = .proxyProviders } label: {
                     Label("添加代理提供方", systemImage: "plus")
@@ -309,9 +321,7 @@ struct CustomSubscriptionEditorView: View {
                     .buttonStyle(.plain)
                 }
                 .onDelete { offsets in
-                    var copy = sub
-                    copy.ruleProviders.remove(atOffsets: offsets)
-                    draft = copy
+                    requestDeleteProviders(kind: "rule", providers: offsets.map { sub.ruleProviders[$0] })
                 }
                 Button { pickerDestination = .ruleProviders } label: {
                     Label("添加规则提供方", systemImage: "plus")
@@ -550,6 +560,28 @@ struct CustomSubscriptionEditorView: View {
         } message: {
             Text("「\(sub.name)」里的分组、提供方和规则都会被删除。")
         }
+        // v0.2.152: referenced-provider delete confirm (see
+        // requestDeleteProviders) — the message names the users
+        // whose references are stripped along with the provider.
+        .alert("删除提供方？", isPresented: $showProviderDeleteAlert) {
+            Button("删除", role: .destructive) {
+                if let pending = pendingProviderDelete {
+                    removeProviders(kind: pending.kind, providers: pending.providers)
+                }
+                pendingProviderDelete = nil
+            }
+            Button("取消", role: .cancel) { pendingProviderDelete = nil }
+        } message: {
+            if let pending = pendingProviderDelete {
+                let lines = pending.providers.flatMap { provider in
+                    providerDeleteUsers(kind: pending.kind, name: provider.name)
+                        .map { "「\(provider.name)」正被\($0)使用" }
+                }
+                Text(lines.isEmpty ? "删除后，提供方将从配置中移除。" : lines.joined(separator: "\n") + "\n删除后，这些引用会一并移除。")
+            } else {
+                Text("")
+            }
+        }
         // Runtime-config preview is a pushed page (upstream
         // _push(PreviewProfileView), custom.dart:250), not a sheet.
         .navigationDestination(isPresented: $showPreview) {
@@ -716,7 +748,112 @@ struct CustomSubscriptionEditorView: View {
 
     private func saveDraft() {
         guard let draft else { return }
+        // v0.2.152 (audit b): the sub may no longer be in the
+        // store — the whole-sub delete alert does store.delete
+        // then dismisses, and dismiss triggers onDisappear →
+        // saveDraft. Check BEFORE update: update appends a
+        // missing sub, which would resurrect the just-deleted
+        // subscription with the draft's edits applied.
+        let old = store.subscriptions.first(where: { $0.id == draft.id })
+        guard let old else { return }
         store.update(draft)
+        // v0.2.152 (C20-b3): a provider definition removed from
+        // the draft leaves map entries + confined files behind —
+        // clean them up, then re-apply the active profile when it
+        // bakes this subscription so the running engine drops the
+        // deleted provider (apply rebuilds the provider sets
+        // fresh; no core RPC exists or is needed). A re-apply
+        // failure surfaces in profileStore.lastError; when the
+        // tunnel is stopped the re-baked config.yaml still takes
+        // effect at the next VPN start.
+        guard !CustomSubscriptionStore.cleanupDeletedProviders(old: old, new: draft).isEmpty else { return }
+        Task {
+            await profileStore.reapplyActiveForSubscription(id: draft.id)
+        }
+    }
+
+    /// Users of a provider inside the draft, for the delete
+    /// confirm: groups using it (proxy) or RULE-SET rules naming
+    /// it (rule). For a proxy provider, THREE lists count — the
+    /// `use:` list, the member list, and the dialers:
+    /// - the group form offers provider names as members and
+    ///   bake emits members verbatim under `proxies:`, and the
+    ///   core does NOT resolve provider names in `proxies:`
+    ///   (build.rs own_members only looks up builtins / inline
+    ///   proxies / groups in its table) — a dangling member fails
+    ///   the whole apply with GroupError::NotFound, exactly like
+    ///   a dangling `use:`.
+    /// - the dialer form offers the same candidates, and bake
+    ///   writes `dialer-proxy: <dialer.dialer>` onto the proxy
+    ///   named `dialer.proxy`; the core resolves a dialer-proxy
+    ///   target by name (outbound.rs: a group, or a provider
+    ///   node) and hard-fails the config when it does not
+    ///   resolve (profile.rs validate_dialers) — so a dialer
+    ///   whose target is the deleted provider must go too.
+    ///   (A dialer whose SOURCE names the provider is dead
+    ///   already — bakeDialers only acts when it finds a proxy
+    ///   block by that name — but it is removed along with the
+    ///   provider rather than left as dead config.)
+    private func providerDeleteUsers(kind: String, name: String) -> [String] {
+        if kind == "proxy" {
+            var users: [String] = []
+            users.append(contentsOf: sub.groups.filter { $0.useProviders.contains(name) }.map { "分组「\($0.name)」" })
+            users.append(contentsOf: sub.groups.filter { $0.members.contains(name) }.map { "分组「\($0.name)」的成员" })
+            users.append(contentsOf: sub.dialers.filter { $0.proxy == name || $0.dialer == name }.map { "拨号器「\($0.proxy) → \($0.dialer)」" })
+            return users
+        }
+        return sub.rules.filter { $0.type == "RULE-SET" && $0.content == name }.map { "规则「\($0.text)」" }
+    }
+
+    /// Swipe-delete for a provider: an unreferenced provider goes
+    /// straight away; a referenced one asks first, because the
+    /// delete also strips the references (see removeProviders).
+    private func requestDeleteProviders(kind: String, providers: [CustomProvider]) {
+        guard !providers.isEmpty else { return }
+        let referenced = providers.contains { provider in
+            !providerDeleteUsers(kind: kind, name: provider.name).isEmpty
+        }
+        if referenced {
+            pendingProviderDelete = PendingProviderDelete(kind: kind, providers: providers)
+            showProviderDeleteAlert = true
+        } else {
+            removeProviders(kind: kind, providers: providers)
+        }
+    }
+
+    /// Removes providers from the draft and strips the references
+    /// to them — groups drop the `use:` entry AND the member
+    /// entry (a provider name can sit in either list; see
+    /// providerDeleteUsers), dialers naming the provider on
+    /// either end are removed, and RULE-SET rules naming a
+    /// deleted rule provider are removed. The stripping is
+    /// required, not cosmetic: a group whose `use:` — or whose
+    /// `proxies:` member list — names a provider missing from
+    /// the config fails the whole config.apply (core build.rs
+    /// resolve_providers / own_members → GroupError::NotFound),
+    /// and a `dialer-proxy:` naming a missing provider fails
+    /// config load the same way (profile.rs validate_dialers).
+    /// The definition removal itself is only persisted by
+    /// saveDraft, which also cleans up the map entries +
+    /// confined files and re-applies.
+    private func removeProviders(kind: String, providers: [CustomProvider]) {
+        var copy = sub
+        if kind == "proxy" {
+            for provider in providers {
+                copy.proxyProviders.removeAll { $0.name == provider.name }
+                for index in copy.groups.indices {
+                    copy.groups[index].useProviders.removeAll { $0 == provider.name }
+                    copy.groups[index].members.removeAll { $0 == provider.name }
+                }
+                copy.dialers.removeAll { $0.proxy == provider.name || $0.dialer == provider.name }
+            }
+        } else {
+            for provider in providers {
+                copy.ruleProviders.removeAll { $0.name == provider.name }
+                copy.rules.removeAll { $0.type == "RULE-SET" && $0.content == provider.name }
+            }
+        }
+        draft = copy
     }
 }
 

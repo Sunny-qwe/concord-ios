@@ -225,8 +225,8 @@ struct CustomProxiesView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+        // v0.2.165 (B): 64 for the docked search pill (16 + 48).
+        .contentMargins(.bottom, ConcordTheme.dockedSearchContentInset)
         .contentMargins(.top, 16)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -321,7 +321,7 @@ struct CustomProxiesView: View {
         }
         DockedSearchBar(text: $searchText, prompt: "搜索节点名称")
             .padding(.horizontal, 16)
-            .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+            .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
         }
     }
 

@@ -790,7 +790,7 @@ struct YamlEditorView: UIViewRepresentable {
         textView.backgroundColor = .secondarySystemBackground
         // v0.2.66: bottom inset clears the floating tab bar so the last YAML lines
         // are not hidden behind it on pushed pages.
-        textView.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8 + ConcordTheme.tabBarClearance, right: 8)
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8 + ConcordTheme.pushedPageClearance, right: 8)
         textView.delegate = context.coordinator
         textView.attributedText = YamlHighlighter.highlighted(text)
         context.coordinator.lastAppliedText = text

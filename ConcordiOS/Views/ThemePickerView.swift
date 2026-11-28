@@ -344,7 +344,7 @@ struct ThemePickerView: View {
             .padding(.horizontal, 16)
             .padding(.top, 28)
             // v0.2.66: tab-bar clearance for pushed pages.
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "主题")

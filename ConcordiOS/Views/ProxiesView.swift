@@ -785,10 +785,18 @@ struct ProxiesView: View {
                 // Task.detached). Deferring one runloop turn here
                 // additionally guarantees the static title and the
                 // loading state render before any of that starts.
-                if proxyStore.groups.isEmpty {
-                    DispatchQueue.main.async {
-                        Task { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
-                    }
+                // v0.2.167: refresh on EVERY first mount, not only
+                // when the list is empty — the Dashboard fills the
+                // list first (with the core's defaults), so the old
+                // `groups.isEmpty` gate skipped this refresh and the
+                // page showed the defaults until a manual refresh,
+                // even though a remembered pick was on disk. The
+                // refresh carries the active profile, so the
+                // remembered picks are re-applied (ProxyStore
+                // applyPendingSelections); one extra fetch buys
+                // correctness.
+                DispatchQueue.main.async {
+                    Task { await proxyStore.refresh(activeProfile: profileStore.activeProfile) }
                 }
             }
             .onChange(of: profileStore.activeProfile?.id) { _, _ in

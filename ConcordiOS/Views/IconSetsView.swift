@@ -559,7 +559,7 @@ struct IconSetsView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .contentMargins(.top, 16)
         .scrollContentBackground(.hidden)
         .listStyle(.insetGrouped)
@@ -758,14 +758,14 @@ private struct IconSetPreviewView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 40)
-            // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
-            .padding(.bottom, ConcordTheme.tabBarClearance + 56)
+            // v0.2.165 (B): 64 for the docked search pill (16 + 48).
+            .padding(.bottom, ConcordTheme.dockedSearchContentInset)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "预览：\(target.title)")
         DockedSearchBar(text: $searchText, prompt: "搜索图标")
             .padding(.horizontal, 16)
-            .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+            .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
         }
     }
 }

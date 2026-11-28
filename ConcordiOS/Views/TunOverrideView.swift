@@ -128,7 +128,7 @@ struct TunOverrideView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .contentMargins(.top, 16)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)

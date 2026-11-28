@@ -432,7 +432,7 @@ struct AboutView: View {
             }
             .padding(.horizontal, 16)
             // v0.2.66: tab-bar clearance for pushed pages.
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "关于")

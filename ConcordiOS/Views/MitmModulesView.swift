@@ -102,7 +102,7 @@ struct MitmModulesView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
@@ -888,7 +888,7 @@ struct MitmModuleDetailView: View {
             detailActionsSection
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
@@ -1858,7 +1858,7 @@ struct MitmModuleLinesView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
@@ -1892,7 +1892,7 @@ struct MitmModuleSkippedView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)

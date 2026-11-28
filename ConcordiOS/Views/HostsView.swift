@@ -116,7 +116,7 @@ struct HostsView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "Hosts")

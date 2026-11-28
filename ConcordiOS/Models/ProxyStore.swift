@@ -440,6 +440,13 @@ final class ProxyStore: ObservableObject {
     /// showing the same pick after the tunnel stops. The value is
     /// the proxy.select argument: a node name, or "" to clear a
     /// url-test/fallback/smart pin.
+    /// v0.2.167: this is the durable memory (upstream
+    /// Profile.selectedMap) — an entry is NEVER dropped when the
+    /// core confirms it, only when its group disappears or a
+    /// double-failure rollback drops it. A core restart (cold
+    /// start, tunnel restart, extension reclaim) re-applies the
+    /// picks from here, so the selection survives a full App
+    /// relaunch.
     private let pendingSelectionsKey = "concord.pendingSelections"
 
     private func loadPendingSelections() -> [String: [String: String]] {
@@ -474,6 +481,54 @@ final class ProxyStore: ObservableObject {
         savePendingSelections(all)
     }
 
+    /// The core's RAW pick per group — (now, fixed), trimmed, ""
+    /// when absent — as last reported by fetchCoreGroups, plus the
+    /// profile that fetch ran with. The displayed ProxyGroup cannot
+    /// serve this: its selectedNodeName prefers the pending itself
+    /// (v0.2.95 Bug 1), so comparing the display against the saved
+    /// pick would always read as confirmed and the pick would never
+    /// reach the core. Only a live fetch populates these; the
+    /// offline path clears them (loadLocalGroups), and they are
+    /// only trusted for the profile the fetch ran with.
+    private var corePicks: [String: (now: String, fixed: String)] = [:]
+    private var corePicksProfileID: UUID?
+
+    /// Whether the core already shows the saved pick for this
+    /// group, so no proxy.select RPC is needed (v0.2.167: pendings
+    /// are durable memory now — they are never dropped when the
+    /// core confirms them, so without this check every refresh
+    /// would re-select every group). Same confirmation rule as
+    /// fetchCoreGroups: an empty saved pick ("clear the pin")
+    /// counts when fixed is empty; a select group counts on now;
+    /// url-test / fallback / smart count on fixed or now. No raw
+    /// record for the group (offline list, or a fetch that ran
+    /// without this profile) means "not confirmed" — the RPC still
+    /// runs, as before.
+    private func isPendingConfirmed(profileID: UUID, group: ProxyGroup, saved: String) -> Bool {
+        guard corePicksProfileID == profileID, let raw = corePicks[group.name] else { return false }
+        let savedTrimmed = saved.trimmingCharacters(in: .whitespaces)
+        if savedTrimmed.isEmpty { return raw.fixed.isEmpty }
+        if group.type == "select" { return raw.now == savedTrimmed }
+        return raw.fixed == savedTrimmed || raw.now == savedTrimmed
+    }
+
+    /// Whether every remembered pick for this profile is already
+    /// what the core shows — i.e. nothing is left to apply. A group
+    /// the core no longer lists counts as nothing to apply:
+    /// refresh()'s applyPendingSelections drops that entry. A group
+    /// with no raw record counts as NOT applied, so the on-connect
+    /// retry loop keeps going instead of stopping early while the
+    /// core is still catching up. No remembered picks at all is
+    /// trivially applied.
+    private func allPendingsApplied(profileID: UUID) -> Bool {
+        let pendings = loadPendingSelections()[profileID.uuidString] ?? [:]
+        for (groupName, proxy) in pendings {
+            guard let live = groups.first(where: { $0.name == groupName }) else { continue }
+            guard isPendingConfirmed(profileID: profileID, group: live, saved: proxy) else { return false }
+        }
+        return true
+    }
+
     // MARK: - Custom-subscription selectedMap (v0.2.147, upstream
     // Profile.selectedMap, lib/models/profile.dart:77)
     //
@@ -499,7 +554,7 @@ final class ProxyStore: ObservableObject {
     /// must never invent a pick), or a value the live list
     /// already shows — a confirmed pick must not be re-selected
     /// on every refresh (that would also defeat
-    /// applyPendingSelectionsOnConnect's empty-pending exit).
+    /// allPendingsApplied's exit in applyPendingSelectionsOnConnect).
     @MainActor
     private func mergeSelectedMap(profileID: UUID) {
         guard let sub = bakedSubscription(for: profileID), !sub.selectedMap.isEmpty else { return }
@@ -587,9 +642,11 @@ final class ProxyStore: ObservableObject {
     /// the group showed before applySelect's applyLocalPick.
     /// Restored — and dropped — when the RPC and its retry both
     /// fail, so the list shows the node the core actually still
-    /// has. In-memory only: a restart loses it, but the pending is
-    /// still dropped then, so fetchCoreGroups shows the core's
-    /// actual pick instead of the refused one.
+    /// has. In-memory only: a restart loses it, so a double
+    /// failure after a restart restores nothing (the rollback
+    /// still drops the pending). Until then the pending is kept
+    /// and retried (v0.2.167: pendings are durable memory, never
+    /// dropped on confirmation or on restart).
     private struct PreviousPick {
         let selectedNodeName: String?
         let fixed: String?
@@ -647,8 +704,11 @@ final class ProxyStore: ObservableObject {
                 // connect, so without this edge the "启动后自动应用"
                 // promise never happens. The apply itself is a
                 // refresh (core groups first, then pending picks);
-                // entries the core accepts are dropped, so a later
-                // reconnect is a no-op.
+                // entries stay in UserDefaults after the core
+                // accepts them (v0.2.167: they are the durable
+                // memory), and a later reconnect is a no-op because
+                // applyPendingSelections skips picks the core
+                // already shows (isPendingConfirmed).
                 let connected = status == .connected
                 if connected, !self.wasTunnelConnected {
                     Task { await self.applyPendingSelectionsOnConnect() }
@@ -827,12 +887,21 @@ final class ProxyStore: ObservableObject {
             // snapshot (written before the select) used to revert
             // the UI to the old pick (自动选择）. New display order:
             // pending -> now -> fixed. With no pending the chain
-            // is unchanged. A pending is dropped here, and only
-            // here, once the RAW core values confirm it: a
-            // non-empty pending is confirmed when g.now or g.fixed
-            // equals it; an empty pending "" (clear-pin) is
-            // confirmed when g.fixed is nil/empty. Until then the
-            // pending is kept and displayed.
+            // is unchanged. A pending is confirmed against the RAW
+            // core values: a non-empty pending is confirmed when
+            // g.now or g.fixed equals it; an empty pending ""
+            // (clear-pin) is confirmed when g.fixed is nil/empty.
+            // Until then the pending is kept and displayed.
+            // v0.2.167: a confirmed pending is NOT dropped anymore
+            // — the pending IS the durable memory (upstream
+            // Profile.selectedMap). Dropping it here left the pick
+            // living only in the core's volatile runtime, so a core
+            // restart (cold start, tunnel restart, extension
+            // reclaim) reset the pick to the config default with
+            // nothing left on disk. The pending stays; the skip in
+            // applyPendingSelections (isPendingConfirmed) is what
+            // stops it being re-selected on every refresh. Only the
+            // pre-pick rollback snapshot is dropped on confirmation.
             let pending = profileID.flatMap { self.pendingSelection(profileID: $0, group: g.name) }
             if let profileID, let pending {
                 let trimmedPending = pending.trimmingCharacters(in: .whitespaces)
@@ -844,7 +913,6 @@ final class ProxyStore: ObservableObject {
                     confirmed = now == trimmedPending || fixedTrimmed == trimmedPending
                 }
                 if confirmed {
-                    dropPendingSelection(profileID: profileID, group: g.name)
                     // v0.2.97 gap 4: the core confirmed the new pick,
                     // so the pre-pick snapshot is no longer needed.
                     dropPreviousPick(profileID: profileID, group: g.name)
@@ -874,6 +942,21 @@ final class ProxyStore: ObservableObject {
                 hidden: g.hidden
             )
         }
+        // v0.2.167: record the core's RAW picks alongside the
+        // display mapping above, so isPendingConfirmed /
+        // allPendingsApplied can tell a pick the core already
+        // shows from one it has not applied yet (the display
+        // prefers the pending itself and cannot tell them apart).
+        // Group names are unique within a profile (same
+        // Dictionary(uniqueKeysWithValues:) use as groupTypeByName
+        // above). A fetch without a profile leaves the profile tag
+        // nil, so the records are never trusted for a profile they
+        // were not fetched with.
+        corePicks = Dictionary(uniqueKeysWithValues: result.groups.map { g in
+            (g.name, (now: (g.now ?? "").trimmingCharacters(in: .whitespaces),
+                      fixed: (g.fixed ?? "").trimmingCharacters(in: .whitespaces)))
+        })
+        corePicksProfileID = profileID
         // Latencies are keyed by (testUrl, real node) now (B3):
         // fill each row from its resolved target, not the raw name.
         applyLatencies()
@@ -922,6 +1005,12 @@ final class ProxyStore: ObservableObject {
                 hidden: g.hidden
             )
         }
+        // v0.2.167: the offline list has no core now/fixed — clear
+        // the raw records so a stale live pick can never read as
+        // confirmed (isPendingConfirmed then falls back to the RPC,
+        // as before).
+        corePicks = [:]
+        corePicksProfileID = nil
         isLocalFallback = true
         return true
     }
@@ -943,12 +1032,14 @@ final class ProxyStore: ObservableObject {
     /// Entries for groups the core no longer has are dropped; entries
     /// the core rejects are kept for the next refresh instead of
     /// dropping the user's choice. An accepted entry is NOT dropped
-    /// here (v0.2.95 Bug 1): it is dropped by fetchCoreGroups once
-    /// the core snapshot confirms the new pick — dropping on RPC
-    /// success let the next refresh show the stale `now` before the
-    /// snapshot caught up. A re-fetch follows when anything changed,
-    /// so `now`/`fixed` show what the core actually picked (and the
-    /// confirmation/drop in fetchCoreGroups runs there).
+    /// here (v0.2.95 Bug 1): dropping on RPC success let the next
+    /// refresh show the stale `now` before the snapshot caught up —
+    /// and since v0.2.167 it is not dropped on confirmation either
+    /// (the pending IS the durable memory). Instead, an entry the
+    /// core already shows is skipped here (isPendingConfirmed), so a
+    /// confirmed pick costs no proxy.select on every refresh. A
+    /// re-fetch follows when anything changed, so `now`/`fixed` show
+    /// what the core actually picked.
     /// `rollbackGroups` (v0.2.97 gap 4): groups whose entry is the
     /// retry of a live applySelect that already failed once — a
     /// second failure there rolls the pick back (restore the
@@ -962,11 +1053,15 @@ final class ProxyStore: ObservableObject {
         guard !pendings.isEmpty else { return }
         var changed = false
         for (groupName, proxy) in pendings {
-            guard groups.contains(where: { $0.name == groupName }) else {
+            guard let live = groups.first(where: { $0.name == groupName }) else {
                 dropPendingSelection(profileID: profileID, group: groupName)
                 dropPreviousPick(profileID: profileID, group: groupName)
                 continue
             }
+            // v0.2.167: the core already shows this pick — no RPC.
+            // Without this, a never-dropped pending would re-select
+            // every group on every refresh.
+            if isPendingConfirmed(profileID: profileID, group: live, saved: proxy) { continue }
             do {
                 if try await selectProxy(group: groupName, proxy: proxy) { changed = true }
             } catch {
@@ -1031,17 +1126,19 @@ final class ProxyStore: ObservableObject {
         // succeed while the select fails and the pick is lost from
         // the UI. Each attempt re-reads the core groups first (the
         // local fallback list cannot be applied); refresh() itself
-        // applies the pending selections. Stop early when the
-        // pending list is empty or the tunnel is no longer
-        // connected. The entries stay in UserDefaults either way,
-        // so a later manual refresh would still apply them.
+        // applies the pending selections. Stop early when there is
+        // nothing left to apply (allPendingsApplied — v0.2.167: the
+        // pending list is never empty anymore, so "empty" can no
+        // longer be the exit) or the tunnel is no longer connected.
+        // The entries stay in UserDefaults either way, so a later
+        // manual refresh would still apply them.
         for attempt in 0..<3 {
             if attempt > 0 {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
                 guard !Task.isCancelled else { return }
                 await refresh(activeProfile: profile)
             }
-            if loadPendingSelections()[profile.id.uuidString]?.isEmpty ?? true { return }
+            if allPendingsApplied(profileID: profile.id) { return }
             guard isRunning else { return }
         }
     }
@@ -1168,8 +1265,9 @@ final class ProxyStore: ObservableObject {
         // update only on failure and only while the VPN was off)
         // left a tap with the VPN on doing nothing visible when
         // the RPC failed or the immediate refresh read a stale
-        // snapshot. The pending is dropped only once the core
-        // snapshot confirms the new pick (fetchCoreGroups).
+        // snapshot. The pending is never dropped on confirmation
+        // (v0.2.167: it is the durable memory); applyPendingSelections
+        // skips the RPC once the core already shows the pick.
         if let profileID {
             savePendingSelection(profileID: profileID, group: group.name, proxy: proxy)
             // v0.2.147: write the tap back into the baked custom

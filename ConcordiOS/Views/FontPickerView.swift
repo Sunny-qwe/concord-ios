@@ -77,10 +77,10 @@ struct FontPickerView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages.
-        // v0.2.165 (B): + 56 for the docked search pill (48 + 8);
+        // v0.2.165 (B): 64 for the docked search pill (16 + 48);
         // the pill only shows with >= 10 families, but the inset
         // is unconditional (harmless when the pill is hidden).
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+        .contentMargins(.bottom, ConcordTheme.dockedSearchContentInset)
         .scrollContentBackground(.hidden)
         .padding(.top, 16)
         .background(ConcordTheme.pageBackground)
@@ -88,7 +88,7 @@ struct FontPickerView: View {
         if fontStore.availableFamilies.count >= 10 {
             DockedSearchBar(text: $searchText, prompt: "搜索字体")
                 .padding(.horizontal, 16)
-                .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+                .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
         }
         }
     }

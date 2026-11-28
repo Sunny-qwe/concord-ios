@@ -102,7 +102,7 @@ struct AdvancedConfigView: View {
             // where upstream's 72pt bar + 12pt puts it (IMG_1406:
             // first card top 131pt).
             .padding(.top, 40)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "进阶配置")

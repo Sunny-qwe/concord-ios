@@ -45,7 +45,7 @@ struct ScriptsView: View {
             scriptsSection
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .contentMargins(.top, 16)
         .scrollContentBackground(.hidden)
         .listStyle(.insetGrouped)

@@ -324,7 +324,7 @@ struct NetworkSettingsView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 40)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "网络")

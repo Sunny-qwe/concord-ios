@@ -98,6 +98,9 @@ struct ProfilesView: View {
     @EnvironmentObject private var profileStore: ProfileStore
     @StateObject private var customStore = CustomSubscriptionStore()
     @State private var navPath: [ProfileNavDestination] = []
+    /// v0.2.167 (B): the shared push depth (NavDepthStore) — the
+    /// tab bar hides while this stack has a pushed page.
+    @ObservedObject private var navDepthStore = NavDepthStore.shared
     /// Unified import form (upstream showNamedUrlsForm /
     /// showFormSheet): ONE item is the single source — the text
     /// handed in ("" from the + menu, the scanned text from the
@@ -105,7 +108,12 @@ struct ProfilesView: View {
     /// + scanned-text state.
     @State private var unifiedImportDraft: UnifiedImportDraft?
     @State private var showCustomSubscriptionImport = false
-    @State private var showFileImporter = false
+    /// The + menu's 文件 picker presenter (v0.2.167): a UIKit
+    /// UIDocumentPickerViewController held by @StateObject, so its
+    /// delegate survives the menu dismissal — SwiftUI's
+    /// .fileImporter orphaned its coordinator there (see
+    /// FileImportPresenter, below the view).
+    @StateObject private var fileImportPresenter = FileImportPresenter()
     @State private var showReorder = false
     @State private var reorderDraft: [Profile] = []
     @State private var qrProfile: Profile?
@@ -311,8 +319,20 @@ struct ProfilesView: View {
                     alertMessage = "\("profiles.notice.exportFailed".l10n)\(error.localizedDescription)"
                 }
             }
-            .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [UTType.yaml, UTType.plainText]) { result in
-                handlePickedFile(result)
+            // v0.2.167: the file picker is a UIKit
+            // UIDocumentPickerViewController (FileImportPresenter,
+            // below) — SwiftUI's .fileImporter orphaned its
+            // coordinator when presented out of the + menu: the
+            // picker opened but a tap on a file never called back
+            // and never dismissed (user video cf/cfc04069; the
+            // 350ms delay in v0.2.166 did not fix it). The picked
+            // URL routes through the same handlePickedFile chain
+            // as before; a cancel leaves pickedURL untouched, so
+            // cancelling shows no alert.
+            .onChange(of: fileImportPresenter.pickedURL) { _, url in
+                guard let url else { return }
+                fileImportPresenter.pickedURL = nil
+                handlePickedFile(.success(url))
             }
             // Age-encrypted file import (upstream _withAgeSecretKey):
             // the picked file needs its key before it can be
@@ -425,6 +445,17 @@ struct ProfilesView: View {
             }
         }
         .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
+        // v0.2.167 (B): report this stack's push depth so
+        // ContentView can hide the tab bar on pushed pages. The
+        // .onAppear re-reports after a remount (e.g. the language
+        // change remounts the tab container and resets navPath —
+        // .onChange does not fire for that reset).
+        .onChange(of: navPath.count) { _, count in
+            navDepthStore.setDepth(count, forTab: AppTab.profiles.rawValue)
+        }
+        .onAppear {
+            navDepthStore.setDepth(navPath.count, forTab: AppTab.profiles.rawValue)
+        }
     }
 
     // MARK: - Add menu (FlClash AddProfileMenu, minus TV-only
@@ -437,15 +468,11 @@ struct ProfilesView: View {
                 .font(.subheadline)
         }
         Button {
-            // v0.2.166: present the picker only after the menu has
-            // fully dismissed — presenting .fileImporter straight out
-            // of the Menu action orphaned its delegate (user video
-            // cf/cfc04069: picker opened, taps on a file did nothing,
-            // picker never dismissed).
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(350))
-                showFileImporter = true
-            }
+            // v0.2.167: UIKit picker, presented from the key
+            // window's root view controller — no delay. The 350ms
+            // wait in v0.2.166 did not fix the orphaned delegate;
+            // the SwiftUI .fileImporter is gone entirely.
+            fileImportPresenter.present()
         } label: {
             Label("profiles.addMenu.file".l10n, systemImage: "doc")
                 .font(.subheadline)
@@ -906,6 +933,71 @@ struct ProfilesView: View {
     }
 }
 
+// MARK: - File import picker (UIKit, v0.2.167)
+
+/// Presents the system document picker for a .yaml file import.
+///
+/// SwiftUI's `.fileImporter` orphaned its coordinator when
+/// presented out of the + menu: the picker opened, but tapping a
+/// file neither dismissed it nor called back (user video
+/// cf/cfc04069; the 350ms delay in v0.2.166 did not fix it). A
+/// UIDocumentPickerViewController presented from the key window's
+/// root view controller bypasses SwiftUI's presentation machinery
+/// entirely. The presenter is the picker's delegate itself and is
+/// kept alive by the view's @StateObject, so the delegate can
+/// never be orphaned mid-pick; the picked URL is handed to the
+/// view through `pickedURL`, which routes it through the existing
+/// handlePickedFile chain (importFileData -> importYamlDocument ->
+/// addFromFile). No new Swift file: a new file would need a
+/// pbxproj registration.
+final class FileImportPresenter: NSObject, ObservableObject, UIDocumentPickerDelegate {
+    /// The picked document URL; the view consumes it (and resets
+    /// it to nil) in .onChange. A cancel leaves it untouched —
+    /// cancelling is not an error and shows no alert.
+    @Published var pickedURL: URL?
+
+    func present() {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.yaml, UTType.plainText])
+        picker.delegate = self
+        picker.allowsMultipleSelection = false
+        // One runloop tick, not a timed delay: let the + menu's
+        // dismissal start before presenting, so the picker is
+        // never offered while a presentation is in flight.
+        DispatchQueue.main.async {
+            guard let root = Self.keyWindowRootViewController() else { return }
+            var top = root
+            while let presented = top.presentedViewController, !presented.isBeingDismissed {
+                top = presented
+            }
+            top.present(picker, animated: true)
+        }
+    }
+
+    /// The key window's root view controller (same connectedScenes
+    /// walk ProxiesView uses for the nav-bar appearance).
+    private static func keyWindowRootViewController() -> UIViewController? {
+        for scene in UIApplication.shared.connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            if let window = windowScene.windows.first(where: { $0.isKeyWindow }) {
+                return window.rootViewController
+            }
+        }
+        return nil
+    }
+
+    // MARK: UIDocumentPickerDelegate
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        if let url = urls.first {
+            pickedURL = url
+        }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        // Cancel is not an error: nothing to report, no alert.
+    }
+}
+
 // MARK: - QR code sheet (FlClash dialogs.showQrCode)
 
 /// QR-code dialog (upstream dialogs.showQrCode → showCommonDialog
@@ -1042,7 +1134,7 @@ struct ProfilePreviewView: View {
                     }
                 }
                 // v0.2.66: tab-bar clearance for pushed pages
-                .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+                .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
             }
             .background(ConcordTheme.pageBackground)
             .navigationTitle(profile.name)

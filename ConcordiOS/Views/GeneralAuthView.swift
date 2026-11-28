@@ -158,7 +158,7 @@ struct GeneralAuthView: View {
             .padding(.bottom, 16)
         }
         // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .background(ConcordTheme.pageBackground)
         .tint(ConcordTheme.accent)
         .upstreamNavBar(title: "鉴权与控制器")

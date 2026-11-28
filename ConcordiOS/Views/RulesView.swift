@@ -158,8 +158,8 @@ struct RulesView: View {
                 }
             }
         // v0.2.66: tab-bar clearance for pushed pages
-        // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+        // v0.2.165 (B): 64 for the docked search pill (16 + 48).
+        .contentMargins(.bottom, ConcordTheme.dockedSearchContentInset)
         .contentMargins(.top, 40)
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
@@ -184,7 +184,7 @@ struct RulesView: View {
             }
             DockedSearchBar(text: $ruleStore.searchText, prompt: "搜索规则内容或目标")
                 .padding(.horizontal, 16)
-                .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+                .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
         }
     }
 }
@@ -220,7 +220,7 @@ struct ProviderDetailView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)

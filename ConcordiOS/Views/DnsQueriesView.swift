@@ -501,7 +501,7 @@ struct DnsQueriesView: View {
                         // the top .searchable field.
                         DockedSearchBar(text: $dnsStore.searchText, prompt: "搜索域名或上游")
                             .padding(.horizontal, 16)
-                            .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+                            .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
                     }
                         .background(ConcordTheme.pageBackground)
                         .listStyle(.insetGrouped)
@@ -758,12 +758,12 @@ struct DnsQueriesView: View {
                 }
             }
             // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-            // v0.2.165 (B): + 56 for the docked search pill (48 + 8);
+            // v0.2.165 (B): 64 for the docked search pill (16 + 48);
             // pageList is shared with the Requests DNS segment, whose
             // parent page carries the same pill, so the extra inset
             // also applies there (in the Dashboard sheet it is just
-            // 56pt of extra space at the very bottom of the list).
-            .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+            // 64pt of extra space at the very bottom of the list).
+            .contentMargins(.bottom, ConcordTheme.dockedSearchContentInset)
             .contentMargins(.top, 16)
             .scrollContentBackground(.hidden)
         }

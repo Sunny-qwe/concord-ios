@@ -277,7 +277,7 @@ struct ExtendConfigView: View {
         // editMode is always on, so the drag handles + delete
         // affordance on the profile-rules rows never need a toggle.
         .environment(\.editMode, .constant(.active))
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("扩展配置")
         .navigationBarTitleDisplayMode(.inline)
@@ -512,14 +512,14 @@ private struct GlobalRulesToggleView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages
-        // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+        // v0.2.165 (B): 64 for the docked search pill (16 + 48).
+        .contentMargins(.bottom, ConcordTheme.dockedSearchContentInset)
         .font(.footnote.weight(.semibold))
         .navigationTitle("全局规则开关")
         .navigationBarTitleDisplayMode(.inline)
         DockedSearchBar(text: $searchText, prompt: "搜索规则")
             .padding(.horizontal, 16)
-            .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+            .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
         }
     }
 }

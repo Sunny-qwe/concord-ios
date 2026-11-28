@@ -119,7 +119,7 @@ struct UserAgentsView: View {
         // also on every row's … menu (upstream: row check + edit).
         .environment(\.editMode, .constant(.active))
         .contentMargins(.top, 16)
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)

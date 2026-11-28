@@ -80,6 +80,9 @@ struct ToolsView: View {
     /// destinations render from one .navigationDestination — the
     /// NavigationLink tap handling is bypassed entirely.
     @State private var navPath: [ToolsDestination] = []
+    /// v0.2.167 (B): the shared push depth (NavDepthStore) — the
+    /// tab bar hides while this stack has a pushed page.
+    @ObservedObject private var navDepthStore = NavDepthStore.shared
 
     /// The language picker's displayed value (v0.2.158): the menu
     /// Picker's label is explicit (see below) and reads the live
@@ -222,6 +225,17 @@ struct ToolsView: View {
             }
         }
         .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
+        // v0.2.167 (B): report this stack's push depth so
+        // ContentView can hide the tab bar on pushed pages. The
+        // .onAppear re-reports after a remount (e.g. the language
+        // change remounts the tab container and resets navPath —
+        // .onChange does not fire for that reset).
+        .onChange(of: navPath.count) { _, count in
+            navDepthStore.setDepth(count, forTab: AppTab.tools.rawValue)
+        }
+        .onAppear {
+            navDepthStore.setDepth(navPath.count, forTab: AppTab.tools.rawValue)
+        }
     }
 }
 
@@ -319,7 +333,7 @@ private struct DisclaimerView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "tools.disclaimer".l10n)

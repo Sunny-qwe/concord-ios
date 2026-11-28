@@ -203,6 +203,25 @@ enum ConcordTheme {
     /// 16pt gap, fixing every page at once (all Proxies grids
     /// and the Dashboard already pad by this value).
     static let tabBarClearance: CGFloat = 112
+    /// Bottom clearance for PUSHED pages (v0.2.167, B): the tab
+    /// bar hides on pushed pages, so they only need to clear the
+    /// home-indicator safe area with a small gap — 16pt above the
+    /// safe-area boundary (the scroll views' content bottom sits
+    /// at 844 − 34 = 810 on a notched phone, so this lands the
+    /// last row 50pt above the screen bottom). Tab roots keep
+    /// tabBarClearance (112) above.
+    static let pushedPageClearance: CGFloat = 16
+    /// Docked search pill bottom margin (v0.2.167, B): 16pt above
+    /// the safe-area boundary — upstream FloatingFootBar
+    /// (prism_ui foot_bar.dart) puts the bar at margin 16 +
+    /// context.bottomInset, i.e. 50pt above the screen bottom on
+    /// a notched phone, exactly what 16 above the boundary is.
+    static let dockedSearchBottomMargin: CGFloat = 16
+    /// Content bottom inset under a docked search pill (v0.2.167,
+    /// B): 16 margin + 48 pill = 64, upstream
+    /// BottomInsetScope.dockedSearchInset. The last row scrolls to
+    /// exactly the pill's top edge, like upstream.
+    static let dockedSearchContentInset: CGFloat = 64
     /// Soft card shadow.
     static let cardShadow = Color.black.opacity(0.05)
     /// Upstream M3 onSurfaceVariant (v0.2.159): the grey for leading
@@ -233,6 +252,33 @@ enum ConcordTheme {
                 : UIColor(red: 0.44, green: 0.47, blue: 0.53, alpha: 1)
         })
     }
+}
+
+/// Shared NavigationStack push depth (v0.2.167, B).
+///
+/// The floating/docked tab bar is a ContentView overlay, so it
+/// floats over every pushed page too — upstream pushed pages
+/// cover the dock entirely, and MuYu's log page shows only the
+/// search pill at the bottom. Each tab root with a path-bound
+/// NavigationStack (Profiles, Tools) reports its depth here via
+/// .onChange(of: navPath.count) + .onAppear; ContentView hides
+/// the bar while the selected tab's depth is > 0. Dashboard has
+/// no root NavigationStack and Proxies' stack never pushes, so
+/// neither reports (their depth is always 0).
+/// Updates come only from .onChange/.onAppear, i.e. on the main
+/// actor — never write depths from a background task.
+final class NavDepthStore: ObservableObject {
+    static let shared = NavDepthStore()
+
+    /// Push depth per tab, keyed by AppTab.rawValue.
+    @Published private(set) var depths: [Int: Int] = [:]
+
+    func setDepth(_ depth: Int, forTab tab: Int) {
+        guard depths[tab] != depth else { return }
+        depths[tab] = depth
+    }
+
+    func isPushed(tab: Int) -> Bool { (depths[tab] ?? 0) > 0 }
 }
 
 extension Color {
@@ -1105,8 +1151,10 @@ struct CachedIconImage<Placeholder: View>: View {
 // verified spec: 48pt high (the template was ~41-44pt), 20pt
 // magnifier, "搜索" placeholder, 14pt horizontal padding, radius-8
 // shadow. The pill itself owns only its look + behaviour;
-// placement (16pt sides, tabBarClearance + 8 bottom) and the
-// content's tabBarClearance + 56 bottom inset live at each call
+// placement (16pt sides, dockedSearchBottomMargin bottom —
+// 16 above the safe-area boundary, upstream FloatingFootBar:
+// margin 16 + bottomInset) and the content's
+// dockedSearchContentInset (64) bottom inset live at each call
 // site, following the hostname page's verified pattern.
 // The cancel button appears while focused or while there is text:
 // it clears the text and dismisses the keyboard.

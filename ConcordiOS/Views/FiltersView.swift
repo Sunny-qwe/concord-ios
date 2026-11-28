@@ -124,7 +124,7 @@ struct FiltersView: View {
         if tab == .named {
             DockedSearchBar(text: $namedSearch, prompt: "搜索名称或正则")
                 .padding(.horizontal, 16)
-                .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+                .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
         }
         }
         .background(ConcordTheme.pageBackground)
@@ -235,8 +235,8 @@ struct FiltersView: View {
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+        // v0.2.165 (B): 64 for the docked search pill (16 + 48).
+        .contentMargins(.bottom, ConcordTheme.dockedSearchContentInset)
     }
 
     private func namedFilterRow(_ filter: NamedFilter) -> some View {
@@ -317,7 +317,7 @@ struct FiltersView: View {
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
     }
 
     private func load() async {

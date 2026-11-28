@@ -189,7 +189,7 @@ struct OnDemandView: View {
         // disconnect are also on every row's swipe actions + … menu.
         .environment(\.editMode, .constant(.active))
         .contentMargins(.top, 16)
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)

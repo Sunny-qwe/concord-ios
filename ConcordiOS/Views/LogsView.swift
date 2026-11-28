@@ -126,8 +126,8 @@ struct LogsView: View {
                         compactEmptyStateView
                     }
                     // v0.2.66: tab-bar clearance for pushed pages.
-                    // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
-                    .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+                    // v0.2.165 (B): 64 for the docked search pill (16 + 48).
+                    .contentMargins(.bottom, ConcordTheme.dockedSearchContentInset)
                 } else {
                     ScrollViewReader { proxy in
                         ZStack(alignment: .trailing) {
@@ -166,8 +166,8 @@ struct LogsView: View {
                             // content change to maintain yet.
                             .defaultScrollAnchor(.bottom)
                             // v0.2.66: tab-bar clearance for pushed pages.
-                            // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
-                            .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+                            // v0.2.165 (B): 64 for the docked search pill (16 + 48).
+                            .contentMargins(.bottom, ConcordTheme.dockedSearchContentInset)
                             .onAppear { scrollToNewestOnce(proxy) }
                             .onChange(of: logStore.filtered.count) { _, _ in
                                 scrollToNewestOnce(proxy)
@@ -175,12 +175,16 @@ struct LogsView: View {
                             // v0.2.139 (L-M3): floating scrollbar
                             // with a time hint (upstream
                             // FloatingScrollbar + hintBuilder).
+                            // v0.2.167: the 166 .frame(maxWidth:
+                            // .infinity, alignment: .trailing) was a
+                            // no-op — the GeometryReader inside
+                            // already fills this ZStack, so the
+                            // alignment never reached the strip (the
+                            // thumb stayed at the LEFT edge, IMG_1421).
+                            // The strip is now pinned by explicit
+                            // .position inside the scrollbar itself.
                             if !logStore.filtered.isEmpty {
                                 LogsFloatingScrollbar(entries: logStore.filtered, proxy: proxy)
-                                    // v0.2.166: pin explicitly to the trailing edge —
-                                    // IMG_1421 showed the thumb at the LEFT edge
-                                    // although the ZStack alignment is .trailing.
-                                    .frame(maxWidth: .infinity, alignment: .trailing)
                             }
                         }
                     }
@@ -192,7 +196,7 @@ struct LogsView: View {
             // top search row; same $logStore.searchText binding.
             DockedSearchBar(text: $logStore.searchText, prompt: "搜索日志")
                 .padding(.horizontal, 16)
-                .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+                .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
         }
         // v0.2.63: the keyboard must not shift this page. The gap
         // in IMG_1195 is ~244pt tall — about a keyboard tall — and
@@ -573,6 +577,11 @@ struct LogsView: View {
 /// FloatingScrollbar + hintBuilder, and record_feed.dart
 /// `recordAtFraction`: the hint is the date-time of the log at the
 /// dragged fraction of the list; dragging scrubs the list there).
+/// v0.2.167: the thumb/track are pinned by explicit .position
+/// against the GeometryReader's measured width — alignment
+/// modifiers cannot pin them, because the GeometryReader lays its
+/// child out at the top-leading corner (the thumb ended up on the
+/// LEFT edge, IMG_1421, and the 166 .frame fix changed nothing).
 /// SwiftUI's List exposes no scroll offset on iOS 17
 /// (`.onScrollGeometryChange` is iOS 18+), so the thumb does NOT
 /// track manual list scrolling — it rests at the last scrub
@@ -601,14 +610,32 @@ private struct LogsFloatingScrollbar: View {
 
     var body: some View {
         GeometryReader { geo in
+            let width = geo.size.width
             let height = geo.size.height
             let thumbY = fraction * max(0, height - Self.thumbHeight)
-            ZStack(alignment: .trailing) {
+            // v0.2.167: explicit geometry, no alignment. The old
+            // body relied on ZStack(alignment: .trailing) — but a
+            // GeometryReader lays its child out at the TOP-LEADING
+            // corner and the inner ZStack shrank to its widest
+            // child (the 28pt track), so the whole strip sat at
+            // the LEFT edge (IMG_1421); the outer alignment and
+            // the 166 .frame modifier only moved the already
+            // full-width GeometryReader itself. Upstream
+            // (prism_ui scroll.dart) puts the thumb at the
+            // trailing edge with a 2pt cross-axis margin, so the
+            // 5pt thumb's centre is 2 + 5/2 = 4.5pt in from the
+            // right edge; the 28pt hit strip is centred on the
+            // same edge. .position is absolute inside the
+            // full-size ZStack below, so the thumb is provably
+            // at the right edge regardless of alignment.
+            let thumbCenterX = width - 2 - 2.5
+            let stripCenterX = width - Self.stripWidth / 2
+            ZStack {
                 // Track: transparent hit strip at the trailing edge.
                 // minimumDistance 0, so a tap on the track jumps
                 // the list to that fraction; a drag scrubs it.
                 Color.clear
-                    .frame(width: Self.stripWidth)
+                    .frame(width: Self.stripWidth, height: height)
                     .contentShape(Rectangle())
                     .gesture(
                         DragGesture(minimumDistance: 0)
@@ -631,28 +658,37 @@ private struct LogsFloatingScrollbar: View {
                                 }
                             }
                     )
-                // Thumb + hint pill. Hit-testing off: the track
-                // above owns the touches in this strip.
-                VStack(alignment: .trailing, spacing: 0) {
-                    Spacer().frame(height: thumbY)
-                    HStack(spacing: 8) {
-                        if scrubbing, let hint {
-                            Text(hint)
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 5)
-                                .background(Color.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 8))
-                        }
-                        RoundedRectangle(cornerRadius: 2.5)
-                            .fill(Color.secondary.opacity(scrubbing ? 0.9 : 0.55))
-                            .frame(width: 5, height: Self.thumbHeight)
-                    }
-                    .padding(.trailing, (Self.stripWidth - 5) / 2)
-                    Spacer()
+                    .position(x: stripCenterX, y: height / 2)
+                // Thumb, pinned by explicit .position: its centre
+                // is thumbCenterX, so its right edge is 2pt from
+                // the screen's right edge. Hit-testing off: the
+                // track above owns the touches in this strip.
+                RoundedRectangle(cornerRadius: 2.5)
+                    .fill(Color.secondary.opacity(scrubbing ? 0.9 : 0.55))
+                    .frame(width: 5, height: Self.thumbHeight)
+                    .position(x: thumbCenterX, y: thumbY + Self.thumbHeight / 2)
+                    .allowsHitTesting(false)
+                // Time hint, shown while scrubbing: trailing-aligned
+                // in a full-width frame, 8pt left of the thumb
+                // (2pt margin + 5pt thumb + 8pt gap).
+                if scrubbing, let hint {
+                    Text(hint)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.trailing, 2 + 5 + 8)
+                        .frame(width: width, height: Self.thumbHeight, alignment: .trailing)
+                        .position(x: width / 2, y: thumbY + Self.thumbHeight / 2)
+                        .allowsHitTesting(false)
                 }
-                .allowsHitTesting(false)
             }
+            // The ZStack must be exactly the GeometryReader's size:
+            // a bare ZStack would shrink to its widest child and
+            // drag the .position coordinates with it — the same
+            // trap that put the thumb on the left.
+            .frame(width: width, height: height)
         }
     }
 

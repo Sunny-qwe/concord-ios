@@ -108,14 +108,14 @@ struct AddedRulesView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
+        // v0.2.165 (B): 64 for the docked search pill (16 + 48).
         // v0.2.165 (D): no EditButton (upstream rules.dart has no
         // bar button besides + / quick actions). Reorder / delete
         // do not depend on it any more: editMode is always on, so
         // the drag handles + delete affordance stay; tapping a row
         // still opens the edit form.
         .environment(\.editMode, .constant(.active))
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+        .contentMargins(.bottom, ConcordTheme.dockedSearchContentInset)
         .contentMargins(.top, 16)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -176,7 +176,7 @@ struct AddedRulesView: View {
         }
         DockedSearchBar(text: $searchText, prompt: "搜索规则")
             .padding(.horizontal, 16)
-            .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+            .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
         }
     }
 

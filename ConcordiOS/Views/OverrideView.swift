@@ -144,7 +144,7 @@ struct OverrideView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "覆盖")
@@ -480,7 +480,7 @@ private struct OverrideSectionPage: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 40)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: section.label)
@@ -1088,7 +1088,7 @@ private struct OverrideStringListPage: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 40)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: title)
@@ -1157,7 +1157,7 @@ private struct OverrideNumberListPage: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 40)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: title)
@@ -1179,7 +1179,7 @@ private struct OverrideStringMapPage: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 40)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: title)

@@ -193,7 +193,7 @@ struct DeveloperView: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
             // v0.2.66: tab-bar clearance for pushed pages.
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "开发者模式")

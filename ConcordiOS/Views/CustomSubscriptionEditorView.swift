@@ -524,7 +524,7 @@ struct CustomSubscriptionEditorView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle(sub.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -969,7 +969,7 @@ private struct CustomSubscriptionPreviewPage: View {
                 .padding()
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .background(ConcordTheme.pageBackground)
         .navigationTitle("运行时配置")
         .navigationBarTitleDisplayMode(.inline)
@@ -1684,7 +1684,7 @@ private struct CustomProviderPickerView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)

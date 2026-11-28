@@ -81,7 +81,7 @@ struct VisualConfigView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("可视化配置")
         .navigationBarTitleDisplayMode(.inline)

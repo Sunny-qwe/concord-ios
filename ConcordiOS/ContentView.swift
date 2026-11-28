@@ -60,6 +60,9 @@ struct ContentView: View {
     @EnvironmentObject private var localization: LocalizationManager
 
     @State private var selectedTab: AppTab = .dashboard
+    /// v0.2.167 (B): the shared push depth (NavDepthStore) — the
+    /// tab bar hides while the selected tab has a pushed page.
+    @ObservedObject private var navDepthStore = NavDepthStore.shared
     /// Sequential fade state (v0.2.136, re-do of v0.2.128): the
     /// fade is two 0.15 s steps — current page out, switch with no
     /// animation, new page in — so the two pages are never visible
@@ -103,6 +106,9 @@ struct ContentView: View {
     /// prism_ui values and unverifiable from these checkouts, so
     /// fade reuses the 0.3 s slide duration.
     private var tabAnimationFade: Bool { themeStore.tabAnimation == .fade }
+    /// v0.2.167 (B): true while the selected tab has a pushed
+    /// page (upstream pushed pages cover the dock entirely).
+    private var isTabBarHidden: Bool { navDepthStore.isPushed(tab: selectedTab.rawValue) }
 
     var body: some View {
         Group {
@@ -116,7 +122,11 @@ struct ContentView: View {
                 slidingTabView
                     .tint(themeStore.accentColor)
                     .safeAreaInset(edge: .bottom) {
-                        dockedTabBar
+                        // v0.2.167 (B): no docked bar over a pushed
+                        // page — same rule as the floating bar below.
+                        if !isTabBarHidden {
+                            dockedTabBar
+                        }
                     }
             } else {
                 // Floating capsule bar (default, reference bottom bar).
@@ -195,9 +205,15 @@ struct ContentView: View {
                         .toolbar(.hidden, for: .tabBar)
                         .tint(themeStore.accentColor)
                         .overlay(alignment: .bottom) {
-                            floatingTabBar
-                                .padding(.horizontal, 21)
-                                // Upstream NavigationDock._bottomMarginOf:
+                            // v0.2.167 (B): the bar hides on pushed
+                            // pages — it is a root overlay, so it
+                            // would otherwise float over every
+                            // pushed page, under the docked search
+                            // pill (user: 底栏的位置不是搜索框的位置吗).
+                            if !isTabBarHidden {
+                                floatingTabBar
+                                    .padding(.horizontal, 21)
+                                    // Upstream NavigationDock._bottomMarginOf:
                                 // max(_edgeMargin = 21, system bottom
                                 // padding), measured from the SCREEN
                                 // bottom. The overlay already sits
@@ -209,10 +225,16 @@ struct ContentView: View {
                                 // max(0, 21 - safeArea). Notched
                                 // (34): 0, bar bottom 810, margin 34.
                                 .padding(.bottom, max(0, 21 - geo.safeAreaInsets.bottom))
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                            }
                         }
                 }
             }
         }
+        // v0.2.167 (B): animate the tab bar sliding away / back
+        // on push / pop (both the floating overlay above and the
+        // docked safeAreaInset below).
+        .animation(.easeOut(duration: 0.25), value: isTabBarHidden)
         // T-D1 (v0.2.138): remount the tab container on a language
         // change — see the localization property above.
         .id(localization.language)

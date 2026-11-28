@@ -544,7 +544,7 @@ struct SettingsView: View {
             .padding(.bottom, 16)
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .background(ConcordTheme.pageBackground)
         .tint(ConcordTheme.accent)
         .upstreamNavBar(title: "title.settings".l10n)
@@ -951,7 +951,7 @@ struct ProvidersView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.top, 16)
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
@@ -1498,7 +1498,7 @@ struct ResourcesView: View {
             .padding(.top, 12)
             .padding(.bottom, 16)
         }
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.bottom, ConcordTheme.pushedPageClearance)
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "tools.resources".l10n)
         .concordNavBarBackground()

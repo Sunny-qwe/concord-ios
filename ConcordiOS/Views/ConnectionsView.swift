@@ -286,7 +286,7 @@ struct ConnectionsView: View {
                         searchSubmitted()
                     }
                     .padding(.horizontal, 16)
-                    .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+                    .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
                 }
             }
         }
@@ -534,7 +534,7 @@ struct ConnectionsView: View {
                     }
                     .listStyle(.insetGrouped)
                     .scrollContentBackground(.hidden)
-                    .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance + 56 : 0))
+                    .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.dockedSearchContentInset : 0))
                 }
             }
         }
@@ -917,7 +917,7 @@ struct ConnectionsView: View {
             }
             .padding(.horizontal, 16)
             // v0.2.66: tab-bar clearance for pushed pages.
-            .padding(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance + 56 : 0))
+            .padding(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.dockedSearchContentInset : 0))
         }
     }
 

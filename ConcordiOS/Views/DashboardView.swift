@@ -676,7 +676,11 @@ struct DashboardView: View {
             // session from the extension's start time.
             await trafficActions.noteTunnelStarted(extStarted)
         }
-        await proxyStore.refresh()
+        // v0.2.167: carry the active profile — a bare refresh()
+        // cannot look up the remembered picks (fetchCoreGroups gets
+        // profileID nil), so the page showed the core's defaults
+        // instead of the node the user last picked.
+        await proxyStore.refresh(activeProfile: profileStore.activeProfile)
         await connectionStore.refresh()
         await trafficActions.refresh()
         await trafficActions.refreshEngineStatus()

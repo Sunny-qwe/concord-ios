@@ -213,18 +213,18 @@ struct MitmHostnameEditorView: View {
                 .tint(.red)
                 .disabled(selectedIndices.isEmpty)
                 .padding(.horizontal, 16)
-                .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+                .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
             } else {
                 // v0.2.165 (B): the old bottomSearchPill is now the
                 // shared DockedSearchBar (48pt, 20pt magnifier,
                 // cancel button); placement / inset unchanged.
                 DockedSearchBar(text: $searchText)
                     .padding(.horizontal, 16)
-                    .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+                    .padding(.bottom, ConcordTheme.dockedSearchBottomMargin)
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+        .contentMargins(.bottom, ConcordTheme.dockedSearchContentInset)
         .contentMargins(.top, 40)
         .upstreamNavBar(title: "主机名")
         .concordNavBarBackground()
@@ -560,7 +560,7 @@ struct MitmOptionsView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            .padding(.bottom, ConcordTheme.pushedPageClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "选项")

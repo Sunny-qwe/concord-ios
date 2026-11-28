@@ -685,9 +685,24 @@ enum CustomSubscriptionImporter {
                 // "" | "yaml" => Yaml) — treat it as unset rather
                 // than an error.
                 if !formatText.isEmpty {
-                    guard ["yaml", "text", "mrs"].contains(formatText) else {
+                    guard ["yaml", "text", "mrs", "domain-set"].contains(formatText) else {
                         throw CustomSubscriptionImportError(
-                            message: "提供方「\(name)」的 format=\(formatText) 不受支持（yaml / text / mrs）")
+                            message: "提供方「\(name)」的 format=\(formatText) 不受支持（yaml / text / mrs / domain-set）")
+                    }
+                    // v0.2.157 (domain-set decision): the core
+                    // accepts format=domain-set ONLY with
+                    // behavior=domain (provider.rs
+                    // parse_rule_provider: "the domain-set format
+                    // needs the domain behavior") — a mismatched
+                    // pair makes the core reject the WHOLE config,
+                    // so fail the import here with the reason
+                    // instead of baking a broken config. The
+                    // payload is Surge DOMAIN-SET text, one domain
+                    // per line; ".example.com" also covers
+                    // "example.com" (core RuleFormat::DomainSet).
+                    if formatText == "domain-set" && behavior != "domain" {
+                        throw CustomSubscriptionImportError(
+                            message: "提供方「\(name)」的 format=domain-set 需要 behavior=domain（当前为 \(behavior ?? "未设置")），否则核心会拒绝整个配置")
                     }
                     format = formatText
                 }

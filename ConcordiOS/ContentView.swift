@@ -44,6 +44,7 @@ struct ContentView: View {
     @EnvironmentObject private var dnsStore: DnsStore
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var clashProviderStore: ClashProviderStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var themeStore: ThemeStore
     // T-D1 (v0.2.138): the picked app language. The root Group
@@ -255,7 +256,15 @@ struct ContentView: View {
             profileUpdateTimer = Timer.publish(every: 1200, on: .main, in: .common)
                 .autoconnect()
                 .sink { _ in
-                    Task { await profileStore.updateDueProfiles() }
+                    Task {
+                        await profileStore.updateDueProfiles()
+                        // v0.2.157: same timer drives the provider
+                        // auto-update; updateDueProviders self-gates
+                        // on the geo switch, like updateDueProfiles
+                        // self-gates on the profile switch.
+                        let changed = await clashProviderStore.updateDueProviders()
+                        for id in changed { await profileStore.reapplyActiveForClashProvider(id: id) }
+                    }
                 }
             // Geo auto-update (ResourcesView setting): refresh the
             // three Geo databases when the interval has elapsed.
@@ -282,6 +291,26 @@ struct ContentView: View {
             // for it and a profile is ready.
             if settingsStore.autoRun, profileStore.activeProfile != nil, !proxyStore.isRunning {
                 await proxyStore.toggle()
+            }
+            // v0.2.157: scheduled ClashProvider auto-update
+            // (upstream resources.dart autoUpdate — same launch +
+            // 20-minute timer as profiles, gated on the geo
+            // auto-update switch + interval inside
+            // updateDueProviders). Changed records re-apply the
+            // active profile when it bakes them (a no-op
+            // otherwise); failures surface in
+            // clashProviderStore.lastAutoUpdateError, shown on the
+            // Providers page. It runs AFTER the auto-run toggle
+            // (behaviour-audit B2): upstream fires autoUpdate
+            // unawaited after startCore, so it can never delay
+            // startup — awaiting serial provider downloads (up to
+            // 30 s each) before the toggle delayed VPN auto-start
+            // by up to 30 s × N due providers. (The profile
+            // update above is still awaited before the toggle —
+            // pre-existing S8 behaviour, not changed here.)
+            if geoAutoUpdate {
+                let changed = await clashProviderStore.updateDueProviders()
+                for id in changed { await profileStore.reapplyActiveForClashProvider(id: id) }
             }
             // Auto-check for updates on launch (v0.2.85):
             // upstream update_status.dart installs directly

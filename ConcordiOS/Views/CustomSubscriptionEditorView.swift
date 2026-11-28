@@ -117,6 +117,15 @@ struct CustomSubscriptionEditorView: View {
         if Set(proxyProviderNames).count != proxyProviderNames.count { issues.append("有重名的代理提供方（重命名其中一个即可消除）") }
         let ruleProviderNames = sub.ruleProviders.map { $0.name }
         if Set(ruleProviderNames).count != ruleProviderNames.count { issues.append("有重名的规则提供方（重命名其中一个即可消除）") }
+        // v0.2.157: domain-set needs behavior domain — the core
+        // rejects the whole config on a mismatched pair, so a
+        // stale pairing (set before the picker/import gates, or
+        // by switching behavior after picking the format) is
+        // flagged here instead of silently breaking the apply.
+        for provider in sub.ruleProviders where provider.format == "domain-set"
+            && (provider.behavior ?? "classical") != "domain" {
+            issues.append("规则提供方「\(provider.name)」的格式是 domain-set，但匹配方式不是 domain：核心会拒绝整个配置")
+        }
         for group in sub.groups {
             if group.members.isEmpty && group.useProviders.isEmpty {
                 issues.append("分组「\(group.name)」没有成员也没有提供方")
@@ -855,7 +864,12 @@ struct CustomSubscriptionEditorView: View {
             users.append(contentsOf: sub.dialers.filter { $0.proxy == name || $0.dialer == name }.map { "拨号器「\($0.proxy) → \($0.dialer)」" })
             return users
         }
-        return sub.rules.filter { $0.type == "RULE-SET" && ruleSetNames($0.content, name) }.map { "规则「\($0.text)」" }
+        var users = sub.rules.filter { $0.type == "RULE-SET" && ruleSetNames($0.content, name) }.map { "规则「\($0.text)」" }
+        // v0.2.157: the delete also strips the scoped DNS /
+        // sniffer `rule-set:` references (see removeProviders),
+        // so they count in the confirm too.
+        users.append(contentsOf: CustomSubscriptionStore.ruleSetPolicyReferenceLabels(in: sub, name: name))
+        return users
     }
 
     /// Swipe-delete for a provider: an unreferenced provider goes
@@ -915,6 +929,16 @@ struct CustomSubscriptionEditorView: View {
                 copy.ruleProviders.removeAll { $0.id == provider.id }
                 guard !copy.ruleProviders.contains(where: { $0.name == provider.name }) else { continue }
                 copy.rules.removeAll { $0.type == "RULE-SET" && ruleSetNames($0.content, provider.name) }
+                // v0.2.157: strip the scoped DNS / sniffer
+                // `rule-set:` references (the 152 gap — the
+                // delete mirror of 156's rename-path strip).
+                // The draft strip is REQUIRED, not belt-and-
+                // braces: the draft survives across saves, and a
+                // second save would re-persist stale refs that
+                // cleanupDeletedProviders had stripped from the
+                // stored copy. cleanupDeletedProviders also
+                // strips (idempotently) as a backstop.
+                CustomSubscriptionStore.stripRuleSetPolicyReferences(in: &copy, deletedName: provider.name)
             }
         }
         draft = copy
@@ -1382,6 +1406,21 @@ private struct CustomProviderOptionsView: View {
         return nil
     }
 
+    /// domain-set is only valid with behavior domain (v0.2.157):
+    /// the core rejects the WHOLE config otherwise
+    /// (provider.rs parse_rule_provider: "the domain-set format
+    /// needs the domain behavior"). Blocks Save like nameError;
+    /// the import gate rejects the same pair, so the two paths
+    /// agree. Upstream FlClash does not offer domain-set at all
+    /// (RuleProviderFormat = yaml / text / mrs) — the core
+    /// accepts it, and the MITM module flow already bakes it, so
+    /// the app offers it here with the pairing enforced.
+    private var formatError: String? {
+        guard isRuleProvider, provider.format == "domain-set",
+              (provider.behavior ?? "classical") != "domain" else { return nil }
+        return "格式 domain-set 只适用于匹配方式 domain，否则核心会拒绝整个配置"
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -1439,6 +1478,16 @@ private struct CustomProviderOptionsView: View {
                             Text("yaml").tag("yaml")
                             Text("text").tag("text")
                             Text("mrs").tag("mrs")
+                            // v0.2.157: Surge DOMAIN-SET text, one
+                            // domain per line (".example.com" also
+                            // covers "example.com"); valid only with
+                            // behavior domain — see formatError.
+                            Text("domain-set（域名集）").tag("domain-set")
+                        }
+                        if let formatError {
+                            Text(formatError)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
                         }
                         if provider.kind == "inline" {
                             Text("内联规则（\(provider.payload.count) 行）")
@@ -1591,7 +1640,7 @@ private struct CustomProviderOptionsView: View {
                         onSave(trimmed)
                         dismiss()
                     }
-                    .disabled(nameError != nil)
+                    .disabled(nameError != nil || formatError != nil)
                 }
             }
         }

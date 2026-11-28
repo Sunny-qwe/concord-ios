@@ -501,6 +501,10 @@ struct ProvidersView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var profileStore: ProfileStore
+    /// The shared ClashProvider records store (v0.2.157): the
+    /// scheduled auto-update runs on this instance (ContentView
+    /// timer) and its lastAutoUpdateError is shown below.
+    @EnvironmentObject private var clashProviderStore: ClashProviderStore
     /// Custom subscriptions, loaded once — the delete swipe
     /// action maps a confined-path row back to its owning
     /// definition (v0.2.152).
@@ -665,6 +669,15 @@ struct ProvidersView: View {
                     .foregroundStyle(.red)
                     .listRowBackground(Color.clear)
             }
+            // v0.2.157: scheduled provider auto-update failures
+            // (same summary shape as the profile auto-update —
+            // "自动更新失败（N 个）：…" — cleared on a clean run).
+            if let error = clashProviderStore.lastAutoUpdateError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .listRowBackground(Color.clear)
+            }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
@@ -805,7 +818,12 @@ struct ProvidersView: View {
     /// RULE-SET rules naming a rule provider inside its owning
     /// subscription (groups never use rule providers).
     private func ruleProviderDeleteUsers(sub: CustomSubscription, name: String) -> [String] {
-        sub.rules.filter { $0.type == "RULE-SET" && $0.content == name }.map { "规则「\($0.text)」" }
+        var users = sub.rules.filter { $0.type == "RULE-SET" && $0.content == name }.map { "规则「\($0.text)」" }
+        // v0.2.157: the delete also strips the scoped DNS /
+        // sniffer `rule-set:` references (see deleteRuleProvider),
+        // so they count in the confirm too.
+        users.append(contentsOf: CustomSubscriptionStore.ruleSetPolicyReferenceLabels(in: sub, name: name))
+        return users
     }
 
     /// Delete swipe action: an unreferenced provider goes
@@ -833,6 +851,11 @@ struct ProvidersView: View {
         var copy = sub
         copy.ruleProviders.removeAll { $0.name == provider.name }
         copy.rules.removeAll { $0.type == "RULE-SET" && $0.content == provider.name }
+        // v0.2.157: strip the scoped DNS / sniffer `rule-set:`
+        // references (the 152 gap). No same-named survivor can
+        // exist here — removeAll above took every provider of
+        // this name — so no twin guard is needed.
+        CustomSubscriptionStore.stripRuleSetPolicyReferences(in: &copy, deletedName: provider.name)
         let store = CustomSubscriptionStore()
         store.update(copy)
         _ = CustomSubscriptionStore.cleanupDeletedProviders(old: sub, new: copy)
@@ -1056,6 +1079,14 @@ struct ResourcesView: View {
                             .foregroundStyle(.red)
                     }
                 }
+                // v0.2.157: the same switch + interval also drives
+                // the scheduled rule-provider auto-update (upstream
+                // resources.dart autoUpdate gates providers on the
+                // geo switch) — no separate provider switch exists
+                // upstream, so none is added here.
+                Text("打开后，规则提供方的内容也会按同一间隔自动更新（上次更新时间见提供方页）。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 if geoFiles.isEmpty {
                     Text("容器里没有找到 Geo 文件（MMDB / ASN / GeoSite）。点下面按钮更新，核心会在后台下载。")
                         .font(.caption2)

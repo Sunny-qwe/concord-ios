@@ -30,6 +30,14 @@ struct ConcordiOSApp: App {
     // so a backup restore can reload it like the other stores
     // (audit B8); ProxiesView reads the same instance.
     @StateObject private var proxyStyleStore = ProxyStyleStore()
+    // The ClashProvider records store lives here (v0.2.157):
+    // the scheduled auto-update runs on this one instance (the
+    // 20-minute timer in ContentView) and the Providers page
+    // reads its lastAutoUpdateError from the same instance.
+    // Ad-hoc ClashProviderStore() instances elsewhere keep
+    // working — they reload from disk on init — but only this
+    // instance carries the scheduled run's result.
+    @StateObject private var clashProviderStore = ClashProviderStore()
 
     init() {
         // v0.2.102: the main-thread watchdog (see
@@ -113,6 +121,7 @@ struct ConcordiOSApp: App {
                 .environmentObject(themeStore)
                 .environmentObject(fontStore)
                 .environmentObject(proxyStyleStore)
+                .environmentObject(clashProviderStore)
                 // T-D1 (v0.2.138): the picked app language — the
                 // Tools picker and ContentView's remount read it.
                 .environmentObject(LocalizationManager.shared)

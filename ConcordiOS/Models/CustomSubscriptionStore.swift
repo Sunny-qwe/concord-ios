@@ -1562,6 +1562,85 @@ final class CustomSubscriptionStore: ObservableObject {
         return text.contains("age-encryption.org/v1")
     }
 
+    /// The stored age private key for one URL profile
+    /// (v0.2.157): read straight from the persisted profiles
+    /// list instead of instantiating ProfileStore — its init
+    /// runs migrations + Combine sinks, which must not run
+    /// inside the synchronous bake path. profiles.v1 is plain
+    /// JSON in UserDefaults (ProfileStore.storageKey); a
+    /// missing or undecodable list just means no key.
+    private static func ageSecretKey(forProfileId profileId: UUID) -> String? {
+        guard let data = UserDefaults.standard.data(forKey: "ConcordiOS.profiles.v1"),
+              let profiles = try? JSONDecoder().decode([Profile].self, from: data) else { return nil }
+        return profiles.first { $0.id == profileId }?.ageSecretKey
+    }
+
+    /// Whether an age secret key is well-formed (v0.2.157,
+    /// behaviour-audit B3): the core runs
+    /// crypt::verify_secret_key on every non-empty
+    /// `age-secret-key:` at parse time (provider.rs:247-249)
+    /// and rejects the WHOLE config on a malformed key — so a
+    /// typo'd stored key baked here would break the VPN
+    /// entirely, not just that provider. The check is the age
+    /// identity format: HRP `age-secret-key-` (15 chars,
+    /// trailing dash — age-0.11.5 x25519.rs
+    /// SECRET_KEY_PREFIX) + `1` separator + 58 bech32 chars
+    /// (32-byte X25519 secret → 52 data + 6 checksum chars;
+    /// 74 chars total, e.g. `AGE-SECRET-KEY-1…`), verified
+    /// with the BIP-173 bech32 polymod (chk == 1).
+    /// Post-quantum keys (`AGE-SECRET-KEY-PQ-1…`) fail the hrp
+    /// check, matching the core's explicit rejection. A
+    /// well-formed but wrong-identity key still passes — only
+    /// the core can tell it decrypts nothing — and fails
+    /// per-provider at pull time, exactly like before 157. The
+    /// algorithm was validated in Python against BIP-173
+    /// vectors + 200 generated age keys (round-trip encode →
+    /// verify, typo rejection) before porting; Swift's UInt32
+    /// arithmetic matches bit-for-bit (all values stay under
+    /// 2^30 after masking, so no overflow trap can fire).
+    /// (An earlier draft used the 14-char HRP `age-secret-key`
+    /// — no trailing dash — which rejected every genuine key;
+    /// caught by the behaviour re-audit against the core's
+    /// SECRET_KEY_PREFIX. The Python validator now encodes
+    /// with the correct HRP and checks the auditor's sample
+    /// genuine-format key.)
+    private static func isValidAgeSecretKey(_ key: String) -> Bool {
+        // bech32 is case-insensitive but not mixed-case; keys
+        // are stored upper-case, lower-case is accepted too.
+        guard key == key.uppercased() || key == key.lowercased() else { return false }
+        let lower = key.lowercased()
+        guard let sep = lower.lastIndex(of: "1") else { return false }
+        let hrp = String(lower[..<sep])
+        let dataPart = String(lower[lower.index(after: sep)...])
+        guard hrp == "age-secret-key-", dataPart.count == 58 else { return false }
+        let charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+        var values: [UInt32] = []
+        values.reserveCapacity(15 + 1 + 15 + 58)
+        for scalar in hrp.unicodeScalars { values.append(UInt32(scalar.value >> 5)) }
+        values.append(0)
+        for scalar in hrp.unicodeScalars { values.append(UInt32(scalar.value & 31)) }
+        for ch in dataPart {
+            guard let idx = charset.firstIndex(of: ch) else { return false }
+            values.append(UInt32(charset.distance(from: charset.startIndex, to: idx)))
+        }
+        return bech32Polymod(values) == 1
+    }
+
+    /// The BIP-173 bech32 checksum polymod (v0.2.157, for
+    /// isValidAgeSecretKey): generator constants per the spec.
+    private static func bech32Polymod(_ values: [UInt32]) -> UInt32 {
+        let gen: [UInt32] = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+        var chk: UInt32 = 1
+        for v in values {
+            let top = chk >> 25
+            chk = ((chk & 0x1ffffff) << 5) ^ v
+            for i in 0..<5 where ((top >> i) & 1) == 1 {
+                chk ^= gen[i]
+            }
+        }
+        return chk
+    }
+
     /// Confined file for a mapped proxy provider (upstream
     /// confineProviders shape): copies the URL Profile's
     /// downloaded file (profiles/<profileId>.yaml —
@@ -1572,9 +1651,12 @@ final class CustomSubscriptionStore: ObservableObject {
     /// whose home is separate; the relative path resolves under
     /// both homes). Nil when the App Group is unavailable, the
     /// profile file is missing, or its content is age-encrypted
-    /// (the http fallback then applies — the profile update
-    /// decrypts it with the stored key and the next bake confines
-    /// the plaintext). The file holds the full subscription YAML;
+    /// — then the bake falls back to `type: http` and the mapped
+    /// profile's stored ageSecretKey is baked as `age-secret-key:`
+    /// (v0.2.157; the engine passes def.age_secret_key into
+    /// parse_provider_content for both file and http sources —
+    /// group provider/mod.rs:147,602 — so the core decrypts the
+    /// download itself). The file holds the full subscription YAML;
     /// parse_provider_content takes the `proxies:` list from it
     /// and ignores the other keys.
     private static func confinedProxyProviderFile(ref: ProviderProfileRef, subID: UUID) -> String? {
@@ -1735,6 +1817,15 @@ final class CustomSubscriptionStore: ObservableObject {
                         if let record = clashStore.provider(id: clashId) { clashStore.delete(record) }
                     }
                 }
+                // v0.2.157: strip the scoped DNS / sniffer
+                // `rule-set:` references (the 152 gap — the
+                // delete mirror of 156's rename-path strip).
+                // Both callers persist the edited copy before
+                // calling this, so `saved` (reloaded here)
+                // normally already carries the draft strip; this
+                // makes cleanup self-contained if a future caller
+                // forgets it. The strip is idempotent.
+                stripRuleSetPolicyReferences(in: &saved, deletedName: provider.name)
             }
             cleaned.append(provider.name)
         }
@@ -1859,6 +1950,161 @@ final class CustomSubscriptionStore: ObservableObject {
                 return String(leading) + newName + String(trailing.reversed())
             }
         return prefix + renamed.joined(separator: ",")
+    }
+
+    /// Removes one provider name from a `rule-set:` list
+    /// (v0.2.157, the delete mirror of renamedRuleSetList): nil
+    /// when the whole entry names only the deleted provider (or
+    /// the list empties once it is removed), otherwise the list
+    /// with that name dropped. Same matching as the rename path
+    /// — case-insensitive `rule-set:` prefix (preserved verbatim),
+    /// each list item compared after trimming (core keys are
+    /// case-sensitive, so no folding), survivors keep their
+    /// surrounding whitespace. Non-`rule-set:` text passes
+    /// through unchanged (the caller handles the `RULE-SET,`
+    /// rule-text form separately).
+    private static func strippedRuleSetList(_ text: String, deletedName: String) -> String? {
+        let lower = text.lowercased()
+        guard lower.hasPrefix("rule-set:") else { return text }
+        let prefix = String(text.prefix("rule-set:".count))
+        let rest = String(text.dropFirst("rule-set:".count))
+        let kept = rest.split(separator: ",", omittingEmptySubsequences: false)
+            .filter { $0.trimmingCharacters(in: .whitespaces) != deletedName }
+        guard kept.contains(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else { return nil }
+        return prefix + kept.joined(separator: ",")
+    }
+
+    /// Whether text is a leading `RULE-SET, NAME` rule naming
+    /// one provider (v0.2.157): the delete-side predicate for
+    /// fake-ip-filter entries, mirroring the leading pass of
+    /// renamedRuleText (same regex, same name-span rules — the
+    /// name ends at `,` or `)`, surrounding whitespace ignored).
+    private static func isRuleSetRuleText(_ text: String, name: String) -> Bool {
+        guard let range = text.range(of: #"^\s*RULE-SET\s*,\s*"#, options: [.regularExpression, .caseInsensitive]) else { return false }
+        let after = text[range.upperBound...]
+        let nameEnd = after.firstIndex(where: { $0 == "," || $0 == ")" }) ?? after.endIndex
+        return after[..<nameEnd].trimmingCharacters(in: .whitespaces) == name
+    }
+
+    /// Strips `rule-set:NAME` references to a deleted rule
+    /// provider from one subscription's scoped DNS / sniffer
+    /// sections (v0.2.157; the delete mirror of 156's
+    /// renameRuleSetPolicyReferences — the 152 gap). Policy-dict
+    /// keys naming only the deleted provider are removed; list
+    /// keys drop the name (and go away when the list empties — a
+    /// rewritten key that already exists keeps ITS value, the
+    /// removed entry's value served the deleted set only);
+    /// fake-ip-filter entries naming the provider go away (both
+    /// the `rule-set:` list form and the leading `RULE-SET,`
+    /// rule-text form); sniffer list entries drop the name.
+    /// Nested `(RULE-SET, NAME)` occurrences inside a larger
+    /// rule text are left alone: the rename path could rewrite
+    /// them in place, but a delete has no valid in-place
+    /// rewrite that preserves the rest of the rule.
+    /// Callers run this only when no same-named provider
+    /// survives (the same B1 guard as the map/file/record
+    /// cleanup) — a surviving twin still owns these references.
+    static func stripRuleSetPolicyReferences(in sub: inout CustomSubscription, deletedName: String) {
+        if var dns = sub.dns {
+            if var policy = dns.nameserverPolicy {
+                // Two-phase (v0.2.157, logic-audit B3): dict
+                // iteration order is unspecified, so inserting a
+                // rewrite while other keys still stand resolves a
+                // collision nondeterministically — two keys can
+                // strip to the same target ("rule-set:A,B" and
+                // "rule-set:B,A" both become "rule-set:B" when A
+                // is deleted) and whichever is visited first
+                // would win. Compute all rewrites first, drop
+                // every key that changes or empties, then insert
+                // each rewrite only when its target is absent
+                // from the FINAL key set: a pre-existing survivor
+                // keeps ITS value, and ties between two rewrites
+                // resolve by sorted original key (first wins),
+                // deterministically. (Iterating Array(policy.keys)
+                // — a snapshot — because phase 1 mutates the dict.)
+                var rewrites: [(key: String, stripped: String, value: String)] = []
+                for key in Array(policy.keys) {
+                    guard let stripped = strippedRuleSetList(key, deletedName: deletedName) else {
+                        policy.removeValue(forKey: key)
+                        continue
+                    }
+                    guard stripped != key, let value = policy.removeValue(forKey: key) else { continue }
+                    rewrites.append((key: key, stripped: stripped, value: value))
+                }
+                for rewrite in rewrites.sorted(by: { $0.key < $1.key }) {
+                    if policy[rewrite.stripped] == nil { policy[rewrite.stripped] = rewrite.value }
+                }
+                dns.nameserverPolicy = policy
+            }
+            if var policy = dns.proxyServerNameserverPolicy {
+                // Two-phase, same as nameserverPolicy above
+                // (logic-audit B3): same nondeterministic
+                // collision when two keys strip to one target.
+                var rewrites: [(key: String, stripped: String, value: String)] = []
+                for key in Array(policy.keys) {
+                    guard let stripped = strippedRuleSetList(key, deletedName: deletedName) else {
+                        policy.removeValue(forKey: key)
+                        continue
+                    }
+                    guard stripped != key, let value = policy.removeValue(forKey: key) else { continue }
+                    rewrites.append((key: key, stripped: stripped, value: value))
+                }
+                for rewrite in rewrites.sorted(by: { $0.key < $1.key }) {
+                    if policy[rewrite.stripped] == nil { policy[rewrite.stripped] = rewrite.value }
+                }
+                dns.proxyServerNameserverPolicy = policy
+            }
+            if let filter = dns.fakeIpFilter {
+                dns.fakeIpFilter = filter.compactMap { entry -> String? in
+                    guard let stripped = strippedRuleSetList(entry, deletedName: deletedName) else { return nil }
+                    return isRuleSetRuleText(stripped, name: deletedName) ? nil : stripped
+                }
+            }
+            sub.dns = dns
+        }
+        if var sniffer = sub.sniffer {
+            if let list = sniffer.forceDomain { sniffer.forceDomain = list.compactMap { strippedRuleSetList($0, deletedName: deletedName) } }
+            if let list = sniffer.skipDomain { sniffer.skipDomain = list.compactMap { strippedRuleSetList($0, deletedName: deletedName) } }
+            if let list = sniffer.skipSrcAddress { sniffer.skipSrcAddress = list.compactMap { strippedRuleSetList($0, deletedName: deletedName) } }
+            if let list = sniffer.skipDstAddress { sniffer.skipDstAddress = list.compactMap { strippedRuleSetList($0, deletedName: deletedName) } }
+            sub.sniffer = sniffer
+        }
+    }
+
+    /// The scoped DNS / sniffer `rule-set:` references naming
+    /// one rule provider (v0.2.157), as confirm labels: the
+    /// delete confirms list them alongside the RULE-SET rules,
+    /// so "这些引用会一并移除" stays honest now that the delete
+    /// path strips them too. Reuses the strip predicate — an
+    /// entry lists when the strip would change or remove it.
+    static func ruleSetPolicyReferenceLabels(in sub: CustomSubscription, name: String) -> [String] {
+        var labels: [String] = []
+        if let dns = sub.dns {
+            for key in (dns.nameserverPolicy ?? [:]).keys where strippedRuleSetList(key, deletedName: name) != key {
+                labels.append("DNS 名称服务器策略「\(key)」")
+            }
+            for key in (dns.proxyServerNameserverPolicy ?? [:]).keys where strippedRuleSetList(key, deletedName: name) != key {
+                labels.append("DNS 代理服务器名称服务器策略「\(key)」")
+            }
+            for entry in dns.fakeIpFilter ?? [] {
+                if strippedRuleSetList(entry, deletedName: name) != entry || isRuleSetRuleText(entry, name: name) {
+                    labels.append("DNS 假 IP 过滤「\(entry)」")
+                }
+            }
+        }
+        if let sniffer = sub.sniffer {
+            for (field, list) in [
+                ("嗅探强制域名", sniffer.forceDomain),
+                ("嗅探跳过域名", sniffer.skipDomain),
+                ("嗅探跳过源地址", sniffer.skipSrcAddress),
+                ("嗅探跳过目标地址", sniffer.skipDstAddress),
+            ] {
+                for entry in list ?? [] where strippedRuleSetList(entry, deletedName: name) != entry {
+                    labels.append("\(field)「\(entry)」")
+                }
+            }
+        }
+        return labels
     }
 
     private static func renameRuleSetPolicyReferences(in sub: inout CustomSubscription, oldName: String, newName: String) {
@@ -2238,6 +2484,50 @@ final class CustomSubscriptionStore: ObservableObject {
         } else if provider.kind == "http", !provider.url.isEmpty {
             lines.append("    type: http")
             lines.append("    url: \(CustomProxy.quote(provider.url))")
+            // v0.2.157 (VPN-on age decrypt): when the mapped
+            // profile's stored file is age-encrypted, confine
+            // refuses it and this http fallback downloads the
+            // ciphertext — without a key the engine calls
+            // parse_provider_content(bytes, key: None) and the
+            // provider comes out empty (stale). The stored
+            // ciphertext arises when the profile was added while
+            // the VPN was off: config.decrypt runs in the
+            // extension core, so decryptAgeDataIfNeeded fails and
+            // addFromURL saves the ciphertext WITH the key for a
+            // later update to decrypt. Baking the stored key lets
+            // the core decrypt the download itself — pure in-core
+            // crypto, no tunnel needed, so the provider works with
+            // the VPN on or off. Decrypting at bake time instead
+            // was rejected: bake is synchronous, decrypt is async
+            // AND needs the live tunnel, and the core already
+            // supports the key natively (decrypt_config passes
+            // plaintext through unchanged, so the key is harmless
+            // when the file was already decrypted).
+            // The key is emitted ONLY when it passes
+            // isValidAgeSecretKey (behaviour-audit B3): the core
+            // rejects the WHOLE config on a malformed
+            // `age-secret-key:` (provider.rs:247-249), so a
+            // typo'd stored key would break the VPN entirely,
+            // not just this provider. A malformed key is skipped
+            // instead — the provider falls back to the pre-157
+            // no-key behaviour (empty until the profile update
+            // decrypts it). Input-side validation (EditProfileView
+            // / addFromURL) is a follow-up, not done here.
+            // Exposure note (behaviour-audit note 3, corrected):
+            // baking the key DOES widen where it rests — profiles.v1
+            // is per-bundle-ID UserDefaults, while the baked
+            // config.yaml lives in the App Group shared container
+            // the extension reads, and the key is visible in the
+            // runtime-config preview (which bakes the full text).
+            // Mitigations: it is baked only on this fallback
+            // branch (not for confined plaintext providers), only
+            // in validated form, and Profiles export exports the
+            // profile file, never the baked config.
+            if let ref = sub.providerProfileMap[provider.name],
+               let key = Self.ageSecretKey(forProfileId: ref.profileId), !key.isEmpty,
+               Self.isValidAgeSecretKey(key) {
+                lines.append("    age-secret-key: \(CustomProxy.quote(key))")
+            }
         } else if provider.kind == "file", !provider.path.isEmpty {
             lines.append("    type: file")
             lines.append("    path: \(CustomProxy.quote(provider.path))")

@@ -26,8 +26,11 @@ struct ClashProvider: Codable, Equatable, Identifiable {
     /// mihomo behavior: domain / ipcidr / classical. Nil = unset
     /// (the baked entry defaults to classical).
     var behavior: String?
-    /// mihomo format: yaml / text / mrs. Nil = unset (the core
-    /// auto-detects).
+    /// mihomo format: yaml / text / mrs / domain-set (v0.2.157:
+    /// domain-set is only valid with behavior domain — the core
+    /// rejects the whole config otherwise, provider.rs
+    /// parse_rule_provider). Nil = unset (the core auto-detects;
+    /// "" means yaml).
     var format: String?
     var updatedAt: Date?
 
@@ -55,10 +58,32 @@ struct ClashProvider: Codable, Equatable, Identifiable {
 /// clash-providers/<fileName>.
 final class ClashProviderStore: ObservableObject {
     @Published var providers: [ClashProvider] = []
+    /// The last scheduled auto-update failure summary, if any
+    /// (v0.2.157; same shape as ProfileStore.updateDueProfiles'
+    /// lastError — "自动更新失败（N 个）：…" — shown on the
+    /// Providers page; nil after a clean run).
+    @Published var lastAutoUpdateError: String?
+    /// A scheduled run is in flight (v0.2.157, logic-audit B2):
+    /// the 20-minute timer can fire while a long run (many
+    /// providers × up-to-30 s each) is still going; without this
+    /// the second run would race the first on `providers` /
+    /// `lastAutoUpdateError` and double-download. @MainActor
+    /// serialises the flag with the runs.
+    private var isAutoUpdating = false
 
     private static let fileName = "clash-providers.json"
     private static let contentDirectoryName = "clash-providers"
     private static let maxDownloadBytes = 2 * 1024 * 1024
+    /// Serialises the load → mutate → save windows (v0.2.157,
+    /// B1 final re-audit residual): writers are separate ad-hoc
+    /// instances, so the lock must be static to be shared. It
+    /// is recursive because update()/delete() lock internally
+    /// while the download functions hold it across their
+    /// post-download segment. No await ever runs under it
+    /// (it is only taken after the download await), so it can
+    /// neither deadlock nor stall a download; the held window
+    /// is a synchronous disk read + write (~1 ms).
+    private static let ioLock = NSRecursiveLock()
 
     private var fileURL: URL? {
         ConfigStore.sharedFileURL(name: Self.fileName)
@@ -89,7 +114,20 @@ final class ClashProviderStore: ObservableObject {
         providers.first { $0.id == id }
     }
 
+    /// Replaces the record with the same id, or appends it when
+    /// it is new — then saves the whole list. Reloads from disk
+    /// first (v0.2.157, B1 re-audit hole 2): writers are ad-hoc
+    /// instances with init-time snapshots, and their saves run
+    /// off the MainActor after a download await — without this,
+    /// a record added by a concurrent writer (e.g. an import
+    /// finishing while an update-all download is in flight)
+    /// would be clobbered by this save. No caller depends on
+    /// overwriting disk with a stale snapshot (there is no
+    /// whole-list restore path for this store).
     func update(_ provider: ClashProvider) {
+        Self.ioLock.lock()
+        defer { Self.ioLock.unlock() }
+        load()
         if let index = providers.firstIndex(where: { $0.id == provider.id }) {
             providers[index] = provider
         } else {
@@ -99,6 +137,11 @@ final class ClashProviderStore: ObservableObject {
     }
 
     func delete(_ provider: ClashProvider) {
+        // Same reload-first as update() (B1 re-audit hole 2):
+        // a delete must not drop records added concurrently.
+        Self.ioLock.lock()
+        defer { Self.ioLock.unlock() }
+        load()
         providers.removeAll { $0.id == provider.id }
         save()
         if let url = Self.contentFileURL(for: provider) {
@@ -123,6 +166,67 @@ final class ClashProviderStore: ObservableObject {
     /// with a Chinese message on failure; the record itself is
     /// untouched on failure.
     func downloadContent(for provider: ClashProvider) async throws -> ClashProvider {
+        let data = try await Self.downloadBytes(for: provider)
+        // v0.2.157, B1 re-audit hole 1: refresh from disk after
+        // the download await — a rename made mid-download must
+        // not be reverted by writing back this stale parameter
+        // struct (label is user-editable; url is not). Only
+        // updatedAt is refreshed. The `?? provider` fallback is
+        // findOrCreate's new record, which is not on disk yet.
+        // The segment runs under ioLock (recursive — update()
+        // locks again inside) so the fresh read, the write and
+        // the save are one atomic window against concurrent
+        // writers; no await runs under the lock.
+        Self.ioLock.lock()
+        defer { Self.ioLock.unlock() }
+        load()
+        let current = providers.first(where: { $0.id == provider.id }) ?? provider
+        try writeContent(data, for: current)
+        var updated = current
+        updated.updatedAt = Date()
+        update(updated)
+        return updated
+    }
+
+    /// Scheduled-run download (v0.2.157, logic re-audit B1):
+    /// like downloadContent, but the record must still exist
+    /// on disk when the download finishes. A record deleted
+    /// mid-run (ad-hoc delete during the up-to-30 s download)
+    /// stays deleted instead of being resurrected by
+    /// update()'s append fallback — returns nil in that case
+    /// and the caller skips it (not a failure). `updated` is
+    /// built from the FRESH record (B1 re-audit hole 1), not
+    /// the stale parameter: a rename made mid-download would
+    /// otherwise be silently reverted by the save. The
+    /// load → exists-check → write → update → save segment is
+    /// synchronous with no await; update()/delete() also
+    /// reload first (hole 2), because saves from the manual
+    /// path run off the MainActor after a download await and
+    /// must not clobber concurrent writers either. The whole
+    /// segment runs under the static ioLock (recursive —
+    /// update() locks again inside), so the existence guard
+    /// cannot go stale between the check and the save. The content
+    /// file is written only AFTER the existence check, so a
+    /// vanished record leaves no orphan file.
+    @MainActor
+    func downloadContentIfStillExists(for provider: ClashProvider) async throws -> ClashProvider? {
+        let data = try await Self.downloadBytes(for: provider)
+        Self.ioLock.lock()
+        defer { Self.ioLock.unlock() }
+        load()
+        guard let current = providers.first(where: { $0.id == provider.id }) else { return nil }
+        try writeContent(data, for: current)
+        var updated = current
+        updated.updatedAt = Date()
+        update(updated)
+        return updated
+    }
+
+    /// The network half of downloadContent, shared by both
+    /// variants: fetches the bytes with the 30 s timeout and
+    /// 2 MB cap, rejecting non-2xx. No disk or store state is
+    /// touched here.
+    private static func downloadBytes(for provider: ClashProvider) async throws -> Data {
         guard let url = URL(string: provider.url), !provider.url.isEmpty else {
             throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "规则提供方「\(provider.label)」没有可下载的链接"])
@@ -138,11 +242,7 @@ final class ClashProviderStore: ObservableObject {
             throw NSError(domain: "ConcordiOS", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "规则提供方「\(provider.label)」文件过大（超过 2MB），无法下载"])
         }
-        try writeContent(data, for: provider)
-        var updated = provider
-        updated.updatedAt = Date()
-        update(updated)
-        return updated
+        return data
     }
 
     /// Finds the record for a URL (dedup by url — the same bytes
@@ -171,5 +271,115 @@ final class ClashProviderStore: ObservableObject {
         } catch {
             return false
         }
+    }
+
+    // MARK: - Scheduled auto-update (v0.2.157)
+
+    /// The global geo auto-update switch (v0.2.157): upstream
+    /// gates provider auto-update on the SAME switch as the geo
+    /// databases (PatchClashConfig.geoAutoUpdate, default on —
+    /// resources.dart autoUpdate). Read from the same
+    /// UserDefaults keys SettingsView writes.
+    private static var geoAutoUpdateEnabled: Bool {
+        UserDefaults.standard.object(forKey: "ConcordiOS.geoAutoUpdate") as? Bool ?? true
+    }
+
+    /// The global geo update interval in hours (v0.2.157):
+    /// upstream's geoUpdateInterval, default 24 — the same
+    /// interval the geo databases use (SettingsView writes
+    /// "ConcordiOS.geoAutoUpdateHours").
+    private static var geoUpdateIntervalHours: Double {
+        UserDefaults.standard.object(forKey: "ConcordiOS.geoAutoUpdateHours") as? Double ?? 24.0
+    }
+
+    /// Scheduled auto-update for ClashProvider records
+    /// (v0.2.157; upstream resources.dart autoUpdate, triggered
+    /// at app start + on core connect — the app runs it at launch
+    /// and on the same 20-minute timer as updateDueProfiles).
+    /// Upstream has NO per-record interval or toggle: the gate is
+    /// the global geo switch + interval above, and a record is
+    /// due when its cached content is older than the interval
+    /// (upstream uses the cache file's lastModified; ours uses
+    /// updatedAt, set by downloadContent on every successful
+    /// download — the same instant). Only remote records (a
+    /// non-empty url) are candidates; a never-updated record is
+    /// due. Returns the ids whose content actually changed, so
+    /// the caller can re-apply the active profile for each
+    /// (ProfileStore.reapplyActiveForClashProvider — a no-op when
+    /// the active profile does not bake that record). The
+    /// confined files are re-created at bake time from the new
+    /// content, so no separate re-confine step exists.
+    /// Per-record failures are collected into
+    /// lastAutoUpdateError (upstream logs them as warnings
+    /// only); the old content stays in place on failure.
+    /// Deliberate deviation from the 157 brief's "per-record
+    /// interval, persisted" suggestion: upstream has no such
+    /// field, and the standing rule is to replicate upstream
+    /// first — a per-record interval would be our own feature.
+    /// @MainActor like ProfileStore.updateDueProfiles: the
+    /// 20-minute-timer Task is not MainActor-isolated, and the
+    /// @Published lastAutoUpdateError write must land on the
+    /// main thread (compile-audit nit).
+    @MainActor
+    func updateDueProviders() async -> [UUID] {
+        // v0.2.157, logic-audit B2: a second run (timer firing
+        // during a long first run) returns immediately instead
+        // of racing the first on `providers` /
+        // `lastAutoUpdateError` and double-downloading.
+        guard !isAutoUpdating else { return [] }
+        isAutoUpdating = true
+        defer { isAutoUpdating = false }
+        // v0.2.157, logic-audit B1: this shared instance loads
+        // clash-providers.json once at launch and never reloads,
+        // while every other writer (import, editor update,
+        // cleanupDeletedProviders) uses a fresh ad-hoc instance
+        // that saves the whole array. Without this reload, a
+        // successful download here would save the stale
+        // launch-time snapshot and silently DELETE records added
+        // (or resurrect records deleted) since launch.
+        load()
+        lastAutoUpdateError = nil
+        guard Self.geoAutoUpdateEnabled else { return [] }
+        // v0.2.157, logic-audit 1(a): the Settings UI requires
+        // hours > 0, but a backup restore writes the interval
+        // unvalidated — a restored 0 would make every provider
+        // due on every run. Treat non-positive as the default.
+        let intervalHours = Self.geoUpdateIntervalHours > 0 ? Self.geoUpdateIntervalHours : 24.0
+        let intervalSeconds = intervalHours * 3600
+        var changed: [UUID] = []
+        var failures: [(label: String, error: String)] = []
+        for record in providers where !record.url.trimmingCharacters(in: .whitespaces).isEmpty {
+            // v0.2.157, logic re-audit B1: reload before each
+            // record — an ad-hoc writer may have saved during
+            // the previous download's await, and this iteration's
+            // save must not clobber it. (The loop iterates the
+            // pre-run snapshot — value semantics — so reloading
+            // here can't skip or repeat records.) The FRESH
+            // record drives the rest: a manual update mid-run
+            // refreshes updatedAt, and a record deleted since
+            // the snapshot is skipped without a pointless
+            // download.
+            load()
+            guard let fresh = providers.first(where: { $0.id == record.id }) else { continue }
+            if let last = fresh.updatedAt {
+                guard Date() >= last.addingTimeInterval(intervalSeconds) else { continue }
+            }
+            do {
+                // nil = deleted mid-download (stays deleted,
+                // not a failure); see downloadContentIfStillExists.
+                if try await downloadContentIfStillExists(for: fresh) != nil {
+                    changed.append(record.id)
+                }
+            } catch {
+                failures.append((fresh.label, error.localizedDescription))
+            }
+        }
+        if failures.isEmpty {
+            lastAutoUpdateError = nil
+        } else {
+            lastAutoUpdateError = "自动更新失败（\(failures.count) 个）：\n"
+                + failures.map { "· \($0.label)：\($0.error)" }.joined(separator: "\n")
+        }
+        return changed
     }
 }

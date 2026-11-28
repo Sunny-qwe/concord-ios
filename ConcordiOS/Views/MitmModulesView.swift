@@ -610,7 +610,7 @@ private struct MitmModuleRow: View {
                     get: { module.enabled },
                     set: { onToggle($0) }
                 ))
-                .toggleStyle(UpstreamToggleStyle())
+                .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                 .labelsHidden()
             }
             if isExpanded {
@@ -1748,7 +1748,8 @@ private struct MitmModuleArgumentsSection: View {
                             get: { (values[argument.name] ?? argument.defaultValue) == "true" },
                             set: { values[argument.name] = $0 ? "true" : "false" }
                         ))
-                        .toggleStyle(UpstreamToggleStyle())
+                        .labelsHidden()
+                        .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                 }
             }

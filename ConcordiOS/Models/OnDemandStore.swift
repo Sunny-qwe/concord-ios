@@ -70,12 +70,23 @@ final class OnDemandStore: ObservableObject {
     /// behind. Only suspends bump it (edits are handled by the
     /// post-save re-check below, not by a generation).
     private var suspendEpoch = 0
+    /// Watermark for the v0.2.168 On-Demand readback (see
+    /// TunnelManager.syncOnDemandFromManager): the manager state
+    /// WE last wrote — (isOnDemandEnabled, rules empty). Nil =
+    /// unknown (pre-v4 record, or the write failed): the readback
+    /// never guesses from an unknown watermark. Persisted, so a
+    /// Settings change made while the app was closed is still
+    /// detectable against the last write before the relaunch.
+    private(set) var lastManagerEnabled: Bool?
+    private(set) var lastManagerRulesEmpty: Bool?
 
     private struct Saved: Codable {
         var version: Int = 3
         var enabled: Bool = false
         var excludedSSIDs: [String] = []
         var directSSIDs: [String] = []
+        var lastManagerEnabled: Bool?
+        var lastManagerRulesEmpty: Bool?
     }
 
     init() {
@@ -94,10 +105,22 @@ final class OnDemandStore: ObservableObject {
     }
 
     func save() {
-        let saved = Saved(version: 3, enabled: enabled, excludedSSIDs: excludedSSIDs, directSSIDs: directSSIDs)
+        let saved = Saved(version: 3, enabled: enabled, excludedSSIDs: excludedSSIDs, directSSIDs: directSSIDs,
+                          lastManagerEnabled: lastManagerEnabled, lastManagerRulesEmpty: lastManagerRulesEmpty)
         guard let data = try? JSONEncoder().encode(saved) else { return }
         UserDefaults.standard.set(data, forKey: storageKey)
         syncSharedFile()
+    }
+
+    /// Records the manager state a TunnelManager write just left
+    /// behind (install or suspend). Nil values mean the write's
+    /// outcome is unknown — the readback then skips the comparison
+    /// instead of adopting a guess. Persists immediately: the
+    /// watermark must survive a relaunch to stay meaningful.
+    func noteManagerWrite(enabled: Bool?, rulesEmpty: Bool?) {
+        lastManagerEnabled = enabled
+        lastManagerRulesEmpty = rulesEmpty
+        save()
     }
 
     /// Writes the SSID lists to the App Group container for the
@@ -140,6 +163,8 @@ final class OnDemandStore: ObservableObject {
         // those networks. New SSIDs added after the update default
         // to direct (fork on_demand.dart).
         directSSIDs = saved.version < 3 ? [] : saved.directSSIDs
+        lastManagerEnabled = saved.lastManagerEnabled
+        lastManagerRulesEmpty = saved.lastManagerRulesEmpty
     }
 
     /// Installs the rules when they changed since the last install.
@@ -202,6 +227,11 @@ final class OnDemandStore: ObservableObject {
             || directSSIDs != installingDirectSSIDs {
             return await installRulesIfNeeded()
         }
+        // The install landed: record what WE wrote, so the readback
+        // can tell our own write apart from a change the user made
+        // in Settings. With enabled on, the rules always carry the
+        // trailing connect rule; with it off, they are empty.
+        noteManagerWrite(enabled: installingEnabled, rulesEmpty: !installingEnabled)
         return true
     }
 
@@ -223,7 +253,16 @@ final class OnDemandStore: ObservableObject {
         lastInstalledEnabled = nil
         lastInstalledSSIDs = nil
         lastInstalledDirectSSIDs = nil
-        try? await TunnelManager.shared.updateOnDemandRules(enabled: false, excludedSSIDs: [])
+        do {
+            try await TunnelManager.shared.updateOnDemandRules(enabled: false, excludedSSIDs: [])
+            noteManagerWrite(enabled: false, rulesEmpty: true)
+        } catch {
+            // The clear may not have landed: the live manager state
+            // is unknown, so drop the watermark instead of recording
+            // a write that never happened. Still swallowed, as
+            // before — clearing must never block the stop itself.
+            noteManagerWrite(enabled: nil, rulesEmpty: nil)
+        }
     }
 
     /// Installs (or clears) the on-demand rules on the saved VPN

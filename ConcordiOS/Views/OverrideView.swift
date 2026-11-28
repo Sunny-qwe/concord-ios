@@ -905,7 +905,7 @@ private struct OverrideKeyRow: View {
         case .toggle:
             Toggle(spec.label, isOn: boolBinding())
                 .labelsHidden()
-                .toggleStyle(UpstreamToggleStyle())
+                .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
         case .text:
             TextField(spec.label, text: stringBinding())
                 .textInputAutocapitalization(.never)

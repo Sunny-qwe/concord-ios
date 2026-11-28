@@ -161,6 +161,23 @@ struct OnDemandView: View {
                     }
                     .disabled(newSSID.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                // v0.2.168: List aligns a row's separator with the
+                // leading edge of the row's first Text — a TextField
+                // is not a Text, so this row's only Text is the
+                // trailing "添加" label and the system line started
+                // there (IMG_1428: stub x 982..1121px, 添加 glyphs
+                // x 985..1069px). Hide it and draw the same 1px
+                // Divider at the row's bottom edge, 16pt in from
+                // the card edge like the other separators here.
+                .listRowSeparator(.hidden)
+                .listRowBackground(
+                    VStack(spacing: 0) {
+                        Spacer()
+                        Divider()
+                            .padding(.leading, 16)
+                    }
+                    .background(Color(.secondarySystemGroupedBackground))
+                )
                 if let ssidError {
                     Text(ssidError)
                         .font(.footnote)

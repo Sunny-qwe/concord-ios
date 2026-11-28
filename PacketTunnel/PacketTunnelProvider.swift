@@ -1,6 +1,5 @@
 import Darwin
 import Foundation
-import Network
 import NetworkExtension
 import os
 
@@ -326,12 +325,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     // memory limit (historically ~15 MB, reported ~50 MB more
     // recently); Jetsam kills the tunnel when it is exceeded.
     private var memoryPressureSource: DispatchSourceMemoryPressure?
-    // Path monitor: re-assert the tunnel network settings when the
-    // underlying network changes (Wi-Fi <-> cellular).
-    private var pathMonitor: NWPathMonitor?
-    private var lastPathSignature: String?
-    private var pathReapplyWorkItem: DispatchWorkItem?
-    private var lastAppliedNetworkSettings: NEPacketTunnelNetworkSettings?
 
     // SSID direct override (v0.2.43 C1): watches the Wi-Fi SSID while
     // the tunnel is up and switches the in-process core to direct on a
@@ -915,10 +908,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             appendStartupStep("setTunnelNetworkSettings: failed: \(error)")
             throw error
         }
-        // Kept for the path monitor (Batch F): a network change
-        // re-asserts these exact settings.
-        lastAppliedNetworkSettings = settings
-
         // The utun fd only exists once the settings above are applied.
         // Prefer a fd that appeared with this boot (not in the
         // pre-settings snapshot): in a reused process the old fd is
@@ -1005,10 +994,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         watchdogTimer = nil
         memoryPressureSource?.cancel()
         memoryPressureSource = nil
-        pathMonitor?.cancel()
-        pathMonitor = nil
-        pathReapplyWorkItem?.cancel()
-        pathReapplyWorkItem = nil
         // The SSID watcher stops with the tunnel: its stop() clears
         // the override state (restoreMode = nil), so the app never
         // sees a stale "direct override active" flag from this run.
@@ -1687,12 +1672,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // MARK: - Long-run stability (Batch F)
 
-    /// Starts the watchdog, memory-pressure watch and path monitor.
+    /// Starts the watchdog and memory-pressure watch.
     /// Called once, after the tunnel is fully up.
+    /// v0.2.168: no path monitor — upstream FlClash iOS applies the
+    /// tunnel network settings once at boot and never re-applies
+    /// them. The settings are built from static tunnel.json values
+    /// only, so re-asserting them on a network change cannot change
+    /// routing or DNS; the re-apply itself perturbs the path (utun
+    /// flap) and stalls traffic, which is what a network switch
+    /// must not add. SsidDirectController keeps its own independent
+    /// monitor for the SSID direct switch.
     private func startStabilityGuards() {
         startWatchdog()
         startMemoryPressureWatch()
-        startPathMonitor()
     }
 
     /// Health watchdog: every 30s, checks whether any core message
@@ -1806,59 +1798,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         source.resume()
         memoryPressureSource = source
-    }
-
-    /// Watches the underlying network (Wi-Fi <-> cellular) and
-    /// re-asserts the tunnel network settings when it changes, so
-    /// routing stays correct after a handover. The signature is the
-    /// path status + interface names + interface types in use; the
-    /// tunnel interface (utun) appears in the list too, but
-    /// re-applying identical settings does not change the signature,
-    /// so this cannot loop. The 1s debounce coalesces bursts
-    /// (interface up/down, IP change); the first callback only sets
-    /// the baseline.
-    private func startPathMonitor() {
-        let monitor = NWPathMonitor()
-        let queue = DispatchQueue(label: "com.lumen.ios.pathmonitor")
-        monitor.pathUpdateHandler = { [weak self] path in
-            guard let self else { return }
-            let signature = [
-                String(describing: path.status),
-                path.availableInterfaces.map(\.name).sorted().joined(separator: ","),
-                "wifi:\(path.usesInterfaceType(.wifi))",
-                "cell:\(path.usesInterfaceType(.cellular))",
-                "wired:\(path.usesInterfaceType(.wiredEthernet))",
-            ].joined(separator: "|")
-            guard let last = self.lastPathSignature else {
-                self.lastPathSignature = signature
-                return
-            }
-            guard signature != last else { return }
-            self.lastPathSignature = signature
-            self.scheduleNetworkSettingsReapply()
-        }
-        monitor.start(queue: queue)
-        pathMonitor = monitor
-    }
-
-    private func scheduleNetworkSettingsReapply() {
-        pathReapplyWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            self?.reapplyNetworkSettings()
-        }
-        pathReapplyWorkItem = item
-        coreQueue.asyncAfter(deadline: .now() + 1.0, execute: item)
-    }
-
-    private func reapplyNetworkSettings() {
-        guard session != 0, !isStopping,
-              let settings = lastAppliedNetworkSettings else { return }
-        Self.log.info("network path changed; re-applying tunnel network settings")
-        setTunnelNetworkSettings(settings) { error in
-            if let error {
-                Self.log.error("re-apply tunnel network settings failed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
     }
 
     // MARK: - Config B1: re-start the channel TUN runner after a live apply/patch

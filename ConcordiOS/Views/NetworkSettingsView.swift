@@ -48,7 +48,7 @@ struct NetworkSettingsView: View {
                     UpstreamSettingRow(title: "启用 TUN") {
                         Toggle("启用 TUN", isOn: $settingsStore.tunEnabled)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     UpstreamSettingRow(title: "协议栈") {
@@ -91,7 +91,7 @@ struct NetworkSettingsView: View {
                     UpstreamSettingRow(title: "系统代理") {
                         Toggle("系统代理", isOn: $settingsStore.systemProxy)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     BypassDomainEditorView()
@@ -105,13 +105,13 @@ struct NetworkSettingsView: View {
                     UpstreamSettingRow(title: "IPv6") {
                         Toggle("IPv6", isOn: $settingsStore.ipv6)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     UpstreamSettingRow(title: "DNS 劫持") {
                         Toggle("DNS 劫持", isOn: $settingsStore.dnsHijack)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     Text("关闭后隧道不再设置 DNS 服务器，系统 DNS 保持原样，DNS 请求不走代理。")
@@ -157,37 +157,37 @@ struct NetworkSettingsView: View {
                     UpstreamSettingRow(title: "包含所有网络") {
                         Toggle("包含所有网络", isOn: $settingsStore.includeAllNetworks)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     UpstreamSettingRow(title: "排除本地网络") {
                         Toggle("排除本地网络", isOn: $settingsStore.excludeLocalNetworks)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     UpstreamSettingRow(title: "排除 APN") {
                         Toggle("排除 APN", isOn: $settingsStore.excludeAPNs)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     UpstreamSettingRow(title: "排除蜂窝服务") {
                         Toggle("排除蜂窝服务", isOn: $settingsStore.excludeCellularServices)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     UpstreamSettingRow(title: "强制路由") {
                         Toggle("强制路由", isOn: $settingsStore.enforceRoutes)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     UpstreamSettingRow(title: "排除设备间通信") {
                         Toggle("排除设备间通信", isOn: $settingsStore.excludeDeviceCommunication)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     Text("iOS 隧道开关，下次启动 VPN 时生效；默认值与系统默认一致。包含所有网络会把全部流量送进隧道；其余几项把本地网络、运营商配置、蜂窝服务和设备间通信排除在外。")
@@ -216,7 +216,7 @@ struct NetworkSettingsView: View {
                             }
                         ))
                         .labelsHidden()
-                        .toggleStyle(UpstreamToggleStyle())
+                        .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     Text("开启后 127.0.0.0/8、10.7.0.0/24、::1/128 不走隧道，本地服务（隔空投送、局域网设备等）不受影响。")
@@ -228,7 +228,7 @@ struct NetworkSettingsView: View {
                     UpstreamSettingRow(title: "绕过私有路由") {
                         Toggle("绕过私有路由", isOn: $settingsStore.bypassPrivateRoute)
                             .labelsHidden()
-                            .toggleStyle(UpstreamToggleStyle())
+                            .toggleStyle(UpstreamToggleStyle(hidesLabel: true))
                     }
                     UpstreamDivider(leading: 16)
                     Text("开启后 10.0.0.0/8、172.16.0.0/12、192.168.0.0/16、169.254.0.0/16 不走隧道。")

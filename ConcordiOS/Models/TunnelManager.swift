@@ -130,6 +130,11 @@ final class TunnelManager: ObservableObject {
     /// been used. Reset only by a MANUAL start(); the auto-restart
     /// path (startTunnel(manual: false)) preserves it.
     private var zombieRestartAttempted = false
+    /// Last time the tunnel status changed (any transition), for
+    /// the v0.2.168 handover window in handleZombieDetected: a
+    /// probe that fails across a network switch must not spend
+    /// the one auto-restart on a merely flapping tunnel.
+    private var lastTunnelStatusChangeAt: Date?
     /// The in-flight zombie probe, so stop() / a new manual start
     /// can cancel it and a stale probe can never restart a VPN the
     /// user already stopped.
@@ -200,6 +205,9 @@ final class TunnelManager: ObservableObject {
                   (connection.manager.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == Self.providerBundleID else { return }
             let old = self.status
             let new = connection.status
+            if new != old {
+                self.lastTunnelStatusChangeAt = Date()
+            }
             self.status = new
             if new == .connected {
                 self.lastError = nil
@@ -231,6 +239,10 @@ final class TunnelManager: ObservableObject {
                 // cancels any probe already running, so the
                 // startTunnel() call just restarts this one.
                 Task { @MainActor [weak self] in self?.launchZombieProbe() }
+                // v0.2.168: adopt a Settings On-Demand change made
+                // while the tunnel was up (see
+                // syncOnDemandFromManager).
+                Task { @MainActor [weak self] in await self?.syncOnDemandFromManager() }
                 return
             }
             if new == .disconnected,
@@ -309,7 +321,10 @@ final class TunnelManager: ObservableObject {
     /// UI. That is the most likely cause of the silent start failure.
     @MainActor
     func prepare() async throws {
-        if manager != nil { return }
+        if manager != nil {
+            await syncOnDemandFromManager()
+            return
+        }
         let managers = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[NETunnelProviderManager], Error>) in
             NETunnelProviderManager.loadAllFromPreferences { managers, error in
                 if let error {
@@ -384,6 +399,9 @@ final class TunnelManager: ObservableObject {
         if let connection = manager?.connection {
             status = connection.status
         }
+        // v0.2.168: first load is also a readback point — adopt a
+        // Settings On-Demand change made while the app was closed.
+        await syncOnDemandFromManager()
     }
 
     /// Start the system VPN. The extension's startTunnel boots the
@@ -499,6 +517,9 @@ final class TunnelManager: ObservableObject {
         // machinery). On-Demand rules are installed only now — a
         // failed start never arms them.
         try await confirmTunnelUp()
+        // v0.2.168: pre-arm readback — adopt a Settings change made
+        // while the tunnel was up before re-installing the rules.
+        await syncOnDemandFromManager()
         _ = await OnDemandStore.shared.installRulesIfNeeded()
         // The tunnel reports .connected — now verify the extension
         // core actually answers (zombie check, v0.2.96).
@@ -614,7 +635,10 @@ final class TunnelManager: ObservableObject {
     /// (showing "核心无响应" while traffic flows, IMG_1276/1277,
     /// is the false positive this fix removes) — just keep
     /// re-probing via the recovery loop, which re-declares a
-    /// zombie only when the data plane is dead too. Otherwise
+    /// zombie only when the data plane is dead too. v0.2.168: a
+    /// probe that failed within 30 s of a status change is deferred
+    /// first (handover window — the guard at the top of the
+    /// function). Otherwise
     /// set the visible notice and, if the one auto-restart for
     /// this manual start is still unused, spend it: stop, then
     /// restart via the internal path (which preserves
@@ -628,6 +652,23 @@ final class TunnelManager: ObservableObject {
     /// screen).
     @MainActor
     private func handleZombieDetected() async {
+        // v0.2.168: never spend the one auto-restart on a handover.
+        // The probe fails fast while the tunnel is .reasserting
+        // (drainMessages only waits out 2 s of it) and the
+        // data-plane snapshots go stale while traffic stalls
+        // (>10 s), so a flap can look exactly like a dead core. If
+        // the last status change was <30 s ago, defer to the
+        // recovery re-probe, which re-evaluates once the tunnel has
+        // been stably .connected for 30 s — a real zombie is still
+        // caught then, only ~15–30 s later, and the budget is never
+        // spent on a healthy-but-flapping tunnel.
+        if let changedAt = lastTunnelStatusChangeAt,
+           Date().timeIntervalSince(changedAt) < 30 {
+            ZombieProbeDiagnostics.record("probe failed ×3 within 30 s of a status change — handover window, NOT restarting, keep re-probing")
+            zombieNotice = nil
+            scheduleZombieRecoveryReprobe()
+            return
+        }
         let plane = dataPlaneAlive()
         if plane.alive {
             ZombieProbeDiagnostics.record("probe failed ×3 but data plane alive (\(plane.detail)) — NOT restarting, keep re-probing")
@@ -1026,6 +1067,52 @@ final class TunnelManager: ObservableObject {
         while Date() < deadline {
             if status == .disconnected { return }
             try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
+    /// On-Demand readback (v0.2.168): the manager is the live truth
+    /// for what the system will do, but a bare "manager off" must not
+    /// wipe the standing preference — our own suspendRules() also
+    /// leaves it off on every stop. The watermark in OnDemandStore
+    /// (the manager state WE last wrote) disambiguates: live ==
+    /// watermark → no external change, keep the preference; live !=
+    /// watermark → the user changed it in Settings, adopt it. An
+    /// enabled manager with no rules evaluates to nothing, so it
+    /// does not count as "on" for the next start's install. The
+    /// adoption goes through `store.enabled`, so the autosave sink
+    /// propagates it (install / clear) like any in-app edit.
+    /// Called from prepare(), on every .connected, and after
+    /// confirmTunnelUp before installRulesIfNeeded — the last one is
+    /// the pre-arm readback, so a Settings change made while the
+    /// tunnel was up is honoured instead of re-armed.
+    /// LIMIT, stated honestly: a Settings toggle made while the VPN
+    /// is STOPPED changes nothing observable (the manager is already
+    /// off with empty rules, exactly our suspend state), so it cannot
+    /// be detected from here — the standing in-app preference is
+    /// re-armed on the next manual start. Turn it off in the app
+    /// (Tools → 按需连接） to change the standing preference.
+    @MainActor
+    func syncOnDemandFromManager() async {
+        let managers = (try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[NETunnelProviderManager], Error>) in
+            NETunnelProviderManager.loadAllFromPreferences { managers, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: managers ?? [])
+                }
+            }
+        }) ?? []
+        guard let live = managers.first(where: { ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == Self.providerBundleID }) else { return }
+        let store = OnDemandStore.shared
+        guard let lastEnabled = store.lastManagerEnabled,
+              let lastEmpty = store.lastManagerRulesEmpty else { return }
+        let currentEnabled = live.isOnDemandEnabled
+        let currentEmpty = live.onDemandRules?.isEmpty ?? true
+        guard currentEnabled != lastEnabled || currentEmpty != lastEmpty else { return }
+        let adopted = currentEnabled && !currentEmpty
+        store.noteManagerWrite(enabled: currentEnabled, rulesEmpty: currentEmpty)
+        if adopted != store.enabled {
+            store.enabled = adopted
         }
     }
 

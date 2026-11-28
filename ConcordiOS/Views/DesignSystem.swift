@@ -595,13 +595,26 @@ struct UpstreamChevron: View {
 /// knob); ON track is the accent, ON thumb white. 240ms ease-in-out.
 /// Apply to every Toggle on Tools pages. The whole row toggles,
 // the same as upstream's ListItem.toggle.
+/// v0.2.168 (B): `hidesLabel` skips `configuration.label` when the
+/// row already draws the title (e.g. the Network page's
+/// `UpstreamSettingRow(title:) { Toggle(title).labelsHidden() }` —
+/// drawing it again here showed every title twice). An explicit
+/// parameter, not `\.labelsHidden`: that environment key is not
+/// public API, and iOS 17 does not forward the hidden state to
+/// custom toggle styles at all, so reading the environment would
+/// silently do nothing on iOS 17.6.1. Without it the label is drawn
+/// exactly as before, so standalone toggles keep theirs.
 struct UpstreamToggleStyle: ToggleStyle {
+    var hidesLabel: Bool = false
+
     func makeBody(configuration: Configuration) -> some View {
         Button(action: {
             withAnimation(.easeInOut(duration: 0.24)) { configuration.isOn.toggle() }
         }) {
             HStack {
-                configuration.label
+                if !hidesLabel {
+                    configuration.label
+                }
                 Spacer()
                 ZStack(alignment: configuration.isOn ? .trailing : .leading) {
                     Capsule()

@@ -28,11 +28,13 @@ import Foundation
 // five coreQueue.sync sites were excluded by experiment, the
 // On-Demand read-back loop had zero log hits). Sampling uses the
 // same Mach port: the background thread suspends the (already
-// unresponsive) main thread, reads its state with
-// thread_get_state, walks the frame-pointer chain with
-// vm_read_overwritten, and resolves each address to image+offset
-// with dladdr. The suspend window is a few microseconds of
-// reads, always paired with a resume (defer), and every Mach call
+// unresponsive) main thread, reads its PC and link register
+// with thread_get_state, and resolves both addresses to
+// image+offset with dladdr. (The frame-pointer walk was
+// dropped: the vm_read_overwritten it needed is not importable
+// in Swift, and PC + LR already name the stuck call and its
+// caller.) The suspend window is a single state read, always
+// paired with a resume (defer), and every Mach call
 // is checked — a failed sample just leaves the stall line
 // without a stack, never a crash. The stack is stored under its
 // own key (latest stall only) and appended to the same export
@@ -45,8 +47,6 @@ enum MainThreadWatchdog {
     /// keeps the one stack that belongs to the newest stall.
     private static let stackStorageKey = "concord.mainThreadWatchdog.stack"
     private static let maxLines = 32
-    /// Frames kept per sampled stack (PC + return addresses).
-    private static let maxStackFrames = 16
     /// Ping interval and stall threshold.
     private static let pingInterval: TimeInterval = 0.5
     private static let stallThreshold: TimeInterval = 2.0
@@ -224,17 +224,16 @@ enum MainThreadWatchdog {
 
     // MARK: - Stack sampling (v0.2.169)
 
-    /// Suspends the main thread, reads its PC/SP/FP with
-    /// thread_get_state, walks the frame-pointer chain, resolves
-    /// each address to image+offset with dladdr, and resumes the
-    /// thread. Called only from the ping loop after a stall is
-    /// detected, with no lock held. Returns nil when the port is
-    /// not captured or any Mach step fails — the caller then
-    /// records the stall line without a stack. The suspend is
-    /// brief (a handful of small reads) and always paired with a
-    /// resume via defer, so even a false-positive stall (app
-    /// backgrounded) costs the main thread a sub-millisecond
-    /// pause at most.
+    /// Suspends the main thread, reads its PC and link register
+    /// with thread_get_state, resolves both addresses to
+    /// image+offset with dladdr, and resumes the thread. Called
+    /// only from the ping loop after a stall is detected, with
+    /// no lock held. Returns nil when the port is not captured
+    /// or any Mach step fails — the caller then records the
+    /// stall line without a stack. The suspend is brief (one
+    /// state read) and always paired with a resume via defer,
+    /// so even a false-positive stall (app backgrounded) costs
+    /// the main thread a sub-millisecond pause at most.
     private static func sampleMainThreadStack(pingSentAt: Date) -> String? {
         state.lock.lock()
         let thread = state.mainThread
@@ -250,83 +249,41 @@ enum MainThreadWatchdog {
         return lines.joined(separator: "\n")
     }
 
-    /// The main thread's PC plus the return addresses up the
-    /// frame chain (at most maxStackFrames). The thread must
-    /// already be suspended by the caller.
+    /// The main thread's PC and link register, straight out of
+    /// the thread state — no frame-pointer walk (the
+    /// vm_read_overwritten it needed is not importable in
+    /// Swift). arm64: __pc is the stuck instruction, __lr is
+    /// its caller. x86_64 has no link register in the state,
+    /// so only __rip is reported. The thread must already be
+    /// suspended by the caller.
     private static func threadStackAddresses(_ thread: thread_t) -> [UInt64]? {
 #if arch(arm64)
         var tstate = arm_thread_state64_t()
         var count = mach_msg_type_number_t(MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &tstate) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                thread_get_state(thread, thread_flavor_t(ARM_THREAD_STATE64), $0, &count)
+                thread_get_state(thread, thread_state_flavor_t(ARM_THREAD_STATE64), $0, &count)
             }
         }
         guard result == KERN_SUCCESS else { return nil }
         var addresses: [UInt64] = [tstate.__pc]
         // The link register is the current frame's return
-        // address; the chain below continues from the saved
-        // frame records.
+        // address.
         if tstate.__lr != 0 { addresses.append(tstate.__lr) }
-        var framePointer = tstate.__fp
-        while addresses.count < maxStackFrames {
-            guard let (previousFP, savedLR) = readFrameRecord(at: framePointer) else { break }
-            // Frame records point up the stack (higher
-            // addresses); a step that goes backwards, stays, or
-            // jumps absurdly far means a corrupt chain — stop
-            // instead of chasing garbage.
-            guard previousFP != 0, savedLR != 0,
-                  previousFP > framePointer,
-                  previousFP - framePointer < 0x100000 else { break }
-            addresses.append(savedLR)
-            framePointer = previousFP
-        }
         return addresses
 #elseif arch(x86_64)
         var tstate = x86_thread_state64_t()
         var count = mach_msg_type_number_t(MemoryLayout<x86_thread_state64_t>.size / MemoryLayout<integer_t>.size)
         let result = withUnsafeMutablePointer(to: &tstate) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                thread_get_state(thread, thread_flavor_t(x86_THREAD_STATE64), $0, &count)
+                thread_get_state(thread, thread_state_flavor_t(x86_THREAD_STATE64), $0, &count)
             }
         }
         guard result == KERN_SUCCESS else { return nil }
-        var addresses: [UInt64] = [tstate.__rip]
-        var framePointer = tstate.__rbp
-        while addresses.count < maxStackFrames {
-            guard let (previousFP, returnAddress) = readFrameRecord(at: framePointer) else { break }
-            guard previousFP != 0, returnAddress != 0,
-                  previousFP > framePointer,
-                  previousFP - framePointer < 0x100000 else { break }
-            addresses.append(returnAddress)
-            framePointer = previousFP
-        }
-        return addresses
+        return [tstate.__rip]
 #else
         return nil
 #endif
-    }
-
-    /// One frame record at `address`: (previous frame pointer,
-    /// saved return address). arm64: [fp] = saved x29, [fp+8] =
-    /// saved x30 (LR). x86_64: [rbp] = saved rbp, [rbp+8] =
-    /// return address. Reads the suspended thread's stack with
-    /// vm_read_overwritten; any failure ends the walk.
-    private static func readFrameRecord(at address: UInt64) -> (UInt64, UInt64)? {
-        guard address != 0, address % 8 == 0 else { return nil }
-        var pair: (UInt64, UInt64) = (0, 0)
-        var outSize: vm_size_t = 0
-        let result = withUnsafeMutablePointer(to: &pair) { rawPointer in
-            vm_read_overwritten(
-                mach_task_self_,
-                vm_address_t(address),
-                vm_size_t(MemoryLayout<(UInt64, UInt64)>.size),
-                vm_address_t(UInt(bitPattern: UnsafeRawPointer(rawPointer))),
-                &outSize)
-        }
-        guard result == KERN_SUCCESS,
-              outSize == MemoryLayout<(UInt64, UInt64)>.size else { return nil }
-        return pair
     }
 
     /// "0x1a2b3c4 FlClash+0x12345 (symbol+0x10)" — the image
@@ -338,18 +295,18 @@ enum MainThreadWatchdog {
         let hex = String(format: "0x%llx", address)
         guard address != 0 else { return "\(hex) (null)" }
         var info = Dl_info()
-        guard dladdr(UnsafeRawPointer(bitPattern: address), &info) != 0,
+        guard dladdr(UnsafeRawPointer(bitPattern: UInt(address)), &info) != 0,
               let fname = info.dli_fname,
               let fbase = info.dli_fbase else {
             return hex
         }
         let image = String(cString: fname).split(separator: "/").last.map(String.init) ?? String(cString: fname)
-        let offset = address - UInt(bitPattern: fbase)
+        let offset = address - UInt64(bitPattern: fbase)
         var text = "\(hex) \(image)+0x\(String(offset, radix: 16))"
         if let sname = info.dli_sname,
            let saddr = info.dli_saddr {
             let symbol = String(cString: sname)
-            let symbolOffset = address - UInt(bitPattern: saddr)
+            let symbolOffset = address - UInt64(bitPattern: saddr)
             text += " (\(symbol)+0x\(String(symbolOffset, radix: 16)))"
         }
         return text

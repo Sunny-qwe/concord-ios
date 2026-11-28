@@ -318,7 +318,7 @@ enum MainThreadWatchdog {
         var outSize: vm_size_t = 0
         let result = withUnsafeMutablePointer(to: &pair) { rawPointer in
             vm_read_overwritten(
-                mach_task_self(),
+                mach_task_self_,
                 vm_address_t(address),
                 vm_size_t(MemoryLayout<(UInt64, UInt64)>.size),
                 vm_address_t(UInt(bitPattern: UnsafeRawPointer(rawPointer))),

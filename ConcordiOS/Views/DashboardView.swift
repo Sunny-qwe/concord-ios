@@ -3248,9 +3248,29 @@ private struct IntranetIpCardView: View {
             } else {
                 SkeletonBar(width: 120, height: 25, animated: true)
             }
-            HStack(spacing: 8) {
-                Image(systemName: "wifi")
-                    .font(.callout.weight(.semibold))
+            // v0.2.164 (IMG_1414): upstream intranet_ip.dart —
+            // the allow-LAN row is a DashboardSwitchRow: a
+            // tone-filled rounded block (radius 20, padding
+            // 10/10/12/10) with a 38pt icon badge (accent
+            // squircle + white glyph while on, card-coloured
+            // circle + grey glyph while off; glyph 19pt) and a
+            // switch at the end; tapping the whole row toggles.
+            HStack(spacing: 12) {
+                Group {
+                    if settingsStore.allowLan {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(ConcordTheme.accent)
+                    } else {
+                        Circle()
+                            .fill(ConcordTheme.cardBackground)
+                    }
+                }
+                .frame(width: 38, height: 38)
+                .overlay(
+                    Image(systemName: "wifi")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundStyle(settingsStore.allowLan ? Color.white : Color.secondary)
+                )
                 VStack(alignment: .leading, spacing: 2) {
                     Text("允许局域网")
                         .font(.subheadline.weight(.semibold))
@@ -3261,14 +3281,14 @@ private struct IntranetIpCardView: View {
                 Spacer()
                 Toggle("", isOn: Binding(
                     get: { settingsStore.allowLan },
-                    set: { newValue in
-                        settingsStore.allowLan = newValue
-                        settingsStore.save()
-                        Task { await settingsStore.applyGeneralToCore() }
-                    }
+                    set: { newValue in setAllowLan(newValue) }
                 ))
                 .labelsHidden()
             }
+            .padding(EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 12))
+            .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 20))
+            .contentShape(Rectangle())
+            .onTapGesture { setAllowLan(!settingsStore.allowLan) }
         }
         .concordCard()
         .task { refreshIp() }
@@ -3280,6 +3300,12 @@ private struct IntranetIpCardView: View {
     private var copyText: String? {
         guard let ip = localIp, !ip.isEmpty else { return nil }
         return settingsStore.allowLan ? "\(ip):\(settingsStore.mixedPort)" : ip
+    }
+
+    private func setAllowLan(_ newValue: Bool) {
+        settingsStore.allowLan = newValue
+        settingsStore.save()
+        Task { await settingsStore.applyGeneralToCore() }
     }
 
     private func refreshIp() {
@@ -3369,7 +3395,14 @@ private struct ServicesCardView: View {
     }
 
     private func servicePill(for service: ConcordServiceItem?) -> some View {
-        HStack(spacing: 10) {
+        // v0.2.164 (IMG_1413): upstream service_status.dart
+        // mobile dashboard cell — 44pt tall, badge 30pt (cell
+        // 44 - 2*7 inset), glyph 56% of the badge (~17pt),
+        // badge radius 16 - 7 = 9, dot 8pt in the badge's
+        // bottom-right corner with a 2pt ring, cell padding
+        // 7 / 0 / 12 / 0, cell radius 16. The sheet rows (40pt
+        // badge, 64pt row) were already upstream since v0.2.158.
+        HStack(spacing: 8) {
             ZStack(alignment: .bottomTrailing) {
                 PackTileImage(
                     name: service?.name ?? "",
@@ -3377,19 +3410,18 @@ private struct ServicesCardView: View {
                     fontSize: service?.name.lowercased() == "github" ? 14 : 20
                 )
                 .foregroundStyle(Color(.label))
-                .frame(width: 40, height: 40)
-                .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .frame(width: 17, height: 17)
+                .frame(width: 30, height: 30)
+                .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 9))
+                .clipShape(RoundedRectangle(cornerRadius: 9))
                 // Status dot in the status colour while checked
                 // (green only when available); no dot while the
                 // service is unchecked.
                 if let service, !trafficStore.servicesHeld {
                     Circle()
                         .fill(dashboardServiceStatusColor(service.status))
-                        .frame(width: 12, height: 12)
+                        .frame(width: 8, height: 8)
                         .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                        .offset(x: 2, y: 2)
                 }
             }
             // Status text (D-26), not delay only: available with a
@@ -3416,9 +3448,9 @@ private struct ServicesCardView: View {
             }
             Spacer()
         }
-        .padding(10)
+        .padding(EdgeInsets(top: 7, leading: 7, bottom: 7, trailing: 12))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: ConcordTheme.panelRadius))
+        .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 16))
     }
 
     private func serviceTileText(_ name: String?) -> String {

@@ -1246,7 +1246,7 @@ struct MitmModuleDetailView: View {
                     }
                 }
 
-                Section("规则") {
+                Section {
                     if content.coreParsed {
                         coreNote(content: content)
                     }
@@ -1266,6 +1266,8 @@ struct MitmModuleDetailView: View {
                             MitmModuleSkippedView(skipped: content.skipped).concordNavBarBackground()
                         }
                     }
+                } header: {
+                    Text("规则")
                 } footer: {
                     Text("先于配置自身的规则匹配。")
                         .font(.footnote)

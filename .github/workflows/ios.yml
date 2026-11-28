@@ -20,7 +20,7 @@ env:
   TUNNEL_BUNDLE_ID: com.sunny-qwe.concord-ios.PacketTunnel
   UPSTREAM_REPO: Vialibrex/concord
   # Pinned upstream commit the patches in patches/ are diffs against.
-  UPSTREAM_REF: faaadad9c93d1967d44a65732bfcb02b7a93aefc
+  UPSTREAM_REF: d9abaade13848e844230fad7868c2b9defcf3523
   CONCORD_PRODUCT_NAME: FlClash
   STATICLIB_DIR: upstream/target/aarch64-apple-ios/release
   STATICLIB: upstream/target/aarch64-apple-ios/release/libconcord_ios.a

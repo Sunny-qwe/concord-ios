@@ -82,6 +82,13 @@ struct ToolsView: View {
     /// NavigationLink tap handling is bypassed entirely.
     @State private var navPath: [ToolsDestination] = []
 
+    /// The language picker's displayed value (v0.2.158): the menu
+    /// Picker's label is explicit (see below) and reads the live
+    /// selection, so it updates when the user picks a language.
+    private var currentLanguageName: String {
+        LocalizationManager.supportedLanguages.first(where: { $0.code == localization.language })?.name ?? ""
+    }
+
     var body: some View {
         NavigationStack(path: $navPath) {
             ScrollViewReader { scrollProxy in
@@ -124,14 +131,30 @@ struct ToolsView: View {
                                 .font(.footnote.weight(.semibold))
                                 .foregroundStyle(Color(.label))
                             Spacer()
-                            Picker("", selection: $localization.language) {
+                            // v0.2.158: the menu Picker's synthesised
+                            // value label ignores .font() — measured
+                            // on IMG_1402, the value glyphs are 43px
+                            // tall vs 33px for the 13pt row titles,
+                            // i.e. it renders at the 17pt default,
+                            // not the .footnote on the Picker. An
+                            // explicit label forces 13pt regular
+                            // (same size as the row titles, no bold);
+                            // the chevron is part of it, as upstream
+                            // shows a picker glyph too. .labelsHidden
+                            // is gone: it would hide this label.
+                            Picker(selection: $localization.language) {
                                 ForEach(LocalizationManager.supportedLanguages, id: \.code) { language in
                                     Text(language.name).tag(language.code)
                                 }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(currentLanguageName)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                }
+                                .font(.footnote.weight(.regular))
+                                .foregroundStyle(Color(.label))
                             }
                             .pickerStyle(.menu)
-                            .labelsHidden()
-                            .font(.footnote)
                             .tint(Color(.label))
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)

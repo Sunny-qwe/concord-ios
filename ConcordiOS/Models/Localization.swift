@@ -45,7 +45,7 @@ final class LocalizationManager: ObservableObject {
     /// the system default. Names are shown in their own language,
     /// as in the old picker page.
     static let supportedLanguages: [(code: String, name: String)] = [
-        ("", "默认（跟随系统）"),
+        ("", "默认"),
         ("zh-Hans", "简体中文"),
         ("en", "English"),
         ("es", "Español"),

@@ -571,14 +571,19 @@ struct ServiceStatusSheet: View {
                     fontSize: service.name.lowercased() == "github" ? 13 : 20
                 )
                 .foregroundStyle(Color(.label))
-                .frame(width: 48, height: 48)
+                // v0.2.158 (upstream service_status.dart:766,545-590):
+                // tile 40pt, glyph 56% of the tile (~22pt) — the
+                // 9pt inset keeps the brand mark off the tile
+                // edges, as upstream's _ServiceBadge does.
+                .padding(9)
+                .frame(width: 40, height: 40)
                 .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 12))
                 .shadow(color: .black.opacity(0.05), radius: 4, x: 0, y: 1)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 Circle()
                     .fill(dashboardServiceStatusColor(service.status))
-                    .frame(width: 12, height: 12)
-                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    .frame(width: 8, height: 8)
+                    .overlay(Circle().stroke(Color.white, lineWidth: 2.5))
                     .offset(x: 2, y: 2)
             }
             VStack(alignment: .leading, spacing: 2) {
@@ -623,7 +628,9 @@ struct ServiceStatusSheet: View {
                 .multilineTextAlignment(.trailing)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        // v0.2.158 (upstream service_status.dart:766): row 64pt =
+        // 40pt tile + 2x12pt — was 68pt (48 + 2x10).
+        .padding(.vertical, 12)
         .contentShape(Rectangle())
         // v0.2.128 item 10c: the row itself is a rounded card
         // (cardBackground — pure white under default blue, ~5%

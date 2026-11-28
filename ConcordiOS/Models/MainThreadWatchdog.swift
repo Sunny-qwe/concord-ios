@@ -301,12 +301,12 @@ enum MainThreadWatchdog {
             return hex
         }
         let image = String(cString: fname).split(separator: "/").last.map(String.init) ?? String(cString: fname)
-        let offset = address - UInt64(bitPattern: fbase)
+        let offset = address - UInt64(UInt(bitPattern: fbase))
         var text = "\(hex) \(image)+0x\(String(offset, radix: 16))"
         if let sname = info.dli_sname,
            let saddr = info.dli_saddr {
             let symbol = String(cString: sname)
-            let symbolOffset = address - UInt64(bitPattern: saddr)
+            let symbolOffset = address - UInt64(UInt(bitPattern: saddr))
             text += " (\(symbol)+0x\(String(symbolOffset, radix: 16)))"
         }
         return text

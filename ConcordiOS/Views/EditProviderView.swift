@@ -7,21 +7,37 @@ import SwiftUI
 // provider URL (ConcordProviderInfo has no url field), so this form
 // takes the name plus a fresh link: saving downloads the link and
 // side-loads the content under that name (provider.sideLoad).
-// Renaming alone creates the provider under the new name — the old
-// name is left alone, since the core has no rename/delete for
-// providers.
+// Renaming alone via that flow creates the provider under the new
+// name — the old name is left alone, since the core has no
+// rename/delete for providers. A TRUE rename (v0.2.156, upstream
+// ClashProviders.put) is offered in the "重命名提供方" section for
+// confined rule providers: it renames the ClashProvider record and
+// rewrites the RULE-SET references in every subscription mapping
+// the record.
 
 struct EditProviderView: View {
     let provider: ConcordProviderInfo
 
     @EnvironmentObject private var ruleStore: RuleStore
+    @EnvironmentObject private var profileStore: ProfileStore
     @Environment(\.dismiss) private var dismiss
+    /// Custom subscriptions, for resolving a confined rule
+    /// provider back to its owning definition + ClashProvider
+    /// record (v0.2.156 record rename; same pattern as
+    /// ProvidersView's delete swipe).
+    @StateObject private var customStore = CustomSubscriptionStore()
 
     @State private var name: String
     @State private var urlString = ""
     @State private var isSaving = false
     @State private var message: String?
     @State private var errorMessage: String?
+    /// The ClashProvider record behind this provider, when the
+    /// provider is a confined rule provider baked from a custom
+    /// subscription (v0.2.156). Nil for profile-defined /
+    /// http-cache providers, which have no record to rename.
+    @State private var confinedRecord: ClashProvider?
+    @State private var isRenaming = false
     /// Provider text editing (FlClash providers.dart _EditProviderView
     /// IS an EditorPage over the provider's text file, load via
     /// _openProviderText, save via _sideLoadProvider). Rule sets load
@@ -128,9 +144,32 @@ struct EditProviderView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
-                    Text("核心不保存提供方的订阅链接：这里重新填写链接，保存时会下载内容并以该名称载入（provider.sideLoad）。改名相当于用新名称载入一份，旧名称的提供方保留。")
+                    Text("核心不保存提供方的订阅链接：这里重新填写链接，保存时会下载内容并以该名称载入（provider.sideLoad）。只改名称不填链接时，不会真正重命名——要真正重命名请用下面的「重命名提供方」。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                }
+                // True record rename (v0.2.156; upstream
+                // ClashProviders.put): only for a confined rule
+                // provider — the record label is renamed and every
+                // custom subscription mapping the record has its
+                // RULE-SET references rewritten, then the active
+                // profile is re-applied when it bakes one of them.
+                // No URL is needed and no content is re-downloaded.
+                if let record = confinedRecord {
+                    Section("重命名提供方") {
+                        Text("将记录「\(record.label)」真正重命名为上方填写的名称：所有引用该提供方的订阅里的规则集引用都会一起改名，正在使用的配置也会重新应用。不需要重新填写订阅链接。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Button(isRenaming ? "重命名中…" : "重命名为「\(trimmedName)」") {
+                            Task { await renameRecord() }
+                        }
+                        .disabled(isRenaming || trimmedName.isEmpty || trimmedName == record.label || renameIssue != nil)
+                        if let issue = renameIssue {
+                            Text(issue)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+                    }
                 }
                 Section {
                     Button(isSaving ? "保存中…" : "保存") {
@@ -154,6 +193,14 @@ struct EditProviderView: View {
                 await ruleStore.loadProviderDetail(provider)
                 detailInfo = ruleStore.providerDetail
                 await loadText()
+                // v0.2.156: resolve the ClashProvider record behind
+                // a confined rule provider (path
+                // <home>/providers/<subID>/rules/<token>) so the
+                // rename section can offer a true rename.
+                if let owned = CustomSubscriptionStore.ownerOfConfinedRuleProvider(path: provider.path, in: customStore.subscriptions),
+                   let ref = owned.sub.ruleProviderMap[owned.provider.name] {
+                    confinedRecord = ClashProviderStore().provider(id: ref.clashProviderId)
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -164,6 +211,59 @@ struct EditProviderView: View {
     }
 
     private var isRuleSet: Bool { provider.type == "rule" }
+
+    /// Why the record rename to the current name cannot run
+    /// (v0.2.156). Nil when the name is unchanged (the button is
+    /// disabled instead) or the rename is safe.
+    private var renameIssue: String? {
+        guard let record = confinedRecord else { return nil }
+        if trimmedName.isEmpty { return "请先输入提供方名称" }
+        if trimmedName == record.label { return nil }
+        return CustomSubscriptionStore.renameClashProviderIssue(recordId: record.id, newLabel: trimmedName)
+    }
+
+    /// True record rename (v0.2.156): rename the ClashProvider
+    /// record and rewrite every referencing subscription, then
+    /// re-apply the active profile when it bakes an affected
+    /// subscription so the running engine sees the new name
+    /// (apply rebuilds the provider sets fresh; no core RPC).
+    /// A re-apply failure is surfaced, not swallowed (logic-audit
+    /// B4, delete-flow pattern): the rename itself is already
+    /// saved, only the live engine still runs the old names, so
+    /// the sheet stays open with the error instead of dismissing
+    /// with a false success.
+    private func renameRecord() async {
+        guard let record = confinedRecord else { return }
+        let newName = trimmedName
+        if let issue = CustomSubscriptionStore.renameClashProviderIssue(recordId: record.id, newLabel: newName) {
+            errorMessage = issue
+            return
+        }
+        isRenaming = true
+        defer { isRenaming = false }
+        let affected = CustomSubscriptionStore.renameClashProviderRecord(id: record.id, newLabel: newName)
+        // The record label is new now even if the live re-apply
+        // below fails — refresh the section state so it shows the
+        // new label and the button disables.
+        confinedRecord = ClashProviderStore().provider(id: record.id)
+        // Capture the re-apply failure BEFORE refresh(): a
+        // successful refresh clears lastError, which would wipe
+        // the failure message.
+        var reapplyError: String?
+        for subId in affected {
+            if await profileStore.reapplyActiveForSubscription(id: subId),
+               let error = profileStore.lastError {
+                reapplyError = error
+                break
+            }
+        }
+        await ruleStore.refresh()
+        if let error = reapplyError {
+            errorMessage = "重命名已保存，但重新应用配置失败：\(error)（下次启动 VPN 时生效）"
+            return
+        }
+        dismiss()
+    }
 
     private func loadText() async {
         isLoadingText = true

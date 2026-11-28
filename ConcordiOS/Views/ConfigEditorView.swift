@@ -515,6 +515,25 @@ struct ConfigEditorView: View {
         defer { isWorking = false }
         // Editable title: a renamed profile keeps its other meta
         // (FlClash editor.dart titleEditable).
+        // v0.2.156 (behaviour-audit B3): this raw-YAML editor is a
+        // SECOND profile-rename path besides EditProfileView —
+        // validate the rename BEFORE the meta is saved, then
+        // rewrite the mapped providers + re-apply after, exactly
+        // like the EditProfileView hook.
+        var profileRenamed: (profile: Profile, newTitle: String)?
+        if let profile = editedProfile, profile.kind == .url {
+            let newTitle = editorTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !newTitle.isEmpty, newTitle != profile.name,
+               let issue = CustomSubscriptionStore.renameProviderProfileIssue(
+                   profileId: profile.id, oldName: profile.name, newName: newTitle,
+                   otherProfileNames: profileStore.profiles.filter { $0.id != profile.id }.map { $0.name }) {
+                errorMessage = issue
+                return
+            }
+            if !newTitle.isEmpty, newTitle != profile.name {
+                profileRenamed = (profile, newTitle)
+            }
+        }
         if let profile = editedProfile {
             let newTitle = editorTitle.trimmingCharacters(in: .whitespacesAndNewlines)
             if !newTitle.isEmpty, newTitle != profile.name {
@@ -536,6 +555,32 @@ struct ConfigEditorView: View {
             result = profileStore.lastError ?? "已保存，下次切换到该订阅时生效"
         } else {
             result = "配置不是有效的 UTF-8 文本"
+        }
+        // v0.2.156 (logic-audit B3): the rewrite + re-apply run
+        // AFTER the file save, not before it. The active-branch
+        // saveActiveProfileYAML writes the raw editor text (no
+        // re-bake), so a rewrite before it would be clobbered by
+        // the stale baked blocks in the file. Running it last
+        // leaves the live config on the new names; the file's
+        // stale blocks are re-baked from the store on the next
+        // apply. (B4: a re-apply failure is surfaced, not
+        // swallowed — the rename and the file are already saved,
+        // only the live engine still runs the old names.)
+        if let renamed = profileRenamed {
+            let affected = CustomSubscriptionStore.renameProviderProfileReferences(
+                profileId: renamed.profile.id, oldName: renamed.profile.name, newName: renamed.newTitle)
+            var reapplyError: String?
+            for subId in affected {
+                if await profileStore.reapplyActiveForSubscription(id: subId),
+                   let error = profileStore.lastError {
+                    reapplyError = error
+                    break
+                }
+            }
+            if let error = reapplyError {
+                errorMessage = "重命名已保存，但重新应用配置失败：\(error)（下次启动 VPN 时生效）"
+                return
+            }
         }
         message = result
         errorMessage = nil

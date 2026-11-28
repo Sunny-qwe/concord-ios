@@ -1768,6 +1768,420 @@ final class CustomSubscriptionStore: ObservableObject {
         return renamed
     }
 
+    // MARK: - Cross-subscription rename (v0.2.156, upstream parity)
+
+    /// RULE-SET rule content, matched after trimming (same
+    /// predicate as the editor's ruleSetNames, v0.2.155 audit
+    /// N1). Case is NOT folded — the core / YAML keys are
+    /// case-sensitive.
+    private static func ruleSetNameMatches(_ content: String, _ name: String) -> Bool {
+        content.trimmingCharacters(in: .whitespacesAndNewlines) == name
+    }
+
+    /// Renames a provider inside one subscription (v0.2.155,
+    /// moved here verbatim from the editor so the cross-sub
+    /// rename paths share the same reference set): rewrites
+    /// every reference to the old name and moves the map key.
+    /// The reference set is the same one removeProviders strips
+    /// on delete: groups' `use:` AND member entries, dialers
+    /// naming the provider on either end, RULE-SET rules naming
+    /// a deleted rule provider.
+    /// - The map key moves, the value is kept: the confined file
+    ///   is named by fileToken, not by name, so no file moves
+    ///   and no re-download is needed.
+    /// - The shared ClashProvider record is NOT renamed by this
+    ///   helper (see renameClashProviderRecord): other
+    ///   subscriptions may reference the same record under the
+    ///   old name; only this sub's map key moves.
+    /// - The provider definition itself is replaced by the caller
+    ///   (by id) after this runs.
+    static func renameProviderReferences(in copy: inout CustomSubscription, kind: String, oldName: String, newName: String) {
+        if kind == "proxy" {
+            for index in copy.groups.indices {
+                copy.groups[index].useProviders = copy.groups[index].useProviders.map { $0 == oldName ? newName : $0 }
+                copy.groups[index].members = copy.groups[index].members.map { $0 == oldName ? newName : $0 }
+            }
+            for index in copy.dialers.indices {
+                if copy.dialers[index].proxy == oldName { copy.dialers[index].proxy = newName }
+                if copy.dialers[index].dialer == oldName { copy.dialers[index].dialer = newName }
+            }
+            // v0.2.155 audit N6: when the old name is duplicated
+            // within the kind, the single map entry may belong to
+            // the other twin — leave the key alone rather than
+            // reassign shared state on ambiguous data (the
+            // duplicate is already flagged by validationIssues).
+            if copy.proxyProviders.filter({ $0.name == oldName }).count <= 1,
+               let ref = copy.providerProfileMap.removeValue(forKey: oldName) {
+                copy.providerProfileMap[newName] = ref
+            }
+        } else {
+            for index in copy.rules.indices where copy.rules[index].type == "RULE-SET" && ruleSetNameMatches(copy.rules[index].content, oldName) {
+                copy.rules[index].content = newName
+            }
+            // Same N6 guard as the proxy branch.
+            if copy.ruleProviders.filter({ $0.name == oldName }).count <= 1,
+               let ref = copy.ruleProviderMap.removeValue(forKey: oldName) {
+                copy.ruleProviderMap[newName] = ref
+            }
+        }
+    }
+
+    /// Rewrites `rule-set:NAME` references to a rule provider
+    /// inside one subscription's scoped DNS / sniffer sections
+    /// (v0.2.156; upstream `renamedRuleSets`,
+    /// references.dart:285-309). Policy keys are `rule-set:NAME`
+    /// (case-insensitive prefix, the remainder is the name — a
+    /// comma list names several sets); fake-ip-filter entries
+    /// are RULE-SET,... rule text; sniffer lists hold
+    /// `rule-set:a,b` entries. Anything that does not name the
+    /// old provider passes through untouched.
+    /// `rule-set:a,b` → names renamed inside the list
+    /// (v0.2.156; upstream `_renamedRuleSetsIn`). The prefix
+    /// match is case-insensitive; the prefix itself is preserved
+    /// verbatim, and each renamed item keeps its surrounding
+    /// whitespace (logic-audit N3). A second colon after the
+    /// list is not a provider reference (upstream truncates the
+    /// range there) — such keys pass through unchanged. Hoisted
+    /// out of renameRuleSetPolicyReferences so the validator
+    /// (renameClashProviderIssue) can preview collisions
+    /// (logic-audit B2).
+    private static func renamedRuleSetList(_ text: String, oldName: String, newName: String) -> String {
+        let lower = text.lowercased()
+        guard lower.hasPrefix("rule-set:") else { return text }
+        let prefix = String(text.prefix("rule-set:".count))
+        let rest = String(text.dropFirst("rule-set:".count))
+        let renamed = rest.split(separator: ",", omittingEmptySubsequences: false)
+            .map { part -> String in
+                let trimmed = part.trimmingCharacters(in: .whitespaces)
+                guard trimmed == oldName else { return String(part) }
+                let leading = part.prefix(while: { $0.isWhitespace })
+                let trailing = part.reversed().prefix(while: { $0.isWhitespace })
+                return String(leading) + newName + String(trailing.reversed())
+            }
+        return prefix + renamed.joined(separator: ",")
+    }
+
+    private static func renameRuleSetPolicyReferences(in sub: inout CustomSubscription, oldName: String, newName: String) {
+        /// Leading `RULE-SET, NAME` or nested `(RULE-SET, NAME)`
+        /// inside rule text (upstream `_renamedRuleText`).
+        func renamedRuleText(_ text: String) -> String {
+            var result = text
+            // Leading RULE-SET,NAME (case-insensitive keyword).
+            // `after` MUST stay a Substring: it shares `result`'s
+            // indices, so the name span is valid in the
+            // replaceSubrange below. Wrapping it in String(...)
+            // would rebase the indices and corrupt (or trap on)
+            // the replacement (compile-audit B1). Only the name
+            // itself is replaced, so surrounding whitespace is
+            // preserved (behaviour-audit N3).
+            if let range = result.range(of: #"^\s*RULE-SET\s*,\s*"#, options: [.regularExpression, .caseInsensitive]) {
+                let after = result[range.upperBound...]
+                var nameEnd = after.firstIndex(where: { $0 == "," || $0 == ")" }) ?? after.endIndex
+                let nameStart = after.firstIndex(where: { !$0.isWhitespace }) ?? after.endIndex
+                while nameEnd > nameStart && after[after.index(before: nameEnd)].isWhitespace {
+                    nameEnd = after.index(before: nameEnd)
+                }
+                let name = String(after[nameStart..<nameEnd])
+                if name == oldName {
+                    result.replaceSubrange(nameStart..<nameEnd, with: newName)
+                }
+            }
+            // Nested (RULE-SET, NAME) occurrences.
+            let pattern = #"\(\s*RULE-SET\s*,\s*([^,()]+?)\s*[,)]"#
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return result }
+            let ns = result as NSString
+            let matches = regex.matches(in: result, range: NSRange(location: 0, length: ns.length))
+            // Replace back-to-front so earlier ranges stay valid.
+            for match in matches.reversed() where match.numberOfRanges > 1 {
+                let nameRange = match.range(at: 1)
+                let name = ns.substring(with: nameRange).trimmingCharacters(in: .whitespaces)
+                guard name == oldName else { continue }
+                let mutable = NSMutableString(string: result)
+                mutable.replaceCharacters(in: nameRange, with: newName)
+                result = mutable as String
+            }
+            return result
+        }
+        if var dns = sub.dns {
+            if var policy = dns.nameserverPolicy {
+                // Snapshot the keys first: renaming a key mutates
+                // the dictionary being iterated (compile-audit N1).
+                // Never silently drop a value: if the target key
+                // already exists (a stale key — the delete path
+                // never strips policy refs), keep the existing
+                // value and leave the old key dangling rather
+                // than destroying data (logic-audit B2; the
+                // validator blocks this at the UI).
+                for key in Array(policy.keys) {
+                    let renamed = renamedRuleSetList(key, oldName: oldName, newName: newName)
+                    guard renamed != key, policy[renamed] == nil else { continue }
+                    policy[renamed] = policy.removeValue(forKey: key)
+                }
+                dns.nameserverPolicy = policy
+            }
+            if var policy = dns.proxyServerNameserverPolicy {
+                // Never silently drop a value: if the target key
+                // already exists (a stale key — the delete path
+                // never strips policy refs), keep the existing
+                // value and leave the old key dangling rather
+                // than destroying data (logic-audit B2; the
+                // validator blocks this at the UI).
+                for key in Array(policy.keys) {
+                    let renamed = renamedRuleSetList(key, oldName: oldName, newName: newName)
+                    guard renamed != key, policy[renamed] == nil else { continue }
+                    policy[renamed] = policy.removeValue(forKey: key)
+                }
+                dns.proxyServerNameserverPolicy = policy
+            }
+            if let filter = dns.fakeIpFilter {
+                // Upstream applies BOTH transforms to fake-ip-filter
+                // entries: a `rule-set:a,b` entry by the list pass,
+                // a `RULE-SET,...` rule text by the text pass
+                // (behaviour-audit B2).
+                dns.fakeIpFilter = filter.map { renamedRuleText(renamedRuleSetList($0, oldName: oldName, newName: newName)) }
+            }
+            sub.dns = dns
+        }
+        if var sniffer = sub.sniffer {
+            if let list = sniffer.forceDomain { sniffer.forceDomain = list.map { renamedRuleSetList($0, oldName: oldName, newName: newName) } }
+            if let list = sniffer.skipDomain { sniffer.skipDomain = list.map { renamedRuleSetList($0, oldName: oldName, newName: newName) } }
+            if let list = sniffer.skipSrcAddress { sniffer.skipSrcAddress = list.map { renamedRuleSetList($0, oldName: oldName, newName: newName) } }
+            if let list = sniffer.skipDstAddress { sniffer.skipDstAddress = list.map { renamedRuleSetList($0, oldName: oldName, newName: newName) } }
+            sub.sniffer = sniffer
+        }
+    }
+
+    /// Why a ClashProvider record rename to `newLabel` cannot
+    /// run (v0.2.156). Nil = the rename is safe. Checks, in
+    /// order: empty; duplicate label across ALL ClashProvider
+    /// records (upstream `_reservedLabels`, exact match — the
+    /// core's YAML keys are case-sensitive, so a case-only
+    /// difference is a different provider); the new label
+    /// collides with a rule-provider name in an affected
+    /// subscription (other than the renamed one(s) — baking two
+    /// providers under one YAML key would drop one); one
+    /// affected subscription maps the record under TWO different
+    /// local names (both would have to become the same label).
+    static func renameClashProviderIssue(recordId: UUID, newLabel: String) -> String? {
+        let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "请填写提供方名称" }
+        let clashStore = ClashProviderStore()
+        guard let record = clashStore.provider(id: recordId) else { return "找不到该提供方记录" }
+        guard trimmed != record.label else { return nil }
+        if clashStore.providers.contains(where: { $0.id != recordId && $0.label == trimmed }) {
+            return "已有同名提供方「\(trimmed)」"
+        }
+        let store = CustomSubscriptionStore()
+        for sub in store.subscriptions {
+            let localNames = sub.ruleProviderMap
+                .filter { $0.value.clashProviderId == recordId }
+                .map { $0.key }
+            guard !localNames.isEmpty else { continue }
+            if localNames.count > 1 {
+                return "订阅「\(sub.name)」里该提供方有两个不同的本地名称（\(localNames.joined(separator: "、"))），请先在订阅内统一名称再重命名"
+            }
+            let localName = localNames[0]
+            if sub.ruleProviders.contains(where: { $0.name == trimmed && $0.name != localName }) {
+                return "订阅「\(sub.name)」里已有规则提供方「\(trimmed)」"
+            }
+            // Logic-audit B2: a policy-key rename must not
+            // silently overwrite an existing key. Check both the
+            // local-name rewrite and the old-label heal (same
+            // condition as the heal in renameClashProviderRecord:
+            // only when no provider still owns the old label).
+            let healsOldLabel = record.label != localName
+                && !sub.ruleProviders.contains(where: { $0.name == record.label })
+            let oldNames = healsOldLabel ? [localName, record.label] : [localName]
+            for policy in [sub.dns?.nameserverPolicy, sub.dns?.proxyServerNameserverPolicy].compactMap({ $0 }) {
+                for key in policy.keys {
+                    for old in oldNames {
+                        let renamed = Self.renamedRuleSetList(key, oldName: old, newName: trimmed)
+                        if renamed != key, policy[renamed] != nil {
+                            return "订阅「\(sub.name)」的 DNS 策略里已有「\(renamed)」"
+                        }
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Renames a ClashProvider record's label and rewrites every
+    /// custom subscription that maps the record (v0.2.156;
+    /// upstream `ClashProviders.put` → `rulesDao.
+    /// renameRuleProvider`). Matching is by `clashProviderId`,
+    /// NOT by name — a 155 local rename may have diverged the
+    /// sub-local provider name from the record label, and the
+    /// record is still found. Per affected subscription: the
+    /// definition(s) named by the map key are renamed, RULE-SET
+    /// rules are rewritten, the map key moves (value kept — the
+    /// confined file is fileToken-named, no file moves), and the
+    /// scoped DNS / sniffer `rule-set:` policy references are
+    /// rewritten (upstream `renamedRuleSets`). The map-key move
+    /// has NO 155-N6 guard here: the entry is known to belong to
+    /// this record by id. Callers validate with
+    /// renameClashProviderIssue first; this returns [] when the
+    /// label is unchanged or the record is gone. Returns the ids
+    /// of the subscriptions that changed, so the caller can
+    /// re-apply the active profile when it bakes one of them —
+    /// the running engine drops the old name at the next
+    /// config.apply, exactly like a delete / 155 rename.
+    @discardableResult
+    static func renameClashProviderRecord(id: UUID, newLabel: String) -> [UUID] {
+        let trimmed = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Logic-audit N5: validate first so a blocked rename is
+        // atomic — the label must not move while a sub is skipped
+        // by a defensive guard below.
+        guard renameClashProviderIssue(recordId: id, newLabel: trimmed) == nil else { return [] }
+        let clashStore = ClashProviderStore()
+        guard var record = clashStore.provider(id: id),
+              !trimmed.isEmpty, trimmed != record.label else { return [] }
+        // Capture the old label BEFORE the update (behaviour-audit
+        // B1): after a 155 sub-local rename, DNS/sniffer policy
+        // refs still carry the old record label while the local
+        // name diverged — the policy rewrite below must heal
+        // those refs too, not just the local-name ones.
+        let oldLabel = record.label
+        record.label = trimmed
+        clashStore.update(record)
+        let store = CustomSubscriptionStore()
+        var affected: [UUID] = []
+        for var sub in store.subscriptions {
+            let localNames = sub.ruleProviderMap
+                .filter { $0.value.clashProviderId == id }
+                .map { $0.key }
+            // Defensive: the validator blocks a sub mapping the
+            // record under two local names (both would have to
+            // become the same label) — if this ever runs
+            // unvalidated, skip the sub rather than half-renaming
+            // it.
+            guard localNames.count <= 1, let localName = localNames.first else { continue }
+            // Definitions named by the map key take the new label.
+            for index in sub.ruleProviders.indices where sub.ruleProviders[index].name == localName {
+                sub.ruleProviders[index].name = trimmed
+            }
+            for index in sub.rules.indices where sub.rules[index].type == "RULE-SET" && ruleSetNameMatches(sub.rules[index].content, localName) {
+                sub.rules[index].content = trimmed
+            }
+            if let ref = sub.ruleProviderMap.removeValue(forKey: localName) {
+                sub.ruleProviderMap[trimmed] = ref
+            }
+            renameRuleSetPolicyReferences(in: &sub, oldName: localName, newName: trimmed)
+            // Behaviour-audit B1 (refined): references still
+            // carrying the OLD record label — left dangling by a
+            // 155 sub-local rename, which never touched DNS /
+            // sniffer — are healed too, but ONLY when no rule
+            // provider in this sub is still named the old label.
+            // A surviving provider of that name (pre-existing
+            // duplicate) owns those references; rewriting them
+            // would break it, so they stay as they are — no worse
+            // than before this rename. Definitions are never
+            // renamed by the old label (that would duplicate a
+            // YAML key at bake).
+            if oldLabel != localName,
+               !sub.ruleProviders.contains(where: { $0.name == oldLabel }) {
+                for index in sub.rules.indices where sub.rules[index].type == "RULE-SET" && ruleSetNameMatches(sub.rules[index].content, oldLabel) {
+                    sub.rules[index].content = trimmed
+                }
+                renameRuleSetPolicyReferences(in: &sub, oldName: oldLabel, newName: trimmed)
+            }
+            store.update(sub)
+            affected.append(sub.id)
+        }
+        return affected
+    }
+
+    /// Why a URL Profile rename from `oldName` to `newName`
+    /// cannot run (v0.2.156). Nil = the rename is safe. Checks:
+    /// empty; the new name collides with another Profile's name
+    /// (exact match — upstream auto-dedups labels with
+    /// optimizeLabel, the app blocks instead, the 155 pattern);
+    /// the new name collides with a proxy-provider name in an
+    /// affected subscription (other than the renamed one(s)).
+    /// The caller supplies the profile names; the store cannot
+    /// see ProfileStore from here without a new dependency.
+    static func renameProviderProfileIssue(profileId: UUID, oldName: String, newName: String, otherProfileNames: [String]) -> String? {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "请填写名称" }
+        guard trimmed != oldName else { return nil }
+        if otherProfileNames.contains(trimmed) {
+            return "已有同名配置「\(trimmed)」"
+        }
+        let store = CustomSubscriptionStore()
+        for sub in store.subscriptions {
+            let mappedNames = sub.providerProfileMap
+                .filter { $0.value.profileId == profileId }
+                .map { $0.key }
+            guard mappedNames.contains(oldName) else { continue }
+            // Logic-audit B1: two definitions sharing oldName
+            // would leave the map-key move skipped (155-N6) while
+            // the definitions are renamed by name — an orphaned
+            // map entry. Block it; the user renames one twin
+            // first.
+            if sub.proxyProviders.filter({ $0.name == oldName }).count > 1 {
+                return "订阅「\(sub.name)」里代理提供方「\(oldName)」重名，请先在订阅内重命名其中一个再改名"
+            }
+            if sub.proxyProviders.contains(where: { $0.name == trimmed && $0.name != oldName }) {
+                return "订阅「\(sub.name)」里已有代理提供方「\(trimmed)」"
+            }
+        }
+        return nil
+    }
+
+    /// Rewrites proxy-provider references after a URL Profile is
+    /// renamed (v0.2.156; upstream `Profiles.put` → `renameUse`
+    /// + `renamedProxyProviders`). Only subscriptions whose
+    /// providerProfileMap contains the profile are touched
+    /// (matched by `profileId`, NOT by name — the provider may
+    /// have been locally renamed in 155 and diverged from the
+    /// profile label). For each mapped provider whose name still
+    /// equals the old profile label, the provider is renamed to
+    /// the new label via the 155 proxy path (definition +
+    /// groups' `use:`/members + dialers + map-key move with the
+    /// 155-N6 guard). A mapped provider whose name already
+    /// diverged keeps its name — upstream has no key/use left to
+    /// rewrite for it either (`renameUse` is name-based).
+    /// Subscriptions NOT mapping the profile are untouched: a
+    /// deliberate, documented divergence from upstream's global
+    /// name-based `renameUse` — upstream cannot distinguish a
+    /// `use:` entry naming an unrelated same-named provider, but
+    /// the id-based map can, and rewriting it would break that
+    /// subscription's own provider. Returns the ids of the
+    /// subscriptions that changed, so the caller can re-apply
+    /// the active profile when it bakes one of them.
+    @discardableResult
+    static func renameProviderProfileReferences(profileId: UUID, oldName: String, newName: String) -> [UUID] {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != oldName else { return [] }
+        let store = CustomSubscriptionStore()
+        var affected: [UUID] = []
+        for var sub in store.subscriptions {
+            let mappedNames = sub.providerProfileMap
+                .filter { $0.value.profileId == profileId }
+                .map { $0.key }
+            guard mappedNames.contains(oldName) else { continue }
+            // Defensive (logic-audit B1): the UI validator blocks
+            // duplicate oldName definitions and newName collisions;
+            // if this ever runs unvalidated, skip the sub rather
+            // than orphaning the map entry (N6-skipped move +
+            // by-name definition rename would disagree) or
+            // overwriting an unrelated map entry.
+            guard sub.proxyProviders.filter({ $0.name == oldName }).count <= 1,
+                  !sub.proxyProviders.contains(where: { $0.name == trimmed }) else { continue }
+            renameProviderReferences(in: &sub, kind: "proxy", oldName: oldName, newName: trimmed)
+            // The definition itself: renameProviderReferences
+            // rewrites references + moves the map key; the sheet
+            // closure replaces the definition in the editor flow,
+            // but here there is no sheet — rename it directly.
+            for index in sub.proxyProviders.indices where sub.proxyProviders[index].name == oldName {
+                sub.proxyProviders[index].name = trimmed
+            }
+            store.update(sub)
+            affected.append(sub.id)
+        }
+        return affected
+    }
+
     private static func providerYAML(_ provider: CustomProvider, in sub: CustomSubscription, isRuleProvider: Bool) -> [String] {
         var lines = ["  \(CustomProxy.quote(provider.name)):"]
         if isRuleProvider {

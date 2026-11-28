@@ -22,7 +22,9 @@ import CoreImage
 // Differences vs FlClash, all honest:
 // - No .custom ProfileKind exists in this app (only url/file), so
 //   every profile takes the non-custom menu path; there is no rename
-//   action (renaming happens via the Edit page's name field).
+//   action on the card menu (renaming happens via the Edit page's
+//   name field — v0.2.156: renaming a URL profile there rewrites
+//   the mapped proxy provider in every custom subscription).
 //   Custom subscriptions are a separate model
 //   (CustomSubscriptionStore) and render as their own cards in the
 //   same grid below the profiles (FlClash _ProfilesGridView by

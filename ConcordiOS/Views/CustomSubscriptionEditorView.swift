@@ -672,9 +672,11 @@ struct CustomSubscriptionEditorView: View {
                 var copy = sub
                 // v0.2.155 rename: rewrite every reference to
                 // the old name and move the map key before the
-                // provider itself is replaced (by id).
+                // provider itself is replaced (by id). The helper
+                // lives on the store since 156 (shared with the
+                // cross-subscription rename paths).
                 if saved.name != provider.name {
-                    renameProviderReferences(in: &copy, kind: "proxy", oldName: provider.name, newName: saved.name)
+                    CustomSubscriptionStore.renameProviderReferences(in: &copy, kind: "proxy", oldName: provider.name, newName: saved.name)
                 }
                 if let index = copy.proxyProviders.firstIndex(where: { $0.id == saved.id }) {
                     copy.proxyProviders[index] = saved
@@ -720,9 +722,10 @@ struct CustomSubscriptionEditorView: View {
             CustomProviderOptionsView(provider: provider, isRuleProvider: true, clashProviderId: sub.ruleProviderMap[provider.name]?.clashProviderId, existingNames: sub.ruleProviders.filter { $0.id != provider.id }.map { $0.name }) { saved in
                 var copy = sub
                 // v0.2.155 rename: same as the proxy-provider
-                // sheet — references + map key move first.
+                // sheet — references + map key move first. The
+                // helper lives on the store since 156.
                 if saved.name != provider.name {
-                    renameProviderReferences(in: &copy, kind: "rule", oldName: provider.name, newName: saved.name)
+                    CustomSubscriptionStore.renameProviderReferences(in: &copy, kind: "rule", oldName: provider.name, newName: saved.name)
                 }
                 if let index = copy.ruleProviders.firstIndex(where: { $0.id == saved.id }) {
                     copy.ruleProviders[index] = saved
@@ -868,57 +871,6 @@ struct CustomSubscriptionEditorView: View {
             showProviderDeleteAlert = true
         } else {
             removeProviders(kind: kind, providers: providers)
-        }
-    }
-
-    /// Renames a provider inside the draft (v0.2.155): rewrites
-    /// every reference to the old name and moves the map key.
-    /// The reference set is the same one removeProviders strips
-    /// on delete (see providerDeleteUsers): groups' `use:` AND
-    /// member entries, dialers naming the provider on either
-    /// end, RULE-SET rules naming a deleted rule provider.
-    /// - The map key moves, the value is kept: the confined file
-    ///   is named by fileToken, not by name, so no file moves
-    ///   and no re-download is needed.
-    /// - The shared ClashProvider record is NOT renamed: other
-    ///   subscriptions may reference the same record under the
-    ///   old name; only this sub's map key moves.
-    /// - The provider definition itself is replaced by the sheet
-    ///   closure (by id) after this runs; saveDraft detects the
-    ///   rename (renamedProviders, by id) and re-applies the
-    ///   active profile, since the baked YAML key changes.
-    private func renameProviderReferences(in copy: inout CustomSubscription, kind: String, oldName: String, newName: String) {
-        if kind == "proxy" {
-            for index in copy.groups.indices {
-                copy.groups[index].useProviders = copy.groups[index].useProviders.map { $0 == oldName ? newName : $0 }
-                copy.groups[index].members = copy.groups[index].members.map { $0 == oldName ? newName : $0 }
-            }
-            for index in copy.dialers.indices {
-                if copy.dialers[index].proxy == oldName { copy.dialers[index].proxy = newName }
-                if copy.dialers[index].dialer == oldName { copy.dialers[index].dialer = newName }
-            }
-            // v0.2.155 audit N6: when the old name is duplicated
-            // within the kind, the single map entry may belong to
-            // the other twin — leave the key alone rather than
-            // reassign shared state on ambiguous data (the
-            // duplicate is already flagged by validationIssues).
-            // `copy` still holds the renamed provider under
-            // oldName here (the sheet closure replaces the
-            // definition after this runs), so a unique name
-            // counts exactly 1.
-            if copy.proxyProviders.filter({ $0.name == oldName }).count <= 1,
-               let ref = copy.providerProfileMap.removeValue(forKey: oldName) {
-                copy.providerProfileMap[newName] = ref
-            }
-        } else {
-            for index in copy.rules.indices where copy.rules[index].type == "RULE-SET" && ruleSetNames(copy.rules[index].content, oldName) {
-                copy.rules[index].content = newName
-            }
-            // Same N6 guard as the proxy branch.
-            if copy.ruleProviders.filter({ $0.name == oldName }).count <= 1,
-               let ref = copy.ruleProviderMap.removeValue(forKey: oldName) {
-                copy.ruleProviderMap[newName] = ref
-            }
         }
     }
 
@@ -1435,16 +1387,18 @@ private struct CustomProviderOptionsView: View {
             Form {
                 Section("提供方") {
                     // v0.2.155: the name is editable (rename).
-                    // Upstream FlClash has no rename (label is
-                    // immutable; delete + re-add is the rename
-                    // path) and the core has no rename RPC, so
-                    // the rename is Swift-side: the editor moves
-                    // the map key and rewrites every reference
-                    // (see renameProviderReferences) and saveDraft
+                    // Upstream FlClash DOES rename at the record
+                    // level (ClashProviders.put rewrites RULE-SET
+                    // refs in all custom profiles); the record
+                    // rename lives in EditProviderView (v0.2.156).
+                    // This form is the SUB-LOCAL rename: the editor
+                    // moves the map key and rewrites every reference
+                    // (see CustomSubscriptionStore.
+                    // renameProviderReferences) and saveDraft
                     // re-applies the active profile. The confined
                     // file is named by fileToken, not by name, so
                     // no file moves; the shared ClashProvider
-                    // record is not renamed.
+                    // record is not renamed here.
                     TextField("提供方名称", text: $provider.name)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()

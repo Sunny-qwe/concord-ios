@@ -8,7 +8,10 @@ import UniformTypeIdentifiers
 // (size + last modified, tap -> ConfigEditorView, menu 编辑 / 上传）.
 // Save (check button) validates like FlClash and calls
 // ProfileStore.updateProfileMeta; when the URL changed it also
-// re-downloads via update (FlClash behavior).
+// re-downloads via update (FlClash behavior). Renaming a URL
+// profile (v0.2.156, upstream Profiles.put → renameUse) rewrites
+// the mapped proxy provider in every custom subscription and
+// re-applies the active profile when it bakes one of them.
 //
 // Honest gaps, stated in the UI:
 // - Auto-update is stored and updateDueProfiles() honors the
@@ -70,6 +73,18 @@ struct EditProfileView: View {
     // ErrorBanner + per-field invalid flags)
     private var isNameInvalid: Bool {
         name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || duplicateNameIssue != nil
+    }
+
+    /// A rename to a name another profile already has (v0.2.156:
+    /// upstream auto-dedups labels with optimizeLabel; the app
+    /// blocks instead, the 155 pattern). Nil when the name is
+    /// empty (the empty check owns that) or unchanged.
+    private var duplicateNameIssue: String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != profile.name else { return nil }
+        guard profileStore.profiles.contains(where: { $0.id != profile.id && $0.name == trimmed }) else { return nil }
+        return "已有同名配置「\(trimmed)」"
     }
 
     private var isURLInvalid: Bool {
@@ -96,6 +111,7 @@ struct EditProfileView: View {
         if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "请填写名称"
         }
+        if let dup = duplicateNameIssue { return dup }
         guard isURLProfile else { return nil }
         let url = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         if url.isEmpty {
@@ -122,7 +138,7 @@ struct EditProfileView: View {
                 }
             }
             Section {
-                fieldRow(label: "名称", invalid: isNameInvalid, error: isNameInvalid ? "请填写名称" : nil) {
+                fieldRow(label: "名称", invalid: isNameInvalid, error: isNameInvalid ? (duplicateNameIssue ?? "请填写名称") : nil) {
                     TextField("必填", text: $name)
                         .font(.footnote.weight(.semibold))
                         .autocorrectionDisabled()
@@ -359,6 +375,21 @@ struct EditProfileView: View {
         let trimmedKey = ageSecretKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let interval = Int(intervalText)
         let effectiveAutoUpdate = turnOffAutoUpdate ? false : autoUpdate
+        // v0.2.156: a renamed URL profile rewrites the mapped
+        // proxy provider in every custom subscription (upstream
+        // Profiles.put → renameUse + renamedProxyProviders).
+        // Validate BEFORE anything is persisted, so a blocked
+        // rename leaves no half-saved state behind. Only URL
+        // profiles can be provider profiles (file profiles are
+        // never mapped), so only they rewrite.
+        let profileRenamed = isURLProfile && trimmedName != profile.name
+        if profileRenamed,
+           let issue = CustomSubscriptionStore.renameProviderProfileIssue(
+               profileId: profile.id, oldName: profile.name, newName: trimmedName,
+               otherProfileNames: profileStore.profiles.filter { $0.id != profile.id }.map { $0.name }) {
+            validationError = issue
+            return
+        }
         // FlClash edit.dart: a staged file wins over a URL change —
         // the file branch saves the file and never re-downloads in
         // the same save, so the upload cannot be overwritten by a
@@ -384,6 +415,34 @@ struct EditProfileView: View {
             autoUpdate: effectiveAutoUpdate,
             autoUpdateIntervalMinutes: effectiveAutoUpdate ? interval : profile.autoUpdateIntervalMinutes
         )
+        // v0.2.156: after the new name is saved, rewrite the
+        // mapped providers, then re-apply the active profile when
+        // it bakes an affected subscription (the running engine
+        // only sees the new provider name at the next apply).
+        // Runs before the pending-file early return below so the
+        // file-upload branch benefits too.
+        // Logic-audit B4: a re-apply failure is surfaced, not
+        // swallowed — the rename is already saved, only the live
+        // engine still runs the old names, so the save stops here
+        // with the error instead of dismissing with a false
+        // success. (reapplyActiveForSubscription returns false
+        // when the active profile bakes no affected sub — then
+        // lastError is stale and must not be read, per its doc.)
+        if profileRenamed {
+            let affected = CustomSubscriptionStore.renameProviderProfileReferences(profileId: profile.id, oldName: profile.name, newName: trimmedName)
+            var reapplyError: String?
+            for subId in affected {
+                if await profileStore.reapplyActiveForSubscription(id: subId),
+                   let error = profileStore.lastError {
+                    reapplyError = error
+                    break
+                }
+            }
+            if let error = reapplyError {
+                validationError = "重命名已保存，但重新应用配置失败：\(error)（下次启动 VPN 时生效）"
+                return
+            }
+        }
         // A file was just uploaded: do not re-download over it in
         // this save, even when the URL (or key) also changed. The
         // next manual / automatic update will fetch from the new
@@ -393,7 +452,10 @@ struct EditProfileView: View {
             // FlClash edit.dart dispose(): saving auto-applies the
             // profile — a saved edit to the ACTIVE profile takes
             // effect without a manual re-apply.
-            await applyIfActive()
+            if let failure = await applyIfActive() {
+                validationError = failure
+                return
+            }
             dismiss()
             return
         }
@@ -408,16 +470,25 @@ struct EditProfileView: View {
                 return
             }
         }
-        await applyIfActive()
+        if let failure = await applyIfActive() {
+            validationError = failure
+            return
+        }
         dismiss()
     }
 
     /// FlClash edit.dart dispose() autoApplyProfile: after a
     /// successful save, re-apply the profile when it is the active
     /// one, so the edit takes effect live (or at next start when
-    /// the VPN is off — reapplyActive handles that).
-    private func applyIfActive() async {
-        guard profile.id == profileStore.activeProfile?.id else { return }
-        _ = await profileStore.reapplyActive()
+    /// the VPN is off — reapplyActive handles that). Returns the
+    /// re-apply failure message, if any (logic-audit B4: the old
+    /// `_ =` discard hid a live-apply failure behind a dismiss);
+    /// nil when the profile is not active, the tunnel is stopped,
+    /// or the re-apply succeeded.
+    private func applyIfActive() async -> String? {
+        guard profile.id == profileStore.activeProfile?.id else { return nil }
+        let result = await profileStore.reapplyActive()
+        guard let result, result.hasPrefix("重新应用失败") else { return nil }
+        return result
     }
 }

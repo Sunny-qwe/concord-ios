@@ -215,7 +215,10 @@ struct MitmHostnameEditorView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, ConcordTheme.tabBarClearance + 8)
             } else {
-                bottomSearchPill
+                // v0.2.165 (B): the old bottomSearchPill is now the
+                // shared DockedSearchBar (48pt, 20pt magnifier,
+                // cancel button); placement / inset unchanged.
+                DockedSearchBar(text: $searchText)
                     .padding(.horizontal, 16)
                     .padding(.bottom, ConcordTheme.tabBarClearance + 8)
             }
@@ -238,14 +241,11 @@ struct MitmHostnameEditorView: View {
                 .disabled(hostnames.isEmpty)
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
+                UpstreamBarButton(systemName: "plus.circle", label: "添加主机名") {
                     newHostname = ""
                     addError = nil
                     showAddSheet = true
-                } label: {
-                    Image(systemName: "plus.circle")
                 }
-                .accessibilityLabel("添加主机名")
                 .disabled(isSelecting)
             }
         }
@@ -301,32 +301,6 @@ struct MitmHostnameEditorView: View {
         } message: {
             Text("每行一个域名，空行会被忽略。")
         }
-    }
-
-    /// Bottom floating search pill (MuYu): a capsule with a
-    /// magnifier, a text field and a clear button, floating above
-    /// the list instead of a top .searchable bar.
-    private var bottomSearchPill: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(ConcordTheme.onSurfaceVariant)
-            TextField("搜索", text: $searchText)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            if !searchText.isEmpty {
-                Button { searchText = "" } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("清除搜索")
-            }
-        }
-        .font(.body)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(ConcordTheme.cardBackground, in: Capsule())
-        .shadow(color: ConcordTheme.cardShadow, radius: 8, x: 0, y: 2)
     }
 
     /// The per-line issue for an invalid hostname (upstream
@@ -585,7 +559,7 @@ struct MitmOptionsView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 40)
+            .padding(.top, 12)
             .padding(.bottom, ConcordTheme.tabBarClearance)
         }
         .background(ConcordTheme.pageBackground)

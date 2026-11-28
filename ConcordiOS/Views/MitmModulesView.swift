@@ -396,17 +396,14 @@ struct MitmModulesView: View {
     @ToolbarContentBuilder
     private var modulesToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Menu {
+            UpstreamBarButtonMenu(systemName: "plus.circle", label: "导入模块") {
                 Button("新建模块") { showBlankEditorPage = true }
                 Button("通过URL导入") {
                     urlText = ""
                     showImportURLDialog = true
                 }
                 Button("通过文件导入") { showImportFilePicker = true }
-            } label: {
-                Image(systemName: "plus.circle")
             }
-            .accessibilityLabel("导入模块")
         }
     }
 

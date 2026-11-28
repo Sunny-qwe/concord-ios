@@ -540,7 +540,7 @@ struct SettingsView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 40)
+            .padding(.top, 12)
             .padding(.bottom, 16)
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
@@ -950,7 +950,7 @@ struct ProvidersView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.top, 40)
+        .contentMargins(.top, 16)
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
@@ -959,8 +959,29 @@ struct ProvidersView: View {
         .concordNavBarBackground()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { Task { await ruleStore.refresh() } } label: {
-                    Image(systemName: "arrow.clockwise")
+                UpstreamBarButtonMenu(systemName: "plus.circle", label: "添加") {
+                    Button {
+                        Task { await ruleStore.sideLoadProvider(name: sideLoadName, data: sideLoadText) }
+                    } label: {
+                        Label("新建", systemImage: "plus")
+                    }
+                    .disabled(sideLoadName.trimmingCharacters(in: .whitespaces).isEmpty || sideLoadText.isEmpty)
+                    Button {
+                        Task { await importProvidersFromURLs() }
+                    } label: {
+                        Label("从链接导入", systemImage: "link")
+                    }
+                    .disabled(importURLs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button {
+                        showProviderImporter = true
+                    } label: {
+                        Label("从文件导入", systemImage: "doc.badge.plus")
+                    }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                UpstreamBarButton(systemName: "arrow.clockwise", label: "刷新") {
+                    Task { await ruleStore.refresh() }
                 }
             }
         }
@@ -1474,7 +1495,7 @@ struct ResourcesView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 40)
+            .padding(.top, 12)
             .padding(.bottom, 16)
         }
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
@@ -1485,16 +1506,15 @@ struct ResourcesView: View {
             // Update-all is the app-bar sync icon upstream
             // (resources.dart:184-193), not a button on the page.
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task { await updateAllResources() }
-                } label: {
-                    if isUpdatingAll {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "arrow.clockwise")
+                if isUpdatingAll {
+                    ProgressView()
+                        .frame(width: 44, height: 44)
+                        .background(ConcordTheme.cardBackground, in: Circle())
+                } else {
+                    UpstreamBarButton(systemName: "arrow.clockwise", label: "全部更新") {
+                        Task { await updateAllResources() }
                     }
                 }
-                .disabled(isUpdatingAll)
             }
         }
         .task {

@@ -152,7 +152,7 @@ struct ProfilesView: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.top, 16)
+                    .padding(.top, 12)
                     .padding(.bottom, ConcordTheme.tabBarClearance)
                 }
                 .onAppear {

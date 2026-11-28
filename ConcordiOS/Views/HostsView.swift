@@ -115,11 +115,18 @@ struct HostsView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 40)
+            .padding(.top, 12)
             .padding(.bottom, ConcordTheme.tabBarClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "Hosts")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                UpstreamBarButton(systemName: "plus.circle", label: "添加 Hosts") {
+                    hosts.append((host: "", ip: ""))
+                }
+            }
+        }
         .onAppear { load() }
     }
 

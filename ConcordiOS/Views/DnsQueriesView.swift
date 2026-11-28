@@ -495,11 +495,17 @@ struct DnsQueriesView: View {
                 segmentList
             } else {
                 ScrollViewReader { proxy in
-                    pageList(proxy: proxy)
+                    ZStack(alignment: .bottom) {
+                        pageList(proxy: proxy)
+                        // v0.2.165 (B): docked search pill, replacing
+                        // the top .searchable field.
+                        DockedSearchBar(text: $dnsStore.searchText, prompt: "搜索域名或上游")
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+                    }
                         .background(ConcordTheme.pageBackground)
                         .listStyle(.insetGrouped)
                         .upstreamNavBar(title: "DNS 查询")
-                        .searchable(text: $dnsStore.searchText, prompt: "搜索域名或上游")
                         .toolbar {
                             ToolbarItem(placement: .topBarTrailing) {
                                 // Filter menu (v0.2.139, C19-c1 —
@@ -508,26 +514,20 @@ struct DnsQueriesView: View {
                                 // initiator + rcode facets. The
                                 // active ones show as removable
                                 // chips above the list.
-                                Menu {
+                                UpstreamBarButtonMenu(systemName: "line.3.horizontal.decrease.circle", label: "筛选") {
                                     dnsFilterMenuContent
-                                } label: {
-                                    Image(systemName: "line.3.horizontal.decrease.circle")
                                 }
-                                .accessibilityLabel("筛选")
                             }
                             ToolbarItem(placement: .topBarTrailing) {
                                 // ⋯ menu (v0.2.139, Q5 — upstream
                                 // requests.dart: the DNS segment's
                                 // app-bar menu has exactly one
                                 // item, clearDnsCache).
-                                Menu {
+                                UpstreamBarButtonMenu(systemName: "ellipsis", label: "更多操作") {
                                     Button("清除 DNS 缓存") {
                                         Task { await dnsStore.clearCache() }
                                     }
-                                } label: {
-                                    Image(systemName: "ellipsis.circle")
                                 }
-                                .accessibilityLabel("更多操作")
                             }
                         }
                         .task {
@@ -758,8 +758,13 @@ struct DnsQueriesView: View {
                 }
             }
             // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-            .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-            .contentMargins(.top, 40)
+            // v0.2.165 (B): + 56 for the docked search pill (48 + 8);
+            // pageList is shared with the Requests DNS segment, whose
+            // parent page carries the same pill, so the extra inset
+            // also applies there (in the Dashboard sheet it is just
+            // 56pt of extra space at the very bottom of the list).
+            .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+            .contentMargins(.top, 16)
             .scrollContentBackground(.hidden)
         }
     }
@@ -993,7 +998,7 @@ private struct DnsRelatedConnectionsView: View {
 /// The MuYu bottom floating search bar (v0.2.68): a rounded bar
 /// with a magnifier + TextField, overlaid at the bottom of the
 /// sheet list. Drives the store's searchText, same as the page's
-/// top .searchable did.
+/// docked pill does.
 private struct DnsFloatingSearchBar: View {
     @Binding var text: String
     let prompt: String
@@ -1001,7 +1006,7 @@ private struct DnsFloatingSearchBar: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 20))
                 .foregroundStyle(.secondary)
             TextField(prompt, text: $text)
                 .font(.footnote)
@@ -1018,8 +1023,8 @@ private struct DnsFloatingSearchBar: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 22))
+        .frame(height: 48)
+        .background(ConcordTheme.cardBackground, in: Capsule())
         .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 2)
         .padding(.horizontal, 16)
         .padding(.bottom, 12)

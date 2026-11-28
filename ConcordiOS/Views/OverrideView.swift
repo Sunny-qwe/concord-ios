@@ -33,10 +33,11 @@ struct OverrideView: View {
     /// edits update the target live; ours applies when leaving
     /// with changes, or on 应用覆盖）.
     @State private var baselineYAML: String?
-    /// YAML quick-edit draft, error and saved flag (v0.2.55).
-    @State private var yamlDraft = ""
-    @State private var yamlEditError: String?
-    @State private var yamlEditSaved = false
+    /// YAML quick-edit sheet (v0.2.165 D): the inline quick-edit
+    /// TextEditor is gone — upstream override.dart opens the YAML
+    /// editor from the ✎ bar button instead, so the hub ✎ opens
+    /// this sheet for the whole scope (section = nil).
+    @State private var showYamlSheet = false
 
     init(scope: String? = nil) {
         _scope = State(initialValue: scope)
@@ -116,48 +117,17 @@ struct OverrideView: View {
                     .padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     UpstreamDivider(leading: 16)
-                    Text("也可以在下面直接编辑 YAML（解析校验通过后才保存）。")
+                    Text("点右上角 ✎ 可以直接编辑 YAML（解析校验通过后才保存）。")
                         .font(.footnote)
                         .foregroundStyle(ConcordTheme.onSurfaceVariant)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                 }
-                UpstreamCardSection(header: "YAML 快速编辑") {
-                    TextEditor(text: $yamlDraft)
-                        .font(.system(.footnote, design: .monospaced))
-                        .frame(minHeight: 200)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                    UpstreamDivider(leading: 16)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button("校验并保存") {
-                            saveYAMLQuickEdit()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(ConcordTheme.accent)
-                        .frame(maxWidth: .infinity)
-                        .disabled(yamlDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if let yamlEditError {
-                            Text(yamlEditError)
-                                .font(.footnote)
-                                .foregroundStyle(.red)
-                        } else if yamlEditSaved {
-                            Text("已保存，离开本页时应用（或点「应用覆盖」立即应用）。")
-                                .font(.footnote)
-                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    UpstreamDivider(leading: 16)
-                    Text("只接受 general、dns、tun、sniffer、ntp 五个分组和已知的覆盖项；未知项或类型不对会报错并保留原文本。test-url 不在这里编辑（它只保存在 App 内用作测速地址兜底）。切换作用范围会丢弃未保存的编辑。")
-                        .font(.footnote)
-                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
-                }
+                // v0.2.165 (D): the inline YAML quick-edit card is
+                // gone — upstream override.dart opens the YAML
+                // editor from the ✎ bar button, so editing now
+                // lives in OverrideYamlQuickEditSheet (hub ✎ =
+                // whole scope, section-page ✎ = that section).
                 VStack(alignment: .leading, spacing: 8) {
                     Button("应用覆盖") {
                         Task { await store.applyOverrides() }
@@ -173,22 +143,27 @@ struct OverrideView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 40)
+            .padding(.top, 12)
             .padding(.bottom, ConcordTheme.tabBarClearance)
         }
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "覆盖")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                UpstreamBarButton(systemName: "square.and.pencil", label: "快速编辑 YAML") {
+                    showYamlSheet = true
+                }
+            }
+        }
+        .sheet(isPresented: $showYamlSheet) {
+            OverrideYamlQuickEditSheet(scope: scope, section: nil)
+                .formSheetChrome()
+        }
         .task {
             baselineYAML = store.yamlText(scope: scope)
-            if yamlDraft.isEmpty {
-                yamlDraft = store.yamlText(scope: scope)
-            }
         }
         .onChange(of: scope) { _, newScope in
             baselineYAML = store.yamlText(scope: newScope)
-            yamlDraft = store.yamlText(scope: newScope)
-            yamlEditError = nil
-            yamlEditSaved = false
         }
         .onDisappear {
             // FlClash applies override edits live; ours applies on
@@ -200,26 +175,16 @@ struct OverrideView: View {
         }
     }
 
-    // MARK: - YAML 快速编辑（v0.2.55）
+    // MARK: - YAML 快速编辑校验（v0.2.55，v0.2.165 D 改为共享静态方法）
 
-    /// 解析并校验编辑框里的 YAML；只有全部合法才替换当前作用范围的
-    /// 覆盖状态，否则显示精确的中文错误并保留原文本和旧状态。
-    private func saveYAMLQuickEdit() {
-        do {
-            let values = try validateOverrideYAML(yamlDraft, scope: scope)
-            store.replaceScope(scope: scope, values: values)
-            yamlEditError = nil
-            yamlEditSaved = true
-            yamlDraft = store.yamlText(scope: scope)
-        } catch {
-            yamlEditError = error.localizedDescription
-            yamlEditSaved = false
-        }
-    }
+    // The hub inline editor is gone; the same validation now serves
+    // OverrideYamlQuickEditSheet (whole scope, or one section via
+    // flattenOverrideKeys). Only the edited scope / section is
+    // replaced — the rest of the stored state is kept.
 
     /// 把 YAML 文本解析成 scope 的完整覆盖状态（section -> key -> value）。
     /// test-url 是客户端专用的测速地址兜底，预览里不显示，保存时原样保留。
-    private func validateOverrideYAML(_ text: String, scope: String?) throws -> [String: [String: JSONValue]] {
+    fileprivate static func validateOverrideYAML(_ text: String, scope: String?) throws -> [String: [String: JSONValue]] {
         let doc = try YamlParser.parse(text)
         // 空文档（或只有注释，如预览的 "# 暂无覆盖项"）= 清空本范围的覆盖
         let top: [String: JSONValue]
@@ -245,7 +210,7 @@ struct OverrideView: View {
                 out[sectionName] = flat
             }
         }
-        if let testURL = store.testURL(scope: scope) {
+        if let testURL = OverrideStore.shared.testURL(scope: scope) {
             var general = out["general"] ?? [:]
             general["test-url"] = .string(testURL)
             out["general"] = general
@@ -256,7 +221,7 @@ struct OverrideView: View {
     /// 把一个分组的嵌套映射展平成点分键（fallback-filter.geoip、
     /// sniff.HTTP），并按该分组的 key spec 逐项校验。stringMap
     /// （nameserver-policy）和 sniff 协议对象整体校验，不再展开。
-    private func flattenOverrideKeys(section: OverrideSection, dict: [String: JSONValue], prefix: String, into out: inout [String: JSONValue]) throws {
+    fileprivate static func flattenOverrideKeys(section: OverrideSection, dict: [String: JSONValue], prefix: String, into out: inout [String: JSONValue]) throws {
         let specs = OverrideStore.specs(for: section)
         for (key, value) in dict {
             let fullKey = prefix.isEmpty ? key : "\(prefix).\(key)"
@@ -289,7 +254,7 @@ struct OverrideView: View {
     }
 
     /// 按 key spec 的 kind 校验一个值（类型、选项范围、数字上下限）。
-    private func validateOverrideValue(_ value: JSONValue, spec: OverrideKeySpec, key: String) throws -> JSONValue {
+    fileprivate static func validateOverrideValue(_ value: JSONValue, spec: OverrideKeySpec, key: String) throws -> JSONValue {
         switch spec.kind {
         case .toggle:
             guard case .bool = value else {
@@ -378,6 +343,123 @@ struct OverrideView: View {
     }
 }
 
+// MARK: - YAML quick-edit sheet (FlClash override.dart _handleQuickEdit)
+
+/// The override as YAML text, edited in a sheet opened from the ✎
+/// bar button (v0.2.165 D — upstream has no inline YAML editor on
+/// the page; the editor is a separate surface). `section == nil`
+/// edits the whole scope (hub ✎); otherwise only that section's
+/// mapping, and only that section is replaced on save — every
+/// other section is kept. Validation is the hub's old inline
+/// rule set (OverrideView.validateOverrideYAML /
+/// flattenOverrideKeys); an error is shown and the stored state
+/// is left untouched. test-url never appears in the text and is
+/// preserved on save, as before.
+private struct OverrideYamlQuickEditSheet: View {
+    let scope: String?
+    let section: OverrideSection?
+    @ObservedObject private var store = OverrideStore.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: String
+    @State private var error: String?
+
+    init(scope: String?, section: OverrideSection?) {
+        self.scope = scope
+        self.section = section
+        _draft = State(initialValue: Self.initialText(scope: scope, section: section))
+    }
+
+    private var title: String {
+        if let section { return "\(section.label) YAML" }
+        return "覆盖 YAML"
+    }
+
+    private var note: String {
+        if let section {
+            return "只接受\(section.label)的已知覆盖项；未知项或类型不对会报错并保留原文本。留空会清空该分组的覆盖。"
+        }
+        return "只接受 general、dns、tun、sniffer、ntp 五个分组和已知的覆盖项；未知项或类型不对会报错并保留原文本。test-url 不在这里编辑（它只保存在 App 内用作测速地址兜底）。"
+    }
+
+    /// The text the sheet opens with: one section's mapping, or
+    /// the whole scope's YAML for the hub.
+    private static func initialText(scope: String?, section: OverrideSection?) -> String {
+        let store = OverrideStore.shared
+        guard let section else { return store.yamlText(scope: scope) }
+        let values = store.state(scope: scope, section: section)
+        guard !values.isEmpty else { return "# 暂无覆盖项\n" }
+        return YAMLValue.lines(for: .object(OverrideStore.expanded(values)), indent: 0)
+            .joined(separator: "\n") + "\n"
+    }
+
+    /// Parse + validate one section's mapping into its flat
+    /// key/value state (same rules as the whole-scope validator).
+    private static func sectionValues(_ text: String, section: OverrideSection, scope: String?) throws -> [String: JSONValue] {
+        let doc = try YamlParser.parse(text)
+        let top: [String: JSONValue]
+        switch doc {
+        case .null:
+            top = [:]
+        case .object(let dict):
+            top = dict
+        default:
+            throw YamlParserError(line: nil, message: "顶层必须是映射（key: value 形式）")
+        }
+        var flat: [String: JSONValue] = [:]
+        try OverrideView.flattenOverrideKeys(section: section, dict: top, prefix: "", into: &flat)
+        if section == .general, let testURL = OverrideStore.shared.testURL(scope: scope) {
+            flat["test-url"] = .string(testURL)
+        }
+        return flat
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 8) {
+                TextEditor(text: $draft)
+                    .font(.system(.footnote, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                if let error {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+                Text(note)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("保存") { save() }
+                }
+            }
+        }
+    }
+
+    private func save() {
+        do {
+            if let section {
+                let values = try Self.sectionValues(draft, section: section, scope: scope)
+                store.replaceSection(scope: scope, section: section, values: values)
+            } else {
+                let values = try OverrideView.validateOverrideYAML(draft, scope: scope)
+                store.replaceScope(scope: scope, values: values)
+            }
+            error = nil
+            dismiss()
+        } catch {
+            error = error.localizedDescription
+        }
+    }
+}
+
 /// One section on its own page (FlClash override.dart: one
 /// OverrideView per section).
 private struct OverrideSectionPage: View {
@@ -394,7 +476,7 @@ private struct OverrideSectionPage: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                OverrideSectionEditorCard(section: section, scope: $editableScope)
+                OverrideSectionEditorCard(section: section, scope: $editableScope, showToolbarAdd: true, showToolbarQuickEdit: true)
             }
             .padding(.horizontal, 16)
             .padding(.top, 40)
@@ -411,8 +493,25 @@ private struct OverrideSectionPage: View {
 struct OverrideSectionEditor: View {
     let section: OverrideSection
     @Binding var scope: String?
+    /// Show the + add button in the page's top-right bar (v0.2.165
+    /// C): off by default — the editor is also embedded in pages
+    /// that must not gain a bar button (e.g. the inline section on
+    /// the DNS page enables it; other embeddings leave it off).
+    let showToolbarAdd: Bool
+    /// Show the ✎ quick-edit button next to it (v0.2.165 D):
+    /// upstream OverrideView carries add + quick-edit together.
+    /// Off by default, enabled at the same call sites as the +.
+    let showToolbarQuickEdit: Bool
     @ObservedObject private var store = OverrideStore.shared
     @State private var showAddSheet = false
+    @State private var showYamlSheet = false
+
+    init(section: OverrideSection, scope: Binding<String?>, showToolbarAdd: Bool = false, showToolbarQuickEdit: Bool = false) {
+        self.section = section
+        self._scope = scope
+        self.showToolbarAdd = showToolbarAdd
+        self.showToolbarQuickEdit = showToolbarQuickEdit
+    }
 
     private var enabledKeys: [String] {
         store.state(scope: scope, section: section).keys.sorted()
@@ -441,6 +540,13 @@ struct OverrideSectionEditor: View {
 
     var body: some View {
         Section(section.label) {
+            // Upstream NullStatus: an empty section says so and
+            // points at the add action (the add row below stays).
+            if enabledKeys.isEmpty {
+                Text("暂无已启用的覆盖项：点下面的「添加覆盖项」启用一项。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             ForEach(enabledKeys, id: \.self) { key in
                 if let spec = OverrideStore.specs(for: section).first(where: { $0.key == key }) {
                     OverrideKeyRow(section: section, scope: $scope, spec: spec)
@@ -459,6 +565,27 @@ struct OverrideSectionEditor: View {
             }
             .formSheetChrome()
         }
+        .sheet(isPresented: $showYamlSheet) {
+            OverrideYamlQuickEditSheet(scope: scope, section: section)
+                .formSheetChrome()
+        }
+        .toolbar {
+            if showToolbarAdd {
+                ToolbarItem(placement: .topBarTrailing) {
+                    UpstreamBarButton(systemName: "plus.circle", label: "添加覆盖项") {
+                        showAddSheet = true
+                    }
+                    .disabled(remainingSpecs.isEmpty)
+                }
+            }
+            if showToolbarQuickEdit {
+                ToolbarItem(placement: .topBarTrailing) {
+                    UpstreamBarButton(systemName: "square.and.pencil", label: "快速编辑 YAML") {
+                        showYamlSheet = true
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -470,8 +597,24 @@ struct OverrideSectionEditor: View {
 struct OverrideSectionEditorCard: View {
     let section: OverrideSection
     @Binding var scope: String?
+    /// Show the + add button in the page's top-right bar (v0.2.165
+    /// C): off by default — the card is also embedded in the
+    /// Settings 常规 page, which must not gain a bar button.
+    let showToolbarAdd: Bool
+    /// Show the ✎ quick-edit button next to it (v0.2.165 D):
+    /// upstream OverrideView carries add + quick-edit together.
+    /// Off by default, enabled at the same call sites as the +.
+    let showToolbarQuickEdit: Bool
     @ObservedObject private var store = OverrideStore.shared
     @State private var showAddSheet = false
+    @State private var showYamlSheet = false
+
+    init(section: OverrideSection, scope: Binding<String?>, showToolbarAdd: Bool = false, showToolbarQuickEdit: Bool = false) {
+        self.section = section
+        self._scope = scope
+        self.showToolbarAdd = showToolbarAdd
+        self.showToolbarQuickEdit = showToolbarQuickEdit
+    }
 
     private var enabledKeys: [String] {
         store.state(scope: scope, section: section).keys.sorted()
@@ -491,6 +634,15 @@ struct OverrideSectionEditorCard: View {
 
     var body: some View {
         UpstreamCardSection(header: section.label) {
+            // Upstream NullStatus: an empty section says so and
+            // points at the add action (the add row below stays).
+            if enabledKeys.isEmpty {
+                Text("暂无已启用的覆盖项：点下面的「添加覆盖项」启用一项。")
+                    .font(.footnote)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+            }
             ForEach(Array(enabledKeys.enumerated()), id: \.element) { index, key in
                 if index > 0 { UpstreamDivider(leading: 16) }
                 if let spec = OverrideStore.specs(for: section).first(where: { $0.key == key }) {
@@ -522,6 +674,27 @@ struct OverrideSectionEditorCard: View {
                 showAddSheet = false
             }
             .formSheetChrome()
+        }
+        .sheet(isPresented: $showYamlSheet) {
+            OverrideYamlQuickEditSheet(scope: scope, section: section)
+                .formSheetChrome()
+        }
+        .toolbar {
+            if showToolbarAdd {
+                ToolbarItem(placement: .topBarTrailing) {
+                    UpstreamBarButton(systemName: "plus.circle", label: "添加覆盖项") {
+                        showAddSheet = true
+                    }
+                    .disabled(remainingSpecs.isEmpty)
+                }
+            }
+            if showToolbarQuickEdit {
+                ToolbarItem(placement: .topBarTrailing) {
+                    UpstreamBarButton(systemName: "square.and.pencil", label: "快速编辑 YAML") {
+                        showYamlSheet = true
+                    }
+                }
+            }
         }
     }
 }
@@ -559,7 +732,7 @@ struct InlineProfileOverrideSection: View {
             }
         }
         if scope != nil {
-            OverrideSectionEditor(section: section, scope: $scope)
+            OverrideSectionEditor(section: section, scope: $scope, showToolbarAdd: true, showToolbarQuickEdit: true)
             Section {
                 Button("应用覆盖") {
                     Task { await store.applyOverrides() }
@@ -583,9 +756,21 @@ struct InlineProfileOverrideSection: View {
 /// List.
 struct InlineProfileOverrideCard: View {
     let section: OverrideSection
+    /// Show the + add button in the page's top-right bar (v0.2.165
+    /// C): the NTP page enables it; the Sniffer page leaves it off.
+    let showToolbarAdd: Bool
+    /// Show the ✎ quick-edit button next to it (v0.2.165 D):
+    /// same call sites as the +.
+    let showToolbarQuickEdit: Bool
     @EnvironmentObject private var profileStore: ProfileStore
     @ObservedObject private var store = OverrideStore.shared
     @State private var scope: String? = nil
+
+    init(section: OverrideSection, showToolbarAdd: Bool = false, showToolbarQuickEdit: Bool = false) {
+        self.section = section
+        self.showToolbarAdd = showToolbarAdd
+        self.showToolbarQuickEdit = showToolbarQuickEdit
+    }
 
     var body: some View {
         UpstreamCardSection(header: "按订阅覆盖") {
@@ -616,7 +801,7 @@ struct InlineProfileOverrideCard: View {
             }
         }
         if scope != nil {
-            OverrideSectionEditorCard(section: section, scope: $scope)
+            OverrideSectionEditorCard(section: section, scope: $scope, showToolbarAdd: showToolbarAdd, showToolbarQuickEdit: showToolbarQuickEdit)
             VStack(alignment: .leading, spacing: 8) {
                 Button("应用覆盖") {
                     Task { await store.applyOverrides() }

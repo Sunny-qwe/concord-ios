@@ -75,8 +75,34 @@ struct CustomProxiesView: View {
     @State private var showOpenVPNImportSheet = false
     @State private var showOvpnFileImporter = false
     @State private var importWarnings: [String] = []
+    /// Docked search (v0.2.165, B): this page had no search at
+    /// all — the pill filters both node lists by name.
+    @State private var searchText = ""
+
+    /// The custom proxies matching the search, by name.
+    private var visibleProxies: [CustomProxy] {
+        guard !searchText.isEmpty else { return store.proxies }
+        return store.proxies.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    /// Indices into `store.rawProxies` matching the search, by
+    /// node name — indices, not values, so edit / delete keep
+    /// addressing the real rows while filtered.
+    private var visibleRawIndices: [Int] {
+        store.rawProxies.indices.filter {
+            searchText.isEmpty || rawProxyName(store.rawProxies[$0]).localizedCaseInsensitiveContains(searchText)
+        }
+    }
+
+    /// A raw ("添加到本地") node's name, "" when unnamed.
+    private func rawProxyName(_ definition: JSONValue) -> String {
+        definition.objectValue?["name"]?.stringValue ?? ""
+    }
 
     var body: some View {
+        // v0.2.165 (B): the docked search pill lives in this
+        // ZStack.
+        ZStack(alignment: .bottom) {
         List {
             Section {
                 Text("自定义节点会写进当前配置的 proxies: 段，之后可以在代理组里选用。订阅更新后会自动重新写回。保存前先用核心校验节点是否可用。")
@@ -92,7 +118,12 @@ struct CustomProxiesView: View {
                 }
             }
             Section(header: Text("自定义代理（\(store.proxies.count) 个）").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
-                ForEach(store.proxies) { proxy in
+                if !searchText.isEmpty && visibleProxies.isEmpty {
+                    Text("没有匹配的代理")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(visibleProxies) { proxy in
                     Button {
                         importWarnings = []
                         editing = proxy
@@ -112,7 +143,11 @@ struct CustomProxiesView: View {
                     .buttonStyle(.plain)
                 }
                 .onDelete { offsets in
-                    store.proxies.remove(atOffsets: offsets)
+                    // Offsets are positions in the visible
+                    // (possibly filtered) list — delete by id,
+                    // not by position in store.proxies.
+                    let ids = Set(offsets.map { visibleProxies[$0].id })
+                    store.proxies.removeAll { ids.contains($0.id) }
                     store.save()
                     Task { await bakeIntoProfile() }
                 }
@@ -149,7 +184,13 @@ struct CustomProxiesView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                ForEach(Array(store.rawProxies.enumerated()), id: \.offset) { index, definition in
+                if !searchText.isEmpty && visibleRawIndices.isEmpty && !store.rawProxies.isEmpty {
+                    Text("没有匹配的节点")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(visibleRawIndices, id: \.self) { index in
+                    let definition = store.rawProxies[index]
                     Button {
                         editingRawItem = RawProxyEditItem(index: index)
                     } label: {
@@ -169,7 +210,10 @@ struct CustomProxiesView: View {
                     .buttonStyle(.plain)
                 }
                 .onDelete { offsets in
-                    deleteRawProxies(at: offsets)
+                    // Offsets are positions in the visible
+                    // (possibly filtered) index list — translate
+                    // back to rawProxies indices before deleting.
+                    deleteRawProxies(at: IndexSet(offsets.map { visibleRawIndices[$0] }))
                 }
             }
             if let message {
@@ -181,11 +225,34 @@ struct CustomProxiesView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .contentMargins(.top, 40)
+        // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+        .contentMargins(.top, 16)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                UpstreamBarButtonMenu(systemName: "plus.circle", label: "添加") {
+                    Button {
+                        importWarnings = []
+                        editing = CustomProxy()
+                    } label: {
+                        Label("添加代理", systemImage: "plus")
+                    }
+                    Button {
+                        showOpenVPNImportSheet = true
+                    } label: {
+                        Label("导入 OpenVPN 链接", systemImage: "link")
+                    }
+                    Button {
+                        showOvpnFileImporter = true
+                    } label: {
+                        Label("导入 .ovpn 文件", systemImage: "doc.badge.plus")
+                    }
+                }
+            }
+        }
         .upstreamNavBar(title: "代理")
         .sheet(item: $editing) { proxy in
             CustomProxyFormView(proxy: proxy, isNew: !store.proxies.contains(where: { $0.id == proxy.id }), importWarnings: importWarnings) { saved in
@@ -251,6 +318,10 @@ struct CustomProxiesView: View {
             if let createdSubscriptionID {
                 CustomSubscriptionEditorView(subscriptionID: createdSubscriptionID).concordNavBarBackground()
             }
+        }
+        DockedSearchBar(text: $searchText, prompt: "搜索节点名称")
+            .padding(.horizontal, 16)
+            .padding(.bottom, ConcordTheme.tabBarClearance + 8)
         }
     }
 

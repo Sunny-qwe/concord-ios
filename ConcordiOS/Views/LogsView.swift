@@ -49,10 +49,13 @@ struct LogsView: View {
         // own background never paints it and the window behind it
         // is white. A full-screen background makes any such gap
         // the page gray instead of white. The VStack is pinned to
-        // the top so the search box stays right under the nav bar.
-        // (The VStack's children keep their old indentation; only
-        // the wrap is new.)
-        ZStack {
+        // the top. (The VStack's children keep their old
+        // indentation; only the wrap is new.)
+        // v0.2.165 (B): the search is a bottom docked pill now
+        // (see the end of this ZStack) — the old permanent top
+        // search row (v0.2.62) is deleted; the binding is unchanged
+        // ($logStore.searchText), so filtering is unchanged.
+        ZStack(alignment: .bottom) {
             ConcordTheme.pageBackground
                 .ignoresSafeArea()
             VStack(spacing: 0) {
@@ -67,38 +70,6 @@ struct LogsView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 6)
                 }
-                // Search is a permanent row now (v0.2.62): the
-                // system `.searchable` field left a large white
-                // gap above the segment on the Events tab
-                // (IMG_1194) — the search controller's blank
-                // area, not our page background — and pushed the
-                // segment to the middle of the page. A plain row
-                // keeps the segment directly below the search box
-                // on both tabs, on the page background like the
-                // Logs tab. Same bindings as the old searchable
-                // field, so filtering is unchanged.
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("搜索日志", text: $logStore.searchText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    if !logStore.searchText.isEmpty {
-                        Button {
-                            logStore.searchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(ConcordTheme.softFill, in: RoundedRectangle(cornerRadius: 10))
-                .padding(.horizontal)
-                .padding(.vertical, 4)
-
                 // Upstream (logs.dart, mobile): no permanent level
                 // row — the filter lives in the bar menu and only
                 // an ACTIVE filter shows as a removable chip under
@@ -155,7 +126,8 @@ struct LogsView: View {
                         compactEmptyStateView
                     }
                     // v0.2.66: tab-bar clearance for pushed pages.
-                    .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+                    // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
+                    .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
                 } else {
                     ScrollViewReader { proxy in
                         ZStack(alignment: .trailing) {
@@ -194,7 +166,8 @@ struct LogsView: View {
                             // content change to maintain yet.
                             .defaultScrollAnchor(.bottom)
                             // v0.2.66: tab-bar clearance for pushed pages.
-                            .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+                            // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
+                            .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
                             .onAppear { scrollToNewestOnce(proxy) }
                             .onChange(of: logStore.filtered.count) { _, _ in
                                 scrollToNewestOnce(proxy)
@@ -209,8 +182,13 @@ struct LogsView: View {
                     }
                 }
             }
-            .padding(.top, 40)
+            .padding(.top, 16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            // v0.2.165 (B): docked search pill, replacing the old
+            // top search row; same $logStore.searchText binding.
+            DockedSearchBar(text: $logStore.searchText, prompt: "搜索日志")
+                .padding(.horizontal, 16)
+                .padding(.bottom, ConcordTheme.tabBarClearance + 8)
         }
         // v0.2.63: the keyboard must not shift this page. The gap
         // in IMG_1195 is ~244pt tall — about a keyboard tall — and
@@ -231,7 +209,7 @@ struct LogsView: View {
                     // Level filter (upstream: the filter lives in
                     // the bar's overflow menu, not a permanent row;
                     // a Picker inside a Menu renders checkmarks).
-                    Menu {
+                    UpstreamBarButtonMenu(systemName: "line.3.horizontal.decrease.circle", label: "筛选") {
                         Picker("级别", selection: $logStore.levelFilter) {
                             ForEach(LogLevelFilter.allCases) { level in
                                 Text(level.rawValue).tag(level)
@@ -259,8 +237,6 @@ struct LogsView: View {
                                 }
                             }
                         }
-                    } label: {
-                        Image(systemName: "line.3.horizontal.decrease.circle")
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -272,11 +248,9 @@ struct LogsView: View {
                     // success dialog — or a copy of the same text
                     // to the clipboard, so the user can paste it
                     // straight into a message.
-                    Menu {
+                    UpstreamBarButtonMenu(systemName: "square.and.arrow.up", label: "导出") {
                         Button("导出日志文件") { exportLogFile() }
                         Button("复制日志文本") { copyLogs() }
-                    } label: {
-                        Image(systemName: "square.and.arrow.up")
                     }
                 }
                 // No clear button: the old trash button only
@@ -285,13 +259,11 @@ struct LogsView: View {
                 // snapshot (audit B27). FlClash has no clear
                 // button either — only export.
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
+                    UpstreamBarButton(systemName: "arrow.clockwise", label: "刷新") {
                         Task {
                             loadPersistedReports()
                             await logStore.refresh()
                         }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
                     }
                 }
             }

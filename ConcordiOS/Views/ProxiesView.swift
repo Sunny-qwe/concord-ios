@@ -1538,7 +1538,7 @@ struct ProxiesView: View {
                             }
                         }
                         .padding(.horizontal, 16)
-                        .padding(.top, 16)
+                        .padding(.top, 12)
                         .padding(.bottom, ConcordTheme.tabBarClearance)
                     }
                     .onChange(of: scrollNonce) { _, _ in

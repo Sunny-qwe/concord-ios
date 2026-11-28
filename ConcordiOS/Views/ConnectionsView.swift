@@ -267,22 +267,27 @@ struct ConnectionsView: View {
                     }
                 }
             } else {
-                // v0.2.163: 4pt, not 40 — upstream's header sits
-                // `_headerTop` (4pt, requests.dart:832) below the
-                // search field, and the .searchable field already
-                // occupies the 40pt zone below the bar. The 40pt
-                // top padding (the 159 pushed-page rule) double-
-                // counted it and left the blank band the user
-                // circled on IMG_1412.
-                contentStack
-                    .padding(.top, 4)
-                    .background(ConcordTheme.pageBackground)
-                    .upstreamNavBar(title: "连接")
-                    .searchable(text: $connectionStore.searchText, prompt: "搜索域名、规则、进程或 field:值")
-                    .onSubmit(of: .search) { searchSubmitted() }
-                    .toolbar {
-                        pageToolbar
+                // v0.2.165 (B): the search is a bottom docked pill
+                // now, not a top .searchable — the 4pt stays: it
+                // matches upstream `_headerTop` (4pt,
+                // requests.dart:832), and the old comment's
+                // "header sits below the search field" premise was
+                // wrong (the search field sat at 91 + 52, under
+                // the bar + the large-title band).
+                ZStack(alignment: .bottom) {
+                    contentStack
+                        .padding(.top, 4)
+                        .background(ConcordTheme.pageBackground)
+                        .upstreamNavBar(title: "连接")
+                        .toolbar {
+                            pageToolbar
+                        }
+                    DockedSearchBar(text: $connectionStore.searchText, prompt: "搜索域名、规则、进程或 field:值") {
+                        searchSubmitted()
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+                }
             }
         }
         .sheet(item: $detail) { connection in
@@ -529,7 +534,7 @@ struct ConnectionsView: View {
                     }
                     .listStyle(.insetGrouped)
                     .scrollContentBackground(.hidden)
-                    .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
+                    .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance + 56 : 0))
                 }
             }
         }
@@ -651,39 +656,8 @@ struct ConnectionsView: View {
     @ToolbarContentBuilder
     private var pageToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Menu {
+            UpstreamBarButtonMenu(systemName: "ellipsis", label: "更多") {
                 filterMenuContent
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-        }
-        // Close-all is an app-bar icon button on the connections
-        // segment (upstream requests.dart:105-117); it asks for
-        // confirmation and is disabled with nothing active.
-        if segment == .connections {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showKillAllConfirm = true
-                } label: {
-                    Image(systemName: "xmark.circle")
-                }
-                .accessibilityLabel("断开全部连接")
-                .disabled(connectionStore.connections.isEmpty)
-            }
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-            Button {
-                Task {
-                    switch segment {
-                    case .connections: await connectionStore.refresh()
-                    case .http:
-                        mitmStore.queryText = connectionStore.searchText
-                        await mitmStore.runQuery()
-                    case .dns: await dnsStore.refresh()
-                    }
-                }
-            } label: {
-                Image(systemName: "arrow.clockwise")
             }
         }
     }
@@ -771,7 +745,7 @@ struct ConnectionsView: View {
             }
         }
         if segment == .connections {
-            Button("断开全部活动连接", role: .destructive) {
+            Button("关闭活动连接", role: .destructive) {
                 showKillAllConfirm = true
             }
             .disabled(connectionStore.connections.isEmpty)
@@ -943,7 +917,7 @@ struct ConnectionsView: View {
             }
             .padding(.horizontal, 16)
             // v0.2.66: tab-bar clearance for pushed pages.
-            .padding(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
+            .padding(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance + 56 : 0))
         }
     }
 
@@ -1873,7 +1847,7 @@ struct ConnectionDetailView: View {
 /// The MuYu bottom floating search bar (v0.2.68): a rounded bar
 /// with a magnifier + TextField, overlaid at the bottom of the
 /// sheet list. Drives the store's searchText, same as the page's
-/// top .searchable did.
+/// docked pill does.
 private struct ConnectionFloatingSearchBar: View {
     @Binding var text: String
     let prompt: String
@@ -1883,7 +1857,7 @@ private struct ConnectionFloatingSearchBar: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 20))
                 .foregroundStyle(.secondary)
             TextField(prompt, text: $text)
                 .font(.footnote)
@@ -1901,8 +1875,8 @@ private struct ConnectionFloatingSearchBar: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 22))
+        .frame(height: 48)
+        .background(ConcordTheme.cardBackground, in: Capsule())
         .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 2)
         .padding(.horizontal, 16)
         .padding(.bottom, 12)

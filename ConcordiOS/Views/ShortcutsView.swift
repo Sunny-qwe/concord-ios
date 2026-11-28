@@ -110,7 +110,7 @@ struct ShortcutsView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 40)
+            .padding(.top, 12)
             .padding(.bottom, ConcordTheme.tabBarClearance)
         }
         .background(ConcordTheme.pageBackground)

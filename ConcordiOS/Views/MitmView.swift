@@ -347,14 +347,14 @@ struct MitmCaptureListView: View {
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "MITM 拦截记录")
-        .searchable(text: $mitmStore.queryText, prompt: "搜索 URL、方法、内容类型或应用")
-        .onSubmit(of: .search) {
-            Task { await mitmStore.runQuery() }
-        }
+        // v0.2.165 (B): the top .searchable + its .onSubmit are
+        // deleted — upstream has no search on this tab. The store
+        // property stays: MitmStore.queryText is still written by
+        // ConnectionsView (shared search) and read by runQuery.
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { Task { await mitmStore.runQuery() } } label: {
-                    Image(systemName: "arrow.clockwise")
+                UpstreamBarButton(systemName: "arrow.clockwise", label: "刷新") {
+                    Task { await mitmStore.runQuery() }
                 }
             }
         }

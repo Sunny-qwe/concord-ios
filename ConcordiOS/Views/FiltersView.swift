@@ -102,6 +102,10 @@ struct FiltersView: View {
     }
 
     var body: some View {
+        // v0.2.165 (B): the docked search pill lives in this
+        // ZStack; it only shows on the 全局过滤器 tab, the only
+        // tab the search filters.
+        ZStack(alignment: .bottom) {
         VStack(spacing: 0) {
             Picker("过滤器", selection: $tab) {
                 ForEach(FiltersTab.allCases, id: \.self) { tab in
@@ -117,10 +121,15 @@ struct FiltersView: View {
                 perGroupFiltersList
             }
         }
+        if tab == .named {
+            DockedSearchBar(text: $namedSearch, prompt: "搜索名称或正则")
+                .padding(.horizontal, 16)
+                .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+        }
+        }
         .background(ConcordTheme.pageBackground)
         .padding(.top, 40)
         .upstreamNavBar(title: "筛选")
-        .searchable(text: $namedSearch, prompt: "搜索名称或正则")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if tab == .named {
@@ -226,7 +235,8 @@ struct FiltersView: View {
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
     }
 
     private func namedFilterRow(_ filter: NamedFilter) -> some View {

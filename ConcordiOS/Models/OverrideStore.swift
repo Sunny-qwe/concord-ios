@@ -343,6 +343,23 @@ final class OverrideStore: ObservableObject {
         save()
     }
 
+    /// One-section replace for the YAML quick-edit sheet
+    /// (OverrideView, v0.2.165 D): replaces one section of one
+    /// scope with the given values (other sections untouched),
+    /// then persists. `test-url` is preserved by the caller when
+    /// it was set.
+    func replaceSection(scope: String?, section: OverrideSection, values: [String: JSONValue]) {
+        if let scope {
+            var bySection = profiles[scope] ?? [:]
+            bySection[section.rawValue] = values
+            profiles[scope] = bySection
+        } else {
+            global[section.rawValue] = values
+        }
+        objectWillChange.send()
+        save()
+    }
+
     /// Enables a key at its default value (FlClash: adding an entry
     /// resets it to the spec default).
     func addKey(scope: String?, section: OverrideSection, key: String) {

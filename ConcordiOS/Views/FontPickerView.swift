@@ -23,6 +23,11 @@ struct FontPickerView: View {
     }
 
     var body: some View {
+        // v0.2.165 (B): the docked search pill lives in this
+        // ZStack, replacing the top .searchable field. It only
+        // shows when there are at least 10 families (upstream
+        // sheetSearchMinItemCount = 10).
+        ZStack(alignment: .bottom) {
         List {
             Section {
                 Button {
@@ -72,11 +77,19 @@ struct FontPickerView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .searchable(text: $searchText, prompt: "搜索字体")
+        // v0.2.165 (B): + 56 for the docked search pill (48 + 8);
+        // the pill only shows with >= 10 families, but the inset
+        // is unconditional (harmless when the pill is hidden).
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
         .scrollContentBackground(.hidden)
-        .padding(.top, 40)
+        .padding(.top, 16)
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "字体")
+        if fontStore.availableFamilies.count >= 10 {
+            DockedSearchBar(text: $searchText, prompt: "搜索字体")
+                .padding(.horizontal, 16)
+                .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+        }
+        }
     }
 }

@@ -39,6 +39,9 @@ struct AddedRulesView: View {
     }
 
     var body: some View {
+        // v0.2.165 (B): the docked search pill lives in this
+        // ZStack, replacing the top .searchable field.
+        ZStack(alignment: .bottom) {
         List {
             Section {
                 Text("附加规则会排在订阅自带规则之前，优先匹配。保存后重启 VPN 生效。")
@@ -105,42 +108,46 @@ struct AddedRulesView: View {
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .contentMargins(.top, 40)
+        // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
+        // v0.2.165 (D): no EditButton (upstream rules.dart has no
+        // bar button besides + / quick actions). Reorder / delete
+        // do not depend on it any more: editMode is always on, so
+        // the drag handles + delete affordance stay; tapping a row
+        // still opens the edit form.
+        .environment(\.editMode, .constant(.active))
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
+        .contentMargins(.top, 16)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "附加规则")
-        .searchable(text: $searchText, prompt: "搜索规则")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if isSelecting {
                     Button("全选") { selectAllVisible() }
                 } else {
-                    Button { showPresets = true } label: {
-                        Image(systemName: "bolt.circle")
+                    UpstreamBarButton(systemName: "bolt.circle", label: "快捷操作") {
+                        showPresets = true
                     }
-                    .accessibilityLabel("快捷操作")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 if isSelecting {
-                    Button(role: .destructive) { showDeleteConfirm = true } label: {
-                        Image(systemName: "trash")
+                    UpstreamBarButton(systemName: "trash", label: "删除所选", role: .destructive) {
+                        showDeleteConfirm = true
                     }
-                    .accessibilityLabel("删除所选")
                 } else {
-                    Button { editingRule = RuleFormDraft() } label: {
-                        Image(systemName: "plus")
+                    UpstreamBarButton(systemName: "plus.circle", label: "添加规则") {
+                        editingRule = RuleFormDraft()
                     }
-                    .accessibilityLabel("添加规则")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
+                // v0.2.165 (D): the EditButton is gone (upstream has
+                // none); the multi-select "取消" stays as its own
+                // slot, shown only while selecting.
                 if isSelecting {
                     Button("取消") { selectedRules.removeAll() }
-                } else {
-                    EditButton()
                 }
             }
         }
@@ -166,6 +173,10 @@ struct AddedRulesView: View {
                 selectedRules.removeAll()
             }
             Button("取消", role: .cancel) {}
+        }
+        DockedSearchBar(text: $searchText, prompt: "搜索规则")
+            .padding(.horizontal, 16)
+            .padding(.bottom, ConcordTheme.tabBarClearance + 8)
         }
     }
 

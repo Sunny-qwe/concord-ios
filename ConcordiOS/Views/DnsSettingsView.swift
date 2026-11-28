@@ -212,7 +212,7 @@ struct DnsSettingsView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .contentMargins(.top, 40)
+        .contentMargins(.top, 16)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)

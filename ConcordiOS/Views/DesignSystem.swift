@@ -305,9 +305,18 @@ extension View {
 /// NavigationStack path / sheet.
 struct UpstreamBackButton: View {
     @Environment(\.dismiss) private var dismiss
+    /// Optional custom tap action (v0.2.165 C): nil = dismiss, as
+    /// before. EditProfileView passes its dirty-check (discard
+    /// confirm when there are unsaved changes) so the circular
+    /// chevron keeps the page's behaviour.
+    let action: (() -> Void)?
+
+    init(action: (() -> Void)? = nil) {
+        self.action = action
+    }
 
     var body: some View {
-        Button(action: { dismiss() }) {
+        Button(action: { action?() ?? dismiss() }) {
             Path { path in
                 path.move(to: CGPoint(x: 8, y: 0))
                 path.addLine(to: CGPoint(x: 0, y: 7.5))
@@ -322,6 +331,93 @@ struct UpstreamBackButton: View {
     }
 }
 
+/// Upstream-style top-right bar button (v0.2.165, C): 44pt circle on
+/// the card surface, no shadow, 24pt SF Symbol glyph, plain style —
+/// the same treatment as UpstreamBackButton, for the trailing slot.
+/// Glyphs: `ellipsis` for ⋯ menus (never `ellipsis.circle`), `plus.circle`
+/// for ⊕ add, `square.and.pencil` for ✎ quick-edit.
+struct UpstreamBarButton: View {
+    let systemName: String
+    let label: String
+    let role: ButtonRole?
+    let action: () -> Void
+
+    init(systemName: String, label: String, role: ButtonRole? = nil, action: @escaping () -> Void) {
+        self.systemName = systemName
+        self.label = label
+        self.role = role
+        self.action = action
+    }
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 24))
+                .foregroundStyle(Color(.label))
+                .frame(width: 44, height: 44)
+                .background(ConcordTheme.cardBackground, in: Circle())
+                .accessibilityLabel(label)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// Menu variant of UpstreamBarButton: the same 44pt circle, whose
+/// label is the button and whose content supplies the menu items.
+struct UpstreamBarButtonMenu<Content: View>: View {
+    let systemName: String
+    let label: String
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        Menu {
+            content()
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 24))
+                .foregroundStyle(Color(.label))
+                .frame(width: 44, height: 44)
+                .background(ConcordTheme.cardBackground, in: Circle())
+                .accessibilityLabel(label)
+        }
+    }
+}
+
+/// Shared-pill variant of UpstreamBarButton (v0.2.165, C): two glyphs
+/// in one capsule on the card surface, no shadow. Only for a pair
+/// that is already grouped in our app or grouped upstream; default to
+/// single UpstreamBarButton circles everywhere else.
+struct UpstreamBarButtonGroup: View {
+    let firstSystemName: String
+    let firstLabel: String
+    let firstAction: () -> Void
+    let secondSystemName: String
+    let secondLabel: String
+    let secondAction: () -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: firstAction) {
+                Image(systemName: firstSystemName)
+                    .font(.system(size: 24))
+                    .foregroundStyle(Color(.label))
+                    .frame(width: 44, height: 44)
+                    .accessibilityLabel(firstLabel)
+            }
+            .buttonStyle(.plain)
+            Button(action: secondAction) {
+                Image(systemName: secondSystemName)
+                    .font(.system(size: 24))
+                    .foregroundStyle(Color(.label))
+                    .frame(width: 44, height: 44)
+                    .accessibilityLabel(secondLabel)
+            }
+            .buttonStyle(.plain)
+        }
+        .background(ConcordTheme.cardBackground, in: Capsule())
+    }
+}
+
 private struct UpstreamNavBarModifier: ViewModifier {
     let title: String
 
@@ -329,6 +425,7 @@ private struct UpstreamNavBarModifier: ViewModifier {
         content
             .navigationBarBackButtonHidden(true)
             .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     HStack(spacing: 16) {
@@ -991,5 +1088,57 @@ struct CachedIconImage<Placeholder: View>: View {
             // lands (no placeholder flash).
             image = await IconImageCache.shared.image(for: url)
         }
+    }
+}
+
+// MARK: - Docked search bar (v0.2.165, B)
+//
+// Bottom floating search pill (MuYu): a 48pt capsule with a
+// magnifier, a text field and a cancel button, docked above the
+// floating tab bar instead of a top .searchable field. Modelled on
+// MitmCertificateView's bottomSearchPill, corrected to the
+// verified spec: 48pt high (the template was ~41-44pt), 20pt
+// magnifier, "搜索" placeholder, 14pt horizontal padding, radius-8
+// shadow. The pill itself owns only its look + behaviour;
+// placement (16pt sides, tabBarClearance + 8 bottom) and the
+// content's tabBarClearance + 56 bottom inset live at each call
+// site, following the hostname page's verified pattern.
+// The cancel button appears while focused or while there is text:
+// it clears the text and dismisses the keyboard.
+
+struct DockedSearchBar: View {
+    @Binding var text: String
+    var prompt: String = "搜索"
+    /// Runs on submit (return key): e.g. the Connections page
+    /// re-queries its HTTP segment instead of waiting for the
+    /// next poll tick.
+    var onSubmit: (() -> Void)? = nil
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 20))
+                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+            TextField(prompt, text: $text)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .focused($isFocused)
+                .onSubmit { onSubmit?() }
+            if isFocused || !text.isEmpty {
+                Button("取消") {
+                    text = ""
+                    isFocused = false
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(ConcordTheme.accent)
+                .accessibilityLabel("取消搜索")
+            }
+        }
+        .font(.body)
+        .padding(.horizontal, 14)
+        .frame(height: 48)
+        .background(ConcordTheme.cardBackground, in: Capsule())
+        .shadow(color: ConcordTheme.cardShadow, radius: 8, x: 0, y: 2)
     }
 }

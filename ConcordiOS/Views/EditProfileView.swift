@@ -240,23 +240,18 @@ struct EditProfileView: View {
         .navigationBarBackButtonHidden(true)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button {
+                UpstreamBackButton {
                     if isDirty {
                         showDiscardAlert = true
                     } else {
                         dismiss()
                     }
-                } label: {
-                    Label("返回", systemImage: "chevron.left")
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
+                UpstreamBarButton(systemName: "checkmark", label: "保存") {
                     Task { await save() }
-                } label: {
-                    Image(systemName: "checkmark")
                 }
-                .accessibilityLabel("保存")
                 .disabled(isSaving)
             }
         }

@@ -272,16 +272,28 @@ struct ExtendConfigView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages
+        // v0.2.165 (D): the profile-rules list stays reorderable
+        // without an EditButton (upstream lists reorder by drag):
+        // editMode is always on, so the drag handles + delete
+        // affordance on the profile-rules rows never need a toggle.
+        .environment(\.editMode, .constant(.active))
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .font(.footnote.weight(.semibold))
         .navigationTitle("扩展配置")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                EditButton()
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("保存") { saveDraft() }
+            // v0.2.165 (D): upstream extend.dart:114-120 — the bar
+            // shows a FilledButton "立即应用" only when there are
+            // unapplied changes (or while applying). Same condition
+            // as the in-body apply section below, same action.
+            if hasUnappliedChanges || unappliedOnOpen || isApplying {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("立即应用") {
+                        Task { await applyNow() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isApplying || profile == nil)
+                }
             }
         }
         .sheet(item: $editingProfileRule) { editing in
@@ -457,6 +469,9 @@ private struct GlobalRulesToggleView: View {
     }
 
     var body: some View {
+        // v0.2.165 (B): the docked search pill lives in this
+        // ZStack, replacing the top .searchable field.
+        ZStack(alignment: .bottom) {
         List {
             if allRules.isEmpty {
                 ContentUnavailableView(
@@ -497,10 +512,14 @@ private struct GlobalRulesToggleView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
         .font(.footnote.weight(.semibold))
         .navigationTitle("全局规则开关")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(text: $searchText, prompt: "搜索规则")
+        DockedSearchBar(text: $searchText, prompt: "搜索规则")
+            .padding(.horizontal, 16)
+            .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+        }
     }
 }

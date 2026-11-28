@@ -154,7 +154,7 @@ struct GeneralAuthView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 40)
+            .padding(.top, 12)
             .padding(.bottom, 16)
         }
         // v0.2.66: tab-bar clearance for pushed pages

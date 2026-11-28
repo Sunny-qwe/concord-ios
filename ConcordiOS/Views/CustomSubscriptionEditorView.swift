@@ -533,7 +533,7 @@ struct CustomSubscriptionEditorView: View {
                 EditButton()
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Menu {
+                UpstreamBarButtonMenu(systemName: "ellipsis", label: "更多") {
                     Button {
                         renameText = sub.name
                         showRenameAlert = true
@@ -546,10 +546,7 @@ struct CustomSubscriptionEditorView: View {
                     Button(role: .destructive) { showDeleteConfirm = true } label: {
                         Label("删除", systemImage: "trash")
                     }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
                 }
-                .accessibilityLabel("更多")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("保存") { saveDraft() }

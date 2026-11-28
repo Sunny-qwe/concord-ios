@@ -97,7 +97,7 @@ struct TunOverrideView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            OverrideSectionEditor(section: .tun, scope: $scope)
+            OverrideSectionEditor(section: .tun, scope: $scope, showToolbarAdd: true, showToolbarQuickEdit: true)
             Section(header: sectionHeader("YAML 预览")) {
                 Text(tunYamlText())
                     .font(.system(.footnote, design: .monospaced))
@@ -129,7 +129,7 @@ struct TunOverrideView: View {
         }
         // v0.2.66: tab-bar clearance for pushed pages
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .contentMargins(.top, 40)
+        .contentMargins(.top, 16)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)

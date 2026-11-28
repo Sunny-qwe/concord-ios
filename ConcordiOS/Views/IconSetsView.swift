@@ -560,11 +560,28 @@ struct IconSetsView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .contentMargins(.top, 40)
+        .contentMargins(.top, 16)
         .scrollContentBackground(.hidden)
         .listStyle(.insetGrouped)
         .background(ConcordTheme.pageBackground)
         .upstreamNavBar(title: "图标集")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                UpstreamBarButtonMenu(systemName: "plus.circle", label: "添加") {
+                    Button {
+                        Task { await iconSetStore.importFromURL(importURL, name: importName) }
+                    } label: {
+                        Label("从链接导入", systemImage: "link")
+                    }
+                    .disabled(importURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button {
+                        showImporter = true
+                    } label: {
+                        Label("从文件导入", systemImage: "doc.badge.plus")
+                    }
+                }
+            }
+        }
         .navigationDestination(item: $previewTarget) { target in
             IconSetPreviewView(target: target)
         }
@@ -703,6 +720,9 @@ private struct IconSetPreviewView: View {
     }
 
     var body: some View {
+        // v0.2.165 (B): the docked search pill lives in this
+        // ZStack, replacing the top .searchable field.
+        ZStack(alignment: .bottom) {
         ScrollView {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 16) {
                 if case .imported = target {
@@ -738,11 +758,15 @@ private struct IconSetPreviewView: View {
             }
             .padding(.horizontal, 16)
             .padding(.top, 40)
-            .padding(.bottom, ConcordTheme.tabBarClearance)
+            // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
+            .padding(.bottom, ConcordTheme.tabBarClearance + 56)
         }
         .background(ConcordTheme.pageBackground)
-        .searchable(text: $searchText, prompt: "搜索图标")
         .upstreamNavBar(title: "预览：\(target.title)")
+        DockedSearchBar(text: $searchText, prompt: "搜索图标")
+            .padding(.horizontal, 16)
+            .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+        }
     }
 }
 

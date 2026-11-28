@@ -109,29 +109,39 @@ struct ConfigEditorView: View {
         .navigationTitle("编辑配置")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // v0.2.165 (D): save is a ✓ UpstreamBarButton (upstream
+            // form convention), and the find / undo / redo glyphs
+            // get the same 44pt circle. Four circles fit a 390pt
+            // bar (4 x 44), so nothing goes into a ⋯ menu; undo /
+            // redo stay separate circles (not the shared pill)
+            // because UpstreamBarButtonGroup cannot disable one
+            // side only. .plain buttons do not dim when disabled,
+            // so the opacity tracks the enabled state explicitly.
             ToolbarItem(placement: .topBarTrailing) {
-                Button("保存") { Task { await validateBeforeSave() } }
-                    .disabled(!isDirty || isWorking)
+                UpstreamBarButton(systemName: "checkmark", label: "保存") {
+                    Task { await validateBeforeSave() }
+                }
+                .disabled(!isDirty || isWorking)
+                .opacity(isDirty && !isWorking ? 1 : 0.4)
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showFind.toggle() } label: {
-                    Image(systemName: "magnifyingglass")
+                UpstreamBarButton(systemName: "magnifyingglass", label: "查找与替换") {
+                    showFind.toggle()
                 }
-                .accessibilityLabel("查找与替换")
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button { yamlController.undo() } label: {
-                    Image(systemName: "arrow.uturn.backward")
+                UpstreamBarButton(systemName: "arrow.uturn.backward", label: "撤销") {
+                    yamlController.undo()
                 }
-                .accessibilityLabel("撤销")
                 .disabled(!yamlController.canUndo)
+                .opacity(yamlController.canUndo ? 1 : 0.4)
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button { yamlController.redo() } label: {
-                    Image(systemName: "arrow.uturn.forward")
+                UpstreamBarButton(systemName: "arrow.uturn.forward", label: "重做") {
+                    yamlController.redo()
                 }
-                .accessibilityLabel("重做")
                 .disabled(!yamlController.canRedo)
+                .opacity(yamlController.canRedo ? 1 : 0.4)
             }
             ToolbarItem(placement: .topBarLeading) {
                 if isDirty {

@@ -82,7 +82,7 @@ struct NtpSettingsView: View {
                 // v0.2.141 (C9-c1): per-profile NTP overrides live on
                 // this page now (FlClash NtpView.profile), not behind a
                 // link to the generic OverrideView.
-                InlineProfileOverrideCard(section: .ntp)
+                InlineProfileOverrideCard(section: .ntp, showToolbarAdd: true, showToolbarQuickEdit: true)
                 VStack(alignment: .leading, spacing: 8) {
                     Button("保存并应用") {
                         Task { await ntpStore.applyNtpSettings() }
@@ -98,7 +98,7 @@ struct NtpSettingsView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 40)
+            .padding(.top, 12)
             .padding(.bottom, ConcordTheme.tabBarClearance)
         }
         .background(ConcordTheme.pageBackground)

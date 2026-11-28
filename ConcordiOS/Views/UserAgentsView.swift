@@ -112,7 +112,13 @@ struct UserAgentsView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.top, 40)
+        // v0.2.165 (D): no EditButton (upstream user_agents.dart
+        // has no bar button besides +). Reorder / delete do not
+        // depend on it any more: editMode is always on, so the
+        // drag handles + delete affordance stay; edit / delete are
+        // also on every row's … menu (upstream: row check + edit).
+        .environment(\.editMode, .constant(.active))
+        .contentMargins(.top, 16)
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
@@ -121,7 +127,10 @@ struct UserAgentsView: View {
         .concordNavBarBackground()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                EditButton()
+                UpstreamBarButton(systemName: "plus.circle", label: "添加 User-Agent") {
+                    showDeleteConfirm = nil
+                    uaDraft = UserAgentDraft(original: nil, text: "")
+                }
             }
         }
         // Add / edit is a centred input dialog (upstream

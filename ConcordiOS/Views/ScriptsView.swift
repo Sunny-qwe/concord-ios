@@ -46,7 +46,7 @@ struct ScriptsView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .contentMargins(.top, 40)
+        .contentMargins(.top, 16)
         .scrollContentBackground(.hidden)
         .listStyle(.insetGrouped)
         .background(ConcordTheme.pageBackground)
@@ -169,15 +169,13 @@ struct ScriptsView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
-            Menu {
+            UpstreamBarButtonMenu(systemName: "plus.circle", label: "添加脚本") {
                 Button("从零开始") { showNewEditor = true }
                 Button("通过URL导入") {
                     importURLText = ""
                     showImportURLDialog = true
                 }
                 Button("通过文件导入") { showFileImporter = true }
-            } label: {
-                Image(systemName: "plus.circle")
             }
         }
         ToolbarItem(placement: .topBarTrailing) {

@@ -402,11 +402,11 @@ struct IPQualityView: View {
                     // refresh action, with a loading state).
                     if isLoading {
                         ProgressView()
+                            .frame(width: 44, height: 44)
+                            .background(ConcordTheme.cardBackground, in: Circle())
                     } else {
-                        Button {
+                        UpstreamBarButton(systemName: "arrow.clockwise", label: "重新查询") {
                             Task { await fetch(forceRefresh: true) }
-                        } label: {
-                            Label("重新查询", systemImage: "arrow.clockwise")
                         }
                     }
                 }

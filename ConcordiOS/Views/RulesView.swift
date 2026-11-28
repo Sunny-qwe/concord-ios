@@ -31,6 +31,9 @@ struct RulesView: View {
         // No NavigationStack here on purpose: this page is pushed
         // from the Tools tab, whose stack provides the navigation
         // bar. (The sheet sub-views below keep their own stacks.)
+        // v0.2.165 (B): the docked search pill lives in this
+        // ZStack, replacing the top .searchable field.
+        ZStack(alignment: .bottom) {
         List {
                 if client.mode == .sample {
                     HStack {
@@ -155,17 +158,17 @@ struct RulesView: View {
                 }
             }
         // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        // v0.2.165 (B): + 56 for the docked search pill (48 + 8).
+        .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
         .contentMargins(.top, 40)
             .scrollContentBackground(.hidden)
             .background(ConcordTheme.pageBackground)
             .listStyle(.insetGrouped)
             .upstreamNavBar(title: "规则")
-            .searchable(text: $ruleStore.searchText, prompt: "搜索规则内容或目标")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { Task { await ruleStore.refresh() } } label: {
-                        Image(systemName: "arrow.clockwise")
+                    UpstreamBarButton(systemName: "arrow.clockwise", label: "刷新") {
+                        Task { await ruleStore.refresh() }
                     }
                 }
             }
@@ -179,6 +182,10 @@ struct RulesView: View {
                         .concordNavBarBackground()
                 }
             }
+            DockedSearchBar(text: $ruleStore.searchText, prompt: "搜索规则内容或目标")
+                .padding(.horizontal, 16)
+                .padding(.bottom, ConcordTheme.tabBarClearance + 8)
+        }
     }
 }
 

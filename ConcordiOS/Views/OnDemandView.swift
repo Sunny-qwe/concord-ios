@@ -182,18 +182,19 @@ struct OnDemandView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.top, 40)
+        // v0.2.165 (D): no EditButton (upstream on_demand.dart has
+        // no bar button at all). Reorder / delete do not depend on
+        // it any more: editMode is always on, so the drag handles
+        // + delete affordance stay; delete / rename / direct /
+        // disconnect are also on every row's swipe actions + … menu.
+        .environment(\.editMode, .constant(.active))
+        .contentMargins(.top, 16)
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .upstreamNavBar(title: "按需运行")
         .concordNavBarBackground()
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                EditButton()
-            }
-        }
         .onAppear {
             Task { await ssidDirect.refreshAll() }
         }

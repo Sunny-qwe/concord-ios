@@ -275,7 +275,7 @@ struct BackupView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 40)
+            .padding(.top, 12)
             // v0.2.66: tab-bar clearance for pushed pages.
             .padding(.bottom, ConcordTheme.tabBarClearance)
         }

@@ -1444,7 +1444,7 @@ final class AppCore {
                 for connection in snapshot.connections {
                     if let data = try? encoder.encode(connection),
                        let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        connectionTable[connection.connectionId] = dict
+                        self.connectionTable[connection.connectionId] = dict
                     }
                 }
             }

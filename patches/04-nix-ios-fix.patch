@@ -262,15 +262,15 @@ Subject: [PATCH 04/10] ios: vendor nix 0.31.3 with macOS-only utun gating
  create mode 100644 vendor/nix-0.31.3-ios/test/test_unistd.rs
 
 diff --git a/Cargo.toml b/Cargo.toml
-index 36f83e4..3b38fe5 100644
+index 40e09fb..c1c6926 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -32,7 +32,7 @@ members = [
      "tools/bench",
      "xtask",
  ]
--exclude = ["vendor/boring", "vendor/gotatun", "vendor/h3", "vendor/h2", "vendor/mio", "vendor/quinn", "vendor/quinn-proto", "vendor/rustls", "vendor/shadowsocks", "vendor/tokio", "vendor/tun-rs"]
-+exclude = ["vendor/boring", "vendor/gotatun", "vendor/h3", "vendor/h2", "vendor/mio", "vendor/nix-0.31.3-ios", "vendor/quinn", "vendor/quinn-proto", "vendor/rustls", "vendor/shadowsocks", "vendor/tokio", "vendor/tun-rs"]
+-exclude = ["vendor/boring", "vendor/gotatun", "vendor/h3", "vendor/h3-quinn", "vendor/h2", "vendor/mio", "vendor/quinn", "vendor/quinn-proto", "vendor/rustls", "vendor/shadowsocks", "vendor/tokio", "vendor/tun-rs"]
++exclude = ["vendor/boring", "vendor/gotatun", "vendor/h3", "vendor/h3-quinn", "vendor/h2", "vendor/mio", "vendor/nix-0.31.3-ios", "vendor/quinn", "vendor/quinn-proto", "vendor/rustls", "vendor/shadowsocks", "vendor/tokio", "vendor/tun-rs"]
  
  [workspace.package]
  version = "0.1.0"
@@ -286,13 +286,14 @@ index 36f83e4..3b38fe5 100644
  
  rustls = { path = "vendor/rustls" }
 diff --git a/vendor/PATCHES.md b/vendor/PATCHES.md
-index c3851da..031c792 100644
+index 2fbed4a..3364128 100644
 --- a/vendor/PATCHES.md
 +++ b/vendor/PATCHES.md
-@@ -34,8 +34,9 @@ crate's directory, its `[patch.crates-io]` entry and its lines in `UPSTREAM.sha2
+@@ -37,9 +37,10 @@ crate's directory, its `[patch.crates-io]` entry and its lines in `UPSTREAM.sha2
  | gotatun | Deliver already-ready encrypted IP packets to the bounded UDP queue together | None yet | Propose the batch handoff to mullvad/gotatun |
  | h2 | Ignore DATA and HEADERS on forgotten client streams | None as of 0.4.20 | Issue and PR to hyperium/h2 with the delayed-DATA-after-reset transport test |
  | h2 | Opt-in split-I/O client direct DATA writes | None as of 0.4.20 | Propose split-transport client API to hyperium/h2 once framing and multi-stream contracts settle |
+ | h2 | `SendStream::poll_drained` before a reset | None as of 0.4.20 | Propose to hyperium/h2 with the NaiveProxy tunnel-close transport test |
  | mio | High-resolution timed waits on Windows | None | PR to tokio-rs/mio, citing Go's default poller path |
  | mio | Nanosecond timed waits through `epoll_pwait2` on Linux | None | PR to tokio-rs/mio |
 +| nix | macOS-only gating of the utun/kern-control items | None | PR to nix-rust/nix gating KextControl/UtunIfname to macOS |

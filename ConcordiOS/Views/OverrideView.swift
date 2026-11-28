@@ -454,8 +454,8 @@ private struct OverrideYamlQuickEditSheet: View {
             }
             error = nil
             dismiss()
-        } catch {
-            error = error.localizedDescription
+        } catch let saveError {
+            error = saveError.localizedDescription
         }
     }
 }

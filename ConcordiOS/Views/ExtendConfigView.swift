@@ -374,7 +374,7 @@ struct ExtendConfigView: View {
     @State private var matchTargetCandidates: [String] = []
     @State private var matchTargetsLoaded = false
 
-    private static func matchTargets(for profile: Profile, store: ProfileStore) -> [String] {
+    private nonisolated static func matchTargets(for profile: Profile, store: ProfileStore) -> [String] {
         var targets = ["DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATIBLE"]
         if let groups = store.localProxyGroups(for: profile) {
             targets.append(contentsOf: groups.groups.map { $0.name })

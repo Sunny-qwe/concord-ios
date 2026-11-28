@@ -44,128 +44,168 @@ struct DeveloperView: View {
     }
 
     var body: some View {
-        List {
-            Section("开发者模式") {
-                Toggle("开发者模式", isOn: $settingsStore.developerMode)
-                    .onChange(of: settingsStore.developerMode) { _, _ in
-                        settingsStore.save()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 12) {
+                    UpstreamCardSection(header: "开发者模式") {
+                        devToggleRow("开发者模式", isOn: $settingsStore.developerMode)
+                            .onChange(of: settingsStore.developerMode) { _, _ in
+                                settingsStore.save()
+                            }
                     }
-                Text("开启后工具页显示本页入口；关闭后本页从工具页消失。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            if !testBanners.isEmpty {
-                Section("消息测试") {
-                    ForEach(testBanners) { banner in
-                        HStack(spacing: 8) {
-                            Image(systemName: banner.level.icon)
-                                .foregroundStyle(banner.level.color)
-                            Text("\(banner.level.rawValue)：这是一条开发者测试消息")
-                                .font(.footnote)
+                    Text("开启后工具页显示本页入口；关闭后本页从工具页消失。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                }
+                if !testBanners.isEmpty {
+                    UpstreamCardSection(header: "消息测试") {
+                        ForEach(Array(testBanners.enumerated()), id: \.element.id) { index, banner in
+                            HStack(spacing: 16) {
+                                Image(systemName: banner.level.icon)
+                                    .font(.system(size: 22, weight: .regular))
+                                    .foregroundStyle(banner.level.color)
+                                    .frame(width: 24, height: 24)
+                                Text("\(banner.level.rawValue)：这是一条开发者测试消息")
+                                    .font(.body)
+                                    .foregroundStyle(Color(.label))
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .frame(minHeight: 56)
+                            if index < testBanners.count - 1 {
+                                UpstreamDivider(leading: 16)
+                            }
                         }
                     }
                 }
-            }
-            Section("测试") {
-                Button("消息测试") {
-                    runMessageTest()
-                }
-                Button("日志测试（写入 1000 条测试日志）") {
-                    runLogsTest()
-                }
-                // v0.2.153: the crash test is back (cut in v0.2.141,
-                // restored by the full-completion order) at
-                // upstream's own location (developer.dart crashTest).
-                // The release core still answers "method not
-                // found" — crashCore surfaces the core's answer
-                // below instead of pretending it crashed.
-                Button("让核心崩溃（debug.crash）", role: .destructive) {
-                    showCrashConfirm = true
-                }
-                .alert("确定要让核心崩溃吗？", isPresented: $showCrashConfirm) {
-                    Button("崩溃", role: .destructive) {
-                        Task { await settingsStore.crashCore() }
+                UpstreamCardSection(header: "测试") {
+                    devButtonRow("消息测试") {
+                        runMessageTest()
                     }
-                    Button("取消", role: .cancel) { }
-                } message: {
-                    Text("debug.crash 会让核心进程立即中止，VPN 隧道随之断开，仅用于调试。注意：iOS 的发布版核心没有编译 debug 功能，调用会被核心拒绝，实际不会崩溃。")
-                }
-                if let message = settingsStore.crashMessage {
-                    Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                Button(isDownloadTesting ? "下载测试中…" : "更新下载测试") {
-                    Task { await runDownloadTest() }
-                }
-                .disabled(isDownloadTesting)
-                // V-M1 (v0.2.138): upstream's live-status preview
-                // (views/developer.dart liveStatusTest ->
-                // showLiveStatusPreview, views/dashboard/widgets/
-                // live_status.dart:66). Ours has no core/update/
-                // consent cards, so the preview opens the warnings
-                // deck with upstream's five sample warnings — the
-                // one live-status card this app has.
-                Button("实时状态卡片测试") {
-                    showLiveStatusTest = true
-                }
-            }
-            // v0.2.153: the MITM memory-pressure control is back
-            // (cut in v0.2.141 with the Settings developer
-            // section). Upstream has no pressure UI anywhere —
-            // core.setPressure is a core debug control — so it
-            // lives here with the other developer tools instead
-            // of in Settings.
-            Section("MITM 内存压力") {
-                Picker("MITM 内存压力（core.setPressure）", selection: $pressureSelection) {
-                    Text("0 无压力").tag(0)
-                    Text("1 停止脚本").tag(1)
-                    Text("2 停止保存请求体").tag(2)
-                    Text("3 仅中继").tag(3)
-                }
-                Button("设置内存压力") {
-                    Task {
-                        await settingsStore.setPressure(level: pressureSelection)
-                        // Snap back to the applied level: on a
-                        // failed apply pressureLevel is untouched,
-                        // so the Picker shows what the core has.
-                        pressureSelection = settingsStore.pressureLevel
+                    UpstreamDivider(leading: 16)
+                    devButtonRow("日志测试（写入 1000 条测试日志）") {
+                        runLogsTest()
+                    }
+                    UpstreamDivider(leading: 16)
+                    // v0.2.153: the crash test is back (cut in v0.2.141,
+                    // restored by the full-completion order) at
+                    // upstream's own location (developer.dart crashTest).
+                    // The release core still answers "method not
+                    // found" — crashCore surfaces the core's answer
+                    // below instead of pretending it crashed.
+                    devButtonRow("让核心崩溃（debug.crash）", role: .destructive) {
+                        showCrashConfirm = true
+                    }
+                    if let crashMessage = settingsStore.crashMessage {
+                        UpstreamDivider(leading: 16)
+                        Text(crashMessage)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                    }
+                    UpstreamDivider(leading: 16)
+                    devButtonRow(isDownloadTesting ? "下载测试中…" : "更新下载测试") {
+                        Task { await runDownloadTest() }
+                    }
+                    .disabled(isDownloadTesting)
+                    UpstreamDivider(leading: 16)
+                    // V-M1 (v0.2.138): upstream's live-status preview
+                    // (views/developer.dart liveStatusTest ->
+                    // showLiveStatusPreview, views/dashboard/widgets/
+                    // live_status.dart:66). Ours has no core/update/
+                    // consent cards, so the preview opens the warnings
+                    // deck with upstream's five sample warnings — the
+                    // one live-status card this app has.
+                    devButtonRow("实时状态卡片测试") {
+                        showLiveStatusTest = true
                     }
                 }
-                if let message = settingsStore.pressureMessage {
+                // v0.2.153: the MITM memory-pressure control is back
+                // (cut in v0.2.141 with the Settings developer
+                // section). Upstream has no pressure UI anywhere —
+                // core.setPressure is a core debug control — so it
+                // lives here with the other developer tools instead
+                // of in Settings.
+                VStack(alignment: .leading, spacing: 12) {
+                    UpstreamCardSection(header: "MITM 内存压力") {
+                        Picker("MITM 内存压力（core.setPressure）", selection: $pressureSelection) {
+                            Text("0 无压力").tag(0)
+                            Text("1 停止脚本").tag(1)
+                            Text("2 停止保存请求体").tag(2)
+                            Text("3 仅中继").tag(3)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                        UpstreamDivider(leading: 16)
+                        devButtonRow("设置内存压力") {
+                            Task {
+                                await settingsStore.setPressure(level: pressureSelection)
+                                // Snap back to the applied level: on a
+                                // failed apply pressureLevel is untouched,
+                                // so the Picker shows what the core has.
+                                pressureSelection = settingsStore.pressureLevel
+                            }
+                        }
+                        if let pressureMessage = settingsStore.pressureMessage {
+                            UpstreamDivider(leading: 16)
+                            Text(pressureMessage)
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                        }
+                    }
+                    Text("压力只升不降（核心在一段时间后自动解除），只影响 MITM 抓包的内存占用：等级 1 停止运行脚本、2 停止保存请求体、3 仅中继流量。MITM 关闭时不起作用。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                }
+                // Upstream order (developer.dart:20-100): 清除全部数据
+                // before 清理缓存.
+                VStack(alignment: .leading, spacing: 12) {
+                    UpstreamCardSection(header: "数据") {
+                        devButtonRow("清除全部数据", role: .destructive) {
+                            showingClearConfirm = true
+                        }
+                        UpstreamDivider(leading: 16)
+                        devButtonRow("清理缓存") {
+                            Task { await pruneCache() }
+                        }
+                    }
+                    Text("将删除所有配置、设置和本地数据，随后关闭应用。重新打开即可从头开始。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                }
+                if let message {
                     Text(message)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                Text("压力只升不降（核心在一段时间后自动解除），只影响 MITM 抓包的内存占用：等级 1 停止运行脚本、2 停止保存请求体、3 仅中继流量。MITM 关闭时不起作用。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section("数据") {
-                Button("清理缓存") {
-                    Task { await pruneCache() }
-                }
-                Button("清除全部数据", role: .destructive) {
-                    showingClearConfirm = true
-                }
-                Text("将删除所有配置、设置和本地数据，随后关闭应用。重新打开即可从头开始。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            if let message {
-                Section {
-                    Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            // v0.2.66: tab-bar clearance for pushed pages.
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: tab-bar clearance for pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("开发者模式")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: "开发者模式")
         .onAppear { pressureSelection = settingsStore.pressureLevel }
+        .alert("确定要让核心崩溃吗？", isPresented: $showCrashConfirm) {
+            Button("崩溃", role: .destructive) {
+                Task { await settingsStore.crashCore() }
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("debug.crash 会让核心进程立即中止，VPN 隧道随之断开，仅用于调试。注意：iOS 的发布版核心没有编译 debug 功能，调用会被核心拒绝，实际不会崩溃。")
+        }
         .alert("确定要清除所有数据？", isPresented: $showingClearConfirm) {
             Button("清除", role: .destructive) { Task { await clearAllData() } }
             Button("取消", role: .cancel) {}
@@ -186,6 +226,31 @@ struct DeveloperView: View {
         }
     }
 
+    /// One toggle row: 17pt title, upstream switch (the style
+    /// renders the label + the 52x32 track, and the whole row
+    /// toggles, as upstream's ListItem.toggle).
+    private func devToggleRow(_ title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
+            .font(.body)
+            .foregroundStyle(Color(.label))
+            .toggleStyle(UpstreamToggleStyle())
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 56)
+    }
+
+    /// One button row: 17pt title, red when destructive.
+    private func devButtonRow(_ title: String, role: ButtonRole? = nil, action: @escaping () -> Void) -> some View {
+        Button(title, role: role, action: action)
+            .font(.body)
+            .foregroundStyle(role == .destructive ? Color.red : Color(.label))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 56)
+            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+    }
     /// V-D1: one banner per banner level, like upstream's loop
     /// over BannerLevel.values.
     private func runMessageTest() {
@@ -489,3 +554,4 @@ private enum DevBannerLevel: String, CaseIterable {
         }
     }
 }
+

@@ -1,5 +1,102 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
+
+// MARK: - Upstream row atoms (v0.2.159, shared by the Settings cluster)
+// Defined here — not in DesignSystem.swift (coordinator-owned):
+// toggle / picker / stepper rows in the upstream card style, built
+// on the shared UpstreamDivider / UpstreamToggleStyle atoms.
+// Upstream's general/config field rows carry NO leading glyph
+// (general.dart has none), so these rows have no icon either and
+// their titles start at the 16pt card inset (dividers leading 16).
+
+/// One 56pt upstream toggle row: 17pt title, optional 15pt grey
+/// subtitle, UpstreamToggleStyle switch (52x32, solid grey OFF
+/// track). The whole row toggles (upstream ListItem.toggle).
+struct UpstreamToggleRow: View {
+    let title: String
+    var subtitle: String? = nil
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                }
+            }
+        }
+        .toggleStyle(UpstreamToggleStyle())
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+    }
+}
+
+/// One 56pt upstream options row: 17pt title, optional 15pt grey
+/// subtitle, menu Picker showing the current value.
+struct UpstreamPickerRow<Value: Hashable, Options: View>: View {
+    let title: String
+    var subtitle: String? = nil
+    @Binding var selection: Value
+    @ViewBuilder let options: () -> Options
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                }
+            }
+            Spacer()
+            Picker("", selection: $selection) { options() }
+                .pickerStyle(.menu)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+    }
+}
+
+/// One 56pt upstream stepper row: 17pt title, 15pt grey value
+/// subtitle, − / + stepper.
+struct UpstreamStepperRow: View {
+    let title: String
+    var valueText: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var step: Int = 1
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
+                Text(valueText)
+                    .font(.subheadline)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+            }
+            Spacer()
+            Stepper("", value: $value, in: range, step: step)
+                .labelsHidden()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+    }
+}
 
 // MARK: - Settings / Tools (FlClash: ToolsView, lib/views/tools.dart)
 // FlClash's Tools page is the settings hub: locale, theme, hotkeys,
@@ -8,13 +105,17 @@ import UniformTypeIdentifiers
 // "More" pages (Requests, DNS, Resources, Logs). On iOS the equivalents
 // are: 通用、TUN、DNS、MITM、网络、提供方、资源、关于. DNS queries and
 // Resources are sub-pages here, matching FlClash's moreFull/more modes.
+//
+// v0.2.159: upstream FlClash general.dart order + wording
+// (启动与后台 / 请求 / 入站 / 出站 / 连接 / 核心 / 日志与诊断,
+// then the kept 配置 / 图标源 / 更多工具 sections). Sections and
+// entries removed here are all duplicates of Tools landing rows or
+// Advanced pages — see the per-page table in
+// scratch/v0.2.159/reports/settings-cluster.md.
 
 struct SettingsView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
-    @EnvironmentObject private var trafficStore: TrafficStore
-    @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var profileStore: ProfileStore
-    @EnvironmentObject private var client: ConcordClient
     // User-imported group icon pack (Settings → 图标源). A shared
     // singleton, not an environment object: the Proxies page reads
     // it through its icon leaf views only, never at page level.
@@ -32,6 +133,10 @@ struct SettingsView: View {
     @AppStorage("ConcordiOS.httpPort") private var httpPort = 0
     @AppStorage("ConcordiOS.redirPort") private var redirPort = 0
     @AppStorage("ConcordiOS.tproxyPort") private var tproxyPort = 0
+    /// Port form sheet (upstream general/port_form.dart): the five
+    /// ports live on one 端口 row + form sheet, not as inline
+    /// steppers.
+    @State private var showPortForm = false
 
     /// The app's own version (Info.plist CFBundleShortVersionString),
     /// never a hardcoded string.
@@ -39,35 +144,7 @@ struct SettingsView: View {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
     }
 
-    /// Port validation (FlClash port_form.dart:118-152): mixed is
-    /// required 1024–49151; the others allow 0 (disabled); no two
-    /// enabled ports may share a value.
-    private var portIssue: String? {
-        var seen: [Int: String] = [:]
-        let ports: [(String, Int, Bool)] = [
-            ("settings.port.mixed".l10n, settingsStore.mixedPort, false),
-            ("SOCKS", settingsStore.socksPort, true),
-            ("HTTP", httpPort, true),
-            ("redir", redirPort, true),
-            ("tproxy", tproxyPort, true),
-        ]
-        for (label, port, allowDisabled) in ports {
-            if port == 0 {
-                if !allowDisabled { return "settings.ports.mixedRequired".l10n }
-                continue
-            }
-            if port < 1024 || port > 49151 {
-                return "\(label)\("settings.ports.rangeError".l10n)"
-            }
-            if let other = seen[port] {
-                return "\(label)\("settings.ports.conflictWith".l10n)\(other)\("settings.ports.conflictSuffix".l10n)"
-            }
-            seen[port] = label
-        }
-        return nil
-    }
-
-    /// Hosts summary for the 内核 → 主机映射 row: "无" when the
+    /// Hosts summary for the 核心 → Hosts row: "无" when the
     /// user has no hosts.json entries, else "N 条". Read from the
     /// shared hosts.json (same file HostsView edits).
     private static func readHostsSummary() -> String {
@@ -98,382 +175,380 @@ struct SettingsView: View {
         // No NavigationStack here on purpose: this page is pushed
         // from the Tools tab, whose stack provides the navigation
         // bar.
-        Form {
-            // v0.2.68 (MuYu): the general settings are grouped
-            // into MuYu's 7 groups with MuYu's labels. Defaults
-            // are NOT changed to match the video — the video shows
-            // one user's configured state, not defaults (log level
-            // stays info, 自动关闭连接 stays off, …). "退出时最小化"
-            // is not added: iOS has no system tray.
-            Section("settings.section.startup".l10n) {
-                Toggle("settings.autorun".l10n, isOn: $settingsStore.autoRun)
-                NavigationLink("settings.ondemand".l10n) {
-                    OnDemandView()
-                }
-                Text("自动运行：打开应用后自动启动 VPN（需已有配置）。上游另有「退出时最小化到托盘」，iOS 没有系统托盘，退出应用即进入后台，故不设此开关。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("settings.section.request".l10n) {
-                NavigationLink {
-                    UserAgentsView()
-                } label: {
-                    HStack {
-                        Text("settings.userAgent".l10n)
-                        Spacer()
-                        Text(settingsStore.globalUa.isEmpty ? "common.default".l10n : settingsStore.globalUa)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                // 启动与后台 (upstream general.dart _startupItems):
+                // 自动运行 + 按需运行. "退出时最小化" is desktop-only
+                // upstream (iOS has no system tray) — correctly absent.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "settings.section.startup".l10n) {
+                        UpstreamToggleRow(title: "settings.autorun".l10n, isOn: $settingsStore.autoRun)
+                        UpstreamDivider(leading: 16)
+                        NavigationLink {
+                            OnDemandView()
+                        } label: {
+                            UpstreamNavRowContent(icon: "wifi", title: "settings.ondemand".l10n)
+                        }
+                        .buttonStyle(.plain)
                     }
+                    Text("自动运行：打开应用后自动启动 VPN（需已有配置）。上游另有「退出时最小化到托盘」，iOS 没有系统托盘，退出应用即进入后台，故不设此开关。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
                 }
-                Toggle("settings.checkCertificate".l10n, isOn: $settingsStore.checkCertificate)
-                Toggle("settings.autoCheckUpdate".l10n, isOn: $settingsStore.autoCheckUpdate)
-                Text("settings.checkCertificate.hint".l10n)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("settings.section.inbound".l10n) {
-                Stepper("\("settings.port.label".l10n)\(settingsStore.mixedPort)", value: $settingsStore.mixedPort, in: 1024...49151)
-                Toggle("settings.allowLan".l10n, isOn: $settingsStore.allowLan)
-                NavigationLink {
-                    GeneralAuthView()
-                } label: {
-                    HStack {
-                        Text("settings.externalControllerSecret".l10n)
-                        Spacer()
-                        Text(settingsStore.externalControllerSecret.isEmpty ? "common.notset".l10n : settingsStore.externalControllerSecret)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                // 请求 (upstream _requestItems): 用户代理 + 校验 TLS
+                // 证书. The 自动检查更新 toggle lived here until
+                // v0.2.159 — upstream puts it in About → 更新
+                // (about.dart:89-102); removed here, to be added
+                // there by the About agent (AboutView has no 更新
+                // section yet). Behaviour/default unchanged.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "请求") {
+                        NavigationLink {
+                            UserAgentsView()
+                        } label: {
+                            UpstreamNavRowContent(
+                                icon: "globe",
+                                title: "settings.userAgent".l10n,
+                                subtitle: settingsStore.globalUa.isEmpty ? "common.default".l10n : settingsStore.globalUa
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        UpstreamDivider()
+                        UpstreamToggleRow(title: "settings.checkCertificate".l10n, isOn: $settingsStore.checkCertificate)
                     }
+                    Text("settings.checkCertificate.hint".l10n)
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
                 }
-                Toggle("settings.auth".l10n, isOn: $settingsStore.authEnabled)
-                // v0.2.68 gap (flagged): MuYu's 入站 shows only the
-                // mixed port — the SOCKS / HTTP / redir / tproxy
-                // steppers + reset were meant to move to the 网络
-                // settings page, but NetworkSettingsView.swift is
-                // outside this change's file ownership, so they stay
-                // here until that move lands. Removing them would
-                // orphan the settings, not dedup them.
-                Stepper("\("settings.ports.socksLabel".l10n)\(settingsStore.socksPort == 0 ? "common.disabled".l10n : "\(settingsStore.socksPort)")", value: $settingsStore.socksPort, in: 0...49151)
-                Stepper("\("settings.ports.httpLabel".l10n)\(httpPort == 0 ? "common.disabled".l10n : "\(httpPort)")", value: $httpPort, in: 0...49151)
-                    .onChange(of: httpPort) { _, _ in settingsStore.save() }
-                Stepper("\("settings.ports.redirLabel".l10n)\(redirPort == 0 ? "common.disabled".l10n : "\(redirPort)")", value: $redirPort, in: 0...49151)
-                    .onChange(of: redirPort) { _, _ in settingsStore.save() }
-                Stepper("\("settings.ports.tproxyLabel".l10n)\(tproxyPort == 0 ? "common.disabled".l10n : "\(tproxyPort)")", value: $tproxyPort, in: 0...49151)
-                    .onChange(of: tproxyPort) { _, _ in settingsStore.save() }
-                if let portIssue {
-                    Text(portIssue)
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                }
-                Text("端口 0 表示停用；启用的端口须在 1024–49151 之间且互不冲突。HTTP / redir / tproxy 在 iOS 上一般用不到，FlClash 仍在 iOS 上提供这三项，这里同样提供。改动在下次启动 VPN 时生效；切换出站模式时也会立即应用。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("settings.section.outbound".l10n) {
-                // v0.2.141 (C1-d1): the outbound-mode picker lived
-                // here until v0.2.140; upstream has no mode switch
-                // in Settings (the mode segment is on the
-                // Dashboard). The mode itself is unchanged — the
-                // Dashboard segment still sets settingsStore.mode,
-                // and the .onChange(save) below still persists it.
-                Toggle("settings.disableKeepAlive".l10n, isOn: $settingsStore.disableKeepAlive)
-                // TCP 保活（核心 keep-alive-idle / interval /
-                // disable-keep-alive；0 = 核心默认）。经
-                // general-overlay.json 下发，下次启动 VPN 或切换出站
-                // 模式时生效。
-                Stepper("\("settings.keepalive.idleLabel".l10n)\(keepAliveIdleText)", value: $settingsStore.keepAliveIdle, in: 0...3600, step: 15)
-                Stepper("\("settings.keepalive.intervalLabel".l10n)\(keepAliveIntervalText)", value: $settingsStore.keepAliveInterval, in: 0...3600, step: 15)
-                Text("保活空闲 / 间隔为 0 表示用核心默认（空闲 15 秒）。改动在下次启动 VPN 时生效；切换出站模式时也会立即应用。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Toggle("IPv6", isOn: $settingsStore.ipv6)
-            }
-
-            Section("settings.section.connection".l10n) {
-                Picker("settings.delayTestTimeout".l10n, selection: $settingsStore.delayTestTimeout) {
-                    Text("3000 ms").tag(3000)
-                    Text("5000 ms").tag(5000)
-                    Text("8000 ms").tag(8000)
-                    Text("10000 ms").tag(10000)
-                    Text("15000 ms").tag(15000)
-                    // A value saved by the old Stepper (500–8000,
-                    // step 500) may not be one of the five menu
-                    // options — keep it selectable instead of
-                    // showing a blank picker.
-                    if ![3000, 5000, 8000, 10000, 15000].contains(settingsStore.delayTestTimeout) {
-                        Text("\(settingsStore.delayTestTimeout) ms").tag(settingsStore.delayTestTimeout)
+                // 入站 (upstream _inboundItems): 端口 row (subtitle
+                // = mixed-port number) → form sheet with the same
+                // five fields (general/port_form.dart:26-76);
+                // 局域网代理; 外部控制器密钥 link → GeneralAuthView
+                // (upstream has the controller toggle + secret +
+                // 允许跨域访问 inline — ours keeps the sub-page;
+                // the CORS toggle is BLOCKED: no SettingsStore /
+                // ConfigPatchParams field exists, see the report);
+                // 认证 toggle.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "settings.section.inbound".l10n) {
+                        Button { showPortForm = true } label: {
+                            UpstreamNavRowContent(icon: "number", title: "端口", subtitle: "\(settingsStore.mixedPort)")
+                        }
+                        .buttonStyle(.plain)
+                        UpstreamDivider()
+                        UpstreamToggleRow(title: "settings.allowLan".l10n, isOn: $settingsStore.allowLan)
+                        UpstreamDivider(leading: 16)
+                        NavigationLink {
+                            GeneralAuthView()
+                        } label: {
+                            UpstreamNavRowContent(
+                                icon: "key",
+                                title: "settings.externalControllerSecret".l10n,
+                                value: settingsStore.externalControllerSecret.isEmpty ? "common.notset".l10n : settingsStore.externalControllerSecret
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        UpstreamDivider()
+                        UpstreamToggleRow(title: "settings.auth".l10n, isOn: $settingsStore.authEnabled)
                     }
+                    Text("端口 0 表示停用；启用的端口须在 1024–49151 之间且互不冲突。HTTP / redir / tproxy 在 iOS 上一般用不到，FlClash 仍在 iOS 上提供这三项，这里同样提供。改动在下次启动 VPN 时生效；切换出站模式时也会立即应用。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
                 }
-                // NOTED DIFFERENCE (flagged, kept on purpose):
-                // MuYu shows 始终查找进程 as a toggle; ours keeps
-                // the 3-way Picker (默认 strict / 始终 always /
-                // 关闭 off) — collapsing it to a toggle would force
-                // "off" on everyone who never touched it and disable
-                // PROCESS-NAME / PROCESS-PATH rules (config B4).
-                Picker("settings.findProcess".l10n, selection: $settingsStore.findProcessModeSetting) {
-                    Text("settings.findProcess.strict".l10n).tag("strict")
-                    Text("settings.findProcess.always".l10n).tag("always")
-                    Text("settings.findProcess.off".l10n).tag("off")
-                }
-                Text("\("settings.findProcess.explainerPrefix".l10n)\(settingsStore.findProcessMode ?? "common.unknown".l10n)\("settings.findProcess.explainerSuffix".l10n)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Toggle("settings.autoCloseConnections".l10n, isOn: $settingsStore.autoCloseConnections)
-                // FlClash general.dart:337 _connectionItems:
-                // only count proxy traffic in the traffic stats.
-                // Stored in SettingsStore; the traffic feed
-                // (traffic.watch) takes no such parameter yet,
-                // so this only records the preference until
-                // ConcordClient / TrafficStore wire it — it does
-                // not change the numbers shown today.
-                Toggle("settings.onlyStatisticsProxy".l10n, isOn: $settingsStore.onlyStatisticsProxy)
-                Text("仅统计代理流量：打开后流量统计只计代理流量，直连流量不计入（上游 getTraffic 参数）。当前版本此开关只保存偏好，流量接口尚未接线，数字暂无变化。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Toggle("settings.sniffing".l10n, isOn: $settingsStore.sniffing)
-                    // B6: the master switch only takes effect
-                    // when sniffer.json is re-saved (effective
-                    // enable = master && page switch).
-                    // SettingsStore.save() also propagates it;
-                    // this makes the wiring explicit at the
-                    // switch itself.
-                    .onChange(of: settingsStore.sniffing) { _, _ in SnifferStore.shared.save() }
-                Toggle("settings.tcpConcurrent".l10n, isOn: $settingsStore.tcpConcurrent)
-                Toggle("settings.unifiedDelay".l10n, isOn: $settingsStore.unifiedDelay)
-                Text("统一延迟测试：打开后测速只计量热连接上的第二次请求，拨号与 TLS 握手不再计入，延迟更接近真实往返耗时。VPN 开启时切换后立即生效；VPN 关闭时，隧道核心在下次启动时读取。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("settings.section.core".l10n) {
-                NavigationLink {
-                    HostsView()
-                } label: {
-                    HStack {
-                        Text("settings.hosts".l10n)
-                        Spacer()
-                        Text(hostsSummary)
-                            .foregroundStyle(.secondary)
+                // 出站 — KEPT functional (restyle only): upstream
+                // has keep-alive in desktop-only outboundItems
+                // (network.dart:396-425) and IPv6 in the
+                // Android-only VpnSections, but the three
+                // keep-alive keys + IPv6 are real core behaviour
+                // with no other UI in our app, so they stay here.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "settings.section.outbound".l10n) {
+                        UpstreamToggleRow(title: "settings.disableKeepAlive".l10n, isOn: $settingsStore.disableKeepAlive)
+                        UpstreamDivider(leading: 16)
+                        // TCP 保活（核心 keep-alive-idle / interval /
+                        // disable-keep-alive；0 = 核心默认）。经
+                        // general-overlay.json 下发，下次启动 VPN 或切换出站
+                        // 模式时生效。
+                        UpstreamStepperRow(title: "settings.keepalive.idleLabel".l10n, valueText: keepAliveIdleText, value: $settingsStore.keepAliveIdle, range: 0...3600, step: 15)
+                        UpstreamDivider(leading: 16)
+                        UpstreamStepperRow(title: "settings.keepalive.intervalLabel".l10n, valueText: keepAliveIntervalText, value: $settingsStore.keepAliveInterval, range: 0...3600, step: 15)
+                        UpstreamDivider(leading: 16)
+                        UpstreamToggleRow(title: "IPv6", isOn: $settingsStore.ipv6)
                     }
+                    Text("保活空闲 / 间隔为 0 表示用核心默认（空闲 15 秒）。改动在下次启动 VPN 时生效；切换出站模式时也会立即应用。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
                 }
-                // FlClash general.dart:360 _coreItems:
-                // appendSystemDns — append the system DNS
-                // servers to dns.nameserver at config build
-                // (task.dart:314). Wired in SettingsStore:
-                // the servers are read from /etc/resolv.conf
-                // and appended to dns.json's nameserver list.
-                Toggle("settings.appendSystemDns".l10n, isOn: $settingsStore.appendSystemDns)
-                Text("追加系统 DNS：打开后，系统当前用的 DNS 服务器会追加到 DNS 上游列表末尾（订阅自带的解析服务器优先）。改动随 DNS 设置保存，下次启动 VPN 或点「应用 DNS 设置」后生效。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                NavigationLink("settings.addOverride".l10n) {
-                    OverrideView()
-                }
-            }
 
-            // FlClash GeneralView 的「核心」OverrideSection
-            // (general/overrides.dart:7-13): 测速地址、统一延迟、
-            // TCP 并发、IPv6、地理数据加载方式 5 项内联在 常规 里
-            // （自带「通用」组头），Hosts 也在该区
-            // （general.dart _coreItems）。覆盖只对启用的项生效；
-            // 没启用的项用订阅自己的值。
-            OverrideSectionEditor(section: .general, scope: .constant(nil))
-
-            Section("settings.section.logs".l10n) {
-                Picker("settings.logLevel".l10n, selection: $settingsStore.logLevel) {
-                    ForEach(LogLevel.allCases) { level in
-                        Text(level.rawValue).tag(level)
+                // 连接 (upstream _connectionItems): 延迟测试超时,
+                // 查找进程, 自动关闭连接, 仅统计代理流量. Plus the
+                // kept 域名嗅探 master toggle (upstream has no
+                // master toggle in General — sniffer enable is
+                // per-profile — but it is the only switch for the
+                // global master in our app), TCP 并发, 统一延迟
+                // (both are _generalOverrideSpec keys upstream;
+                // ours keeps them as direct toggles too).
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "settings.section.connection".l10n) {
+                        UpstreamPickerRow(title: "settings.delayTestTimeout".l10n, selection: $settingsStore.delayTestTimeout) {
+                            Text("3000 ms").tag(3000)
+                            Text("5000 ms").tag(5000)
+                            Text("8000 ms").tag(8000)
+                            Text("10000 ms").tag(10000)
+                            Text("15000 ms").tag(15000)
+                            // A value saved by the old Stepper (500–8000,
+                            // step 500) may not be one of the five menu
+                            // options — keep it selectable instead of
+                            // showing a blank picker.
+                            if ![3000, 5000, 8000, 10000, 15000].contains(settingsStore.delayTestTimeout) {
+                                Text("\(settingsStore.delayTestTimeout) ms").tag(settingsStore.delayTestTimeout)
+                            }
+                        }
+                        UpstreamDivider(leading: 16)
+                        // NOTED DIFFERENCE (flagged, kept on purpose):
+                        // MuYu shows 始终查找进程 as a toggle; ours keeps
+                        // the 3-way Picker (默认 strict / 始终 always /
+                        // 关闭 off) — collapsing it to a toggle would force
+                        // "off" on everyone who never touched it and disable
+                        // PROCESS-NAME / PROCESS-PATH rules (config B4).
+                        UpstreamPickerRow(title: "查找进程", selection: $settingsStore.findProcessModeSetting) {
+                            Text("settings.findProcess.strict".l10n).tag("strict")
+                            Text("settings.findProcess.always".l10n).tag("always")
+                            Text("settings.findProcess.off".l10n).tag("off")
+                        }
+                        UpstreamDivider(leading: 16)
+                        UpstreamToggleRow(title: "settings.autoCloseConnections".l10n, isOn: $settingsStore.autoCloseConnections)
+                        UpstreamDivider(leading: 16)
+                        UpstreamToggleRow(title: "settings.onlyStatisticsProxy".l10n, isOn: $settingsStore.onlyStatisticsProxy)
+                        UpstreamDivider(leading: 16)
+                        UpstreamToggleRow(title: "域名嗅探", isOn: $settingsStore.sniffing)
+                            // B6: the master switch only takes effect
+                            // when sniffer.json is re-saved (effective
+                            // enable = master && page switch).
+                            // SettingsStore.save() also propagates it;
+                            // this makes the wiring explicit at the
+                            // switch itself.
+                            .onChange(of: settingsStore.sniffing) { _, _ in SnifferStore.shared.save() }
+                        UpstreamDivider(leading: 16)
+                        UpstreamToggleRow(title: "settings.tcpConcurrent".l10n, isOn: $settingsStore.tcpConcurrent)
+                        UpstreamDivider(leading: 16)
+                        UpstreamToggleRow(title: "settings.unifiedDelay".l10n, isOn: $settingsStore.unifiedDelay)
                     }
+                    Text("\("settings.findProcess.explainerPrefix".l10n)\(settingsStore.findProcessMode ?? "common.unknown".l10n)\("settings.findProcess.explainerSuffix".l10n)")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                    Text("仅统计代理流量：打开后流量统计只计代理流量，直连流量不计入（上游 getTraffic 参数）。当前版本此开关只保存偏好，流量接口尚未接线，数字暂无变化。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                    Text("统一延迟测试：打开后测速只计量热连接上的第二次请求，拨号与 TLS 握手不再计入，延迟更接近真实往返耗时。VPN 开启时切换后立即生效；VPN 关闭时，隧道核心在下次启动时读取。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
                 }
-                // v0.2.68: the 日志捕获 toggle is back (deleted in
-                // v0.2.40). When it is OFF the Tools → 日志 row is
-                // hidden (ToolsView gates on openLogs); logging
-                // itself is still collected by LogStore either way.
-                // v0.2.141 (C1-d2): the read-from-core / apply-to-
-                // core buttons are gone (upstream has no such
-                // buttons in Settings). The store method stays:
-                // applyGeneralToCore is still called on Dashboard
-                // mode switches and at app launch.
-                Toggle("settings.openLogs".l10n, isOn: $settingsStore.openLogs)
-            }
 
-            // v0.2.68 (MuYu): the TUN + DNS sections moved out —
-            // the Advanced 网络 page (NetworkSettingsView) hosts
-            // the TUN settings + TUN 覆盖 link, and the Advanced
-            // DNS page (DnsSettingsView) hosts 启用 DNS / DoH 上游 /
-            // Fake-IP + 保存并应用. Remaining gap (flagged): the
-            // core-reported TUN state readout (refreshTunState) had
-            // no host on either subpage, so it is dropped for now.
-            Section("settings.section.config".l10n) {
-                NavigationLink("NTP") {
-                    NtpSettingsView()
-                }
-                NavigationLink("settings.sniff".l10n) {
-                    SnifferSettingsView()
-                }
-                Text("settings.sniff.hint".l10n)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            // v0.2.141 (C20-c1) + v0.2.145: upstream splits providers
-            // — proxy providers live ONLY in the profile-detail
-            // sheet (their ExternalProvidersSliver), opened from
-            // the dashboard profile card; rule providers live
-            // here under Advanced → 提供方. The hub therefore
-            // offers only the rule-provider page; the caption
-            // counts it.
-            Section("settings.section.providers".l10n) {
-                NavigationLink("settings.ruleProviders".l10n) {
-                    ProvidersView()
-                }
-                Text(String(format: "settings.ruleProviders.count".l10n, "\(ruleStore.ruleProviders.count)"))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("settings.section.resources".l10n) {
-                NavigationLink("settings.resourceDetail".l10n) {
-                    ResourcesView()
-                }
-                LabeledContent("settings.coreMemory".l10n, value: trafficStore.coreMemoryBytes.map { ConcordFormat.bytes(Int64($0)) } ?? "—")
-            }
-
-            Section("settings.section.app".l10n) {
-                // v0.2.141 (C1-d1): the 自动更新订阅 toggle and the
-                // 核心模式 picker are gone (upstream has neither in
-                // Settings). The properties stay — autoUpdateProfiles
-                // still drives ContentView's subscription refresh,
-                // client.mode still drives the sample/live badge —
-                // frozen at their persisted values. The 开发者模式
-                // toggle stays: it also gates the Developer row in
-                // ToolsView.
-                Toggle("settings.developerMode".l10n, isOn: $settingsStore.developerMode)
-            }
-
-            // Group icon pack (v0.2.53): the user pastes the URL
-            // of an icon-pack JSON file (iBL3ND format) and taps
-            // 导入 / 更新; the pack is downloaded once, stored
-            // locally, and group icons resolve from it by name.
-            // The pack still wins over the bundled brands
-            // (BrandIcons, v0.2.141). The field starts empty;
-            // nothing is fetched until the button is tapped.
-            Section("settings.section.iconSource".l10n) {
-                TextField("settings.iconSource.urlPlaceholder".l10n, text: $iconPack.urlText)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                HStack {
-                    Button(iconPack.iconCount > 0 ? "common.update".l10n : "common.import".l10n) {
-                        Task { await iconPack.importPack() }
+                // 核心 (upstream OverrideSection with
+                // _generalOverrideSpec): Hosts row (subtitle 无 / N
+                // 条), 追加系统 DNS, 添加覆盖 link, then the 通用
+                // override keys in their own card below (test-url /
+                // unified-delay / tcp-concurrent / ipv6). The editor
+                // is OverrideSectionEditorCard, not the Section
+                // version: a SwiftUI Section only renders inside a
+                // List/Form, so embedding it in this card's VStack
+                // would risk the key rows not rendering at all.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "核心") {
+                        NavigationLink {
+                            HostsView()
+                        } label: {
+                            UpstreamNavRowContent(icon: "list.bullet", title: "Hosts", subtitle: hostsSummary)
+                        }
+                        .buttonStyle(.plain)
+                        UpstreamDivider()
+                        // FlClash general.dart:360 _coreItems:
+                        // appendSystemDns — append the system DNS
+                        // servers to dns.nameserver at config build
+                        // (task.dart:314). Wired in SettingsStore:
+                        // the servers are read from /etc/resolv.conf
+                        // and appended to dns.json's nameserver list.
+                        UpstreamToggleRow(title: "settings.appendSystemDns".l10n, isOn: $settingsStore.appendSystemDns)
+                        UpstreamDivider(leading: 16)
+                        NavigationLink {
+                            OverrideView()
+                        } label: {
+                            UpstreamNavRowContent(icon: "slider.horizontal.3", title: "settings.addOverride".l10n)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .disabled(iconPack.isImporting || iconPack.urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Spacer()
-                    if iconPack.isImporting {
-                        ProgressView()
-                    } else if iconPack.iconCount > 0 {
-                        Button("common.delete".l10n, role: .destructive) {
-                            iconPack.clearPack()
+                    OverrideSectionEditorCard(section: .general, scope: .constant(nil))
+                        .padding(.top, 16) // 8 (group spacing) + 16 = 24, the page's inter-card gap
+                    Text("追加系统 DNS：打开后，系统当前用的 DNS 服务器会追加到 DNS 上游列表末尾（订阅自带的解析服务器优先）。改动随 DNS 设置保存，下次启动 VPN 或点「应用 DNS 设置」后生效。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                }
+
+                // 日志与诊断 (upstream _logItems): 日志捕获 only.
+                // The 日志级别 picker lived here until v0.2.159 —
+                // upstream sets the level in the Logs page menu
+                // (logs.dart:76-100); LogsView already has that
+                // submenu (Picker "日志等级" writing
+                // SettingsStore.logLevel), so nothing else to move.
+                UpstreamCardSection(header: "settings.section.logs".l10n) {
+                    // v0.2.68: the 日志捕获 toggle is back (deleted in
+                    // v0.2.40). When it is OFF the Tools → 日志 row is
+                    // hidden (ToolsView gates on openLogs); logging
+                    // itself is still collected by LogStore either way.
+                    UpstreamToggleRow(title: "settings.openLogs".l10n, isOn: $settingsStore.openLogs)
+                }
+
+                // 配置 — KEPT (restyle only): the only entry to the
+                // global NTP / 嗅探 pages. Upstream has NTP/Sniffer
+                // per-profile only, but our global pages are the
+                // only UI for those settings.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "settings.section.config".l10n) {
+                        NavigationLink {
+                            NtpSettingsView()
+                        } label: {
+                            UpstreamNavRowContent(icon: "clock", title: "NTP")
+                        }
+                        .buttonStyle(.plain)
+                        UpstreamDivider()
+                        NavigationLink {
+                            SnifferSettingsView()
+                        } label: {
+                            UpstreamNavRowContent(icon: "waveform", title: "settings.sniff".l10n)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Text("settings.sniff.hint".l10n)
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                }
+
+                // 图标源 — KEPT (restyle only): NOT a duplicate of
+                // Advanced → 图标集. Evidence: IconPackStore is the
+                // single app-wide name→URL pack that ProxiesView /
+                // Dashboard actually resolve group icons from
+                // (IconPackStore.shared.iconURL); IconSetStore
+                // manages multiple imported packs + a picker whose
+                // selectedPack has no consumer outside IconSetsView.
+                // Removing this section would orphan the live pack.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "settings.section.iconSource".l10n) {
+                        HStack(spacing: 16) {
+                            UpstreamRowIcon(systemName: "link")
+                            TextField("settings.iconSource.urlPlaceholder".l10n, text: $iconPack.urlText)
+                                .keyboardType(.URL)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .font(.body)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                        UpstreamDivider(leading: 16)
+                        HStack(spacing: 16) {
+                            Button(iconPack.iconCount > 0 ? "common.update".l10n : "common.import".l10n) {
+                                Task { await iconPack.importPack() }
+                            }
+                            .disabled(iconPack.isImporting || iconPack.urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            Spacer()
+                            if iconPack.isImporting {
+                                ProgressView()
+                            } else if iconPack.iconCount > 0 {
+                                Button("common.delete".l10n, role: .destructive) {
+                                    iconPack.clearPack()
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                        if let name = iconPack.packName, iconPack.iconCount > 0 {
+                            UpstreamDivider(leading: 16)
+                            iconPackValueRow(title: "settings.iconPack.name".l10n, value: name)
+                            UpstreamDivider(leading: 16)
+                            iconPackValueRow(title: "settings.iconPack.count".l10n, value: String(format: "common.count.items".l10n, "\(iconPack.iconCount)"))
+                            if let date = iconPack.fetchedAt {
+                                UpstreamDivider(leading: 16)
+                                iconPackValueRow(title: "settings.iconPack.updated".l10n, value: date.formatted(date: .abbreviated, time: .shortened))
+                            }
                         }
                     }
-                }
-                if let name = iconPack.packName, iconPack.iconCount > 0 {
-                    LabeledContent("settings.iconPack.name".l10n, value: name)
-                    LabeledContent("settings.iconPack.count".l10n, value: String(format: "common.count.items".l10n, "\(iconPack.iconCount)"))
-                    if let date = iconPack.fetchedAt {
-                        LabeledContent("settings.iconPack.updated".l10n, value: date.formatted(date: .abbreviated, time: .shortened))
+                    if iconPack.packName == nil || iconPack.iconCount == 0 {
+                        Text("settings.iconSource.hint".l10n)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            .padding(.horizontal, 16)
                     }
-                } else {
-                    Text("settings.iconSource.hint".l10n)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    if let error = iconPack.errorMessage {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                    } else if let notice = iconPack.noticeMessage {
+                        Text(notice)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            .padding(.horizontal, 16)
+                    }
                 }
-                if let error = iconPack.errorMessage {
-                    Text(error)
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                } else if let notice = iconPack.noticeMessage {
-                    Text(notice)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
 
-            // v0.2.136 (D1): the App 图标 section is deleted —
-            // upstream has no alternate-icon switching (rs.1: only
-            // an unused app_icon plugin); the icon now changes at
-            // install time in SideKite.
-            Section("settings.theme".l10n) {
-                NavigationLink("settings.appearance".l10n) {
-                    ThemePickerView()
-                }
-                Text("settings.appearance.subtitle".l10n)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("settings.backup".l10n) {
-                NavigationLink("settings.backup".l10n) {
-                    BackupView()
-                }
-                Text("settings.backup.subtitle".l10n)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            // v0.2.153: the 更多工具 section is back (cut in
-            // v0.2.141, restored by the full-completion order).
-            // Upstream has no such section in Settings, and none
-            // of these three pages has an upstream standalone
-            // entry: RulesView is the global rules-in-force
-            // viewer (upstream shows rules in force only inside
-            // the profile editor / connections); ShortcutsView is
-            // iOS-only (concord:// URL actions); the MITM capture
-            // list upstream lives in the Connections/Requests
-            // HTTP segment (same mitm.query feed as
-            // MitmCaptureListView). Without this section the
-            // three pages are unreachable. Logs/IP 质量 are NOT
-            // restored here — LogsView is reachable from
-            // ToolsView:184 and IPQualityView from the Dashboard
-            // status card.
-            Section("更多工具") {
-                NavigationLink("规则") {
-                    RulesView()
-                }
-                NavigationLink("快捷指令") {
-                    ShortcutsView()
-                }
-                NavigationLink("MITM 拦截记录") {
-                    MitmCaptureListView()
+                // 更多工具 — KEPT (restyle only): without this
+                // section the three pages are unreachable. Upstream
+                // has no such section in Settings, and none of these
+                // three pages has an upstream standalone entry:
+                // RulesView is the global rules-in-force viewer
+                // (upstream shows rules in force only inside the
+                // profile editor / connections); ShortcutsView is
+                // iOS-only (concord:// URL actions); the MITM
+                // capture list upstream lives in the
+                // Connections/Requests HTTP segment (same mitm.query
+                // feed as MitmCaptureListView).
+                UpstreamCardSection(header: "更多工具") {
+                    NavigationLink {
+                        RulesView()
+                    } label: {
+                        UpstreamNavRowContent(icon: "list.bullet.rectangle", title: "规则")
+                    }
+                    .buttonStyle(.plain)
+                    UpstreamDivider()
+                    NavigationLink {
+                        ShortcutsView()
+                    } label: {
+                        UpstreamNavRowContent(icon: "bolt", title: "快捷指令")
+                    }
+                    .buttonStyle(.plain)
+                    UpstreamDivider()
+                    NavigationLink {
+                        MitmCaptureListView()
+                    } label: {
+                        UpstreamNavRowContent(icon: "eye", title: "MITM 拦截记录")
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            // v0.2.141 (C1-d7): the developer section is gone
-            // (upstream has no developer section in Settings).
-            // v0.2.153: its two buttons live again in DeveloperView
-            // (Tools → 开发者模式) — the crash button at upstream's
-            // own location (developer.dart crashTest), the MITM
-            // pressure picker beside it. refreshDeveloperInfo /
-            // the capabilities display stay un-restored (not in
-            // the completion order). The 开发者模式 toggle in 应用
-            // stays — it also gates the Developer row in ToolsView.
-            Section("tools.about".l10n) {
-                LabeledContent("settings.about.version".l10n, value: "Lumen \(Self.appVersion)")
-                LabeledContent("settings.about.core".l10n, value: "chen08209/concord（GPL-3.0-or-later）")
-                LabeledContent("settings.about.uiSource".l10n, value: "chen08209/FlClash（GPL-3.0）")
-            }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, 16)
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .tint(ConcordTheme.accent)
-        .navigationTitle("title.settings".l10n)
-        .navigationBarTitleDisplayMode(.inline)
+        .upstreamNavBar(title: "title.settings".l10n)
+        .concordNavBarBackground()
         .onChange(of: settingsStore.mode) { _, _ in settingsStore.save() }
         .onChange(of: settingsStore.logLevel) { _, _ in settingsStore.save() }
         .onChange(of: settingsStore.allowLan) { _, _ in settingsStore.save() }
@@ -491,14 +566,199 @@ struct SettingsView: View {
         .onChange(of: settingsStore.autoCheckUpdate) { _, _ in settingsStore.save() }
         .onChange(of: settingsStore.openLogs) { _, _ in settingsStore.save() }
         .onAppear { hostsSummaryCache = Self.readHostsSummary() }
+        .sheet(isPresented: $showPortForm) {
+            PortFormSheet(
+                mixedPort: $settingsStore.mixedPort,
+                socksPort: $settingsStore.socksPort,
+                httpPort: $httpPort,
+                redirPort: $redirPort,
+                tproxyPort: $tproxyPort,
+                onSave: { settingsStore.save() }
+            )
+        }
+    }
+
+    /// One pack-info value row inside the 图标源 card: 17pt title,
+    /// 11pt semibold grey trailing value.
+    private func iconPackValueRow(title: String, value: String) -> some View {
+        HStack(spacing: 16) {
+            Text(title)
+                .font(.body)
+                .foregroundStyle(Color(.label))
+            Spacer()
+            Text(value)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+    }
+}
+
+// MARK: - Port form sheet (FlClash: general/port_form.dart:26-76)
+//
+// Upstream presentation: one 端口 row (subtitle = mixed-port
+// number) opening a form sheet with the same five fields
+// (mixed / HTTP / SOCKS / redir / tproxy), validation
+// (port_form.dart:118-152: mixed required 1024–49151, the others
+// allow 0 = disabled, no two enabled ports may share a value)
+// and a reset (mixed 7890, the rest 0). The sheet keeps the
+// system default top padding (no 40pt).
+
+private struct PortFormSheet: View {
+    @Binding var mixedPort: Int
+    @Binding var socksPort: Int
+    @Binding var httpPort: Int
+    @Binding var redirPort: Int
+    @Binding var tproxyPort: Int
+    var onSave: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var mixedText: String
+    @State private var httpText: String
+    @State private var socksText: String
+    @State private var redirText: String
+    @State private var tproxyText: String
+
+    init(mixedPort: Binding<Int>, socksPort: Binding<Int>, httpPort: Binding<Int>, redirPort: Binding<Int>, tproxyPort: Binding<Int>, onSave: @escaping () -> Void) {
+        _mixedPort = mixedPort
+        _socksPort = socksPort
+        _httpPort = httpPort
+        _redirPort = redirPort
+        _tproxyPort = tproxyPort
+        self.onSave = onSave
+        _mixedText = State(initialValue: "\(mixedPort.wrappedValue)")
+        _httpText = State(initialValue: "\(httpPort.wrappedValue)")
+        _socksText = State(initialValue: "\(socksPort.wrappedValue)")
+        _redirText = State(initialValue: "\(redirPort.wrappedValue)")
+        _tproxyText = State(initialValue: "\(tproxyPort.wrappedValue)")
+    }
+
+    /// Upstream field order: mixed, HTTP, SOCKS, redir, tproxy.
+    private var fieldTexts: [String] { [mixedText, httpText, socksText, redirText, tproxyText] }
+    private var fieldLabels: [String] { ["settings.port.mixed".l10n, "HTTP", "SOCKS", "redir", "tproxy"] }
+    private var fieldAllowDisabled: [Bool] { [false, true, true, true, true] }
+
+    private func fieldIssue(text: String, label: String, allowDisabled: Bool) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard let value = Int(trimmed) else { return "\(label)请输入数字" }
+        if value == 0 {
+            return allowDisabled ? nil : "settings.ports.mixedRequired".l10n
+        }
+        if value < 1024 || value > 49151 {
+            return "\(label)\("settings.ports.rangeError".l10n)"
+        }
+        return nil
+    }
+
+    /// First validation problem across the five fields, or nil.
+    private var issue: String? {
+        var seen: [Int: String] = [:]
+        for index in fieldTexts.indices {
+            if let problem = fieldIssue(text: fieldTexts[index], label: fieldLabels[index], allowDisabled: fieldAllowDisabled[index]) {
+                return problem
+            }
+            let value = Int(fieldTexts[index].trimmingCharacters(in: .whitespaces)) ?? 0
+            if value != 0 {
+                if let other = seen[value] {
+                    return "\(fieldLabels[index])\("settings.ports.conflictWith".l10n)\(other)\("settings.ports.conflictSuffix".l10n)"
+                }
+                seen[value] = fieldLabels[index]
+            }
+        }
+        return nil
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                Text("端口")
+                    .font(.headline)
+                    .foregroundStyle(Color(.label))
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: nil) {
+                        portField(label: fieldLabels[0], text: $mixedText)
+                        UpstreamDivider(leading: 16)
+                        portField(label: fieldLabels[1], text: $httpText)
+                        UpstreamDivider(leading: 16)
+                        portField(label: fieldLabels[2], text: $socksText)
+                        UpstreamDivider(leading: 16)
+                        portField(label: fieldLabels[3], text: $redirText)
+                        UpstreamDivider(leading: 16)
+                        portField(label: fieldLabels[4], text: $tproxyText)
+                    }
+                    if let issue {
+                        Text(issue)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                    }
+                    Text("端口 0 表示停用；启用的端口须在 1024–49151 之间且互不冲突。HTTP / redir / tproxy 在 iOS 上一般用不到，FlClash 仍在 iOS 上提供这三项，这里同样提供。改动在下次启动 VPN 时生效；切换出站模式时也会立即应用。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                }
+                HStack {
+                    Button("重置") {
+                        mixedText = "7890"
+                        httpText = "0"
+                        socksText = "0"
+                        redirText = "0"
+                        tproxyText = "0"
+                    }
+                    Spacer()
+                    Button("取消") { dismiss() }
+                    Button("保存") {
+                        mixedPort = Int(mixedText.trimmingCharacters(in: .whitespaces)) ?? mixedPort
+                        httpPort = Int(httpText.trimmingCharacters(in: .whitespaces)) ?? httpPort
+                        socksPort = Int(socksText.trimmingCharacters(in: .whitespaces)) ?? socksPort
+                        redirPort = Int(redirText.trimmingCharacters(in: .whitespaces)) ?? redirPort
+                        tproxyPort = Int(tproxyText.trimmingCharacters(in: .whitespaces)) ?? tproxyPort
+                        onSave()
+                        dismiss()
+                    }
+                    .disabled(issue != nil)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 16)
+        }
+        .background(ConcordTheme.pageBackground)
+        .presentationDetents([.medium])
+    }
+
+    private func portField(label: String, text: Binding<String>) -> some View {
+        HStack(spacing: 16) {
+            Text(label)
+                .font(.body)
+                .foregroundStyle(Color(.label))
+            Spacer()
+            TextField("0", text: text)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.trailing)
+                .font(.body)
+                .frame(width: 100)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
     }
 }
 
 // MARK: - Providers (FlClash: providers view, lib/views/config/providers.dart)
+//
+// v0.2.159: title 规则集 (upstream ruleProviders, l10n_zh:963);
+// rows per upstream providers.dart:329-348 — label + behavior chip,
+// subtitle 远程/本地, trailing last-update time. The long dynamic
+// list keeps its List structure (swipe actions, import/sideload
+// sections); only rows/fonts/nav-bar change. Import + sideload stay
+// on the page (upstream: add menu; ours keeps the sections — the
+// paste box is the nearest equivalent of blank-create, and moving
+// them would orphan the sideload flow).
 
 struct ProvidersView: View {
     @EnvironmentObject private var ruleStore: RuleStore
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var profileStore: ProfileStore
     /// The shared ClashProvider records store (v0.2.157): the
@@ -543,7 +803,7 @@ struct ProvidersView: View {
                 HStack {
                     SampleDataBadge()
                     Text("providers.sampleNotice".l10n)
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
                 .listRowBackground(Color.clear)
@@ -553,21 +813,31 @@ struct ProvidersView: View {
             // providers live in the profile-detail sheet
             // (dashboard profile card → ProfileDetailSheet).
             ForEach(ruleStore.ruleProviders) { provider in
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack {
-                        Text(provider.name).font(.footnote)
-                        Spacer()
-                        // v0.2.141 (C20-d2): the purple type capsule
-                        // is gone — on a rule-only page every row
-                        // would say "rule".
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(provider.name)
+                                .font(.body)
+                                .foregroundStyle(Color(.label))
+                                .lineLimit(1)
+                            if let behavior = provider.behavior {
+                                Text(behavior)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(Color(.systemGray5), in: Capsule())
+                            }
+                        }
+                        Text(provider.vehicleType.lowercased() == "http" ? "common.remote".l10n : "common.local".l10n)
+                            .font(.subheadline)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
                     }
-                    Text("\(provider.vehicleType) · \(String(format: "common.count.entries".l10n, "\(provider.count)")) · \(provider.path)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Spacer()
                     if let updated = provider.updatedAt {
-                        Text("\("common.updatedAt".l10n) \(Date(timeIntervalSince1970: TimeInterval(updated)).formatted(date: .abbreviated, time: .shortened))")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                        Text(Date(timeIntervalSince1970: TimeInterval(updated)).formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
                     }
                 }
                 .swipeActions {
@@ -628,7 +898,7 @@ struct ProvidersView: View {
                 }
                 .disabled(importURLs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Text("每行一个链接；下载到的内容按链接文件名作为提供方名称（重名时自动加后缀），通过 provider.sideLoad 存到核心。只下载文本内容，失败的链接会汇总在下面。")
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Section("providers.section.sideload".l10n) {
@@ -654,18 +924,18 @@ struct ProvidersView: View {
                     showProviderImporter = true
                 }
                 Text("把提供方文件内容（YAML / MRS / 文本）直接贴进来，核心会把它存到该名称下。只处理本地内容，不联网拉取；从文件导入时名称取文件主名。")
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             if let message = ruleStore.providerActionMessage {
                 Text(message)
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                     .listRowBackground(Color.clear)
             }
             if let error = ruleStore.lastError {
                 Text(error)
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(.red)
                     .listRowBackground(Color.clear)
             }
@@ -674,26 +944,20 @@ struct ProvidersView: View {
             // "自动更新失败（N 个）：…" — cleared on a clean run).
             if let error = clashProviderStore.lastAutoUpdateError {
                 Text(error)
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(.red)
                     .listRowBackground(Color.clear)
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
+        .contentMargins(.top, 40)
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
-        .navigationTitle("settings.ruleProviders".l10n)
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
+        .upstreamNavBar(title: "规则集")
+        .concordNavBarBackground()
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                }
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await ruleStore.refresh() } } label: {
                     Image(systemName: "arrow.clockwise")
@@ -881,25 +1145,43 @@ struct ProvidersView: View {
 }
 
 // MARK: - Resources (FlClash: ResourcesView, lib/views/resources.dart)
+//
+// v0.2.159: upstream order — 自动更新 (+ 更新间隔 tap row) /
+// Geo 资源 / 图标集 / 规则集 / 脚本 / MITM 模块; update-all is the
+// toolbar sync icon (resources.dart:184-193), not a button; every
+// row is title + last-update-or-未知 subtitle + size/count chip
+// with a per-row menu (同步 / 编辑 URL / 复制链接,
+// _ResourceItem). Removed: the 可更新 button section, the Geo file
+// list + three Geo update buttons (now per-row menu sync), the
+// inline Geo URL fields (now per-row 编辑 URL dialog), the builtin
+// icon-set row ("默认" — upstream has none), the MITM 脚本
+// total-count row (now one row per script), the 刷新 button section,
+// and the toolbar Geo menu.
 
 struct ResourcesView: View {
     @EnvironmentObject private var trafficStore: TrafficStore
-    @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var proxyStore: ProxyStore
     @EnvironmentObject private var ruleStore: RuleStore
     @EnvironmentObject private var mitmModuleStore: MitmModuleStore
     @EnvironmentObject private var client: ConcordClient
     @EnvironmentObject private var settingsStore: SettingsStore
     @ObservedObject private var iconSetStore = IconSetStore.shared
+    /// Standalone MITM scripts (MitmScriptStore — ScriptsView owns
+    /// its own instance the same way; this one only reads the
+    /// registry + syncs remote scripts).
+    @StateObject private var scriptStore = MitmScriptStore()
     @State private var geoFiles: [GeoFileInfo] = []
-    /// Geo update interval text field (FlClash resources.dart
+    /// Update-interval dialog draft (FlClash resources.dart
     /// _updateInterval: a free number input in hours, digits only,
-    /// max 6 digits, must be > 0). Synced once from the stored
-    /// hours on appear; the stored value updates as valid text is
-    /// typed.
-    @State private var geoIntervalText = ""
+    /// max 6 digits, must be > 0). Set from the stored hours when
+    /// the dialog opens; the stored value updates on save.
+    @State private var showIntervalDialog = false
+    @State private var intervalDraft = ""
     @State private var geoIntervalIssue: String?
-    @State private var geoIntervalSynced = false
+    /// Per-row Geo URL edit dialog (upstream UpdateGeoUrlFormDialog):
+    /// which kind is being edited + its draft URL. Empty = core default.
+    @State private var urlEditKind: GeoResourceKind?
+    @State private var urlEditText = ""
+    @State private var geoURLIssue: String?
     /// Per-item update state (FlClash ResourcesView): the names of
     /// the items currently updating, plus the update-all result.
     @State private var updatingItems: Set<String> = []
@@ -933,334 +1215,421 @@ struct ResourcesView: View {
     }
 
     var body: some View {
-        List {
-            // v0.2.141 (C21-d1/d2): the 核心 section (memory +
-            // release button) and the 已加载 section are gone
-            // (upstream resources.dart has neither — memory lives
-            // on the Dashboard, counts live on their own pages).
-            Section("resources.section.updatable".l10n) {
-                Button(isUpdatingAll ? "resources.updateAll.updating".l10n : "resources.updateAll.update".l10n) {
-                    Task { await updateAllResources() }
-                }
-                .disabled(isUpdatingAll)
-                if let message = updateAllMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
-                }
-                Text("全部更新会依次更新所有提供方、MITM 模块与三类 Geo 数据库；失败的项会继续更新其余项，最后汇总。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Section("settings.ruleProviders".l10n) {
-                if ruleStore.ruleProviders.isEmpty {
-                    Text("resources.noRuleProviders".l10n)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(ruleStore.ruleProviders) { provider in
-                        resourceRow(
-                            title: provider.name,
-                            subtitle: "\(String(format: "common.count.entries".l10n, "\(provider.count)")) · \(provider.vehicleType)",
-                            updatedAt: provider.updatedAt,
-                            updatingKey: "provider:\(provider.name)",
-                            onUpdate: { await updateProvider(provider) }
-                        )
-                    }
-                }
-            }
-            // v0.2.141 (C21-d3) + v0.2.145: the 代理提供方 section
-            // is gone — proxy providers live in the profile-detail
-            // sheet now (dashboard profile card → ProfileDetailSheet).
-            Section("resources.section.mitmModules".l10n) {
-                if mitmModuleStore.modules.isEmpty {
-                    Text("resources.noMitmModules".l10n)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(mitmModuleStore.modules) { module in
-                        resourceRow(
-                            title: module.name,
-                            subtitle: "\(String(format: "common.count.scripts".l10n, "\(module.scripts)")) · \(module.enabled ? "common.enabled".l10n : "common.paused".l10n)",
-                            updatedAt: Int64(module.lastUpdateTime.timeIntervalSince1970),
-                            updatingKey: "module:\(module.id)",
-                            onUpdate: { await mitmModuleStore.update(module) }
-                        )
-                    }
-                }
-            }
-            Section("resources.section.mitmScripts".l10n) {
-                let totalScripts = mitmModuleStore.modules.reduce(0) { $0 + $1.scripts }
-                LabeledContent("resources.scripts.total".l10n, value: String(format: "common.count.items".l10n, "\(totalScripts)"))
-                Text("resources.scripts.hint".l10n)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            Section("resources.section.iconSets".l10n) {
-                LabeledContent("resources.iconSets.builtin".l10n, value: "common.default".l10n)
-                Text("resources.iconSets.hint".l10n)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                // FlClash resources.dart:238,568 _IconSetItem:
-                // imported icon sets with a per-set update. Local
-                // (file-imported) packs have no source URL and no
-                // update action, so they get a plain row.
-                ForEach(iconSetStore.importedPacks) { pack in
-                    if pack.isRemote {
-                        resourceRow(
-                            title: pack.name,
-                            subtitle: "\(String(format: "common.count.icons".l10n, "\(pack.icons.count)")) · \("common.remote".l10n)",
-                            updatedAt: Int64(pack.lastUpdate.timeIntervalSince1970),
-                            updatingKey: "iconset:\(pack.id)",
-                            onUpdate: { await iconSetStore.syncPack(pack) }
-                        )
-                    } else {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(pack.name)
-                                .font(.footnote)
-                            Text("\(pack.icons.count) \("settings.iconPack.iconsUnit".l10n)\("settings.iconPack.localFileNote".l10n)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Text("\("common.updatedAt".l10n) \(Date(timeIntervalSince1970: pack.lastUpdate.timeIntervalSince1970).formatted(date: .abbreviated, time: .shortened))")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                // 自动更新 (upstream: untitled first section) —
+                // toggle + [if on] 更新间隔 row, subtitle "N 小时",
+                // tap → number input dialog.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: nil) {
+                        UpstreamToggleRow(title: "resources.geo.autoUpdate".l10n, isOn: $geoAutoUpdate)
+                            // C3: the toggle writes general-overlay.json
+                            // (via settingsStore.save) so the tunnel core
+                            // picks the change up at the next VPN start /
+                            // live re-apply — the same pattern as the port
+                            // steppers. Without this the file would keep
+                            // the old value until an unrelated settings save.
+                            .onChange(of: geoAutoUpdate) { _, _ in settingsStore.save() }
+                        if geoAutoUpdate {
+                            UpstreamDivider(leading: 16)
+                            Button {
+                                intervalDraft = "\(Int(geoAutoUpdateHours))"
+                                showIntervalDialog = true
+                            } label: {
+                                UpstreamNavRowContent(
+                                    icon: "clock",
+                                    title: "resources.geo.interval".l10n,
+                                    subtitle: "\(Int(geoAutoUpdateHours)) \("resources.geo.hours".l10n)"
+                                )
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                }
-                if let message = iconSetStore.actionMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
-                }
-                if let error = iconSetStore.lastError {
-                    Text(error).font(.caption2).foregroundStyle(.red)
-                }
-            }
-            Section("resources.section.geo".l10n) {
-                Toggle("resources.geo.autoUpdate".l10n, isOn: $geoAutoUpdate)
-                    // C3: the toggle writes general-overlay.json
-                    // (via settingsStore.save) so the tunnel core
-                    // picks the change up at the next VPN start /
-                    // live re-apply — the same pattern as the port
-                    // steppers. Without this the file would keep
-                    // the old value until an unrelated settings save.
-                    .onChange(of: geoAutoUpdate) { _, _ in settingsStore.save() }
-                if geoAutoUpdate {
-                    HStack {
-                        Text("resources.geo.interval".l10n)
-                        Spacer()
-                        TextField("24", text: $geoIntervalText)
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 80)
-                            .onChange(of: geoIntervalText) { _, value in
-                                // FlClash input_limits.dart geoUpdateInterval:
-                                // digits only, max 6 chars, must be > 0.
-                                var digits = value.filter(\.isNumber)
-                                if digits.count > 6 {
-                                    digits = String(digits.prefix(6))
-                                }
-                                if digits != value {
-                                    geoIntervalText = digits
-                                    return
-                                }
-                                if digits.isEmpty {
-                                    geoIntervalIssue = "resources.geo.intervalEmpty".l10n
-                                } else if let hours = Int(digits), hours > 0 {
-                                    geoAutoUpdateHours = Double(hours)
-                                    geoIntervalIssue = nil
-                                    settingsStore.save()
-                                } else {
-                                    geoIntervalIssue = "resources.geo.intervalInvalid".l10n
-                                }
-                            }
-                        Text("resources.geo.hours".l10n)
-                            .foregroundStyle(.secondary)
-                    }
+                    // v0.2.157: the same switch + interval also drives
+                    // the scheduled rule-provider auto-update (upstream
+                    // resources.dart autoUpdate gates providers on the
+                    // geo switch) — no separate provider switch exists
+                    // upstream, so none is added here.
+                    Text("打开后，规则提供方的内容也会按同一间隔自动更新（上次更新时间见提供方页）。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
                     if let geoIntervalIssue {
                         Text(geoIntervalIssue)
-                            .font(.caption2)
+                            .font(.footnote)
                             .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                    }
+                    if let message = updateAllMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            .padding(.horizontal, 16)
                     }
                 }
-                // v0.2.157: the same switch + interval also drives
-                // the scheduled rule-provider auto-update (upstream
-                // resources.dart autoUpdate gates providers on the
-                // geo switch) — no separate provider switch exists
-                // upstream, so none is added here.
-                Text("打开后，规则提供方的内容也会按同一间隔自动更新（上次更新时间见提供方页）。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if geoFiles.isEmpty {
-                    Text("容器里没有找到 Geo 文件（MMDB / ASN / GeoSite）。点下面按钮更新，核心会在后台下载。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(geoFiles) { file in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(file.name)
-                                .font(.footnote)
-                            Text("\(ConcordFormat.bytes(file.size))\(file.modified.map { " · \("common.updatedAt".l10n) \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "")")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+
+                // Geo 资源 (upstream _GeoResourceItem per GeoResource):
+                // title = type name, subtitle = last-update or 未知,
+                // trailing chip = file size, menu: 同步 / 编辑 URL /
+                // 复制链接.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "resources.section.geo".l10n) {
+                        ForEach(Array(GeoResourceKind.allCases.enumerated()), id: \.element) { index, kind in
+                            if index > 0 { UpstreamDivider(leading: 16) }
+                            geoRow(kind: kind)
                         }
                     }
+                    Text("concord 的 geo.update 支持 MMDB、ASN、GEOSITE 三种（上游 FlClash 的 GeoResource 也是这三种）。更新在后台进行，完成后文件会出现在容器里。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                    if let geoURLIssue {
+                        Text(geoURLIssue)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                    }
                 }
-                Button("resources.geo.updateMmdb".l10n) {
-                    Task { await ruleStore.geoUpdate(kind: "MMDB") }
+
+                // 图标集 (upstream _IconSetItem): imported sets only.
+                // Remote sets get a sync menu; local (file-imported)
+                // packs have no source URL and no update action.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "resources.section.iconSets".l10n) {
+                        if iconSetStore.importedPacks.isEmpty {
+                            Text("暂无已导入的图标集。")
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                        } else {
+                            ForEach(Array(iconSetStore.importedPacks.enumerated()), id: \.element.id) { index, pack in
+                                if index > 0 { UpstreamDivider(leading: 16) }
+                                ResourceMenuRow(
+                                    title: pack.name,
+                                    subtitle: updatedSubtitle(Int64(pack.lastUpdate.timeIntervalSince1970)),
+                                    chip: String(format: "common.count.icons".l10n, "\(pack.icons.count)"),
+                                    isUpdating: updatingItems.contains("iconset:\(pack.id)"),
+                                    showMenu: pack.isRemote
+                                ) {
+                                    Button("同步") {
+                                        Task {
+                                            updatingItems.insert("iconset:\(pack.id)")
+                                            await iconSetStore.syncPack(pack)
+                                            updatingItems.remove("iconset:\(pack.id)")
+                                        }
+                                    }
+                                    if !pack.url.isEmpty {
+                                        Button("复制链接") {
+                                            UIPasteboard.general.string = pack.url
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let message = iconSetStore.actionMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            .padding(.horizontal, 16)
+                    }
+                    if let error = iconSetStore.lastError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                    }
                 }
-                Button("resources.geo.updateAsn".l10n) {
-                    Task { await ruleStore.geoUpdate(kind: "ASN") }
+
+                // 规则集 (upstream _RuleProviderItem): title, subtitle
+                // = last-update or 未知, trailing chip = entry count,
+                // menu: 同步.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "规则集") {
+                        if ruleStore.ruleProviders.isEmpty {
+                            Text("resources.noRuleProviders".l10n)
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                        } else {
+                            ForEach(Array(ruleStore.ruleProviders.enumerated()), id: \.element.id) { index, provider in
+                                if index > 0 { UpstreamDivider(leading: 16) }
+                                ResourceMenuRow(
+                                    title: provider.name,
+                                    subtitle: updatedSubtitle(provider.updatedAt),
+                                    chip: String(format: "common.count.entries".l10n, "\(provider.count)"),
+                                    isUpdating: updatingItems.contains("provider:\(provider.name)")
+                                ) {
+                                    Button("同步") {
+                                        Task {
+                                            updatingItems.insert("provider:\(provider.name)")
+                                            await updateProvider(provider)
+                                            updatingItems.remove("provider:\(provider.name)")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let message = ruleStore.providerActionMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            .padding(.horizontal, 16)
+                    }
+                    if let error = ruleStore.lastError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                    }
                 }
-                Button("resources.geo.updateGeosite".l10n) {
-                    Task { await ruleStore.geoUpdate(kind: "GEOSITE") }
+
+                // 脚本 (upstream _ScriptItem): one row per script,
+                // not a total-count row. Remote scripts get a sync
+                // menu; local scripts are plain rows.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "脚本") {
+                        if scriptStore.scripts.isEmpty {
+                            Text("暂无 MITM 脚本。")
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                        } else {
+                            ForEach(Array(scriptStore.scripts.enumerated()), id: \.element.id) { index, script in
+                                if index > 0 { UpstreamDivider(leading: 16) }
+                                ResourceMenuRow(
+                                    title: script.label,
+                                    subtitle: updatedSubtitle(Int64(script.lastUpdateTime.timeIntervalSince1970)),
+                                    isUpdating: scriptStore.updatingIds.contains(script.id),
+                                    showMenu: script.isRemote
+                                ) {
+                                    Button("同步") {
+                                        Task { await scriptStore.update(script) }
+                                    }
+                                    if let url = script.url, !url.isEmpty {
+                                        Button("复制链接") {
+                                            UIPasteboard.general.string = url
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let error = scriptStore.lastError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                    }
                 }
-                Text("concord 的 geo.update 支持 MMDB、ASN、GEOSITE 三种（上游 FlClash 的 GeoResource 也是这三种）。更新在后台进行，完成后文件会出现在容器里。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text("resources.geo.urlHint".l10n)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                GeoURLRow(title: "GeoIP（MMDB）", url: $geoURLMMDB)
-                GeoURLRow(title: "ASN", url: $geoURLASN)
-                GeoURLRow(title: "GeoSite", url: $geoURLGeosite)
-                if let message = ruleStore.providerActionMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
-                }
-                if let error = ruleStore.lastError {
-                    Text(error).font(.caption2).foregroundStyle(.red)
-                }
-            }
-            Section {
-                Button("common.refresh".l10n) {
-                    Task {
-                        await trafficStore.refreshMemory()
-                        await proxyStore.refresh()
-                        await ruleStore.refresh()
-                        scanGeoFiles()
+
+                // MITM 模块 (upstream _ModuleItem): title, subtitle =
+                // last-update or 未知, menu: 同步 / 复制链接.
+                VStack(alignment: .leading, spacing: 8) {
+                    UpstreamCardSection(header: "resources.section.mitmModules".l10n) {
+                        if mitmModuleStore.modules.isEmpty {
+                            Text("resources.noMitmModules".l10n)
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                        } else {
+                            ForEach(Array(mitmModuleStore.modules.enumerated()), id: \.element.id) { index, module in
+                                if index > 0 { UpstreamDivider(leading: 16) }
+                                ResourceMenuRow(
+                                    title: module.name,
+                                    subtitle: updatedSubtitle(Int64(module.lastUpdateTime.timeIntervalSince1970)),
+                                    isUpdating: updatingItems.contains("module:\(module.id)")
+                                ) {
+                                    Button("同步") {
+                                        Task {
+                                            updatingItems.insert("module:\(module.id)")
+                                            await mitmModuleStore.update(module)
+                                            updatingItems.remove("module:\(module.id)")
+                                        }
+                                    }
+                                    if let url = module.url, !url.isEmpty {
+                                        Button("复制链接") {
+                                            UIPasteboard.general.string = url
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let error = mitmModuleStore.lastError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
                     }
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, 16)
         }
-        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
-        .listStyle(.insetGrouped)
-        .navigationTitle("tools.resources".l10n)
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
+        .upstreamNavBar(title: "tools.resources".l10n)
+        .concordNavBarBackground()
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                }
-            }
-            // FlClash puts the geo updates on the Resources page
-            // (resources.dart:507-561); the same menu used to live
-            // on the Providers toolbar.
+            // Update-all is the app-bar sync icon upstream
+            // (resources.dart:184-193), not a button on the page.
             ToolbarItem(placement: .topBarTrailing) {
-                Menu("resources.geo.menu".l10n) {
-                    Button("resources.geo.updateMmdb".l10n) {
-                        Task { await ruleStore.geoUpdate(kind: "MMDB") }
-                    }
-                    Button("resources.geo.updateAsn".l10n) {
-                        Task { await ruleStore.geoUpdate(kind: "ASN") }
-                    }
-                    Button("resources.geo.updateGeosite".l10n) {
-                        Task { await ruleStore.geoUpdate(kind: "GEOSITE") }
+                Button {
+                    Task { await updateAllResources() }
+                } label: {
+                    if isUpdatingAll {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "arrow.clockwise")
                     }
                 }
+                .disabled(isUpdatingAll)
             }
         }
         .task {
             scanGeoFiles()
-            if !geoIntervalSynced {
-                geoIntervalText = "\(Int(geoAutoUpdateHours))"
-                geoIntervalSynced = true
+        }
+        .alert("resources.geo.interval".l10n, isPresented: $showIntervalDialog) {
+            TextField("24", text: $intervalDraft)
+                .keyboardType(.numberPad)
+            Button("保存") { saveInterval() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("更新间隔（小时），须大于 0。")
+        }
+        .alert("编辑下载地址", isPresented: Binding(
+            get: { urlEditKind != nil },
+            set: { if !$0 { urlEditKind = nil } }
+        )) {
+            TextField("https://…", text: $urlEditText)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button("保存") { saveGeoURL() }
+            Button("恢复默认") {
+                if let kind = urlEditKind {
+                    var binding = geoURLBinding(for: kind)
+                    binding.wrappedValue = ""
+                }
+                geoURLIssue = nil
+                urlEditKind = nil
+            }
+            Button("取消", role: .cancel) { urlEditKind = nil }
+        } message: {
+            Text("留空使用核心默认地址。")
+        }
+    }
+
+    /// Upstream _ResourceItem subtitle: last-update time, or 未知.
+    private func updatedSubtitle(_ updatedAt: Int64?) -> String {
+        guard let updatedAt else { return "common.unknown".l10n }
+        return "\("common.updatedAt".l10n) \(Date(timeIntervalSince1970: TimeInterval(updatedAt)).formatted(date: .abbreviated, time: .shortened))"
+    }
+
+    /// The Geo file on disk for one kind, matched by filename
+    /// heuristic (mihomo names: Country.mmdb / GeoIP.dat for MMDB,
+    /// ASN.mmdb for ASN, geosite.dat for GeoSite). "ASN.mmdb"
+    /// contains "mmdb" too, so the MMDB match excludes "asn".
+    private func geoFile(for kind: GeoResourceKind) -> GeoFileInfo? {
+        geoFiles.first { file in
+            let lower = file.name.lowercased()
+            switch kind {
+            case .mmdb:
+                return (lower.contains("mmdb") || lower.contains("geoip") || lower.contains("country")) && !lower.contains("asn")
+            case .asn:
+                return lower.contains("asn")
+            case .geosite:
+                return lower.contains("geosite")
             }
         }
     }
 
-/// One custom Geo download URL (FlClash UpdateGeoUrlFormDialog):
-/// an http(s) URL field with validation and a reset-to-default
-/// button. Empty means the core's default address.
-private struct GeoURLRow: View {
-    let title: String
-    @Binding var url: String
+    private func geoURLBinding(for kind: GeoResourceKind) -> Binding<String> {
+        switch kind {
+        case .mmdb: return $geoURLMMDB
+        case .asn: return $geoURLASN
+        case .geosite: return $geoURLGeosite
+        }
+    }
 
-    private var urlIssue: String? {
-        let value = url.trimmingCharacters(in: .whitespaces)
-        guard !value.isEmpty else { return nil }
+    /// One Geo row: title = type name, subtitle = last-update or
+    /// 未知, trailing chip = file size, menu: 同步 / 编辑 URL /
+    /// 复制链接 (upstream _GeoResourceItem + _ResourceItem menu).
+    private func geoRow(kind: GeoResourceKind) -> some View {
+        let file = geoFile(for: kind)
+        let url = geoURLBinding(for: kind).wrappedValue
+        return ResourceMenuRow(
+            title: kind.title,
+            subtitle: updatedSubtitle(file?.modified.map { Int64($0.timeIntervalSince1970) }),
+            chip: file.map { ConcordFormat.bytes($0.size) },
+            isUpdating: updatingItems.contains("geo:\(kind.rawValue)")
+        ) {
+            Button("同步") {
+                Task {
+                    updatingItems.insert("geo:\(kind.rawValue)")
+                    await ruleStore.geoUpdate(kind: kind.rawValue)
+                    scanGeoFiles()
+                    updatingItems.remove("geo:\(kind.rawValue)")
+                }
+            }
+            Button("编辑 URL") {
+                urlEditText = url
+                urlEditKind = kind
+            }
+            if !url.isEmpty {
+                Button("复制链接") {
+                    UIPasteboard.general.string = url
+                }
+            }
+        }
+    }
+
+    /// Interval dialog save (FlClash input_limits.dart
+    /// geoUpdateInterval: digits only, max 6 chars, must be > 0).
+    private func saveInterval() {
+        let digits = intervalDraft.filter(\.isNumber)
+        guard !digits.isEmpty, digits.count <= 6, let hours = Int(digits), hours > 0 else {
+            geoIntervalIssue = "resources.geo.intervalInvalid".l10n
+            return
+        }
+        geoAutoUpdateHours = Double(hours)
+        geoIntervalIssue = nil
+        settingsStore.save()
+    }
+
+    /// Geo URL dialog save (upstream UpdateGeoUrlFormDialog):
+    /// empty = core default; otherwise must be an http(s) URL.
+    private func saveGeoURL() {
+        guard let kind = urlEditKind else { return }
+        var binding = geoURLBinding(for: kind)
+        let value = urlEditText.trimmingCharacters(in: .whitespaces)
+        if value.isEmpty {
+            binding.wrappedValue = ""
+            geoURLIssue = nil
+            urlEditKind = nil
+            return
+        }
         guard let parsed = URL(string: value),
               parsed.scheme?.hasPrefix("http") == true,
               parsed.host != nil else {
-            return "resources.geo.invalidUrl".l10n
+            geoURLIssue = "resources.geo.invalidUrl".l10n
+            urlEditKind = nil
+            return
         }
-        return nil
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("\(title)\("resources.geo.downloadUrl".l10n)")
-                .font(.footnote.weight(.semibold))
-            HStack {
-                TextField("resources.geo.urlPlaceholder".l10n, text: $url)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                if !url.isEmpty {
-                    Button("resources.geo.restoreDefault".l10n) { url = "" }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                }
-            }
-            if let urlIssue {
-                Text(urlIssue)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-            }
-        }
-    }
-}
-
-    /// One updatable resource row (FlClash ResourcesView): name,
-    /// detail, last-update time, and its own update button.
-    private func resourceRow(
-        title: String,
-        subtitle: String,
-        updatedAt: Int64?,
-        updatingKey: String,
-        onUpdate: @escaping () async -> Void
-    ) -> some View {
-        HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.footnote)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if let updatedAt {
-                    Text("\("common.updatedAt".l10n) \(Date(timeIntervalSince1970: TimeInterval(updatedAt)).formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            Spacer()
-            if updatingItems.contains(updatingKey) {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Button("common.update".l10n) {
-                    Task {
-                        updatingItems.insert(updatingKey)
-                        await onUpdate()
-                        updatingItems.remove(updatingKey)
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(ConcordTheme.accent)
-            }
-        }
+        binding.wrappedValue = value
+        geoURLIssue = nil
+        urlEditKind = nil
     }
 
     /// Updates one provider (provider.update) and refreshes the
@@ -1333,5 +1702,74 @@ private struct GeoURLRow: View {
             let modified = attributes?[.modificationDate] as? Date
             return GeoFileInfo(name: name, size: size, modified: modified)
         }.sorted { $0.name < $1.name }
+    }
+}
+
+/// One Geo resource kind (upstream GeoResource: MMDB / ASN / GEOSITE).
+private enum GeoResourceKind: String, CaseIterable {
+    case mmdb = "MMDB"
+    case asn = "ASN"
+    case geosite = "GEOSITE"
+
+    var title: String {
+        switch self {
+        case .mmdb: return "GeoIP（MMDB）"
+        case .asn: return "ASN"
+        case .geosite: return "GeoSite"
+        }
+    }
+}
+
+/// One upstream resource row (FlClash resources.dart _ResourceItem):
+/// 17pt title, 15pt grey last-update subtitle, trailing size/count
+/// chip (or spinner while updating), per-row menu (同步 / 编辑 URL /
+/// 复制链接). Local items pass showMenu: false and render plain.
+private struct ResourceMenuRow<MenuContent: View>: View {
+    let title: String
+    let subtitle: String
+    var chip: String? = nil
+    var isUpdating: Bool = false
+    var showMenu: Bool = true
+    @ViewBuilder let menuContent: () -> MenuContent
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+            }
+            Spacer()
+            if isUpdating {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                if let chip {
+                    Text(chip)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color(.systemGray5), in: Capsule())
+                }
+                if showMenu {
+                    Menu {
+                        menuContent()
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.system(size: 22))
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
     }
 }

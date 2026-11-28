@@ -280,9 +280,9 @@ struct ConnectionsView: View {
                 }
             } else {
                 contentStack
+                    .padding(.top, 40)
                     .background(ConcordTheme.pageBackground)
-                    .navigationTitle("连接")
-                    .navigationBarTitleDisplayMode(.inline)
+                    .upstreamNavBar(title: "连接")
                     .searchable(text: $connectionStore.searchText, prompt: "搜索域名、规则、进程或 field:值")
                     .onSubmit(of: .search) { searchSubmitted() }
                     .toolbar {
@@ -540,46 +540,74 @@ struct ConnectionsView: View {
         }
     }
 
-    /// One HTTP-segment row: method + host/path, status + time.
-    /// (MitmView's exchangeRow is per-connection; this list is
-    /// cross-connection, so it shows the host too.)
+    /// One HTTP-segment row (upstream http_requests.dart): leading
+    /// 40pt method well (LabelWell: ≤3 chars subheadline 15 semibold
+    /// mono, 4 chars caption1 12, longer caption2 11); title = path
+    /// (else url), subheadline 15; subtitle = host · process,
+    /// caption1 12 secondary; trailing = status footnote 13 semibold
+    /// (≥400 red, 2xx green, pending 进行中， failed 失败） + size ·
+    /// duration caption2 11 secondary. No separate error line —
+    /// upstream shows the failure in the status text; the detail
+    /// page carries the message. (MitmView's exchangeRow is
+    /// per-connection; this list is cross-connection, so it shows
+    /// the host too.)
     private func httpExchangeRow(_ exchange: MitmExchangeSummary) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text(exchange.method)
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.15), in: Capsule())
-                Text(exchange.host ?? "")
+        HStack(alignment: .top, spacing: 12) {
+            UpstreamLabelWell(label: exchange.method)
+            VStack(alignment: .leading, spacing: 3) {
+                Text((exchange.path?.isEmpty == false ? exchange.path : exchange.url) ?? "")
+                    .font(.subheadline)
+                    .lineLimit(1)
+                Text(httpExchangeSubtitle(exchange))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(httpStatusText(exchange))
                     .font(.footnote.weight(.semibold))
-                    .lineLimit(1)
-                Spacer()
-                if exchange.status > 0 {
-                    Text("\(exchange.status)")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(exchange.status >= 400 ? .red : .secondary)
-                }
-            }
-            HStack(spacing: 6) {
-                Text(exchange.path ?? "/")
+                    .foregroundStyle(httpStatusColor(exchange))
+                    .monospacedDigit()
+                Text("\(ConcordFormat.bytes(exchange.responseSize)) · \(httpMillisText(exchange.duration))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                Text(ConcordFormat.time(rfc3339: exchange.start))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if let error = exchange.error, !error.isEmpty {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
+                    .monospacedDigit()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
+    }
+
+    /// Upstream http_requests.dart subtitle: host · process.
+    private func httpExchangeSubtitle(_ exchange: MitmExchangeSummary) -> String {
+        [exchange.host, exchange.app?.process]
+            .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// Upstream http_requests.dart / mitm_texts.dart: the status
+    /// number when answered, 进行中 while pending, 失败 otherwise.
+    private func httpStatusText(_ exchange: MitmExchangeSummary) -> String {
+        if exchange.status > 0 { return "\(exchange.status)" }
+        if exchange.pending == true { return "进行中" }
+        return "失败"
+    }
+
+    /// Upstream httpStatusColor (mitm_texts.dart): ≥400 error red,
+    /// 2xx success green, anything else secondary — except a failed
+    /// (unanswered, not pending) exchange, whose 失败 reads red.
+    private func httpStatusColor(_ exchange: MitmExchangeSummary) -> Color {
+        if exchange.status >= 400 { return .red }
+        if exchange.status >= 200 && exchange.status < 300 { return .green }
+        if exchange.pending == true { return .secondary }
+        return exchange.status > 0 ? .secondary : .red
+    }
+
+    /// Upstream httpMillisText (mitm_texts.dart): "123 ms" under a
+    /// second, "1.2 s" at and above it.
+    private func httpMillisText(_ milliseconds: Int64) -> String {
+        if milliseconds < 1000 { return "\(milliseconds) ms" }
+        return String(format: "%.1f s", Double(milliseconds) / 1000)
     }
 
     /// Active facet + condition chips (upstream RecordFilterScope
@@ -705,6 +733,7 @@ struct ConnectionsView: View {
             }
         }
         Toggle("仅 MITM", isOn: $connectionStore.facetMitmOnly)
+            .toggleStyle(UpstreamToggleStyle())
         if connectionStore.hasActiveFacets {
             Button("清除筛选") { connectionStore.clearFacets() }
         }
@@ -1046,11 +1075,11 @@ struct ConnectionsView: View {
             ConnectionAppWell(connection: connection, isLive: isLive)
             VStack(alignment: .leading, spacing: 3) {
                 Text(Self.hostPort(connection))
-                    .font(.footnote.weight(.semibold))
+                    .font(.subheadline)
                     .lineLimit(1)
                 HStack(spacing: 6) {
                     Text(rowSubtitle(connection, isLive: isLive))
-                        .font(.caption2)
+                        .font(.caption)
                         .foregroundStyle(connection.failureKind != nil ? .red : .secondary)
                         .lineLimit(1)
                     rowLabels(connection)
@@ -1120,6 +1149,7 @@ struct ConnectionsView: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(ConcordFormat.rate(Int64(connection.upSpeed + connection.downSpeed)))
                     .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color(.label))
                     .monospacedDigit()
                 Text(ConcordFormat.bytes(total))
                     .font(.caption2)
@@ -1831,7 +1861,6 @@ struct ConnectionDetailView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
     }
 
     /// One path row: title + subtitle, optional trailing delay.
@@ -1839,17 +1868,17 @@ struct ConnectionDetailView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.footnote.weight(.semibold))
+                    .font(.body)
                     .lineLimit(1)
                 Text(subtitle)
-                    .font(.caption2)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer()
             if let delayMs, delayMs > 0 {
                 Text("\(delayMs) ms")
-                    .font(.footnote)
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }

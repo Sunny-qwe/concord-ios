@@ -108,7 +108,6 @@ struct MitmView: View {
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .mitmExchangeMenuOverlays(menuModel, moduleStore: moduleStore)
         .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
         .navigationTitle("MITM 拦截")
@@ -218,26 +217,6 @@ struct MitmView: View {
         return text
     }
 
-    /// The rewrite mark upstream appends to a finished exchange
-    /// (`exchangeMark`): the answer label, or the first action kind's
-    /// label, plus how many other actions there are.
-    private func exchangeMark(_ exchange: MitmExchangeSummary) -> String? {
-        if let answer = exchange.answer {
-            let answerKind: String = {
-                switch answer {
-                case .reject, .redirect: return "url-rewrite"
-                case .mapLocal: return "map-local"
-                case .script: return "script"
-                }
-            }()
-            let others = (exchange.actionKinds ?? []).filter { $0 != answerKind }.count
-            return others > 0 ? "\(answer.label) +\(others)" : answer.label
-        }
-        guard let kinds = exchange.actionKinds, !kinds.isEmpty else { return nil }
-        let label = MitmExchangeAction.kindLabel(for: kinds[0])
-        return kinds.count > 1 ? "\(label) +\(kinds.count - 1)" : label
-    }
-
     /// The row title: path + query only (upstream `exchangePathOf`).
     /// No authority → the whole URL.
     private func exchangePathOf(_ url: String) -> String {
@@ -246,11 +225,36 @@ struct MitmView: View {
         if let query = parsed.query { return "\(path)?\(query)" }
         return path
     }
+}
 
-    /// The duration as upstream shows it (`httpMillisText`).
-    private func httpMillisText(_ millis: Int64) -> String {
-        millis < 1000 ? "\(millis) ms" : String(format: "%.1f s", Double(millis) / 1000)
+// MARK: - Shared exchange helpers (file scope, v0.2.159)
+// Moved out of MitmView so MitmCaptureListView can use them too:
+// the standalone list's rows are upstream HttpRequestRows, which
+// need the same rewrite mark and duration text as MitmView's rows.
+
+/// The rewrite mark upstream appends to a finished exchange
+/// (`exchangeMark`): the answer label, or the first action kind's
+/// label, plus how many other actions there are.
+private func exchangeMark(_ exchange: MitmExchangeSummary) -> String? {
+    if let answer = exchange.answer {
+        let answerKind: String = {
+            switch answer {
+            case .reject, .redirect: return "url-rewrite"
+            case .mapLocal: return "map-local"
+            case .script: return "script"
+            }
+        }()
+        let others = (exchange.actionKinds ?? []).filter { $0 != answerKind }.count
+        return others > 0 ? "\(answer.label) +\(others)" : answer.label
     }
+    guard let kinds = exchange.actionKinds, !kinds.isEmpty else { return nil }
+    let label = MitmExchangeAction.kindLabel(for: kinds[0])
+    return kinds.count > 1 ? "\(label) +\(kinds.count - 1)" : label
+}
+
+/// The duration as upstream shows it (`httpMillisText`).
+private func httpMillisText(_ millis: Int64) -> String {
+    millis < 1000 ? "\(millis) ms" : String(format: "%.1f s", Double(millis) / 1000)
 }
 
 // MARK: - Standalone capture list (v0.2.153)
@@ -334,16 +338,15 @@ struct MitmCaptureListView: View {
                         await mitmStore.runQuery()
                     }
                 }
+                .padding(.top, 40)
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .mitmExchangeMenuOverlays(menuModel, moduleStore: moduleStore)
         .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
-        .navigationTitle("MITM 拦截记录")
-        .navigationBarTitleDisplayMode(.inline)
+        .upstreamNavBar(title: "MITM 拦截记录")
         .searchable(text: $mitmStore.queryText, prompt: "搜索 URL、方法、内容类型或应用")
         .onSubmit(of: .search) {
             Task { await mitmStore.runQuery() }
@@ -382,47 +385,81 @@ struct MitmCaptureListView: View {
         return hosts.allSatisfy { $0.hasPrefix("-") }
     }
 
-    /// One cross-connection row — same shape as the Connections
-    /// HTTP segment's row (method + host/path, status + time):
-    /// unlike MitmView's per-connection rows, this list spans
-    /// connections, so it shows the host too.
+    /// One cross-connection row — upstream HttpRequestRow
+    /// (http_requests.dart:268): leading method well, title = path
+    /// (15pt subheadline), subtitle = host · process (12pt grey,
+    /// + the rewrite mark when one acted), trailing = status
+    /// (13pt semibold, upstream httpStatusColor: red ≥400, green
+    /// 2xx, grey otherwise; 进行中 while pending, 失败 when the
+    /// exchange failed) over "size · duration" (11pt grey). The
+    /// old row showed the host as the title, the path as a second
+    /// line, the start time, and a red error line — upstream has
+    /// none of those (the error text lives in the detail sheet);
+    /// the time column is dropped with them. Unlike MitmView's
+    /// per-connection rows, this list spans connections, so it
+    /// shows the host too.
     private func httpExchangeRow(_ exchange: MitmExchangeSummary) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Text(exchange.method)
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.secondary.opacity(0.15), in: Capsule())
-                Text(exchange.host ?? "")
+        HStack(alignment: .top, spacing: 12) {
+            UpstreamLabelWell(label: exchange.method)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(httpRowTitle(of: exchange))
+                    .font(.subheadline)
+                    .foregroundStyle(Color(.label))
+                    .lineLimit(1)
+                Text(httpRowSubtitle(of: exchange))
+                    .font(.caption)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    .lineLimit(1)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(httpRowStatusText(of: exchange))
                     .font(.footnote.weight(.semibold))
-                    .lineLimit(1)
-                Spacer()
-                if exchange.status > 0 {
-                    Text("\(exchange.status)")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(exchange.status >= 400 ? .red : .secondary)
-                }
-            }
-            HStack(spacing: 6) {
-                Text(exchange.path ?? "/")
+                    .monospacedDigit()
+                    .foregroundStyle(httpRowStatusColor(of: exchange))
+                Text("\(ConcordFormat.bytes(exchange.responseSize)) · \(httpMillisText(exchange.duration))")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                Text(ConcordFormat.time(rfc3339: exchange.start))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if let error = exchange.error, !error.isEmpty {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
+                    .monospacedDigit()
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
+    }
+
+    /// Upstream HttpRequestRow title: the path (with query), or
+    /// the whole URL when the core sent no path.
+    private func httpRowTitle(of exchange: MitmExchangeSummary) -> String {
+        if let path = exchange.path, !path.isEmpty { return path }
+        return exchange.url
+    }
+
+    /// Upstream HttpRequestRow subtitle: host · process (+ the
+    /// rewrite mark, which upstream shows as a MetaChip beside
+    /// them — appended here as text, since this row has no chip).
+    private func httpRowSubtitle(of exchange: MitmExchangeSummary) -> String {
+        var parts: [String] = []
+        if let host = exchange.host, !host.isEmpty { parts.append(host) }
+        if let process = exchange.app?.process, !process.isEmpty { parts.append(process) }
+        if let mark = exchangeMark(exchange) { parts.append(mark) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Upstream HttpRequestRow status text: the code, 进行中 while
+    /// pending, 失败 (connectionsFailed) when it failed.
+    private func httpRowStatusText(of exchange: MitmExchangeSummary) -> String {
+        if exchange.status > 0 { return "\(exchange.status)" }
+        if exchange.pending ?? false { return "进行中" }
+        return "失败"
+    }
+
+    /// Upstream httpStatusColor (mitm_texts.dart:26): red ≥400,
+    /// green 2xx, grey otherwise; pending is grey, failed is red.
+    private func httpRowStatusColor(of exchange: MitmExchangeSummary) -> Color {
+        if exchange.status >= 400 { return .red }
+        if exchange.status >= 200 && exchange.status < 300 { return .green }
+        if exchange.status == 0 && !(exchange.pending ?? false) { return .red }
+        return ConcordTheme.onSurfaceVariant
     }
 }
 
@@ -600,7 +637,6 @@ struct MitmExchangeDetailView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .navigationTitle("拦截详情")
             .navigationBarTitleDisplayMode(.inline)

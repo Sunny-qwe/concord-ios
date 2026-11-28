@@ -8,6 +8,14 @@ import SwiftUI
 // overlay; an empty selection means the core's built-in default.
 // Add / edit / delete / reorder (long-press drag in edit mode,
 // or the ↑↓ buttons — List edit mode is the reliable one here).
+//
+// v0.2.159: upstream UserAgentsView is a header row 默认 + UA rows
+// (check + edit button, menu 编辑/删除) + add button. The list
+// keeps its List structure (reorder/delete need it); only
+// fonts/nav-bar change. The 应用（重新应用配置） button is KEPT:
+// upstream selection only saves, but re-applying here makes a new
+// UA take effect on the running core at once instead of at the
+// next VPN start.
 
 struct UserAgentsView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
@@ -104,10 +112,13 @@ struct UserAgentsView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.top, 40)
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("User-Agent")
-        .navigationBarTitleDisplayMode(.inline)
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
+        .listStyle(.insetGrouped)
+        .upstreamNavBar(title: "User-Agent")
+        .concordNavBarBackground()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 EditButton()
@@ -163,6 +174,7 @@ struct UserAgentsView: View {
                     Image(systemName: selected == value ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(selected == value ? .blue : .secondary)
                     Text(label)
+                        .font(.body)
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                 }

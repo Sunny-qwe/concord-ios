@@ -5,6 +5,14 @@ import SwiftUI
 // rule providers (provider.list, type == rule). Rules are read-only
 // here — editing a rule means editing the profile YAML (Profiles page),
 // as in FlClash's editor.
+//
+// v0.2.159: upstream has NO standalone rules-in-force page (the data
+// is shown inside the profile editor / connection detail and as the
+// read-only profile file), so there is no upstream row layout to
+// match — this page is kept as-is in structure and restyled to the
+// shared Tools atoms (17pt body titles, 15pt grey subtitles, 11pt
+// semibold grey trailing values, upstream nav bar). The list stays
+// a List: these are long dynamic lists, not settings cards.
 
 struct RulesView: View {
     @EnvironmentObject private var ruleStore: RuleStore
@@ -34,10 +42,10 @@ struct RulesView: View {
                     .listRowBackground(Color.clear)
                 }
 
-                Section("规则集提供方（provider.list）") {
+                Section {
                     if ruleStore.ruleProviders.isEmpty {
                         Text("暂无规则提供方")
-                            .font(.caption2)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(ruleStore.ruleProviders) { provider in
@@ -54,18 +62,17 @@ struct RulesView: View {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(provider.name)
-                                            .font(.footnote)
+                                            .font(.body)
+                                            .foregroundStyle(Color(.label))
                                         Text("\(provider.behavior ?? provider.format ?? "") · \(provider.count) 条")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                            .font(.subheadline)
+                                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
                                     }
                                     Spacer()
                                     Text(provider.vehicleType)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    Image(systemName: "chevron.right")
-                                        .font(.footnote.weight(.semibold))
-                                        .foregroundStyle(.tertiary)
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                    UpstreamChevron()
                                 }
                             }
                             .buttonStyle(.plain)
@@ -93,11 +100,17 @@ struct RulesView: View {
                         }
                     }
                     if let message = ruleStore.providerActionMessage {
-                        Text(message).font(.caption2).foregroundStyle(.secondary)
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
+                } header: {
+                    Text("规则集提供方（provider.list）")
+                        .font(.headline)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
 
-                Section("生效规则（rule.list，按匹配顺序）") {
+                Section {
                     Picker("类型", selection: $ruleStore.typeFilter) {
                         ForEach(ruleStore.ruleTypes, id: \.self) { type in
                             Text(type).tag(type)
@@ -106,7 +119,7 @@ struct RulesView: View {
                     .pickerStyle(.menu)
                     if ruleStore.filtered.isEmpty {
                         Text("没有匹配的规则")
-                            .font(.caption2)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(Array(ruleStore.filtered.enumerated()), id: \.element.id) { index, rule in
@@ -124,26 +137,30 @@ struct RulesView: View {
                                             .padding(.vertical, 2)
                                             .background(Color.blue.opacity(0.12), in: Capsule())
                                         Text(rule.payload.isEmpty ? "—" : rule.payload)
-                                            .font(.footnote)
+                                            .font(.body)
+                                            .foregroundStyle(Color(.label))
                                             .lineLimit(2)
                                     }
                                     Text("→ \(rule.target)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                                        .font(.subheadline)
+                                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                                 }
                             }
                         }
                     }
+                } header: {
+                    Text("生效规则（rule.list，按匹配顺序）")
+                        .font(.headline)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
             }
         // v0.2.66: tab-bar clearance for pushed pages
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.top, 40)
             .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
             .listStyle(.insetGrouped)
-            .navigationTitle("规则")
-            .navigationBarTitleDisplayMode(.inline)
+            .upstreamNavBar(title: "规则")
             .searchable(text: $ruleStore.searchText, prompt: "搜索规则内容或目标")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -197,10 +214,9 @@ struct ProviderDetailView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
-        .navigationTitle(provider.name)
-        .navigationBarTitleDisplayMode(.inline)
+        .upstreamNavBar(title: provider.name)
     }
 }

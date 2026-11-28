@@ -147,8 +147,8 @@ struct MitmHostnameEditorView: View {
             List {
                 if hostnames.isEmpty {
                     Text("暂无主机名")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(.body)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
                 ForEach(visibleIndices, id: \.self) { index in
                     HostnameRowView(
@@ -177,11 +177,6 @@ struct MitmHostnameEditorView: View {
                     hostnames.move(fromOffsets: from, toOffset: to)
                     save()
                 }
-                if !invalidHostnames.isEmpty {
-                    Text("格式不对的域名（不会生效）：\(invalidHostnames.joined(separator: "、"))")
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
                 if let addError {
                     Text(addError)
                         .font(.footnote)
@@ -195,6 +190,8 @@ struct MitmHostnameEditorView: View {
                         bulkText = hostnames.joined(separator: "\n")
                         showBulkEdit = true
                     }
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
                     .disabled(isSelecting)
                 }
             }
@@ -225,11 +222,11 @@ struct MitmHostnameEditorView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance + 56)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("主机名")
-        .navigationBarTitleDisplayMode(.inline)
+        .contentMargins(.top, 40)
+        .upstreamNavBar(title: "主机名")
+        .concordNavBarBackground()
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
+            ToolbarItem(placement: .topBarTrailing) {
                 Button(isSelecting ? "完成" : "选择") {
                     if isSelecting {
                         isSelecting = false
@@ -312,28 +309,43 @@ struct MitmHostnameEditorView: View {
     private var bottomSearchPill: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(ConcordTheme.onSurfaceVariant)
             TextField("搜索", text: $searchText)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
             if !searchText.isEmpty {
                 Button { searchText = "" } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("清除搜索")
             }
         }
-        .font(.footnote.weight(.semibold))
+        .font(.body)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(ConcordTheme.cardBackground, in: Capsule())
         .shadow(color: ConcordTheme.cardShadow, radius: 8, x: 0, y: 2)
     }
 
-    private var invalidHostnames: [String] {
-        hostnames.filter { !Self.isValidHostname($0) }
+    /// The per-line issue for an invalid hostname (upstream
+    /// _MitmHostnameView, mitm.dart:665-669: the issue is the row
+    /// subtitle, in the error colour); nil when the hostname is
+    /// valid. Same wording as the add dialog's error, so the
+    /// bottom summary line it replaces is gone — the issue now
+    /// sits on the offending row, as upstream shows it.
+    static func hostnameIssue(_ value: String) -> String? {
+        guard !isValidHostname(value) else { return nil }
+        var host = value
+        if host.hasPrefix("-") {
+            host = String(host.dropFirst())
+        }
+        if host.hasPrefix("*.") {
+            host = String(host.dropFirst(2))
+        }
+        if host.isEmpty { return "域名不能为空" }
+        return "格式不对，应为域名或 *.域名，如 *.example.com"
     }
 
     private func addHostname() {
@@ -435,16 +447,27 @@ private struct HostnameRowView: View {
     }
 
     var body: some View {
+        // Upstream _MitmHostnameView (mitm.dart:665-669): an
+        // invalid line shows its issue as the row subtitle, in
+        // the error colour.
+        let issue = MitmHostnameEditorView.hostnameIssue(hostnames[index])
         if isSelecting {
             Button(action: { onToggleSelect?() }) {
-                HStack {
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(isSelected ? ConcordTheme.accent : .secondary)
-                    Text(displayName)
-                        .foregroundStyle(MitmHostnameEditorView.isValidHostname(hostnames[index]) ? Color.primary : Color.red)
-                    Spacer()
-                    if !MitmHostnameEditorView.isValidHostname(hostnames[index]) {
-                        Image(systemName: "exclamationmark.circle.fill")
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(isSelected ? ConcordTheme.accent : .secondary)
+                        Text(displayName)
+                            .foregroundStyle(issue == nil ? Color.primary : Color.red)
+                        Spacer()
+                        if issue != nil {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    if let issue {
+                        Text(issue)
+                            .font(.subheadline)
                             .foregroundStyle(.red)
                     }
                 }
@@ -452,28 +475,35 @@ private struct HostnameRowView: View {
             .buttonStyle(.plain)
             .accessibilityLabel(isSelected ? "取消选择 \(displayName)" : "选择 \(displayName)")
         } else {
-            HStack {
-                Button {
-                    if isExcluded {
-                        hostnames[index] = displayName
-                    } else {
-                        hostnames[index] = "-" + hostnames[index]
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Button {
+                        if isExcluded {
+                            hostnames[index] = displayName
+                        } else {
+                            hostnames[index] = "-" + hostnames[index]
+                        }
+                    } label: {
+                        Image(systemName: isExcluded ? "circle" : "circle.fill")
+                            .foregroundStyle(isExcluded ? .secondary : ConcordTheme.accent)
                     }
-                } label: {
-                    Image(systemName: isExcluded ? "circle" : "circle.fill")
-                        .foregroundStyle(isExcluded ? .secondary : ConcordTheme.accent)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isExcluded ? "排除，不解密 \(displayName)" : "解密 \(displayName)")
+                    TextField("域名，如 *.example.com", text: Binding(
+                        get: { displayName },
+                        set: { hostnames[index] = isExcluded ? "-" + $0 : $0 }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .foregroundStyle(issue == nil ? Color.primary : Color.red)
+                    if issue != nil {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .foregroundStyle(.red)
+                    }
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isExcluded ? "排除，不解密 \(displayName)" : "解密 \(displayName)")
-                TextField("域名，如 *.example.com", text: Binding(
-                    get: { displayName },
-                    set: { hostnames[index] = isExcluded ? "-" + $0 : $0 }
-                ))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .foregroundStyle(MitmHostnameEditorView.isValidHostname(hostnames[index]) ? Color.primary : Color.red)
-                if !MitmHostnameEditorView.isValidHostname(hostnames[index]) {
-                    Image(systemName: "exclamationmark.circle.fill")
+                if let issue {
+                    Text(issue)
+                        .font(.subheadline)
                         .foregroundStyle(.red)
                 }
             }
@@ -487,7 +517,9 @@ private struct HostnameRowView: View {
 // re-org): install guidance, the CA section (details, install /
 // export / generate / regenerate / delete, engine note,
 // trusted-fingerprint field), trust detection, the capture section
-// and the four toggles, in upstream order. The enable toggle and
+// and the four toggles. Certificate first, then the four toggles,
+// is upstream's order (mitm.dart); trust detection and capture are
+// the iOS MITM controls, kept (v0.2.159). The enable toggle and
 // the hostname link are NOT here: upstream keeps them in the
 // Advanced Config MITM section (advanced.dart), which our
 // 进阶配置 MITM card already mirrors. The video's labels:
@@ -534,103 +566,31 @@ struct MitmOptionsView: View {
     }
 
     var body: some View {
-        List {
-            Section {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
                 Text("安装分两步：① 点下面的「安装描述文件」，系统会打开安装页面，按提示装好描述文件（装完后在「设置 → 通用 → VPN 与设备管理」里能看到它）；② 去「设置 → 通用 → 关于本机 → 证书信任设置」里打开 FlClash CA 的完全信任。应用本身装不了系统证书，这两步都要手动完成。")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            caCertificateSection
-            Section("信任检测") {
-                Text("检测会请核心签发一张 mitm-check.flclash.invalid 的叶证书，再用系统信任库验证它（只在本地验证，不联网）。通过 = CA 已安装且已完全信任；不通过时看状态：显示「未安装」是本机找不到 CA 文件，显示「未完全信任」是 CA 已装但没在「证书信任设置」里打开完全信任。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                if let trustResult {
-                    HStack {
-                        Image(systemName: trustResult.isReady ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
-                            .foregroundStyle(trustResult.isReady ? .green : .orange)
-                        Text(trustResult.message)
-                            .font(.footnote)
-                    }
-                }
-                if isCheckingTrust {
-                    ProgressView()
-                }
-                Button("检测信任状态") {
-                    Task { await checkTrust() }
-                }
-                .disabled(isCheckingTrust || !settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
-            }
-            Section {
-                // 抓包 is a status row in the video, not a toggle:
-                // tapping the row flips the capture switch.
-                Button {
-                    settingsStore.mitmCapture.toggle()
-                    settingsStore.save()
-                } label: {
-                    HStack {
-                        Text("抓包")
-                            .foregroundStyle(Color(.label))
-                        Spacer()
-                        Text(captureStatusText)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .buttonStyle(.plain)
-                .disabled(!settingsStore.mitmAvailable)
-                // FlClash clash_config.dart:2264-2272: the capture
-                // limit is a picker — desktop [500..20000], default
-                // 2000. v0.2.137 restores it (the value was fixed at
-                // 64 with no UI since the picker was removed).
-                Picker("保留条数", selection: $settingsStore.mitmCaptureEntries) {
-                    ForEach([500, 1000, 2000, 5000, 10000, 20000], id: \.self) { value in
-                        Text("\(value) 条").tag(value)
-                    }
-                }
-                .disabled(!settingsStore.mitmAvailable)
-                .onChange(of: settingsStore.mitmCaptureEntries) { _, _ in settingsStore.save() }
-                Button(isRestartingVpn ? "重启中…" : "重启隧道") {
-                    Task { await restartVpn() }
-                }
-                .disabled(isRestartingVpn)
-                if let restartMessage {
-                    Text(restartMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            } footer: {
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                caCertificateSection
+                trustCheckSection
+                captureSection
                 Text("MITM 的改动需重启隧道后生效。")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                Toggle("跳过服务器证书验证", isOn: $settingsStore.mitmSkipServerCertVerify)
-                    .disabled(!settingsStore.mitmAvailable)
-                    .onChange(of: settingsStore.mitmSkipServerCertVerify) { _, _ in settingsStore.save() }
-                Toggle("阻止 QUIC", isOn: $settingsStore.mitmAutoQuicBlock)
-                    .disabled(!settingsStore.mitmAvailable)
-                    .onChange(of: settingsStore.mitmAutoQuicBlock) { _, _ in settingsStore.save() }
-                Toggle("HTTP/2", isOn: $mitmH2)
-                    .disabled(!settingsStore.mitmAvailable)
-                    .onChange(of: mitmH2) { _, _ in settingsStore.save() }
-                Toggle("本机未信任时也解密", isOn: $mitmDecryptUntrusted)
-                    .disabled(!settingsStore.mitmAvailable)
-                    .onChange(of: mitmDecryptUntrusted) { _, _ in settingsStore.save() }
-            }
-            if let message = settingsStore.mitmStatusMessage {
-                Section {
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                mitmTogglesSection
+                if let message = settingsStore.mitmStatusMessage {
                     Text(message)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("选项")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: "选项")
+        .concordNavBarBackground()
         .task {
             await settingsStore.refreshMitmStatus()
             await checkTrust()
@@ -655,6 +615,148 @@ struct MitmOptionsView: View {
         }
     }
 
+    /// One padded row inside an UpstreamCardSection (v0.2.159):
+    /// 16pt horizontal, 10pt vertical, 56pt minimum height.
+    private func cardRow<Row: View>(_ row: Row) -> some View {
+        row
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 56)
+    }
+
+    /// The trust-check card (ours-only section, kept: the manual
+    /// trust check + status is the iOS MITM control).
+    @ViewBuilder
+    private var trustCheckSection: some View {
+        UpstreamCardSection(header: "信任检测") {
+            cardRow(
+                Text("检测会请核心签发一张 mitm-check.flclash.invalid 的叶证书，再用系统信任库验证它（只在本地验证，不联网）。通过 = CA 已安装且已完全信任；不通过时看状态：显示「未安装」是本机找不到 CA 文件，显示「未完全信任」是 CA 已装但没在「证书信任设置」里打开完全信任。")
+                    .font(.footnote)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+            )
+            if let trustResult {
+                UpstreamDivider(leading: 16)
+                cardRow(
+                    HStack(spacing: 8) {
+                        Image(systemName: trustResult.isReady ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                            .foregroundStyle(trustResult.isReady ? .green : .orange)
+                        Text(trustResult.message)
+                            .font(.footnote)
+                    }
+                )
+            }
+            if isCheckingTrust {
+                UpstreamDivider(leading: 16)
+                cardRow(ProgressView())
+            }
+            UpstreamDivider(leading: 16)
+            cardRow(
+                Button("检测信任状态") {
+                    Task { await checkTrust() }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color(.label))
+                .disabled(isCheckingTrust || !settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
+            )
+        }
+    }
+
+    /// The capture card (ours-only section, kept: the capture
+    /// switch + limit live here as well as in the Requests filter
+    /// sheet — this page is the MITM control surface).
+    @ViewBuilder
+    private var captureSection: some View {
+        UpstreamCardSection(header: nil) {
+            // 抓包 is a status row in the video, not a toggle:
+            // tapping the row flips the capture switch.
+            cardRow(
+                Button {
+                    settingsStore.mitmCapture.toggle()
+                    settingsStore.save()
+                } label: {
+                    HStack {
+                        Text("抓包")
+                            .foregroundStyle(Color(.label))
+                        Spacer()
+                        Text(captureStatusText)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!settingsStore.mitmAvailable)
+            )
+            UpstreamDivider(leading: 16)
+            // FlClash clash_config.dart:2264-2272: the capture
+            // limit is a picker — desktop [500..20000], default
+            // 2000. v0.2.137 restores it (the value was fixed at
+            // 64 with no UI since the picker was removed).
+            cardRow(
+                Picker("保留条数", selection: $settingsStore.mitmCaptureEntries) {
+                    ForEach([500, 1000, 2000, 5000, 10000, 20000], id: \.self) { value in
+                        Text("\(value) 条").tag(value)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(!settingsStore.mitmAvailable)
+                .onChange(of: settingsStore.mitmCaptureEntries) { _, _ in settingsStore.save() }
+            )
+            UpstreamDivider(leading: 16)
+            cardRow(
+                Button(isRestartingVpn ? "重启中…" : "重启隧道") {
+                    Task { await restartVpn() }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color(.label))
+                .disabled(isRestartingVpn)
+            )
+            if let restartMessage {
+                UpstreamDivider(leading: 16)
+                cardRow(
+                    Text(restartMessage)
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                )
+            }
+        }
+    }
+
+    /// The four MITM toggles, in upstream order (mitm.dart:474-530):
+    /// 跳过服务器证书验证 / 阻止 QUIC / HTTP/2 / 本机未信任时也解密.
+    @ViewBuilder
+    private var mitmTogglesSection: some View {
+        UpstreamCardSection(header: nil) {
+            cardRow(
+                Toggle("跳过服务器证书验证", isOn: $settingsStore.mitmSkipServerCertVerify)
+                    .toggleStyle(UpstreamToggleStyle())
+                    .disabled(!settingsStore.mitmAvailable)
+                    .onChange(of: settingsStore.mitmSkipServerCertVerify) { _, _ in settingsStore.save() }
+            )
+            UpstreamDivider(leading: 16)
+            cardRow(
+                Toggle("阻止 QUIC", isOn: $settingsStore.mitmAutoQuicBlock)
+                    .toggleStyle(UpstreamToggleStyle())
+                    .disabled(!settingsStore.mitmAvailable)
+                    .onChange(of: settingsStore.mitmAutoQuicBlock) { _, _ in settingsStore.save() }
+            )
+            UpstreamDivider(leading: 16)
+            cardRow(
+                Toggle("HTTP/2", isOn: $mitmH2)
+                    .toggleStyle(UpstreamToggleStyle())
+                    .disabled(!settingsStore.mitmAvailable)
+                    .onChange(of: mitmH2) { _, _ in settingsStore.save() }
+            )
+            UpstreamDivider(leading: 16)
+            cardRow(
+                Toggle("本机未信任时也解密", isOn: $mitmDecryptUntrusted)
+                    .toggleStyle(UpstreamToggleStyle())
+                    .disabled(!settingsStore.mitmAvailable)
+                    .onChange(of: mitmDecryptUntrusted) { _, _ in settingsStore.save() }
+            )
+        }
+    }
+
     /// The "CA 证书" section: CA details, install / export /
     /// regenerate / delete (with their nested confirm alerts) and
     /// the upstream engine-capability note, plus the trusted
@@ -662,103 +764,145 @@ struct MitmOptionsView: View {
     /// the main `body` stays small enough for the type checker.
     @ViewBuilder
     private var caCertificateSection: some View {
-        Section("CA 证书") {
+        UpstreamCardSection(header: "CA 证书") {
             if settingsStore.mitmAvailable, let info = settingsStore.mitmCertificate {
-                HStack(spacing: 12) {
-                    // The video's CA icon is a green certificate
-                    // with a ribbon seal; SF has no equivalent —
-                    // checkmark.seal is the closest honest
-                    // approximation.
-                    Image(systemName: "checkmark.seal")
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundStyle(.green)
-                        .frame(width: 36, height: 36)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(info.subject)
-                            .font(.footnote.weight(.semibold))
-                        Text(trustStatusText)
-                            .font(.caption)
-                            .foregroundStyle(trustResult?.isReady == true ? .green : .secondary)
+                cardRow(
+                    HStack(spacing: 12) {
+                        // The video's CA icon is a green certificate
+                        // with a ribbon seal; SF has no equivalent —
+                        // checkmark.seal is the closest honest
+                        // approximation. Upstream _trustGlyph is 32pt
+                        // (mitm.dart:376-389): green when trusted,
+                        // grey otherwise.
+                        Image(systemName: "checkmark.seal")
+                            .font(.system(size: 32, weight: .semibold))
+                            .foregroundStyle(trustResult?.isReady == true ? .green : ConcordTheme.onSurfaceVariant)
+                            .frame(width: 36, height: 36)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(info.subject)
+                                .font(.body)
+                                .foregroundStyle(Color(.label))
+                            Text(trustStatusText)
+                                .font(.subheadline)
+                                .foregroundStyle(trustResult?.isReady == true ? .green : ConcordTheme.onSurfaceVariant)
+                        }
+                        Spacer()
                     }
-                    Spacer()
-                }
+                )
+                UpstreamDivider(leading: 16)
                 labeled("指纹", info.fingerprint)
+                UpstreamDivider(leading: 16)
                 labeled("有效期自", info.notBefore)
+                UpstreamDivider(leading: 16)
                 labeled("有效期至", info.notAfter)
+                UpstreamDivider(leading: 16)
                 // Primary entry: the system install flow. The
                 // app builds a .mobileconfig with the CA and
                 // hands it to iOS, which prompts the install —
                 // the app itself cannot install a system CA.
-                Button {
-                    installProfile()
-                } label: {
-                    Label("安装描述文件（去 Safari 安装）", systemImage: "arrow.down.doc.fill")
-                }
-                .disabled(isInstallingProfile)
+                cardRow(
+                    Button {
+                        installProfile()
+                    } label: {
+                        HStack(spacing: 16) {
+                            UpstreamRowIcon(systemName: "arrow.down.doc.fill")
+                            Text("安装描述文件（去 Safari 安装）")
+                                .font(.body)
+                                .foregroundStyle(Color(.label))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isInstallingProfile)
+                )
                 if isInstallingProfile {
-                    ProgressView()
+                    UpstreamDivider()
+                    cardRow(ProgressView())
                 }
                 if let installHint {
-                    Text(installHint)
-                        .font(.footnote)
-                        .foregroundStyle(Color.orange)
+                    UpstreamDivider(leading: 16)
+                    cardRow(
+                        Text(installHint)
+                            .font(.footnote)
+                            .foregroundStyle(Color.orange)
+                    )
                 }
                 if let installMessage {
-                    Text(installMessage)
-                        .font(.footnote)
-                        .foregroundStyle(installFailed ? Color.red : Color.secondary)
+                    UpstreamDivider(leading: 16)
+                    cardRow(
+                        Text(installMessage)
+                            .font(.footnote)
+                            .foregroundStyle(installFailed ? Color.red : ConcordTheme.onSurfaceVariant)
+                    )
                 }
+                UpstreamDivider(leading: 16)
                 // CA 证书是解密流量的信任根：导出前先确认，
                 // 别随手发出去。
-                Button("导出 CA 证书（PEM）") {
-                    showExportCAConfirm = true
-                }
-                .alert("导出 CA 证书？", isPresented: $showExportCAConfirm) {
-                    Button("导出") { exportCA(pem: info.pem) }
-                    Button("取消", role: .cancel) {}
-                } message: {
-                    Text("CA 证书是解密流量的信任根，请只导出到自己的设备上使用。")
-                }
-                .alert("导出 CA 证书", isPresented: $showCAExportAlert) {
-                    Button("好", role: .cancel) {}
-                } message: {
-                    Text(caExportMessage ?? "CA 证书已保存。")
-                }
+                cardRow(
+                    Button("导出证书") {
+                        showExportCAConfirm = true
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color(.label))
+                    .alert("导出证书？", isPresented: $showExportCAConfirm) {
+                        Button("导出") { exportCA(pem: info.pem) }
+                        Button("取消", role: .cancel) {}
+                    } message: {
+                        Text("CA 证书是解密流量的信任根，请只导出到自己的设备上使用。")
+                    }
+                    .alert("导出证书", isPresented: $showCAExportAlert) {
+                        Button("好", role: .cancel) {}
+                    } message: {
+                        Text(caExportMessage ?? "CA 证书已保存。")
+                    }
+                )
             } else {
-                Text(settingsStore.mitmStatusMessage ?? "尚未读取 CA 状态")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                cardRow(
+                    Text(settingsStore.mitmStatusMessage ?? "尚未读取 CA 状态")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                )
             }
-            Button("生成 CA 证书") {
-                Task {
-                    if await settingsStore.ensureMitmCertificate() {
-                        installHint = "CA 已生成：下一步点「安装描述文件」，按系统提示装好，再去「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任。"
+            UpstreamDivider(leading: 16)
+            cardRow(
+                Button("生成证书") {
+                    Task {
+                        if await settingsStore.ensureMitmCertificate() {
+                            installHint = "CA 已生成：下一步点「安装描述文件」，按系统提示装好，再去「设置 → 通用 → 关于本机 → 证书信任设置」里打开完全信任。"
+                        }
                     }
                 }
-            }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color(.label))
+            )
+            UpstreamDivider(leading: 16)
             // FlClash mitm.dart:253-340 _regenerate: confirm,
             // then generate a new CA. The old CA stays installed
             // in iOS Settings until the user removes it — the
             // note after regenerating says so.
-            Button("重新生成 CA 证书", role: .destructive) {
-                showRegenerateConfirm = true
-            }
-            .disabled(!settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
-            .alert("重新生成 CA 证书吗？", isPresented: $showRegenerateConfirm) {
-                Button("重新生成", role: .destructive) {
-                    Task {
-                        // Only claim a new CA when generation
-                        // actually succeeded (Item C rule 2).
-                        if await settingsStore.ensureMitmCertificate() {
-                            regenerateNote = "已生成新的 CA 证书。旧 CA 还留在 iPhone「设置 → 通用 → VPN 与设备管理」里，请先删掉旧的，再安装并完全信任新的 CA，否则 HTTPS 解密会失败。"
-                            await checkTrust()
+            cardRow(
+                Button("重新生成证书", role: .destructive) {
+                    showRegenerateConfirm = true
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.red)
+                .disabled(!settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
+                .alert("重新生成证书吗？", isPresented: $showRegenerateConfirm) {
+                    Button("重新生成", role: .destructive) {
+                        Task {
+                            // Only claim a new CA when generation
+                            // actually succeeded (Item C rule 2).
+                            if await settingsStore.ensureMitmCertificate() {
+                                regenerateNote = "已生成新的 CA 证书。旧 CA 还留在 iPhone「设置 → 通用 → VPN 与设备管理」里，请先删掉旧的，再安装并完全信任新的 CA，否则 HTTPS 解密会失败。"
+                                await checkTrust()
+                            }
                         }
                     }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("旧 CA 会失效，所有用旧 CA 解密过的配置都要换新 CA。生成后需要重新安装并信任新 CA。")
                 }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("旧 CA 会失效，所有用旧 CA 解密过的配置都要换新 CA。生成后需要重新安装并信任新 CA。")
-            }
+            )
+            UpstreamDivider(leading: 16)
             // FlClash mitm.dart:125-150 (_remove): tapping the
             // certificate offers deletion with a confirm; the
             // installed profile must also be removed by hand in
@@ -766,37 +910,53 @@ struct MitmOptionsView: View {
             // deletes the CA files from both homes (the proven
             // AppCore.deleteOldCAFiles path) and clears the
             // stored fingerprint / certificate state.
-            Button("删除 CA 证书", role: .destructive) {
-                showDeleteCAConfirm = true
-            }
-            .disabled(!settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
-            .alert("删除 CA 证书吗？", isPresented: $showDeleteCAConfirm) {
-                Button("删除", role: .destructive) { deleteCA() }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("删除后，MITM 将无法解密 HTTPS，直到重新生成 CA 并安装信任。已装在 iPhone 里的旧描述文件也要手动删除（设置 → 通用 → VPN 与设备管理）。")
-            }
+            cardRow(
+                Button("移除证书", role: .destructive) {
+                    showDeleteCAConfirm = true
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.red)
+                .disabled(!settingsStore.mitmAvailable || settingsStore.mitmCertificate == nil)
+                .alert("移除证书吗？", isPresented: $showDeleteCAConfirm) {
+                    Button("移除", role: .destructive) { deleteCA() }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("移除后，MITM 将无法解密 HTTPS，直到重新生成 CA 并安装信任。已装在 iPhone 里的旧描述文件也要手动删除（设置 → 通用 → VPN 与设备管理）。")
+                }
+            )
             if let regenerateNote {
-                Text(regenerateNote)
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
+                UpstreamDivider(leading: 16)
+                cardRow(
+                    Text(regenerateNote)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                )
             }
-            // Upstream mitm.dart:441-448 (mitmEngineCompatibility):
-            // what the MITM engine does and does not do.
-            Text("支持指定域名的 HTTPS 解密、URL 跳转/拦截、请求头和正文重写、本地响应、请求/响应脚本、$httpClient、$task.fetch、计时器与持久存储。脚本有较短的运行时间和大小限制。暂不支持定时/事件脚本、二进制/完整头脚本模式，超大正文原样传输。模块为部分兼容。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            UpstreamDivider(leading: 16)
+            // Upstream engine capability note: what the MITM
+            // engine does and does not do.
+            cardRow(
+                Text("支持指定域名的 HTTPS 解密、URL 跳转/拦截、请求头和正文重写、本地响应、请求/响应脚本、$httpClient、$task.fetch、计时器与持久存储。脚本有较短的运行时间和大小限制。暂不支持定时/事件脚本、二进制/完整头脚本模式，超大正文原样传输。模块为部分兼容。")
+                    .font(.footnote)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+            )
+            UpstreamDivider(leading: 16)
             // v0.2.68 (MuYu): the trusted-server-certificate
             // fingerprint input — the 选项 page (this page) is
             // where it lives now (merged from the certificate
             // page, v0.2.143).
-            TextField("受信任的服务器证书指纹（可选）", text: $settingsStore.mitmTrustedFingerprint)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save() }
-            Text("填入某个服务器证书的 SHA-256 指纹后，只信任该指纹的证书（解密 TLS 随之开启）；留空则用本应用 CA 的指纹。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            cardRow(
+                TextField("受信任的服务器证书指纹（可选）", text: $settingsStore.mitmTrustedFingerprint)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onChange(of: settingsStore.mitmTrustedFingerprint) { _, _ in settingsStore.save() }
+            )
+            UpstreamDivider(leading: 16)
+            cardRow(
+                Text("填入某个服务器证书的 SHA-256 指纹后，只信任该指纹的证书（解密 TLS 随之开启）；留空则用本应用 CA 的指纹。")
+                    .font(.footnote)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+            )
         }
     }
 
@@ -914,14 +1074,18 @@ struct MitmOptionsView: View {
     }
 
     private func labeled(_ title: String, _ value: String) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(value)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.trailing)
-        }
+        cardRow(
+            HStack {
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
+                Spacer()
+                Text(value)
+                    .font(.subheadline)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    .multilineTextAlignment(.trailing)
+            }
+        )
     }
 
     /// Restarts the tunnel (stop, then start) so MITM changes
@@ -968,6 +1132,7 @@ struct MitmEnableToggle: View {
                 }
             }
         ))
+        .toggleStyle(UpstreamToggleStyle())
         .alert("HTTPS 解密", isPresented: $showEnableConfirm) {
             Button("开启") {
                 Task {

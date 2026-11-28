@@ -121,7 +121,7 @@ final class IconSetStore: ObservableObject {
 
     /// One imported icon (FlClash IconSetIcon): a name + an http(s)
     /// image URL.
-    struct ImportedIcon: Codable, Equatable, Identifiable {
+    struct ImportedIcon: Codable, Equatable, Identifiable, Hashable {
         var id: String { url }
         let name: String
         let url: String
@@ -130,7 +130,7 @@ final class IconSetStore: ObservableObject {
     /// One imported icon set (FlClash IconSet): a name, an optional
     /// source URL ("" = imported from a file), its icons, and the
     /// last sync time. Stored as JSON in UserDefaults.
-    struct ImportedPack: Codable, Equatable, Identifiable {
+    struct ImportedPack: Codable, Equatable, Identifiable, Hashable {
         let id: String
         var name: String
         var url: String
@@ -384,6 +384,9 @@ struct IconSetsView: View {
     /// are initialised from the item.
     @State private var editingRemotePack: IconSetStore.ImportedPack?
     @State private var deletingPack: IconSetStore.ImportedPack?
+    /// Pushed searchable preview page (upstream _IconSetPreviewView):
+    /// nil = no preview open.
+    @State private var previewTarget: IconSetPreviewTarget?
 
     var body: some View {
         List {
@@ -403,10 +406,10 @@ struct IconSetsView: View {
                             }
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(pack.name)
-                                    .font(.footnote.weight(.semibold))
+                                    .font(.body)
                                     .foregroundStyle(Color(.label))
                                 Text(pack.description)
-                                    .font(.caption2)
+                                    .font(.subheadline)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -428,7 +431,7 @@ struct IconSetsView: View {
             // file. The format is the upstream one (Quantumult X /
             // Loon gallery JSON); an already-imported link syncs
             // instead of duplicating.
-            Section("导入图标集") {
+            Section(header: Text("导入图标集").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                 TextField("名称（可选，留空用文件里的名字）", text: $importName)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -461,7 +464,7 @@ struct IconSetsView: View {
             }
 
             if !iconSetStore.importedPacks.isEmpty {
-                Section("已导入") {
+                Section(header: Text("已导入").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     ForEach(iconSetStore.importedPacks) { pack in
                         HStack(spacing: 12) {
                             Button {
@@ -470,11 +473,24 @@ struct IconSetsView: View {
                                 HStack(spacing: 12) {
                                     packCover(pack)
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(pack.name)
-                                            .font(.footnote.weight(.semibold))
-                                            .foregroundStyle(Color(.label))
-                                        Text("\(pack.icons.count) 个图标 · \(pack.isRemote ? "远程" : "本地文件") · 更新于 \(pack.lastUpdate.formatted(date: .abbreviated, time: .shortened))")
-                                            .font(.caption2)
+                                        // Upstream ChipTitle: name +
+                                        // count chip; subtitle is
+                                        // 远程/本地 only (listCaptionStyle
+                                        // = footnote 13). The update time
+                                        // is dropped from the row.
+                                        HStack(spacing: 6) {
+                                            Text(pack.name)
+                                                .font(.body)
+                                                .foregroundStyle(Color(.label))
+                                            Text("\(pack.icons.count)")
+                                                .font(.caption2.weight(.semibold))
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(ConcordTheme.accent.opacity(0.12), in: Capsule())
+                                                .foregroundStyle(ConcordTheme.accent)
+                                        }
+                                        Text(pack.isRemote ? "远程" : "本地")
+                                            .font(.footnote)
                                             .foregroundStyle(.secondary)
                                     }
                                 }
@@ -489,6 +505,9 @@ struct IconSetsView: View {
                                     .foregroundStyle(ConcordTheme.accent)
                             }
                             Menu {
+                                Button("预览") {
+                                    previewTarget = .imported(pack)
+                                }
                                 if pack.isRemote {
                                     Button("同步") {
                                         Task { await iconSetStore.syncPack(pack) }
@@ -516,60 +535,39 @@ struct IconSetsView: View {
                 }
             }
 
-            Section("预览：\(previewTitle)") {
-                if let imported = iconSetStore.selectedImportedPack {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 16) {
-                        ForEach(Array(imported.icons.prefix(18))) { icon in
-                            VStack(spacing: 4) {
-                                AsyncImage(url: URL(string: icon.url)) { phase in
-                                    if let image = phase.image {
-                                        image.resizable().scaledToFit()
-                                    } else {
-                                        Image(systemName: "photo")
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .frame(width: 28, height: 28)
-                                Text(icon.name)
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
+            // Upstream _IconSetPreviewView is a pushed page: the
+            // embedded first-18 grid is gone, replaced by this nav
+            // row (plus 预览 in each imported pack's menu).
+            Section(header: Text("预览").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
+                Button {
+                    if let imported = iconSetStore.selectedImportedPack {
+                        previewTarget = .imported(imported)
+                    } else {
+                        previewTarget = .builtin
                     }
-                    .padding(.vertical, 4)
-                    if imported.icons.count > 18 {
-                        Text("共 \(imported.icons.count) 个图标，这里只预览前 18 个。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                } label: {
+                    HStack {
+                        Text("预览：\(previewTitle)")
+                        Spacer()
+                        UpstreamChevron()
                     }
-                } else {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 16) {
-                        ForEach(IconSetStore.previewTypes, id: \.self) { type in
-                            VStack(spacing: 4) {
-                                iconSetStore.icon(for: type, size: 18)
-                                    .frame(width: 28, height: 28)
-                                Text(type)
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                    .padding(.vertical, 4)
                 }
+                .buttonStyle(.plain)
                 Text("导入的图标按名称匹配代理类型；代理列表暂仍用内置图标显示，待列表渲染接入远程图标。")
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
-        // v0.2.66: tab-bar clearance for pushed pages.
+        // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
+        .listStyle(.insetGrouped)
         .background(ConcordTheme.pageBackground)
-        .navigationTitle("图标集")
-        .navigationBarTitleDisplayMode(.inline)
+        .upstreamNavBar(title: "图标集")
+        .navigationDestination(item: $previewTarget) { target in
+            IconSetPreviewView(target: target)
+        }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.plainText, .data], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
@@ -664,6 +662,90 @@ struct IconSetsView: View {
     }
 }
 
+/// What the pushed preview page shows: the built-in pack or one
+/// imported pack (upstream _IconSetPreviewView, icon_sets.dart:256).
+enum IconSetPreviewTarget: Identifiable, Hashable {
+    case builtin
+    case imported(IconSetStore.ImportedPack)
+
+    var id: String {
+        switch self {
+        case .builtin: return "builtin"
+        case .imported(let pack): return pack.id
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .builtin: return IconSetStore.shared.selectedPack.name
+        case .imported(let pack): return pack.name
+        }
+    }
+}
+
+/// The pushed searchable preview page (upstream _IconSetPreviewView):
+/// the full icon grid with search, not the old embedded first-18.
+private struct IconSetPreviewView: View {
+    let target: IconSetPreviewTarget
+    @ObservedObject private var iconSetStore = IconSetStore.shared
+    @State private var searchText = ""
+
+    private var importedIcons: [IconSetStore.ImportedIcon] {
+        guard case .imported(let pack) = target else { return [] }
+        guard !searchText.isEmpty else { return pack.icons }
+        return pack.icons.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private var builtinTypes: [String] {
+        guard case .builtin = target else { return [] }
+        guard !searchText.isEmpty else { return IconSetStore.previewTypes }
+        return IconSetStore.previewTypes.filter { $0.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 16) {
+                if case .imported = target {
+                    ForEach(importedIcons) { icon in
+                        VStack(spacing: 4) {
+                            AsyncImage(url: URL(string: icon.url)) { phase in
+                                if let image = phase.image {
+                                    image.resizable().scaledToFit()
+                                } else {
+                                    Image(systemName: "photo")
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(width: 28, height: 28)
+                            Text(icon.name)
+                                .font(.system(size: 8))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                } else {
+                    ForEach(builtinTypes, id: \.self) { type in
+                        VStack(spacing: 4) {
+                            iconSetStore.icon(for: type, size: 18)
+                                .frame(width: 28, height: 28)
+                            Text(type)
+                                .font(.system(size: 8))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, ConcordTheme.tabBarClearance)
+        }
+        .background(ConcordTheme.pageBackground)
+        .searchable(text: $searchText, prompt: "搜索图标")
+        .upstreamNavBar(title: "预览：\(target.title)")
+    }
+}
+
 /// Rename a remote pack (and change its URL — a changed URL
 /// re-syncs, FlClash _handleEditOptions). The fields live in the
 /// sheet, initialised from the item — no separate parent state.
@@ -726,7 +808,6 @@ private struct IconSetEditSheet: View {
                     }
                 }
             }
-            .font(.footnote.weight(.semibold))
             .navigationTitle("图标集选项")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

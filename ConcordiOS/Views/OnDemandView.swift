@@ -24,6 +24,16 @@ import SwiftUI
 // 您授予位置权限"). The permission is requested only from this
 // page's button, never automatically; a denial is shown honestly
 // and the SSID is never guessed.
+//
+// v0.2.159: title 按需运行 (upstream onDemand, l10n_zh:2344);
+// the list section is 排除 SSID (upstream excludeSsids). KEPT
+// functional: the 启用按需运行 toggle (upstream has no toggle on
+// this page, but it is the only switch for the NEOnDemandRule
+// install), the 当前 Wi-Fi section (only way to request location
+// permission / add the current SSID), the 直连覆盖生效中 banner
+// (live status) and the 重新应用按需规则 button. The list keeps
+// its List structure (swipe actions, reorder, multi-select
+// delete); only fonts/nav-bar/wording change.
 
 struct OnDemandView: View {
     @ObservedObject private var store = OnDemandStore.shared
@@ -37,7 +47,7 @@ struct OnDemandView: View {
     var body: some View {
         List {
             Section {
-                Text("按需连接：打开后，iPhone 会在网络变化时自动按规则连接或断开 VPN。列表里的 Wi-Fi 各有动作：直连的 Wi-Fi 上 VPN 保持连接、核心切换为直连模式；不自动连接的 Wi-Fi 上 VPN 不会自动连接；不在列表里的网络都会自动连接。手动从仪表盘启动 VPN 不受这些规则限制。\n\n默认关闭：启动 VPN 时不会自动开启按需连接；打开下面的开关后，断网或切换网络（Wi-Fi ↔ 蜂窝）后系统会自动重连，不用手动再开。")
+                Text("按需运行：打开后，iPhone 会在网络变化时自动按规则连接或断开 VPN。列表里的 Wi-Fi 各有动作：直连的 Wi-Fi 上 VPN 保持连接、核心切换为直连模式；不自动连接的 Wi-Fi 上 VPN 不会自动连接；不在列表里的网络都会自动连接。手动从仪表盘启动 VPN 不受这些规则限制。\n\n默认关闭：启动 VPN 时不会自动开启按需连接；打开下面的开关后，断网或切换网络（Wi-Fi ↔ 蜂窝）后系统会自动重连，不用手动再开。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -64,10 +74,11 @@ struct OnDemandView: View {
             Section("当前 Wi-Fi") {
                 currentWiFiContent
             }
-            Section("按需连接") {
-                Toggle("启用按需连接", isOn: $store.enabled)
+            Section("按需运行") {
+                Toggle("启用按需运行", isOn: $store.enabled)
+                    .toggleStyle(UpstreamToggleStyle())
             }
-            Section("按需列表 Wi-Fi（SSID）") {
+            Section("排除 SSID") {
                 if store.excludedSSIDs.isEmpty {
                     Text("还没有加入的 Wi-Fi：开启后所有网络都会自动连接。点下面的输入框或上面的「当前 Wi-Fi」添加。")
                         .font(.footnote)
@@ -81,9 +92,10 @@ struct OnDemandView: View {
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(ssid)
+                                    .font(.body)
                                     .foregroundStyle(Color(.label))
                                 Text(store.isDirect(ssid: ssid) ? "直连" : "不自动连接")
-                                    .font(.footnote)
+                                    .font(.subheadline)
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -170,10 +182,13 @@ struct OnDemandView: View {
             }
         }
         // v0.2.66: tab-bar clearance for pushed pages
+        .contentMargins(.top, 40)
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("按需连接")
-        .navigationBarTitleDisplayMode(.inline)
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
+        .listStyle(.insetGrouped)
+        .upstreamNavBar(title: "按需运行")
+        .concordNavBarBackground()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 EditButton()
@@ -227,7 +242,7 @@ struct OnDemandView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
-                        Button("加入按需列表") {
+                        Button("加入列表") {
                             _ = store.addSSID(ssid)
                         }
                     }

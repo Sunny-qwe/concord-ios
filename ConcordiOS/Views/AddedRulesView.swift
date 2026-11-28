@@ -31,6 +31,13 @@ struct AddedRulesView: View {
 
     private var isSelecting: Bool { !selectedRules.isEmpty }
 
+    /// Upstream section header: 17pt semibold, onSurfaceVariant grey.
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+    }
+
     var body: some View {
         List {
             Section {
@@ -38,7 +45,7 @@ struct AddedRulesView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Section("附加规则（\(rulesStore.rules.count) 条）") {
+            Section(header: sectionHeader("附加规则（\(rulesStore.rules.count) 条）")) {
                 if rulesStore.rules.isEmpty {
                     ContentUnavailableView(
                         "暂无规则",
@@ -76,11 +83,17 @@ struct AddedRulesView: View {
                 }
             }
             if !rulesStore.disabledRules.isEmpty {
-                Section("已停用（\(rulesStore.disabledRules.count) 条）") {
+                Section(header: sectionHeader("已停用（\(rulesStore.disabledRules.count) 条）")) {
                     ForEach(rulesStore.disabledRules, id: \.self) { rule in
                         HStack {
                             ruleRowContent(rule)
                             Spacer()
+                            if let parsed = RuleFormDraft.parse(rule) {
+                                Text(parsed.target)
+                                    .font(.system(.subheadline, design: .monospaced))
+                                    .foregroundStyle(targetColor(parsed.target))
+                                    .lineLimit(1)
+                            }
                             Button("启用") { rulesStore.setRule(rule, disabled: false) }
                                 .font(.footnote.weight(.semibold))
                         }
@@ -93,9 +106,11 @@ struct AddedRulesView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("附加规则")
-        .navigationBarTitleDisplayMode(.inline)
+        .contentMargins(.top, 40)
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: "附加规则")
         .searchable(text: $searchText, prompt: "搜索规则")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -178,8 +193,13 @@ struct AddedRulesView: View {
         selectedRules = selectedRules.isSuperset(of: visible) ? selectedRules.subtracting(visible) : selectedRules.union(visible)
     }
 
-    /// Structured row (FlClash RuleItem): type chip + content +
-    /// target, instead of the raw string.
+    /// Structured row (FlClash RuleItem, features/form/rule.dart):
+    /// two-line mono label — type in body 17, content in
+    /// subheadline 15 at 60% — with the target as a subheadline-15
+    /// mono trailing, coloured by target (DIRECT green, REJECT
+    /// orange, PASS-family accent, else default). The old type chip
+    /// + second-line target are gone: upstream has no chip and the
+    /// target is the trailing, not a second line.
     private func ruleRow(_ rule: String) -> some View {
         Button {
             if isSelecting {
@@ -195,31 +215,41 @@ struct AddedRulesView: View {
                 }
                 ruleRowContent(rule)
                 Spacer()
+                if let parsed = RuleFormDraft.parse(rule) {
+                    Text(parsed.target)
+                        .font(.system(.subheadline, design: .monospaced))
+                        .foregroundStyle(targetColor(parsed.target))
+                        .lineLimit(1)
+                }
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// Upstream RuleItem._checkInvalid target colours.
+    private func targetColor(_ target: String) -> Color {
+        switch target.uppercased() {
+        case "DIRECT", "COMPATIBLE": return .green
+        case "REJECT", "REJECT-DROP": return .orange
+        case "PASS", "PASS-RULE", "GLOBAL": return ConcordTheme.accent
+        default: return Color(.label)
+        }
     }
 
     @ViewBuilder
     private func ruleRowContent(_ rule: String) -> some View {
         if let parsed = RuleFormDraft.parse(rule) {
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(parsed.type)
-                        .font(.caption2.weight(.bold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(ConcordTheme.accent.opacity(0.12), in: Capsule())
-                        .foregroundStyle(ConcordTheme.accent)
-                    if parsed.type != "MATCH" && parsed.type != "FINAL" {
-                        Text(parsed.content)
-                            .font(.system(.footnote, design: .monospaced))
-                            .lineLimit(1)
-                    }
+                Text(parsed.type)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(Color(.label))
+                    .lineLimit(1)
+                if parsed.type != "MATCH" && parsed.type != "FINAL" {
+                    Text(parsed.content + (parsed.noResolve ? " · no-resolve" : "") + (parsed.src ? " · src" : ""))
+                        .font(.system(.subheadline, design: .monospaced))
+                        .foregroundStyle(Color(.label).opacity(0.6))
+                        .lineLimit(1)
                 }
-                Text("→ \(parsed.target)" + (parsed.noResolve ? " · no-resolve" : "") + (parsed.src ? " · src" : ""))
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
         } else {
             Text(rule)
@@ -357,7 +387,7 @@ struct RuleFormSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("规则") {
+                Section(header: Text("规则").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     Picker("类型", selection: $draft.type) {
                         ForEach(CustomRule.types, id: \.self) { type in
                             Text(type).tag(type)
@@ -387,7 +417,9 @@ struct RuleFormSheet: View {
                         .autocorrectionDisabled()
                     if draft.type != "MATCH" && draft.type != "FINAL" {
                         Toggle("不解析域名（no-resolve）", isOn: $draft.noResolve)
+                        .toggleStyle(UpstreamToggleStyle())
                         Toggle("匹配源 IP（src）", isOn: $draft.src)
+                        .toggleStyle(UpstreamToggleStyle())
                     }
                 }
                 Section {
@@ -401,7 +433,6 @@ struct RuleFormSheet: View {
                     }
                 }
             }
-            .font(.footnote.weight(.semibold))
             .navigationTitle(draft.originalText == nil ? "添加规则" : "编辑规则")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -443,7 +474,7 @@ struct RulePresetSheetView: View {
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(preset.rawValue)
-                                    .font(.headline)
+                                    .font(.body)
                                     .foregroundStyle(.primary)
                                 ForEach(preset.rawRules, id: \.self) { rule in
                                     Text(rule)
@@ -462,7 +493,6 @@ struct RulePresetSheetView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .font(.footnote.weight(.semibold))
             .navigationTitle("快捷操作")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

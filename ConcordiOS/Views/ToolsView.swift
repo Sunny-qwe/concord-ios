@@ -50,7 +50,6 @@ enum ToolsDestination: Hashable {
     case advancedProxies
     case advancedProviders
     case advancedFilters
-    case configEditor
     case settings
     case disclaimer
     case developer
@@ -93,16 +92,15 @@ struct ToolsView: View {
         NavigationStack(path: $navPath) {
             ScrollViewReader { scrollProxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 28) {
+                    VStack(alignment: .leading, spacing: 24) {
                     // FlClash pageTitle is 24pt semibold on a tab
-                    // page (scaffold.dart:780); the 18pt bold here
-                    // was the v0.2.50-era guess.
+                    // page (scaffold.dart:780).
                     Text("tools.title".l10n)
-                        .font(.system(size: 24, weight: .bold))
-                    toolSection(header: nil) {
-                        ToolRow(icon: "clock", title: "tools.requests".l10n) { navPath.append(.requests) }
-                        Divider().padding(.leading, 54)
-                        ToolRow(icon: "archivebox", title: "tools.resources".l10n) { navPath.append(.resources) }
+                        .font(.system(size: 24, weight: .semibold))
+                    UpstreamCardSection(header: nil) {
+                        UpstreamNavRow(icon: "clock", title: "tools.requests".l10n) { navPath.append(.requests) }
+                        UpstreamDivider()
+                        UpstreamNavRow(icon: "archivebox", title: "tools.resources".l10n) { navPath.append(.resources) }
                         // v0.2.68 (MuYu): the Logs row shows only
                         // when 常规 → 日志捕获 is on (restored
                         // toggle, SettingsStore.openLogs). NOTE: the
@@ -110,11 +108,11 @@ struct ToolsView: View {
                         // hides the Logs row until the user turns
                         // 日志捕获 on in 常规.
                         if settingsStore.openLogs {
-                            Divider().padding(.leading, 54)
-                            ToolRow(icon: "terminal", title: "tools.logs".l10n) { navPath.append(.logs) }
+                            UpstreamDivider()
+                            UpstreamNavRow(icon: "terminal", title: "tools.logs".l10n) { navPath.append(.logs) }
                         }
                     }
-                    toolSection(header: "tools.section.settings".l10n) {
+                    UpstreamCardSection(header: "tools.section.settings".l10n) {
                         // T-D1 (v0.2.138): inline language row —
                         // upstream tools.dart:148-175
                         // ListItem<Locale?>.options. A Menu picker:
@@ -122,13 +120,10 @@ struct ToolsView: View {
                         // localised strings immediately (no restart,
                         // no separate page); only the ~50 .l10n keys
                         // switch, the rest of the app stays Chinese.
-                        HStack(spacing: 14) {
-                            Image(systemName: "character.bubble")
-                                .font(.system(size: 18, weight: .regular))
-                                .foregroundStyle(Color(.label))
-                                .frame(width: 24, height: 24)
+                        HStack(spacing: 16) {
+                            UpstreamRowIcon(systemName: "character.bubble")
                             Text("tools.language".l10n)
-                                .font(.footnote.weight(.semibold))
+                                .font(.body)
                                 .foregroundStyle(Color(.label))
                             Spacer()
                             // v0.2.158: the menu Picker's synthesised
@@ -137,11 +132,10 @@ struct ToolsView: View {
                             // tall vs 33px for the 13pt row titles,
                             // i.e. it renders at the 17pt default,
                             // not the .footnote on the Picker. An
-                            // explicit label forces 13pt regular
-                            // (same size as the row titles, no bold);
-                            // the chevron is part of it, as upstream
-                            // shows a picker glyph too. .labelsHidden
-                            // is gone: it would hide this label.
+                            // explicit label forces the upstream
+                            // _OptionsValueButton style: 17pt regular
+                            // in onSurfaceVariant grey, with the
+                            // picker glyph after it.
                             Picker(selection: $localization.language) {
                                 ForEach(LocalizationManager.supportedLanguages, id: \.code) { language in
                                     Text(language.name).tag(language.code)
@@ -150,38 +144,40 @@ struct ToolsView: View {
                                 HStack(spacing: 4) {
                                     Text(currentLanguageName)
                                     Image(systemName: "chevron.up.chevron.down")
+                                        .font(.system(size: 14, weight: .semibold))
                                 }
-                                .font(.footnote.weight(.regular))
-                                .foregroundStyle(Color(.label))
+                                .font(.body)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
                             }
                             .pickerStyle(.menu)
-                            .tint(Color(.label))
+                            .tint(ConcordTheme.onSurfaceVariant)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 16)
-                        Divider().padding(.leading, 54)
-                        ToolRow(icon: "paintbrush", title: "tools.theme".l10n) { navPath.append(.theme) }
-                        Divider().padding(.leading, 54)
-                        ToolRow(icon: "arrow.clockwise.icloud", title: "tools.backup".l10n) { navPath.append(.backup) }
-                        Divider().padding(.leading, 54)
-                        ToolRow(icon: "wrench", title: "tools.advanced".l10n) { navPath.append(.config) }
-                        Divider().padding(.leading, 54)
-                        ToolRow(icon: "gear", title: "tools.settings".l10n) { navPath.append(.settings) }
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                        UpstreamDivider()
+                        UpstreamNavRow(icon: "paintbrush", title: "tools.theme".l10n) { navPath.append(.theme) }
+                        UpstreamDivider()
+                        UpstreamNavRow(icon: "arrow.clockwise.icloud", title: "tools.backup".l10n) { navPath.append(.backup) }
+                        UpstreamDivider()
+                        UpstreamNavRow(icon: "wrench", title: "tools.advanced".l10n) { navPath.append(.config) }
+                        UpstreamDivider()
+                        UpstreamNavRow(icon: "gear", title: "tools.settings".l10n) { navPath.append(.settings) }
                     }
-                    toolSection(header: "tools.section.other".l10n) {
+                    UpstreamCardSection(header: "tools.section.other".l10n) {
                         // v0.2.68 (MuYu): the disclaimer icon is a
                         // gavel, not doc.text (which also collided
                         // with the Logs icon). GavelIcon lives in
                         // Views/CustomGlyphs.swift (shared with the
                         // Connections page).
-                        ToolGlyphRow(title: "tools.disclaimer".l10n, icon: { GavelIcon(size: 18, color: Color(.label)) }) { navPath.append(.disclaimer) }
+                        ToolGlyphRow(title: "tools.disclaimer".l10n, icon: { GavelIcon(size: 18, color: ConcordTheme.onSurfaceVariant) }) { navPath.append(.disclaimer) }
                         if settingsStore.developerMode {
-                            Divider().padding(.leading, 54)
-                            ToolRow(icon: "hammer", title: "tools.developer".l10n) { navPath.append(.developer) }
+                            UpstreamDivider()
+                            UpstreamNavRow(icon: "hammer", title: "tools.developer".l10n) { navPath.append(.developer) }
                         }
-                        Divider().padding(.leading, 54)
-                        ToolRow(icon: "info.circle", title: "tools.about".l10n) { navPath.append(.about) }
+                        UpstreamDivider()
+                        UpstreamNavRow(icon: "info.circle", title: "tools.about".l10n) { navPath.append(.about) }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -216,7 +212,6 @@ struct ToolsView: View {
                 case .advancedProxies: CustomProxiesView()
                 case .advancedProviders: ProvidersView()
                 case .advancedFilters: FiltersView()
-                case .configEditor: ConfigEditorView()
                 case .settings: SettingsView()
                 case .disclaimer: DisclaimerView()
                 case .developer: DeveloperView()
@@ -228,68 +223,11 @@ struct ToolsView: View {
         }
         .toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
     }
-
-    /// One card: an optional 13pt section label above a 24pt-radius
-    /// white card. Row dividers are written explicitly between rows
-    /// (inset 54pt = 16 padding + 24 icon + 14 spacing).
-    @ViewBuilder
-    private func toolSection<Content: View>(header: String?, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let header {
-                Text(header)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 4)
-            }
-            VStack(spacing: 0) {
-                content()
-            }
-            .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 24))
-            .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
-        }
-    }
 }
 
-/// One 56pt row: plain grey outline icon, 13pt semibold title,
-/// chevron right (16pt vertical padding + 24pt icon frame). A plain
-/// Button (not a NavigationLink — see the note on navPath above).
-/// The label fills the row width and carries the contentShape:
-/// on device, contentShape on the Button itself did NOT extend the
-/// hit area — only the chevron responded (v0.2.18) — while the
-/// shape on the label HStack makes the whole row rect, including
-/// the gap between the title and the chevron, tappable.
-private struct ToolRow: View {
-    let icon: String
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 14) {
-                Image(systemName: icon)
-                    .font(.system(size: 18, weight: .regular))
-                    .foregroundStyle(Color(.label))
-                    .frame(width: 24, height: 24)
-                Text(title)
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color(.label))
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 16)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-/// A ToolRow whose icon is a custom-drawn glyph view instead of
-/// an SF Symbol (v0.2.68: the disclaimer gavel, GavelIcon from
-/// CustomGlyphs.swift). Same 56pt row geometry as ToolRow.
+/// A row whose icon is a custom-drawn glyph view instead of an
+/// SF Symbol (v0.2.68: the disclaimer gavel, GavelIcon from
+/// CustomGlyphs.swift). Same 56pt upstream geometry as UpstreamNavRow.
 private struct ToolGlyphRow<Icon: View>: View {
     let title: String
     @ViewBuilder let icon: () -> Icon
@@ -297,20 +235,19 @@ private struct ToolGlyphRow<Icon: View>: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 14) {
+            HStack(spacing: 16) {
                 icon()
                     .frame(width: 24, height: 24)
                 Text(title)
-                    .font(.footnote.weight(.semibold))
+                    .font(.body)
                     .foregroundStyle(Color(.label))
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                UpstreamChevron()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
-            .padding(.vertical, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 56)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -319,25 +256,15 @@ private struct ToolGlyphRow<Icon: View>: View {
 
 // MARK: - Disclaimer
 //
-// FlClash's full disclaimer (lib/views/disclaimer.dart): 10
-// titled sections from the upstream localisation (l10n_zh.dart
-// disclaimer*Title/Content + disclaimerNoServiceStatement).
-// Section 1's content is the software content plus the
-// no-service statement, exactly as upstream composes it
-// (disclaimer.dart:29); the intro is disclaimerDesc. The
-// retype-to-agree sentence IS the no-service statement
-// (disclaimer.dart:467).
+// FlClash's disclaimer (lib/views/disclaimer.dart), mobile branch:
+// no in-content title (the title2 heading is desktop-only), the
+// intro in a raised card with a 28pt accent gavel, and 10 numbered
+// terms — 28pt circle badge + 17pt semibold title, 15pt grey
+// paragraphs at 1.6 line height. Opened from Tools there is no
+// consent bar (disclaimer.dart:85-87); this app has no first-launch
+// consent gate, so the agree/disagree bar and its retype dialog are
+// gone in v0.2.159.
 private struct DisclaimerView: View {
-    /// The sentence the user must retype to agree (FlClash
-    /// disclaimerNoServiceStatement — also the page's last line).
-    static var restatement: String { "disclaimer.restatement".l10n }
-
-    @AppStorage("ConcordiOS.disclaimer.consented") private var consented = false
-    @AppStorage("ConcordiOS.disclaimer.consentedAt") private var consentedAt: Double = 0
-    @Environment(\.dismiss) private var dismiss
-    @State private var showRestateDialog = false
-    @State private var restateTyped = ""
-    @State private var disagreeMessage: String?
     private static var terms: [(String, String)] {
         [
         ("disclaimer.terms.nature.title".l10n, "disclaimer.terms.nature.body".l10n),
@@ -354,126 +281,47 @@ private struct DisclaimerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("tools.disclaimer".l10n)
-                        .font(.system(size: 18, weight: .bold))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top, spacing: 16) {
+                    GavelIcon(size: 28, color: ConcordTheme.accent)
+                        .frame(width: 28, height: 28)
                     Text("disclaimer.intro".l10n)
-                    ForEach(DisclaimerView.terms, id: \.0) { title, body in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(title)
-                                .font(.footnote.weight(.semibold))
-                            Text(body)
+                        .font(.subheadline)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .lineSpacing(4)
+                }
+                .padding(20)
+                .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                ForEach(Array(DisclaimerView.terms.enumerated()), id: \.offset) { index, term in
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 12) {
+                            Text("\(index + 1)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                .frame(width: 28, height: 28)
+                                .background(ConcordTheme.cardBackground, in: Circle())
+                            Text(term.0)
+                                .font(.headline)
+                                .foregroundStyle(Color(.label))
+                        }
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(Array(term.1.components(separatedBy: "\n\n").enumerated()), id: \.offset) { _, paragraph in
+                                Text(paragraph)
+                                    .font(.subheadline)
+                                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                    .lineSpacing(4)
+                            }
                         }
                     }
-                    Text(DisclaimerView.restatement)
-                        .font(.footnote.weight(.semibold))
-                    if let disagreeMessage {
-                        Text(disagreeMessage)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
+                    .padding(.top, 28)
                 }
-                .font(.footnote)
-                .padding(16)
-                // v0.2.66: tab-bar clearance for pushed pages.
-                .padding(.bottom, ConcordTheme.tabBarClearance)
             }
-            _ConsentBar(
-                consented: consented,
-                consentedDate: consentedAt > 0 ? Date(timeIntervalSince1970: consentedAt) : nil,
-                onAgree: {
-                    restateTyped = ""
-                    showRestateDialog = true
-                },
-                onDisagree: {
-                    consented = false
-                    disagreeMessage = "disclaimer.disagree.message".l10n
-                }
-            )
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
         .background(ConcordTheme.pageBackground)
-        .navigationTitle("tools.disclaimer".l10n)
-        .navigationBarTitleDisplayMode(.inline)
-        // Upstream _handleAgree → dialogs.showCommonDialog
-        // (dismissible: false, child: _RestateDialog())
-        // (disclaimer.dart:305): a centered AlertDialog with
-        // Cancel + Confirm — NOT a sheet, NOT scrim-dismissible.
-        // Confirm stays disabled until the typed text matches the
-        // statement exactly; a non-prefix is flagged as a mismatch.
-        .alert("disclaimer.confirm.title".l10n, isPresented: $showRestateDialog) {
-            TextField("disclaimer.retype.placeholder".l10n, text: $restateTyped)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            Button("common.cancel".l10n, role: .cancel) { restateTyped = "" }
-            Button("common.confirm".l10n) {
-                consented = true
-                consentedAt = Date().timeIntervalSince1970
-                restateTyped = ""
-            }
-            .disabled(restateTyped.trimmingCharacters(in: .whitespacesAndNewlines) != DisclaimerView.restatement)
-        } message: {
-            Text("\("disclaimer.retype.prompt".l10n)\n\(DisclaimerView.restatement)\(restateMismatch ? "\n\("disclaimer.retype.mismatch".l10n)" : "")")
-        }
-    }
-
-    /// The typed restatement matches the statement so far, or
-    /// diverges from it (a non-prefix, non-empty input).
-    private var restateMismatch: Bool {
-        let trimmed = restateTyped.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty
-            && trimmed != DisclaimerView.restatement
-            && !DisclaimerView.restatement.hasPrefix(trimmed)
-    }
-}
-
-/// Consent bar (FlClash _ConsentBar): the bottom bar below the
-/// terms. Agree opens the restatement dialog; disagree declines;
-/// after agreeing it shows the consent time. Upstream has no
-/// withdraw action (v0.2.136: the 撤回同意 button is deleted).
-private struct _ConsentBar: View {
-    let consented: Bool
-    let consentedDate: Date?
-    let onAgree: () -> Void
-    let onDisagree: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Divider()
-            if consented {
-                HStack(spacing: 12) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("disclaimer.agreed".l10n)
-                            .font(.footnote.weight(.semibold))
-                        if let date = consentedDate {
-                            Text(date.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            } else {
-                HStack(spacing: 12) {
-                    Button("disclaimer.disagree".l10n, action: onDisagree)
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity)
-                    Button("disclaimer.agree".l10n, action: onAgree)
-                        .buttonStyle(.borderedProminent)
-                        .tint(ConcordTheme.accent)
-                        .controlSize(.large)
-                        .frame(maxWidth: .infinity)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-        }
-        .background(ConcordTheme.cardBackground)
+        .upstreamNavBar(title: "tools.disclaimer".l10n)
     }
 }

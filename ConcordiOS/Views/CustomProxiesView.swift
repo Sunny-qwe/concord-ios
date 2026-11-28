@@ -91,7 +91,7 @@ struct CustomProxiesView: View {
                         .font(.footnote)
                 }
             }
-            Section("自定义代理（\(store.proxies.count) 个）") {
+            Section(header: Text("自定义代理（\(store.proxies.count) 个）").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                 ForEach(store.proxies) { proxy in
                     Button {
                         importWarnings = []
@@ -100,8 +100,10 @@ struct CustomProxiesView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(proxy.name)
-                                Text("\(proxy.type) · \(proxy.server):\(proxy.port)")
-                                    .font(.footnote)
+                                // Upstream _NodeItem (custom_proxies.dart):
+                                // subtitle is the proxy type only.
+                                Text(proxy.type)
+                                    .font(.subheadline)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -141,7 +143,7 @@ struct CustomProxiesView: View {
             // listed with edit + delete. Edit only touches
             // name / server / port (the form cannot express the
             // rest, so the remaining keys are kept verbatim).
-            Section("本地添加的节点（\(store.rawProxies.count) 个）") {
+            Section(header: Text("本地添加的节点（\(store.rawProxies.count) 个）").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                 if store.rawProxies.isEmpty {
                     Text("还没有通过「添加到本地」加入的节点。")
                         .font(.footnote)
@@ -154,8 +156,11 @@ struct CustomProxiesView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(definition.objectValue?["name"]?.stringValue ?? "—")
+                                // Ours-only row (no upstream counterpart):
+                                // keep type · server:port — the type
+                                // alone does not identify a raw node.
                                 Text("\(definition.objectValue?["type"]?.stringValue ?? "—") · \(definition.objectValue?["server"]?.stringValue ?? "—"):\(rawPortText(definition))")
-                                    .font(.footnote)
+                                    .font(.subheadline)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
@@ -177,9 +182,11 @@ struct CustomProxiesView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("代理")
-        .navigationBarTitleDisplayMode(.inline)
+        .contentMargins(.top, 40)
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: "代理")
         .sheet(item: $editing) { proxy in
             CustomProxyFormView(proxy: proxy, isNew: !store.proxies.contains(where: { $0.id == proxy.id }), importWarnings: importWarnings) { saved in
                 // The form only dismisses when this returns true:
@@ -1036,7 +1043,7 @@ private struct OpenVPNImportSheetView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("OpenVPN 链接") {
+                Section(header: Text("OpenVPN 链接").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     TextField("openvpn://… 或 https://… .ovpn", text: $linkText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -1057,7 +1064,6 @@ private struct OpenVPNImportSheetView: View {
                     .disabled(isImporting || linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-            .font(.footnote.weight(.semibold))
             .navigationTitle("导入 OpenVPN")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1129,7 +1135,7 @@ struct CustomProxyFormView: View {
                 // completes it here; save-time validate.proxies
                 // enforces the core's requirements.
                 if !importWarnings.isEmpty {
-                    Section("导入提示") {
+                    Section(header: Text("导入提示").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                         ForEach(Array(importWarnings.enumerated()), id: \.offset) { _, warning in
                             Text(warning)
                                 .font(.footnote)
@@ -1140,7 +1146,7 @@ struct CustomProxyFormView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Section("基本") {
+                Section(header: Text("基本").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     TextField("名称", text: $proxy.name)
                     Picker("类型", selection: $proxy.type) {
                         ForEach(CustomProxy.types, id: \.self) { type in
@@ -1153,7 +1159,7 @@ struct CustomProxyFormView: View {
                     TextField("端口", value: $proxy.port, format: .number)
                         .keyboardType(.numberPad)
                 }
-                Section("认证") {
+                Section(header: Text("认证").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     if proxy.type == "openvpn" {
                         TextField("用户名", text: $proxy.ovpnUsername)
                             .autocapitalization(.none)
@@ -1180,7 +1186,7 @@ struct CustomProxyFormView: View {
                     }
                 }
                 if proxy.type == "openvpn" {
-                    Section("证书") {
+                    Section(header: Text("证书").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                         Text("CA 证书（必填，PEM 文本）")
                         TextEditor(text: $proxy.ovpnCa)
                             .font(.system(.footnote, design: .monospaced))
@@ -1226,7 +1232,7 @@ struct CustomProxyFormView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                    Section("加密") {
+                    Section(header: Text("加密").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                         Picker("协议", selection: $proxy.ovpnProto) {
                             Text("UDP").tag("udp")
                             Text("TCP").tag("tcp")
@@ -1253,8 +1259,9 @@ struct CustomProxyFormView: View {
                             }
                         }
                         Toggle("comp-lzo", isOn: $proxy.ovpnCompLzo)
+                            .toggleStyle(UpstreamToggleStyle())
                     }
-                    Section("高级") {
+                    Section(header: Text("高级").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                         TextField("ping（秒，0 = 不设置）", value: $proxy.ovpnPing, format: .number)
                             .keyboardType(.numberPad)
                         TextField("ping-restart（秒，0 = 不设置）", value: $proxy.ovpnPingRestart, format: .number)
@@ -1266,15 +1273,17 @@ struct CustomProxyFormView: View {
                         TextField("MTU（0 = 默认）", value: $proxy.ovpnMtu, format: .number)
                             .keyboardType(.numberPad)
                         Toggle("remote-dns-resolve", isOn: $proxy.ovpnRemoteDnsResolve)
+                            .toggleStyle(UpstreamToggleStyle())
                         TextField("DNS，多个用逗号隔开", text: $proxy.ovpnDns)
                             .autocapitalization(.none)
                             .disableAutocorrection(true)
                     }
                 }
                 if proxy.type != "openvpn" {
-                    Section("传输") {
+                    Section(header: Text("传输").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                         if proxy.type == "vmess" || proxy.type == "vless" || proxy.type == "trojan" {
                             Toggle("TLS", isOn: $proxy.tls)
+                            .toggleStyle(UpstreamToggleStyle())
                             TextField("SNI / servername", text: $proxy.sni)
                                 .autocapitalization(.none)
                                 .disableAutocorrection(true)
@@ -1285,10 +1294,10 @@ struct CustomProxyFormView: View {
                                 .disableAutocorrection(true)
                         }
                         Toggle("UDP", isOn: $proxy.udp)
+                            .toggleStyle(UpstreamToggleStyle())
                     }
                 }
             }
-            .font(.footnote.weight(.semibold))
             .navigationTitle(proxy.id.isEmpty || isNew ? "添加代理" : "编辑代理")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1376,7 +1385,7 @@ struct RawProxyEditView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("基本") {
+                Section(header: Text("基本").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     TextField("名称", text: $name)
                     TextField("服务器", text: $server)
                         .autocapitalization(.none)
@@ -1387,7 +1396,7 @@ struct RawProxyEditView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                Section("完整定义（原样保留）") {
+                Section(header: Text("完整定义（原样保留）").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     Text(yamlText)
                         .font(.system(.caption, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1399,7 +1408,6 @@ struct RawProxyEditView: View {
                     }
                 }
             }
-            .font(.footnote.weight(.semibold))
             .navigationTitle("编辑本地节点")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

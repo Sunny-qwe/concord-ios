@@ -205,6 +205,34 @@ enum ConcordTheme {
     static let tabBarClearance: CGFloat = 112
     /// Soft card shadow.
     static let cardShadow = Color.black.opacity(0.05)
+    /// Upstream M3 onSurfaceVariant (v0.2.159): the grey for leading
+    /// row icons, chevrons, subtitles, trailing values and section
+    /// headers on Tools pages — light #44474E, dark #CAC4D0.
+    static var onSurfaceVariant: Color {
+        Color(UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 0.79, green: 0.77, blue: 0.82, alpha: 1)
+                : UIColor(red: 0.27, green: 0.28, blue: 0.31, alpha: 1)
+        })
+    }
+    /// Upstream Switch OFF track (v0.2.159, prism_ui switch.dart):
+    /// surfaceContainerHighest — light #E4E2E4, dark #44474E.
+    static var toggleTrackOff: Color {
+        Color(UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 0.27, green: 0.28, blue: 0.31, alpha: 1)
+                : UIColor(red: 0.89, green: 0.89, blue: 0.89, alpha: 1)
+        })
+    }
+    /// Upstream Switch OFF thumb (v0.2.159): outline grey —
+    /// light #717786, dark #938F99.
+    static var toggleThumbOff: Color {
+        Color(UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 0.58, green: 0.56, blue: 0.60, alpha: 1)
+                : UIColor(red: 0.44, green: 0.47, blue: 0.53, alpha: 1)
+        })
+    }
 }
 
 extension Color {
@@ -257,6 +285,243 @@ extension View {
     /// covers the root page.
     func concordNavBarBackground() -> some View {
         toolbarBackground(ConcordTheme.pageBackground, for: .navigationBar)
+    }
+
+    /// Upstream FlClash nav bar for a pushed Tools page (v0.2.159):
+    /// hides the system "< 返回" text button and puts a circular
+    /// icon-only back button + a 17pt semibold left-aligned title in
+    /// the leading toolbar slot (scaffold.dart: appBarActionInset 16,
+    /// TonalButtonSize.bar 44, compactTitle = pushed). Replaces the
+    /// page's .navigationTitle/.navigationBarTitleDisplayMode calls.
+    func upstreamNavBar(title: String) -> some View {
+        modifier(UpstreamNavBarModifier(title: title))
+    }
+}
+
+/// Circular icon-only back button (upstream AppBarActionButton):
+/// 44pt circle on the card surface, no shadow (IMG_1406 shows none),
+/// custom-drawn chevron matching upstream's back glyph: 8pt wide,
+/// 15pt tall, 2.2pt stroke, near-black. Dismiss pops the
+/// NavigationStack path / sheet.
+struct UpstreamBackButton: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Button(action: { dismiss() }) {
+            Path { path in
+                path.move(to: CGPoint(x: 8, y: 0))
+                path.addLine(to: CGPoint(x: 0, y: 7.5))
+                path.addLine(to: CGPoint(x: 8, y: 15))
+            }
+            .stroke(Color(.label), style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+            .frame(width: 8, height: 15)
+            .frame(width: 44, height: 44)
+            .background(ConcordTheme.cardBackground, in: Circle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct UpstreamNavBarModifier: ViewModifier {
+    let title: String
+
+    func body(content: Content) -> some View {
+        content
+            .navigationBarBackButtonHidden(true)
+            .navigationTitle("")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    HStack(spacing: 16) {
+                        UpstreamBackButton()
+                        Text(title)
+                            .font(.headline)
+                            .foregroundStyle(Color(.label))
+                    }
+                }
+            }
+    }
+}
+
+/// One upstream-style card section (v0.2.159): optional 17pt semibold
+/// grey header above a 24pt-radius card with no shadow. The header
+/// sits 16pt inside the card edge (32pt from the screen edge) and
+/// 12pt above the card (IMG_1406). Rows are supplied with explicit
+/// UpstreamDividers between them.
+struct UpstreamCardSection<Content: View>: View {
+    let header: String?
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let header {
+                Text(header)
+                    .font(.headline)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    .padding(.leading, 16)
+            }
+            VStack(spacing: 0) { content() }
+                .background(
+                    ConcordTheme.cardBackground,
+                    in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+                )
+        }
+    }
+}
+
+/// Upstream row divider (v0.2.159): 1px hairline in onSurface at 14%.
+/// Upstream draws a row's separator from where its title starts
+/// (prism_ui list_row_separator.dart): 56pt from the card edge when the
+/// row has a 24pt leading glyph, 16pt when it has none, 72pt for the
+/// Shortcuts action rows whose leading tile is 40pt (16 + 40 + 16).
+/// (IMG_1406: #DCD9DB, x216–1079). Trailing is always 16pt from the
+/// card edge.
+struct UpstreamDivider: View {
+    var leading: CGFloat = 56
+
+    var body: some View {
+        Rectangle()
+            .fill(Color(.label).opacity(0.14))
+            .frame(height: 1 / UIScreen.main.scale)
+            .padding(.leading, leading)
+            .padding(.trailing, 16)
+    }
+}
+
+/// Upstream LabelWell (v0.2.159, record.dart, list size 40): the inset
+/// well leading the HTTP/DNS feed rows — a 40pt rounded square with
+/// the label centred, sized by label length (≤3 chars subheadline 15
+/// semibold mono, 4 chars caption1 12, longer caption2 11).
+struct UpstreamLabelWell: View {
+    let label: String
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.15))
+            Text(label)
+                .font((label.count <= 3 ? Font.subheadline : (label.count == 4 ? Font.caption : Font.caption2)).weight(.semibold))
+                .monospaced()
+                .foregroundStyle(Color(.label))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(width: 40, height: 40)
+    }
+}
+
+/// Grey 24pt leading row icon (upstream Glyph.size 24, colour
+/// onSurfaceVariant — never the accent).
+struct UpstreamRowIcon: View {
+    let systemName: String
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 22, weight: .regular))
+            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+            .frame(width: 24, height: 24)
+    }
+}
+
+/// Grey trailing chevron for nav rows (upstream Glyphs.chevronForward,
+/// colour onSurfaceVariant). Custom-drawn: upstream's glyph ink is
+/// 6.3pt wide, 12pt tall (IMG_1406) with its right edge 22pt from the
+/// card edge, so the view carries 6pt trailing padding inside the
+/// row's 16pt inset.
+struct UpstreamChevron: View {
+    var body: some View {
+        Path { path in
+            path.move(to: CGPoint(x: 0, y: 0))
+            path.addLine(to: CGPoint(x: 6.5, y: 6))
+            path.addLine(to: CGPoint(x: 0, y: 12))
+        }
+        .stroke(ConcordTheme.onSurfaceVariant, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+        .frame(width: 6.5, height: 12)
+        .padding(.trailing, 6)
+    }
+}
+
+/// Upstream Switch as a ToggleStyle (v0.2.159, prism_ui switch.dart):
+/// 52×32 track, 24pt thumb. OFF track is the solid mid-grey
+/// surfaceContainerHighest and the OFF thumb is the grey outline
+/// (IMG_1406: #E4E2E4 / #717786 — NOT the iOS light track + white
+/// knob); ON track is the accent, ON thumb white. 240ms ease-in-out.
+/// Apply to every Toggle on Tools pages. The whole row toggles,
+// the same as upstream's ListItem.toggle.
+struct UpstreamToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.24)) { configuration.isOn.toggle() }
+        }) {
+            HStack {
+                configuration.label
+                Spacer()
+                ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+                    Capsule()
+                        .fill(configuration.isOn ? ConcordTheme.accent : ConcordTheme.toggleTrackOff)
+                        .frame(width: 52, height: 32)
+                    Circle()
+                        .fill(configuration.isOn ? Color.white : ConcordTheme.toggleThumbOff)
+                        .frame(width: 24, height: 24)
+                        .padding(4)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// One 56pt upstream nav row: grey icon, 17pt regular title, optional
+/// 15pt grey subtitle under the title, optional 11pt semibold grey
+/// trailing value, grey chevron. The whole row is the tap target.
+/// The content is split out so a NavigationLink label can use it
+/// directly — a Button inside a link label swallows the tap.
+struct UpstreamNavRowContent: View {
+    let icon: String
+    let title: String
+    var subtitle: String? = nil
+    var value: String? = nil
+
+    var body: some View {
+        HStack(spacing: 16) {
+            UpstreamRowIcon(systemName: icon)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                }
+            }
+            Spacer()
+            if let value {
+                Text(value)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+            }
+            UpstreamChevron()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(minHeight: 56)
+        .contentShape(Rectangle())
+    }
+}
+
+struct UpstreamNavRow: View {
+    let icon: String
+    let title: String
+    var subtitle: String? = nil
+    var value: String? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            UpstreamNavRowContent(icon: icon, title: title, subtitle: subtitle, value: value)
+        }
+        .buttonStyle(.plain)
     }
 }
 

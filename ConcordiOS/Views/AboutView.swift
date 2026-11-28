@@ -286,8 +286,10 @@ struct AboutView: View {
     }
 
     var body: some View {
-        List {
-            Section {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                // Hero (upstream _AboutHero): logo / name / version
+                // pill / GPL-3.0 pill / desc / 检查更新 button.
                 VStack(spacing: 12) {
                     Button {
                         // A-M6: taps more than 1 s apart restart the
@@ -377,49 +379,63 @@ struct AboutView: View {
                     .disabled(isCheckingUpdate)
                 }
                 .frame(maxWidth: .infinity)
-                .listRowBackground(Color.clear)
+                .padding(.top, 40)
+
+                // 更新 (upstream about.dart:89-102): the
+                // 自动检查更新 toggle, relocated here from 常规 →
+                // 请求 (v0.2.159). It only controls CHECKING for
+                // updates — the user declined any in-app
+                // self-update/install flow (2026-11-27).
+                UpstreamCardSection(header: "更新") {
+                    Toggle("自动检查更新", isOn: $settingsStore.autoCheckUpdate)
+                        .font(.body)
+                        .foregroundStyle(Color(.label))
+                        .toggleStyle(UpstreamToggleStyle())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                }
+                .onChange(of: settingsStore.autoCheckUpdate) { _, _ in settingsStore.save() }
+
+                // v0.2.138 (user decision 2026-11-26): the
+                // contributor section is GONE — no original-developer
+                // info, no contributor rows. The app's author is the
+                // user themself: name + GitHub only, no email or other
+                // contact detail. This 开发者 section replaces
+                // upstream's 其他贡献者 section.
+                UpstreamCardSection(header: "开发者") {
+                    aboutLink(
+                        title: "樹小沢",
+                        urlString: "https://github.com/Sunny-qwe",
+                        icon: "person"
+                    )
+                }
+                UpstreamCardSection(header: "更多") {
+                    aboutLink(
+                        title: "项目主页",
+                        urlString: "https://github.com/Sunny-qwe/concord-ios",
+                        icon: "chevron.left.forwardslash.chevron.right"
+                    )
+                    UpstreamDivider()
+                    aboutLink(
+                        title: "核心仓库 (chen08209/concord)",
+                        urlString: "https://github.com/chen08209/concord",
+                        icon: "cpu"
+                    )
+                    UpstreamDivider()
+                    aboutLink(
+                        title: "FlClash Telegram 频道",
+                        urlString: "https://t.me/FlClash",
+                        icon: "paperplane"
+                    )
+                }
             }
-            // v0.2.136 (D4): the update-channel picker is deleted —
-            // upstream about.dart has the updateChannel SETTING
-            // (checkForUpdate reads it, above) but no channel-picker
-            // UI anywhere in source; the About page's only update
-            // item is the auto-check toggle. The stored setting
-            // stays, defaulting to stable.
-            // v0.2.138 (user decision 2026-11-26): the
-            // contributor section is GONE — no original-developer
-            // info, no contributor rows. The app's author is the
-            // user themself: name + GitHub only, no email or other
-            // contact detail.
-            Section("开发者") {
-                aboutLink(
-                    title: "樹小沢",
-                    urlString: "https://github.com/Sunny-qwe",
-                    icon: "person"
-                )
-            }
-            Section("更多") {
-                aboutLink(
-                    title: "项目主页",
-                    urlString: "https://github.com/Sunny-qwe/concord-ios",
-                    icon: "chevron.left.forwardslash.chevron.right"
-                )
-                aboutLink(
-                    title: "核心仓库 (chen08209/concord)",
-                    urlString: "https://github.com/chen08209/concord",
-                    icon: "cpu"
-                )
-                aboutLink(
-                    title: "FlClash Telegram 频道",
-                    urlString: "https://t.me/FlClash",
-                    icon: "paperplane"
-                )
-            }
+            .padding(.horizontal, 16)
+            // v0.2.66: tab-bar clearance for pushed pages.
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: tab-bar clearance for pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("关于")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: "关于")
         .overlay {
             if showUpdateDialog {
                 updateDialog
@@ -433,7 +449,7 @@ struct AboutView: View {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                     Text("developerModeEnableTip".l10n)
-                        .font(.footnote.weight(.semibold))
+                        .font(.footnote)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
@@ -445,7 +461,6 @@ struct AboutView: View {
         }
         .animation(.easeOut(duration: 0.25), value: showDevModeBanner)
     }
-
     /// The update-result modal dialog (MuYu f_069): dimmed
     /// backdrop, centered card, "检查更新" title, the result
     /// message, a download button when a new version exists, and
@@ -485,38 +500,34 @@ struct AboutView: View {
         }
     }
 
-    /// A-M4: a link row with a glyph badge, the URL as subtitle,
-    /// and the external-link glyph (upstream AboutView's link rows).
-    /// v0.2.68 (MuYu): NEUTRAL gray rounded-square tiles, not
-    /// accent/colored ones; external-link glyph is
-    /// arrow.up.right.square.
-    /// S1 (v0.2.138, upstream stable v0.9.5 _GlyphBadge /
-    /// rs.1 _LinkBadge, about.dart:261): the badge is a 40x40
-    /// raised-surface tile with a 20pt glyph in the
-    /// onSurfaceVariant colour — the 28x28 footnote tile was the
-    /// old size.
+    /// A-M4: a link row with a grey leading icon, the URL (without
+    /// scheme, as upstream's label) as subtitle, and the
+    /// external-link glyph (upstream AboutView's link rows).
+    /// v0.2.159: upstream row geometry — 17pt title, 15pt grey
+    /// subtitle, 56pt row — instead of the old 40x40 badge tile.
     private func aboutLink(title: String, urlString: String, icon: String) -> some View {
         Link(destination: URL(string: urlString)!) {
-            HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 20))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 40, height: 40)
-                    .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 12))
+            HStack(spacing: 16) {
+                UpstreamRowIcon(systemName: icon)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.footnote)
+                        .font(.body)
                         .foregroundStyle(Color(.label))
-                    Text(urlString)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text(urlString.replacingOccurrences(of: "https://", with: ""))
+                        .font(.subheadline)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                         .lineLimit(1)
                 }
                 Spacer()
                 Image(systemName: "arrow.up.right.square")
-                    .font(.footnote)
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 56)
+            .contentShape(Rectangle())
         }
     }
 }
+

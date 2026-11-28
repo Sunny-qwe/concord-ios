@@ -8,8 +8,20 @@ import SwiftUI
 // config.apply's overlay as "sniffer".
 //
 // The master switch is the 通用 page's 流量嗅探 toggle: the
-// effective enable is master && this page's own 启用. Turning the
+// effective enable is master && this page's own 状态. Turning the
 // master off disables sniffing without losing these choices.
+//
+// v0.2.159: upstream SnifferView is per-profile only (no global
+// page, no General row) — this global page is kept because it is
+// the only UI for the global override. Sections follow upstream
+// (sniffer.dart:89-90: 选项 for the 8 option keys, 协议 for the 3
+// protocol keys) and labels follow l10n_zh.dart (enable = 状态
+// :1056, forceDnsMapping = 强制DNS映射 :1002, parsePureIp =
+// 解析纯IP :1005, skipSrcAddress = 跳过来源地址 :1017). The
+// 强制嗅探域名 description is upstream's forceDomainDesc
+// (:1011). The master-off warning and the Fake-IP footnote are
+// ours-only explanations, kept — they describe iOS behaviour
+// upstream has no text for.
 
 struct SnifferSettingsView: View {
     @ObservedObject private var snifferStore = SnifferStore.shared
@@ -45,76 +57,147 @@ struct SnifferSettingsView: View {
     }
 
     var body: some View {
-        List {
-            Section {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
                 Text("嗅探设置写入共享 sniffer.json，扩展在 config.apply 时把它作为 overlay 合并进去。改动后点「保存并应用」，VPN 运行时立即生效，否则下次启动 VPN 时生效。")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section("嗅探") {
-                Toggle("启用嗅探", isOn: $snifferStore.enable)
-                if !settingsStore.sniffing {
-                    Text("通用里的「流量嗅探」总开关是关着的，嗅探当前不会生效（这里的设置会保留）。")
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                UpstreamCardSection(header: "选项") {
+                    Toggle("状态", isOn: $snifferStore.enable)
+                        .toggleStyle(UpstreamToggleStyle())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                    if !settingsStore.sniffing {
+                        UpstreamDivider(leading: 16)
+                        Text("通用里的「流量嗅探」总开关是关着的，嗅探当前不会生效（这里的设置会保留）。")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                    }
+                    UpstreamDivider(leading: 16)
+                    Toggle("覆盖目标地址", isOn: $snifferStore.overrideDest)
+                        .toggleStyle(UpstreamToggleStyle())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                    UpstreamDivider(leading: 16)
+                    Toggle("强制DNS映射", isOn: $snifferStore.forceDnsMapping)
+                        .toggleStyle(UpstreamToggleStyle())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                    UpstreamDivider(leading: 16)
+                    Text("把嗅探到的域名映射回 Fake-IP。")
                         .font(.footnote)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    UpstreamDivider(leading: 16)
+                    Toggle("解析纯IP", isOn: $snifferStore.parsePureIp)
+                        .toggleStyle(UpstreamToggleStyle())
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                    UpstreamDivider(leading: 16)
+                    snifferListBlock(
+                        title: "强制嗅探域名",
+                        items: $snifferStore.forceDomain,
+                        placeholder: "域名，如 example.com",
+                        footer: "强制嗅探域名中的域名同样会被嗅探，其余已有域名的连接不嗅探。"
+                    )
+                    UpstreamDivider(leading: 16)
+                    snifferListBlock(
+                        title: "跳过域名",
+                        items: $snifferStore.skipDomain,
+                        placeholder: "域名，如 example.com"
+                    )
+                    UpstreamDivider(leading: 16)
+                    snifferListBlock(
+                        title: "跳过来源地址",
+                        items: $snifferStore.skipSrcAddress,
+                        placeholder: "IP 或 CIDR，如 192.168.1.0/24",
+                        footer: invalidSkipSrc.isEmpty ? nil : "以下地址格式不对（应为 IP 或 IP 段），核心会忽略：\(invalidSkipSrc.prefix(3).joined(separator: "、"))\(invalidSkipSrc.count > 3 ? " 等 \(invalidSkipSrc.count) 条" : "")",
+                        footerIsError: !invalidSkipSrc.isEmpty
+                    )
+                    UpstreamDivider(leading: 16)
+                    snifferListBlock(
+                        title: "跳过目标地址",
+                        items: $snifferStore.skipDstAddress,
+                        placeholder: "IP 或 CIDR，如 10.0.0.0/8",
+                        footer: invalidSkipDst.isEmpty ? nil : "以下地址格式不对（应为 IP 或 IP 段），核心会忽略：\(invalidSkipDst.prefix(3).joined(separator: "、"))\(invalidSkipDst.count > 3 ? " 等 \(invalidSkipDst.count) 条" : "")",
+                        footerIsError: !invalidSkipDst.isEmpty
+                    )
                 }
-                Toggle("覆盖目标地址", isOn: $snifferStore.overrideDest)
-                Toggle("强制 DNS 映射", isOn: $snifferStore.forceDnsMapping)
-                Text("把嗅探到的域名映射回 Fake-IP。")
+                UpstreamCardSection(header: "协议") {
+                    SniffProtocolRow(title: "HTTP", config: $snifferStore.sniffHttp)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    UpstreamDivider(leading: 16)
+                    SniffProtocolRow(title: "TLS", config: $snifferStore.sniffTls)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    UpstreamDivider(leading: 16)
+                    SniffProtocolRow(title: "QUIC", config: $snifferStore.sniffQuic)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    UpstreamDivider(leading: 16)
+                    Text("端口为空时按协议默认端口嗅探。覆盖目标地址选「跟随」时用上面总开关的值。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+                // v0.2.141 (C12-c1): per-profile sniffer overrides live
+                // on this page now (FlClash SnifferView.profile), not
+                // behind a link to the generic OverrideView.
+                InlineProfileOverrideCard(section: .sniffer)
+                VStack(alignment: .leading, spacing: 8) {
+                    Button("保存并应用") {
+                        Task { await snifferStore.applySnifferSettings() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(ConcordTheme.accent)
+                    .frame(maxWidth: .infinity)
+                    if let message = snifferStore.applyMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, ConcordTheme.tabBarClearance)
+        }
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: "嗅探")
+    }
+
+    /// One list key inside the 选项 card: its label row, the
+    /// inline list editor, and an optional footnote (an upstream
+    /// key description, or an invalid-entry warning in red).
+    private func snifferListBlock(
+        title: String,
+        items: Binding<[String]>,
+        placeholder: String,
+        footer: String? = nil,
+        footerIsError: Bool = false
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.body)
+                .foregroundStyle(Color(.label))
+            StringListEditor(items: items, placeholder: placeholder)
+            if let footer {
+                Text(footer)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Toggle("解析纯 IP", isOn: $snifferStore.parsePureIp)
-            }
-            Section("强制嗅探域名") {
-                StringListEditor(items: $snifferStore.forceDomain, placeholder: "域名，如 example.com")
-            }
-            Section("跳过域名") {
-                StringListEditor(items: $snifferStore.skipDomain, placeholder: "域名，如 example.com")
-            }
-            Section("跳过源地址") {
-                StringListEditor(items: $snifferStore.skipSrcAddress, placeholder: "IP 或 CIDR，如 192.168.1.0/24")
-                if !invalidSkipSrc.isEmpty {
-                    Text("以下地址格式不对（应为 IP 或 IP 段），核心会忽略：\(invalidSkipSrc.prefix(3).joined(separator: "、"))\(invalidSkipSrc.count > 3 ? " 等 \(invalidSkipSrc.count) 条" : "")")
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-            }
-            Section("跳过目标地址") {
-                StringListEditor(items: $snifferStore.skipDstAddress, placeholder: "IP 或 CIDR，如 10.0.0.0/8")
-                if !invalidSkipDst.isEmpty {
-                    Text("以下地址格式不对（应为 IP 或 IP 段），核心会忽略：\(invalidSkipDst.prefix(3).joined(separator: "、"))\(invalidSkipDst.count > 3 ? " 等 \(invalidSkipDst.count) 条" : "")")
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-            }
-            Section("嗅探协议") {
-                SniffProtocolRow(title: "HTTP", config: $snifferStore.sniffHttp)
-                SniffProtocolRow(title: "TLS", config: $snifferStore.sniffTls)
-                SniffProtocolRow(title: "QUIC", config: $snifferStore.sniffQuic)
-                Text("端口为空时按协议默认端口嗅探。覆盖目标地址选「跟随」时用上面总开关的值。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            // v0.2.141 (C12-c1): per-profile sniffer overrides live
-            // on this page now (FlClash SnifferView.profile), not
-            // behind a link to the generic OverrideView.
-            InlineProfileOverrideSection(section: .sniffer)
-            Section {
-                Button("保存并应用") {
-                    Task { await snifferStore.applySnifferSettings() }
-                }
-                if let message = snifferStore.applyMessage {
-                    Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
+                    .foregroundStyle(footerIsError ? Color.red : ConcordTheme.onSurfaceVariant)
             }
         }
-        // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("嗅探")
-        .navigationBarTitleDisplayMode(.inline)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 }
 
@@ -130,11 +213,12 @@ private struct SniffProtocolRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(title)
-                    .fontWeight(.semibold)
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
                 Spacer()
-                Text(config.ports.isEmpty ? "默认端口" : "\(config.ports.count) 个端口")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                Text(config.ports.isEmpty ? "默认" : "\(config.ports.count) 项")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
             Picker("覆盖目标地址", selection: Binding(
                 get: { config.overrideDest },
@@ -186,7 +270,6 @@ private struct SniffProtocolRow: View {
                     .foregroundStyle(.red)
             }
         }
-        .padding(.vertical, 4)
     }
 
     static func isValidPortRange(_ value: String) -> Bool {

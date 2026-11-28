@@ -7,10 +7,20 @@ import SwiftUI
 // first too), so the change is visible before leaving the page.
 // Changing either control saves immediately (ThemeStore.save) and
 // the app root re-renders with the new scheme and tint.
+//
+// v0.2.159: sections, order and wording follow upstream theme.dart
+// (live preview / 主题模式 / 纯黑模式 choice group / 主题色彩 /
+// 配色风格 / 底栏 / 选项卡动画 / 液态玻璃 / 字体 / 文本缩放).
+// Kept, restyled only: the teal + magenta presets, the inline
+// 自定义颜色 picker, and the pure-black option (now a 标准/纯黑
+// choice group, as upstream). The reset is a header icon, shown
+// only when the colour is non-default, as upstream. No auto
+// (follow-system) swatch: ThemeStore has no auto-accent concept
+// to bind it to — flagged for the coordinator.
 
 struct ThemePickerView: View {
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var fontStore: FontStore
     @State private var newCustomColor = Color.blue
     @State private var customColorMessage: String?
     @State private var showResetConfirm = false
@@ -33,292 +43,326 @@ struct ThemePickerView: View {
         ("灰色", "#8E8E93"),
     ]
 
+    /// True when the colour differs from upstream's default (blue
+    /// + vivid style, no custom colours): the header reset icon in
+    /// the 主题色彩 section only shows then.
+    private var isNonDefaultColor: Bool {
+        themeStore.accent != .blue
+            || themeStore.customAccentHex != nil
+            || !themeStore.customColors.isEmpty
+            || themeStore.colorStyle != .vivid
+    }
+
+    /// The pure-black choice (upstream 纯黑模式 choice group):
+    /// 0 = 标准， 1 = 纯黑.
+    private var pureBlackChoice: Binding<Int> {
+        Binding(
+            get: { themeStore.pureBlack ? 1 : 0 },
+            set: { themeStore.pureBlack = $0 == 1; themeStore.save() }
+        )
+    }
+
     var body: some View {
-        List {
-            Section("预览") {
-                // v0.2.141 (C2-c3): the full live MiniScreen, not
-                // the old static card — see ThemeLivePreview.swift.
-                // The List's Section already paints the rounded
-                // card background (v0.2.130), so the preview sits
-                // directly on it.
-                ThemeLivePreview()
-            }
-            Section("外观") {
-                ForEach(ThemeAppearance.allCases) { appearance in
-                    Button {
-                        themeStore.appearance = appearance
-                        themeStore.save()
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: appearance.icon)
-                                .font(.system(size: 18))
-                                .foregroundStyle(themeStore.appearance == appearance ? themeStore.accentColor : .secondary)
-                                .frame(width: 28)
-                            Text(appearance.label)
-                                .foregroundStyle(Color(.label))
-                            Spacer()
-                            if themeStore.appearance == appearance {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(themeStore.accentColor)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                UpstreamCardSection(header: "预览") {
+                    ThemeLivePreview()
+                        .padding(16)
                 }
-                Toggle("纯黑模式", isOn: $themeStore.pureBlack)
-                    .onChange(of: themeStore.pureBlack) { _, _ in themeStore.save() }
-                Text("「跟随系统」时 App 跟随 iPhone 的深色 / 浅色设置自动切换。纯黑模式只在深色下生效：页面背景变纯黑，卡片变深灰。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("主题色") {
-                // v0.2.141 (C2-d1): ONE swatch row, as upstream's
-                // _ColorSwatches Wrap — the old split grids (main
-                // presets / extra presets / custom list) are merged.
-                // The presets are upstream's 8 + the teal preset
-                // this app already shipped (kept) + magenta (the
-                // MuYu video's primary); custom colours follow in
-                // the same row. The add control stays below the row
-                // (upstream's _AddColorButton opens a colour sheet;
-                // ours keeps the inline picker).
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
-                    ForEach(ThemeAccent.allCases) { accent in
-                        Button {
-                            themeStore.accent = accent
-                            themeStore.customAccentHex = nil
-                            themeStore.save()
-                        } label: {
-                            VStack(spacing: 6) {
-                                ZStack {
-                                    Circle()
-                                        .fill(accent.color)
-                                        .frame(width: 44, height: 44)
-                                    if themeStore.customAccentHex == nil && themeStore.accent == accent {
-                                        Image(systemName: "checkmark")
-                                            .font(.callout.weight(.semibold))
-                                            .fontWeight(.bold)
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                                Text(accent.label)
-                                    .font(.caption2)
-                                    .foregroundStyle(themeStore.customAccentHex == nil && themeStore.accent == accent ? Color(.label) : .secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    ForEach(Self.extraPresets, id: \.hex) { preset in
-                        Button {
-                            themeStore.customAccentHex = preset.hex
-                            themeStore.save()
-                        } label: {
-                            VStack(spacing: 6) {
-                                ZStack {
-                                    Circle()
-                                        .fill(Color(hex: preset.hex) ?? .gray)
-                                        .frame(width: 44, height: 44)
-                                    if themeStore.customAccentHex == preset.hex {
-                                        Image(systemName: "checkmark")
-                                            .font(.callout.weight(.semibold))
-                                            .fontWeight(.bold)
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                                Text(preset.label)
-                                    .font(.caption2)
-                                    .foregroundStyle(themeStore.customAccentHex == preset.hex ? Color(.label) : .secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    ForEach(themeStore.customColors, id: \.self) { hex in
-                        Button {
-                            themeStore.customAccentHex = hex
-                            themeStore.save()
-                        } label: {
-                            VStack(spacing: 6) {
-                                ZStack {
-                                    Circle()
-                                        .fill(Color(hex: hex) ?? .gray)
-                                        .frame(width: 44, height: 44)
-                                    if themeStore.customAccentHex == hex {
-                                        Image(systemName: "checkmark")
-                                            .font(.callout.weight(.semibold))
-                                            .fontWeight(.bold)
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                                Text(hex)
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(themeStore.customAccentHex == hex ? Color(.label) : .secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        // Upstream's swatch menu (theme.dart
-                        // _ColorSwatches) has 编辑 + 删除 with a
-                        // confirm dialog; ours keeps the delete
-                        // half of that menu (no edit flow exists
-                        // here), now with upstream's confirm.
-                        .contextMenu {
-                            Button("删除", role: .destructive) {
-                                deletingCustomColor = hex
-                            }
+                footerSection(header: "主题模式", footer: "「跟随系统」时 App 跟随 iPhone 的深色 / 浅色设置自动切换。") {
+                    ForEach(Array(ThemeAppearance.allCases.enumerated()), id: \.element) { index, appearance in
+                        appearanceRow(appearance)
+                        if index < ThemeAppearance.allCases.count - 1 {
+                            UpstreamDivider()
                         }
                     }
                 }
-                .padding(.vertical, 4)
-                HStack {
-                    ColorPicker("自定义颜色", selection: $newCustomColor)
-                    Button("添加") {
-                        guard let hex = Self.hexString(of: newCustomColor) else { return }
-                        if themeStore.customColors.contains(hex) {
-                            customColorMessage = "这个颜色已经加过了"
-                            return
-                        }
-                        themeStore.customColors.append(hex)
-                        themeStore.customAccentHex = hex
-                        themeStore.save()
-                        customColorMessage = nil
-                    }
-                }
-                if let customColorMessage {
-                    Text(customColorMessage)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Text("主题色会用在按钮、开关、选中状态和进度条上。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                // FlClash theme.dart:109-135 _PrimaryColorItem reset:
-                // confirm, then back to the default blue + vivid
-                // style (and the preset list back to the defaults,
-                // which here means clearing user-added swatches).
-                Button("恢复默认颜色", role: .destructive) {
-                    showResetConfirm = true
-                }
-                .alert("恢复默认颜色吗？", isPresented: $showResetConfirm) {
-                    Button("恢复默认", role: .destructive) {
-                        themeStore.accent = .blue
-                        themeStore.customAccentHex = nil
-                        themeStore.customColors = []
-                        themeStore.colorStyle = .vivid
-                        themeStore.save()
-                    }
-                    Button("取消", role: .cancel) {}
-                } message: {
-                    Text("主题色会回到默认蓝色，颜色风格回到生动，自己添加的颜色也会清空。")
-                }
-            }
 
-            Section("颜色风格") {
-                Picker("颜色风格", selection: $themeStore.colorStyle) {
-                    ForEach(ThemeColorStyle.allCases) { style in
-                        Text(style.label).tag(style)
+                footerSection(header: "纯黑模式", footer: "纯黑模式只在深色下生效：页面背景变纯黑，卡片变深灰。") {
+                    Picker("纯黑模式", selection: pureBlackChoice) {
+                        Text("标准").tag(0)
+                        Text("纯黑").tag(1)
                     }
+                    .pickerStyle(.segmented)
+                    .padding(16)
                 }
-                .pickerStyle(.segmented)
-                .onChange(of: themeStore.colorStyle) { _, _ in themeStore.save() }
-                Text("生动：原样；柔和：降低饱和度；单色：灰色主题色。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
 
-            Section("导航栏") {
-                Picker("导航栏样式", selection: $themeStore.navBarStyle) {
-                    ForEach(ThemeNavBarStyle.allCases) { style in
-                        Text(style.label).tag(style)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: themeStore.navBarStyle) { _, _ in themeStore.save() }
-                Text("悬浮：底部悬浮胶囊栏；停靠：系统自带底部标签栏。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            // FlClash theme.dart _TabAnimationItem (enum.dart:825):
-            // slide / fade, default fade. The choice is stored in
-            // ThemeStore; the bottom-tab container that applies it
-            // lives in ContentView (not this file), which reads
-            // themeStore.tabAnimation.
-            Section("标签页切换动画") {
-                Picker("标签页切换动画", selection: $themeStore.tabAnimation) {
-                    ForEach(ThemeTabAnimation.allCases) { animation in
-                        Text(animation.label).tag(animation)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: themeStore.tabAnimation) { _, _ in themeStore.save() }
-                Text("滑动：页面左右滑动切换；淡入：页面淡入淡出切换。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            // FlClash theme.dart _LiquidGlassItem (enum.dart:827):
-            // none / standard / ultra, default none. Stored in
-            // ThemeStore; liquid glass needs iOS 26 glass rendering
-            // in the tab bar, which this iOS 17-target build does
-            // not do — the choice is saved and takes effect once
-            // the tab bar renders glass, it does nothing visible
-            // today.
-            Section("液态玻璃") {
-                Picker("液态玻璃", selection: $themeStore.liquidGlass) {
-                    ForEach(ThemeLiquidGlassMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .onChange(of: themeStore.liquidGlass) { _, _ in themeStore.save() }
-                Text("液态玻璃需要 iOS 26 及支持玻璃材质的界面；当前版本只保存你的选择，界面暂无可见变化。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("文字大小") {
-                Toggle("自定义文字大小", isOn: $themeStore.textScaleEnabled)
-                    .onChange(of: themeStore.textScaleEnabled) { _, _ in themeStore.save() }
-                if themeStore.textScaleEnabled {
+                // 主题色彩: header carries the reset icon (upstream
+                // _PrimaryColorItem), shown only when non-default.
+                VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text("小")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Slider(value: $themeStore.textScale, in: 0.8...1.4, step: 0.05)
-                            .onChange(of: themeStore.textScale) { _, _ in themeStore.save() }
-                        Text("大")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        Text("主题色彩")
+                            .font(.headline)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        Spacer()
+                        if isNonDefaultColor {
+                            Button { showResetConfirm = true } label: {
+                                Image(systemName: "arrow.counterclockwise")
+                                    .font(.system(size: 17, weight: .semibold))
+                                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("恢复默认颜色")
+                        }
                     }
-                    Text("当前 \(Int(themeStore.textScale * 100))%")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    VStack(spacing: 0) {
+                        // v0.2.141 (C2-d1): ONE swatch row, as upstream's
+                        // _ColorSwatches Wrap — the old split grids (main
+                        // presets / extra presets / custom list) are merged.
+                        // The presets are upstream's 8 + the teal preset
+                        // this app already shipped (kept) + magenta (the
+                        // MuYu video's primary); custom colours follow in
+                        // the same row. The add control stays below the row
+                        // (upstream's _AddColorButton opens a colour sheet;
+                        // ours keeps the inline picker).
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
+                            ForEach(ThemeAccent.allCases) { accent in
+                                Button {
+                                    themeStore.accent = accent
+                                    themeStore.customAccentHex = nil
+                                    themeStore.save()
+                                } label: {
+                                    VStack(spacing: 6) {
+                                        ZStack {
+                                            Circle()
+                                                .fill(accent.color)
+                                                .frame(width: 44, height: 44)
+                                            if themeStore.customAccentHex == nil && themeStore.accent == accent {
+                                                Image(systemName: "checkmark")
+                                                    .font(.callout.weight(.semibold))
+                                                    .fontWeight(.bold)
+                                                    .foregroundStyle(.white)
+                                            }
+                                        }
+                                        Text(accent.label)
+                                            .font(.caption2)
+                                            .foregroundStyle(themeStore.customAccentHex == nil && themeStore.accent == accent ? Color(.label) : .secondary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            ForEach(Self.extraPresets, id: \.hex) { preset in
+                                Button {
+                                    themeStore.customAccentHex = preset.hex
+                                    themeStore.save()
+                                } label: {
+                                    VStack(spacing: 6) {
+                                        ZStack {
+                                            Circle()
+                                                .fill(Color(hex: preset.hex) ?? .gray)
+                                                .frame(width: 44, height: 44)
+                                            if themeStore.customAccentHex == preset.hex {
+                                                Image(systemName: "checkmark")
+                                                    .font(.callout.weight(.semibold))
+                                                    .fontWeight(.bold)
+                                                    .foregroundStyle(.white)
+                                            }
+                                        }
+                                        Text(preset.label)
+                                            .font(.caption2)
+                                            .foregroundStyle(themeStore.customAccentHex == preset.hex ? Color(.label) : .secondary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            ForEach(themeStore.customColors, id: \.self) { hex in
+                                Button {
+                                    themeStore.customAccentHex = hex
+                                    themeStore.save()
+                                } label: {
+                                    VStack(spacing: 6) {
+                                        ZStack {
+                                            Circle()
+                                                .fill(Color(hex: hex) ?? .gray)
+                                                .frame(width: 44, height: 44)
+                                            if themeStore.customAccentHex == hex {
+                                                Image(systemName: "checkmark")
+                                                    .font(.callout.weight(.semibold))
+                                                    .fontWeight(.bold)
+                                                    .foregroundStyle(.white)
+                                            }
+                                        }
+                                        Text(hex)
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(themeStore.customAccentHex == hex ? Color(.label) : .secondary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                // Upstream's swatch menu (theme.dart
+                                // _ColorSwatches) has 编辑 + 删除 with a
+                                // confirm dialog; ours keeps the delete
+                                // half of that menu (no edit flow exists
+                                // here), now with upstream's confirm.
+                                .contextMenu {
+                                    Button("删除", role: .destructive) {
+                                        deletingCustomColor = hex
+                                    }
+                                }
+                            }
+                        }
+                        .padding(16)
+                        UpstreamDivider(leading: 16)
+                        HStack {
+                            ColorPicker("自定义颜色", selection: $newCustomColor)
+                            Button("添加") {
+                                guard let hex = Self.hexString(of: newCustomColor) else { return }
+                                if themeStore.customColors.contains(hex) {
+                                    customColorMessage = "这个颜色已经加过了"
+                                    return
+                                }
+                                themeStore.customColors.append(hex)
+                                themeStore.customAccentHex = hex
+                                themeStore.save()
+                                customColorMessage = nil
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                        if let customColorMessage {
+                            Text(customColorMessage)
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 16)
+                                .padding(.bottom, 10)
+                        }
+                    }
+                    .background(
+                        ConcordTheme.cardBackground,
+                        in: RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    )
+                    Text("主题色会用在按钮、开关、选中状态和进度条上。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                }
+
+                footerSection(header: "配色风格", footer: "生动：原样；柔和：降低饱和度；单色：灰色主题色。") {
+                    Picker("配色风格", selection: $themeStore.colorStyle) {
+                        ForEach(ThemeColorStyle.allCases) { style in
+                            Text(style.label).tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: themeStore.colorStyle) { _, _ in themeStore.save() }
+                    .padding(16)
+                }
+
+                footerSection(header: "底栏", footer: "悬浮：底部悬浮胶囊栏；停靠：系统自带底部标签栏。") {
+                    Picker("底栏", selection: $themeStore.navBarStyle) {
+                        ForEach(ThemeNavBarStyle.allCases) { style in
+                            Text(style.label).tag(style)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: themeStore.navBarStyle) { _, _ in themeStore.save() }
+                    .padding(16)
+                }
+
+                footerSection(header: "选项卡动画", footer: "滑动：页面左右滑动切换；淡入：页面淡入淡出切换。") {
+                    Picker("选项卡动画", selection: $themeStore.tabAnimation) {
+                        ForEach(ThemeTabAnimation.allCases) { animation in
+                            Text(animation.label).tag(animation)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: themeStore.tabAnimation) { _, _ in themeStore.save() }
+                    .padding(16)
+                }
+
+                footerSection(header: "液态玻璃", footer: "液态玻璃需要 iOS 26 及支持玻璃材质的界面；当前版本只保存你的选择，界面暂无可见变化。") {
+                    Picker("液态玻璃", selection: $themeStore.liquidGlass) {
+                        ForEach(ThemeLiquidGlassMode.allCases) { mode in
+                            Text(mode.label).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: themeStore.liquidGlass) { _, _ in themeStore.save() }
+                    .padding(16)
+                }
+
+                footerSection(header: "字体", footer: "系统默认字体，或已安装的任意字体。") {
+                    NavigationLink {
+                        FontPickerView()
+                    } label: {
+                        UpstreamNavRowContent(
+                            icon: "textformat",
+                            title: "字体",
+                            value: fontStore.selectedFamily ?? "默认"
+                        )
+                    }
+                }
+
+                footerSection(header: "文本缩放", footer: nil) {
+                    toggleRow("自定义文字大小", isOn: $themeStore.textScaleEnabled)
+                        .onChange(of: themeStore.textScaleEnabled) { _, _ in themeStore.save() }
+                    if themeStore.textScaleEnabled {
+                        UpstreamDivider(leading: 16)
+                        HStack {
+                            Text("小")
+                                .font(.caption2)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            Slider(value: $themeStore.textScale, in: 0.8...1.4, step: 0.05)
+                                .onChange(of: themeStore.textScale) { _, _ in themeStore.save() }
+                            Text("大")
+                                .font(.caption2)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                        UpstreamDivider(leading: 16)
+                        HStack {
+                            Text("当前 \(Int(themeStore.textScale * 100))%")
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            Spacer()
+                            if themeStore.textScale != 1.0 {
+                                Button("恢复") {
+                                    themeStore.textScale = 1.0
+                                    themeStore.save()
+                                }
+                                .font(.footnote)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                        UpstreamDivider(leading: 16)
+                        Text("预览 AaBbCc 1234")
+                            .font(.system(size: 17 * themeStore.textScale))
+                            .foregroundStyle(Color(.label))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .frame(minHeight: 56)
+                    }
                 }
             }
-
-            Section("字体") {
-                NavigationLink("settings.font".l10n) {
-                    FontPickerView()
-                }
-                Text("系统默认字体，或已安装的任意字体。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            // v0.2.66: tab-bar clearance for pushed pages.
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: tab-bar clearance for pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
-        .navigationTitle("主题")
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                }
+        .upstreamNavBar(title: "主题")
+        // FlClash theme.dart:109-135 _PrimaryColorItem reset:
+        // confirm, then back to the default blue + vivid
+        // style (and the preset list back to the defaults,
+        // which here means clearing user-added swatches).
+        .alert("恢复默认颜色吗？", isPresented: $showResetConfirm) {
+            Button("恢复默认", role: .destructive) {
+                themeStore.accent = .blue
+                themeStore.customAccentHex = nil
+                themeStore.customColors = []
+                themeStore.colorStyle = .vivid
+                themeStore.save()
             }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("主题色会回到默认蓝色，颜色风格回到生动，自己添加的颜色也会清空。")
         }
         // Upstream _handleDelete confirms before removing a
         // custom colour (and falls back to the default blue when
@@ -339,6 +383,65 @@ struct ThemePickerView: View {
             }
             Button("取消", role: .cancel) { deletingCustomColor = nil }
         }
+    }
+
+    /// One card section with a 13pt grey footer line under it.
+    private func footerSection<Content: View>(
+        header: String?,
+        footer: String?,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            UpstreamCardSection(header: header) {
+                content()
+            }
+            if let footer {
+                Text(footer)
+                    .font(.footnote)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    /// One appearance choice row: grey leading icon, 17pt title,
+    /// accent checkmark when selected.
+    private func appearanceRow(_ appearance: ThemeAppearance) -> some View {
+        Button {
+            themeStore.appearance = appearance
+            themeStore.save()
+        } label: {
+            HStack(spacing: 16) {
+                UpstreamRowIcon(systemName: appearance.icon)
+                Text(appearance.label)
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
+                Spacer()
+                if themeStore.appearance == appearance {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(ConcordTheme.accent)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 56)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// One toggle row: 17pt title, upstream switch (the style
+    /// renders the label + the 52x32 track, and the whole row
+    /// toggles, as upstream's ListItem.toggle).
+    private func toggleRow(_ title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
+            .font(.body)
+            .foregroundStyle(Color(.label))
+            .toggleStyle(UpstreamToggleStyle())
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 56)
     }
 
     /// "#RRGGBB" for a picked colour.

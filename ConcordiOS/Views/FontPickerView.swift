@@ -8,6 +8,9 @@ import SwiftUI
 // filters the long installed list. Footer states the CJK limit:
 // most iOS families are Latin-only, so Chinese text falls back to
 // the system font for CJK glyphs.
+// v0.2.159: upstream nav bar; the 13pt semibold container font is
+// gone — rows render at the 17pt body size upstream's SelectionSheet
+// uses, each name in its own family.
 
 struct FontPickerView: View {
     @EnvironmentObject private var fontStore: FontStore
@@ -48,7 +51,7 @@ struct FontPickerView: View {
                     } label: {
                         HStack(spacing: 12) {
                             Text(family)
-                                .font(fontStore.font(family: family, size: 13))
+                                .font(fontStore.font(family: family, size: 17))
                                 .foregroundStyle(Color(.label))
                             Spacer()
                             if fontStore.selectedFamily == family {
@@ -61,6 +64,8 @@ struct FontPickerView: View {
                 }
             } header: {
                 Text("已安装字体")
+                    .font(.headline)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
             } footer: {
                 Text("iOS 自带字体大多只含拉丁字母，中文仍会用系统字体显示；英文与数字会按所选字体显示。")
                     .font(.footnote)
@@ -70,9 +75,8 @@ struct FontPickerView: View {
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
         .searchable(text: $searchText, prompt: "搜索字体")
         .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
+        .padding(.top, 40)
         .background(ConcordTheme.pageBackground)
-        .navigationTitle("字体")
-        .navigationBarTitleDisplayMode(.inline)
+        .upstreamNavBar(title: "字体")
     }
 }

@@ -117,9 +117,9 @@ struct FiltersView: View {
                 perGroupFiltersList
             }
         }
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("过滤器")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .padding(.top, 40)
+        .upstreamNavBar(title: "筛选")
         .searchable(text: $namedSearch, prompt: "搜索名称或正则")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -191,7 +191,7 @@ struct FiltersView: View {
                     )
                 }
             } else {
-                Section("全局过滤器（\(namedStore.filters.count) 个）") {
+                Section(header: Text("全局过滤器（\(namedStore.filters.count) 个）").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     if namedSearch.isEmpty {
                         ForEach(namedStore.filters) { filter in
                             namedFilterRow(filter)
@@ -222,6 +222,9 @@ struct FiltersView: View {
                 }
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
     }
@@ -241,10 +244,10 @@ struct FiltersView: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(filter.label)
-                        .font(.headline)
+                        .font(.body)
                         .foregroundStyle(.primary)
                     Text(filter.regex)
-                        .font(.system(.footnote, design: .monospaced))
+                        .font(.system(.subheadline, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -273,7 +276,7 @@ struct FiltersView: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Section("代理组过滤器") {
+                Section(header: Text("代理组过滤器").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     ForEach(filters, id: \.group) { item in
                         Button {
                             editingGroup = item.group
@@ -283,7 +286,7 @@ struct FiltersView: View {
                                 Text(item.group)
                                 Spacer()
                                 Text(item.filter)
-                                    .font(.system(.body, design: .monospaced))
+                                    .font(.system(.subheadline, design: .monospaced))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                             }
@@ -300,6 +303,9 @@ struct FiltersView: View {
                 }
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
     }
@@ -377,7 +383,7 @@ private struct NamedFilterFormView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("过滤器") {
+                Section(header: Text("过滤器").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     TextField("名称（唯一）", text: $filter.label)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -397,7 +403,6 @@ private struct NamedFilterFormView: View {
                     }
                 }
             }
-            .font(.footnote.weight(.semibold))
             .navigationTitle(isNew ? "添加过滤器" : "编辑过滤器")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

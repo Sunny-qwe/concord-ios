@@ -2338,13 +2338,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请求与更新"
+            "value": "请求"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Requests & Updates"
+            "value": "Requests"
           }
         }
       }
@@ -2642,13 +2642,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "流量嗅探"
+            "value": "域名嗅探"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Traffic Sniffing"
+            "value": "Domain Sniffing"
           }
         }
       }
@@ -2706,13 +2706,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "主机映射"
+            "value": "Hosts"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Hosts Mapping"
+            "value": "Hosts"
           }
         }
       }
@@ -2866,13 +2866,13 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "规则提供方"
+            "value": "规则集"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Rule Providers"
+            "value": "Rule Sets"
           }
         }
       }

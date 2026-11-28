@@ -11,6 +11,18 @@ import SwiftUI
 //
 // The same section editor is reused by TunOverrideView (the TUN
 // section on its own page).
+//
+// v0.2.159: upstream has NO override hub — OverrideView is one
+// page per section (General / DNS / TUN / NTP / Sniffer), with an
+// app-bar add button and a quick-edit (YAML) app-bar button. The
+// hub is kept (it is the override editor's navigation unit in
+// this app), restyled to upstream cards; the per-section pages
+// match upstream's one-page-per-section shape. The per-profile
+// inline section mirrors FlClash's DnsView.profile /
+// NtpView.profile / SnifferView.profile (same page, profile
+// target). Override keys are NOT added/removed here — only
+// restyled (the map did not compare key specs against upstream
+// *OverrideKey enums).
 
 struct OverrideView: View {
     @ObservedObject private var store = OverrideStore.shared
@@ -30,92 +42,142 @@ struct OverrideView: View {
         _scope = State(initialValue: scope)
     }
 
+    /// Leading icon per override section (the hub rows are nav
+    /// rows, so each needs a grey UpstreamRowIcon).
+    private func sectionIcon(_ section: OverrideSection) -> String {
+        switch section {
+        case .general: return "slider.horizontal.3"
+        case .dns: return "network"
+        case .tun: return "cable.connector"
+        case .sniffer: return "antenna.radiowaves.left.and.right"
+        case .ntp: return "clock"
+        }
+    }
+
     var body: some View {
-        List {
-            Section {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
                 Text("覆盖只对启用的项生效：没启用的项用订阅自己的值。全局覆盖对所有订阅生效，单个订阅的覆盖优先于全局。改动在离开本页时自动应用（VPN 运行时立即生效，否则下次启动 VPN 时生效），也可以点「应用覆盖」立即应用。")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section("作用范围") {
-                Picker("作用范围", selection: $scope) {
-                    Text("全局（全部订阅）").tag(nil as String?)
-                    ForEach(profileStore.profiles) { profile in
-                        Text(profile.name).tag(profile.id.uuidString as String?)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                UpstreamCardSection(header: "作用范围") {
+                    HStack(spacing: 16) {
+                        Text("作用范围")
+                            .font(.body)
+                            .foregroundStyle(Color(.label))
+                        Spacer()
+                        Picker("", selection: $scope) {
+                            Text("全局（全部订阅）").tag(nil as String?)
+                            ForEach(profileStore.profiles) { profile in
+                                Text(profile.name).tag(profile.id.uuidString as String?)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .frame(minHeight: 56)
+                }
+                // One page per section (FlClash DnsView / NtpView /
+                // SnifferView / TunView + general overrides, each its
+                // own OverrideView with its own title and app-bar add
+                // button). Tapping a row pushes that section's editor.
+                UpstreamCardSection(header: "覆盖分组") {
+                    ForEach(OverrideSection.allCases) { section in
+                        if section != OverrideSection.allCases.first { UpstreamDivider() }
+                        NavigationLink {
+                            OverrideSectionPage(section: section, scope: scope)
+                                .concordNavBarBackground()
+                        } label: {
+                            UpstreamNavRowContent(
+                                icon: sectionIcon(section),
+                                title: section.label,
+                                value: "\(store.state(scope: scope, section: section).count) 项已启用"
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                .pickerStyle(.menu)
-            }
-            // One page per section (FlClash DnsView / NtpView /
-            // SnifferView / TunView + general overrides, each its
-            // own OverrideView with its own title and app-bar add
-            // button). Tapping a row pushes that section's editor.
-            Section("覆盖分组") {
-                ForEach(OverrideSection.allCases) { section in
-                    NavigationLink {
-                        OverrideSectionPage(section: section, scope: scope)
-                    } label: {
-                        HStack {
-                            Text(section.label)
-                            Spacer()
-                            Text("\(store.state(scope: scope, section: section).count) 项已启用")
+                UpstreamCardSection(header: "YAML 预览") {
+                    Text(store.yamlText(scope: scope))
+                        .font(.system(.footnote, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    UpstreamDivider(leading: 16)
+                    Button(copied ? "已复制" : "复制 YAML") {
+                        UIPasteboard.general.string = store.yamlText(scope: scope)
+                        copied = true
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(ConcordTheme.accent)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    UpstreamDivider(leading: 16)
+                    Text("也可以在下面直接编辑 YAML（解析校验通过后才保存）。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+                UpstreamCardSection(header: "YAML 快速编辑") {
+                    TextEditor(text: $yamlDraft)
+                        .font(.system(.footnote, design: .monospaced))
+                        .frame(minHeight: 200)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    UpstreamDivider(leading: 16)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button("校验并保存") {
+                            saveYAMLQuickEdit()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(ConcordTheme.accent)
+                        .frame(maxWidth: .infinity)
+                        .disabled(yamlDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if let yamlEditError {
+                            Text(yamlEditError)
                                 .font(.footnote)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.red)
+                        } else if yamlEditSaved {
+                            Text("已保存，离开本页时应用（或点「应用覆盖」立即应用）。")
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
                         }
                     }
-                }
-            }
-            Section("YAML 预览") {
-                Text(store.yamlText(scope: scope))
-                    .font(.system(.footnote, design: .monospaced))
-                    .textSelection(.enabled)
-                Button(copied ? "已复制" : "复制 YAML") {
-                    UIPasteboard.general.string = store.yamlText(scope: scope)
-                    copied = true
-                }
-                Text("也可以在下面直接编辑 YAML（解析校验通过后才保存）。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section("YAML 快速编辑") {
-                TextEditor(text: $yamlDraft)
-                    .font(.system(.footnote, design: .monospaced))
-                    .frame(minHeight: 200)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                Button("校验并保存") {
-                    saveYAMLQuickEdit()
-                }
-                .disabled(yamlDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if let yamlEditError {
-                    Text(yamlEditError)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    UpstreamDivider(leading: 16)
+                    Text("只接受 general、dns、tun、sniffer、ntp 五个分组和已知的覆盖项；未知项或类型不对会报错并保留原文本。test-url 不在这里编辑（它只保存在 App 内用作测速地址兜底）。切换作用范围会丢弃未保存的编辑。")
                         .font(.footnote)
-                        .foregroundStyle(.red)
-                } else if yamlEditSaved {
-                    Text("已保存，离开本页时应用（或点「应用覆盖」立即应用）。")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
                 }
-                Text("只接受 general、dns、tun、sniffer、ntp 五个分组和已知的覆盖项；未知项或类型不对会报错并保留原文本。test-url 不在这里编辑（它只保存在 App 内用作测速地址兜底）。切换作用范围会丢弃未保存的编辑。")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            Section {
-                Button("应用覆盖") {
-                    Task { await store.applyOverrides() }
-                }
-                if let message = store.applyMessage {
-                    Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Button("应用覆盖") {
+                        Task { await store.applyOverrides() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(ConcordTheme.accent)
+                    .frame(maxWidth: .infinity)
+                    if let message = store.applyMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    }
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("覆盖")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: "覆盖")
         .task {
             baselineYAML = store.yamlText(scope: scope)
             if yamlDraft.isEmpty {
@@ -330,14 +392,16 @@ private struct OverrideSectionPage: View {
     }
 
     var body: some View {
-        List {
-            OverrideSectionEditor(section: section, scope: $editableScope)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                OverrideSectionEditorCard(section: section, scope: $editableScope)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle(section.label)
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: section.label)
     }
 }
 
@@ -387,6 +451,70 @@ struct OverrideSectionEditor: View {
             } label: {
                 Label("添加覆盖项", systemImage: "plus.circle")
             }
+            .disabled(remainingSpecs.isEmpty)
+        }
+        .sheet(isPresented: $showAddSheet) {
+            OverrideAddSheet(section: section, scope: $scope, specs: remainingSpecs) {
+                showAddSheet = false
+            }
+            .formSheetChrome()
+        }
+    }
+}
+
+/// Card version of OverrideSectionEditor (v0.2.159): the same
+/// enabled-key rows + add button inside an UpstreamCardSection,
+/// for the ScrollView pages (OverrideSectionPage, the per-profile
+/// inline card). The Section version above is kept unchanged for
+/// TunOverrideView, which still embeds it in a List.
+struct OverrideSectionEditorCard: View {
+    let section: OverrideSection
+    @Binding var scope: String?
+    @ObservedObject private var store = OverrideStore.shared
+    @State private var showAddSheet = false
+
+    private var enabledKeys: [String] {
+        store.state(scope: scope, section: section).keys.sorted()
+    }
+
+    private var remainingSpecs: [OverrideKeySpec] {
+        let enabled = Set(enabledKeys)
+        return OverrideStore.specs(for: section).filter { spec in
+            guard !enabled.contains(spec.key) else { return false }
+            if section == .tun, spec.key == "congestion-controller",
+               let controllers = store.congestionControllers, controllers.isEmpty {
+                return false
+            }
+            return true
+        }
+    }
+
+    var body: some View {
+        UpstreamCardSection(header: section.label) {
+            ForEach(Array(enabledKeys.enumerated()), id: \.element) { index, key in
+                if index > 0 { UpstreamDivider(leading: 16) }
+                if let spec = OverrideStore.specs(for: section).first(where: { $0.key == key }) {
+                    OverrideKeyRow(section: section, scope: $scope, spec: spec)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
+            }
+            if !enabledKeys.isEmpty { UpstreamDivider(leading: 16) }
+            Button {
+                showAddSheet = true
+            } label: {
+                HStack(spacing: 16) {
+                    UpstreamRowIcon(systemName: "plus.circle")
+                    Text("添加覆盖项")
+                        .font(.body)
+                        .foregroundStyle(remainingSpecs.isEmpty ? Color(.tertiaryLabel) : ConcordTheme.accent)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .frame(minHeight: 56)
+            }
+            .buttonStyle(.plain)
             .disabled(remainingSpecs.isEmpty)
         }
         .sheet(isPresented: $showAddSheet) {
@@ -449,6 +577,66 @@ struct InlineProfileOverrideSection: View {
     }
 }
 
+/// Card version of InlineProfileOverrideSection (v0.2.159) for the
+/// ScrollView pages (NTP, Sniffer). The Section version above is
+/// kept unchanged for DnsSettingsView, which still embeds it in a
+/// List.
+struct InlineProfileOverrideCard: View {
+    let section: OverrideSection
+    @EnvironmentObject private var profileStore: ProfileStore
+    @ObservedObject private var store = OverrideStore.shared
+    @State private var scope: String? = nil
+
+    var body: some View {
+        UpstreamCardSection(header: "按订阅覆盖") {
+            HStack(spacing: 16) {
+                Text("订阅")
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
+                Spacer()
+                Picker("", selection: $scope) {
+                    Text("选择订阅…").tag(nil as String?)
+                    ForEach(profileStore.profiles) { profile in
+                        Text(profile.name).tag(profile.id.uuidString as String?)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 56)
+            if scope == nil {
+                UpstreamDivider(leading: 16)
+                Text("选一个订阅，在这里单独覆盖\(section.label)；没有覆盖的订阅用上面的全局设置。")
+                    .font(.footnote)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+            }
+        }
+        if scope != nil {
+            OverrideSectionEditorCard(section: section, scope: $scope)
+            VStack(alignment: .leading, spacing: 8) {
+                Button("应用覆盖") {
+                    Task { await store.applyOverrides() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(ConcordTheme.accent)
+                .frame(maxWidth: .infinity)
+                if let message = store.applyMessage {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                }
+                Text("覆盖只对该订阅生效；没有覆盖的项用上面的全局设置。VPN 运行时立即生效，否则下次启动 VPN 时生效。")
+                    .font(.footnote)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
 /// The add sheet: the section's remaining keys with their
 /// descriptions. Tapping one enables it at its default value.
 private struct OverrideAddSheet: View {
@@ -480,7 +668,6 @@ private struct OverrideAddSheet: View {
                     .buttonStyle(.plain)
                 }
             }
-            .font(.footnote.weight(.semibold))
             .navigationTitle("添加\(section.label)覆盖项")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -533,6 +720,7 @@ private struct OverrideKeyRow: View {
         case .toggle:
             Toggle(spec.label, isOn: boolBinding())
                 .labelsHidden()
+                .toggleStyle(UpstreamToggleStyle())
         case .text:
             TextField(spec.label, text: stringBinding())
                 .textInputAutocapitalization(.never)
@@ -705,16 +893,20 @@ private struct OverrideStringListPage: View {
     @Binding var items: [String]
 
     var body: some View {
-        List {
-            Section {
-                StringListEditor(items: $items, placeholder: "添加一项")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                UpstreamCardSection(header: nil) {
+                    StringListEditor(items: $items, placeholder: "添加一项")
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: title)
     }
 }
 
@@ -725,45 +917,65 @@ private struct OverrideNumberListPage: View {
     @State private var error: String?
 
     var body: some View {
-        List {
-            Section {
-                ForEach(items, id: \.self) { number in
-                    Text("\(number)")
-                        .font(.system(.body, design: .monospaced))
-                }
-                .onDelete { offsets in
-                    items.remove(atOffsets: offsets)
-                }
-                HStack {
-                    TextField("数字", text: $newItem)
-                        .keyboardType(.numberPad)
-                    Button("添加") {
-                        guard let number = Int(newItem.trimmingCharacters(in: .whitespaces)) else {
-                            error = "请输入数字"
-                            return
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                UpstreamCardSection(header: nil) {
+                    ForEach(Array(items.enumerated()), id: \.offset) { index, number in
+                        if index > 0 { UpstreamDivider(leading: 16) }
+                        HStack {
+                            Text("\(number)")
+                                .font(.system(.body, design: .monospaced))
+                            Spacer()
+                            Button {
+                                items.remove(at: index)
+                            } label: {
+                                Image(systemName: "minus.circle")
+                                    .foregroundStyle(.red)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        guard !items.contains(number) else {
-                            error = "这个数字已存在"
-                            return
-                        }
-                        error = nil
-                        items.append(number)
-                        newItem = ""
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
                     }
-                    .disabled(newItem.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                if let error {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
+                    if !items.isEmpty { UpstreamDivider(leading: 16) }
+                    HStack {
+                        TextField("数字", text: $newItem)
+                            .keyboardType(.numberPad)
+                        Button("添加") {
+                            guard let number = Int(newItem.trimmingCharacters(in: .whitespaces)) else {
+                                error = "请输入数字"
+                                return
+                            }
+                            guard !items.contains(number) else {
+                                error = "这个数字已存在"
+                                return
+                            }
+                            error = nil
+                            items.append(number)
+                            newItem = ""
+                        }
+                        .disabled(newItem.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .frame(minHeight: 56)
+                    if let error {
+                        UpstreamDivider(leading: 16)
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                    }
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: title)
     }
 }
 
@@ -772,15 +984,19 @@ private struct OverrideStringMapPage: View {
     @Binding var items: [String: String]
 
     var body: some View {
-        List {
-            Section {
-                KeyValueListEditor(items: $items, keyPlaceholder: "匹配", valuePlaceholder: "服务器")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                UpstreamCardSection(header: nil) {
+                    KeyValueListEditor(items: $items, keyPlaceholder: "匹配", valuePlaceholder: "服务器")
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: title)
     }
 }

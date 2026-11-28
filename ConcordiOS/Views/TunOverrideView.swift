@@ -31,6 +31,15 @@ import SwiftUI
 // congestion-controller key is gated on the core's capability
 // (MuYu tunCongestionAvailable) — see OverrideStore /
 // OverrideSectionEditor; the capability is refreshed on appear.
+//
+// v0.2.159: upstream nav bar + 17pt body rows (the 13pt container
+// font is gone) + 17pt semibold grey section headers. The page
+// stays a List: OverrideSectionEditor (OverrideView.swift, another
+// agent's file) emits SwiftUI Sections, which only render inside
+// a List/Form — so the 24pt UpstreamCardSection conversion is
+// blocked here; the List uses insetGrouped cards on the page
+// background instead. No override keys were added or removed
+// (the map notes the key specs were not compared key-by-key).
 
 struct TunOverrideView: View {
     @ObservedObject private var store = OverrideStore.shared
@@ -49,7 +58,7 @@ struct TunOverrideView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Section("作用范围") {
+            Section(header: sectionHeader("作用范围")) {
                 Picker("作用范围", selection: $scope) {
                     Text("全局（全部订阅）").tag(nil as String?)
                     ForEach(profileStore.profiles) { profile in
@@ -65,7 +74,7 @@ struct TunOverrideView: View {
             // controller (OverrideSectionEditor, C13-c2). The
             // capability is refreshed on appear so the gate has a
             // value before the user opens the add sheet.
-            Section("拥塞控制支持") {
+            Section(header: sectionHeader("拥塞控制支持")) {
                 Button("检查核心是否支持拥塞控制") {
                     Task {
                         await settingsStore.refreshDeveloperInfo()
@@ -89,7 +98,7 @@ struct TunOverrideView: View {
                 }
             }
             OverrideSectionEditor(section: .tun, scope: $scope)
-            Section("YAML 预览") {
+            Section(header: sectionHeader("YAML 预览")) {
                 Text(tunYamlText())
                     .font(.system(.footnote, design: .monospaced))
                     .textSelection(.enabled)
@@ -120,9 +129,11 @@ struct TunOverrideView: View {
         }
         // v0.2.66: tab-bar clearance for pushed pages
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("TUN 覆盖")
-        .navigationBarTitleDisplayMode(.inline)
+        .contentMargins(.top, 40)
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: "TUN 覆盖")
         .task {
             // C13-c2: refresh the congestion capability on appear
             // so the add sheet's gate has a value (unknown still
@@ -131,6 +142,13 @@ struct TunOverrideView: View {
                 await store.refreshCongestionCapability()
             }
         }
+    }
+
+    /// Upstream section header: 17pt semibold, onSurfaceVariant grey.
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(ConcordTheme.onSurfaceVariant)
     }
 
     private func tunYamlText() -> String {

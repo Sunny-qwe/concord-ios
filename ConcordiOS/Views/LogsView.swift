@@ -24,7 +24,6 @@ struct LogsView: View {
     @State private var showExportSuccess = false
     @State private var exportedFileName: String?
     @State private var showCopiedAlert = false
-    @Environment(\.dismiss) private var dismiss
     /// The log row tapped for its detail sheet (C8).
     @State private var selectedEntry: ConcordLogEntry?
     /// Persisted diagnostics (v0.2.40): AppCore writes the boot
@@ -127,20 +126,15 @@ struct LogsView: View {
                 if !logStore.warnings.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("核心警告（core.lastWarnings）")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(.headline)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
                         ForEach(logStore.warnings, id: \.message) { warning in
-                            Text(warning.message).font(.caption2).foregroundStyle(.orange)
+                            Text(warning.message).font(.footnote).foregroundStyle(.orange)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    // v0.2.111: this card only — radius 20, not the
-                    // global cardRadius 28 (user: 核心警告 card too
-                    // round). Same fill + padding + shadow as
-                    // .concordCard, only the corner radius differs.
                     .padding(12)
-                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20))
-                    .shadow(color: ConcordTheme.cardShadow, radius: 10, x: 0, y: 3)
+                    .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                     .padding(.horizontal)
                     .padding(.vertical, 4)
                 }
@@ -215,6 +209,7 @@ struct LogsView: View {
                     }
                 }
             }
+            .padding(.top, 40)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         // v0.2.63: the keyboard must not shift this page. The gap
@@ -225,16 +220,13 @@ struct LogsView: View {
         // never covers it anyway.
         .ignoresSafeArea(.keyboard)
             .background(ConcordTheme.pageBackground)
-            .navigationBarTitleDisplayMode(.inline)
-            // Upstream has no "返回" text: the leading slot holds a
-            // back chevron glyph only (scaffold.dart _buildPopButton).
-            .navigationBarBackButtonHidden(true)
+            // v0.2.159: upstream nav bar (circular icon-only back
+            // button + 17pt semibold left title). The log-level
+            // picker relocation is already done: the "日志等级"
+            // submenu below writes SettingsStore.logLevel, matching
+            // upstream logs.dart:76-100.
+            .upstreamNavBar(title: "日志")
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                }
-            }
                 ToolbarItem(placement: .topBarTrailing) {
                     // Level filter (upstream: the filter lives in
                     // the bar's overflow menu, not a permanent row;
@@ -430,8 +422,8 @@ struct LogsView: View {
     private func diagnosticsBlock(title: String, text: String?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.subheadline)
+                .foregroundStyle(ConcordTheme.onSurfaceVariant)
             if let text = text, !text.isEmpty {
                 Text(text)
                     .font(.system(.caption2, design: .monospaced))
@@ -445,7 +437,8 @@ struct LogsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .concordCard(padding: 12)
+        .padding(12)
+        .background(ConcordTheme.cardBackground, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     /// Writes the bundled log export to a .txt file in Documents
@@ -726,10 +719,12 @@ private struct LogEntryDetailView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
+                Section("基本信息") {
                     Text("\(ConcordFormat.time(entry.time)) · \(entry.level.uppercased())")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                Section("内容") {
                     Text(entry.text)
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)

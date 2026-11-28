@@ -12,6 +12,15 @@ import SwiftUI
 // loads the subscription's hosts (read-only, marked as such) and
 // saves the MERGED set (user entries win on a conflict), so a
 // save can never drop subscription hosts.
+//
+// v0.2.159: upstream MapEditView (general.dart:98-111) shows only
+// the user's own hosts map and saves on edit/close. Kept here:
+// the 订阅自带（只读） section (the merge that protects
+// subscription hosts depends on showing them) and the 保存 button
+// (our edits are staged — removing it would change save
+// semantics). Restyled to the upstream button (FilledButton
+// equivalent). Not added: upstream's per-key MITM-takeover note
+// (general.dart:104-110) — no such data is plumbed to this page.
 
 struct HostsView: View {
     @EnvironmentObject private var profileStore: ProfileStore
@@ -23,77 +32,94 @@ struct HostsView: View {
     @State private var message: String?
 
     var body: some View {
-        List {
-            Section {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
                 Text("把域名映射到固定 IP，核心在 DNS 查询前先查这张表。修改后重启 VPN 生效（或在 常规 页点「应用到核心」后重启）。")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            if !subscriptionHosts.isEmpty {
-                Section("订阅自带（只读）") {
-                    ForEach(Array(subscriptionHosts.enumerated()), id: \.offset) { _, entry in
-                        HStack {
-                            Text(entry.host)
-                            Spacer()
-                            Text(entry.ip)
-                                .font(.system(.body, design: .monospaced))
-                                .foregroundStyle(.secondary)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                if !subscriptionHosts.isEmpty {
+                    UpstreamCardSection(header: "订阅自带（只读）") {
+                        ForEach(Array(subscriptionHosts.enumerated()), id: \.offset) { index, entry in
+                            if index > 0 { UpstreamDivider(leading: 16) }
+                            HStack {
+                                Text(entry.host)
+                                    .font(.body)
+                                    .foregroundStyle(Color(.label))
+                                Spacer()
+                                Text(entry.ip)
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .frame(minHeight: 56)
                         }
                     }
                     Text("这些来自当前订阅，在这里不能删除或修改（改订阅本身才能去掉）；每次保存都会一并保留，不会丢。")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
-            }
-            Section("Hosts") {
-                // FlClash MapEditView: values edit in place. Each
-                // row is two text fields; leaving a field (submit)
-                // or tapping 保存 writes hosts.json.
-                ForEach(Array(hosts.enumerated()), id: \.offset) { index, _ in
-                    HostRowView(hosts: $hosts, index: index, onSubmit: save)
-                }
-                .onDelete { offsets in
-                    hosts.remove(atOffsets: offsets)
-                    save()
-                }
-                if hosts.contains(where: { !Self.isValidIP($0.ip) }) {
-                    Text("标红的 IP 格式不对：应为 IPv4（如 1.2.3.4）或 IPv6 地址。")
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-                HStack {
-                    TextField("域名，如 example.com", text: $newHost)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                    TextField("IP", text: $newIp)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .frame(width: 120)
-                    Button("添加") {
-                        addHost()
+                UpstreamCardSection(header: "Hosts") {
+                    // FlClash MapEditView: values edit in place. Each
+                    // row is two text fields; leaving a field (submit)
+                    // or tapping 保存 writes hosts.json.
+                    ForEach(Array(hosts.enumerated()), id: \.offset) { index, _ in
+                        if index > 0 { UpstreamDivider(leading: 16) }
+                        HostRowView(hosts: $hosts, index: index, onSubmit: save, onDelete: {
+                            hosts.remove(at: index)
+                            save()
+                        })
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .frame(minHeight: 56)
                     }
-                    .disabled(newHost.trimmingCharacters(in: .whitespaces).isEmpty || newIp.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if hosts.contains(where: { !Self.isValidIP($0.ip) }) {
+                        if !hosts.isEmpty { UpstreamDivider(leading: 16) }
+                        Text("标红的 IP 格式不对：应为 IPv4（如 1.2.3.4）或 IPv6 地址。")
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                    }
+                    if !hosts.isEmpty { UpstreamDivider(leading: 16) }
+                    HStack {
+                        TextField("域名，如 example.com", text: $newHost)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                        TextField("IP", text: $newIp)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .frame(width: 120)
+                        Button("添加") {
+                            addHost()
+                        }
+                        .disabled(newHost.trimmingCharacters(in: .whitespaces).isEmpty || newIp.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .frame(minHeight: 56)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    Button("保存") {
+                        save()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(ConcordTheme.accent)
+                    .frame(maxWidth: .infinity)
+                    .disabled(hosts.contains(where: { $0.host.trimmingCharacters(in: .whitespaces).isEmpty || !Self.isValidIP($0.ip) }))
+                    if let message {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    }
                 }
             }
-            Section {
-                Button("保存") {
-                    save()
-                }
-                .disabled(hosts.contains(where: { $0.host.trimmingCharacters(in: .whitespaces).isEmpty || !Self.isValidIP($0.ip) }))
-            }
-            if let message {
-                Section {
-                    Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: tab-bar clearance for pushed pages
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .font(.footnote.weight(.semibold))
-        .navigationTitle("Hosts")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: "Hosts")
         .onAppear { load() }
     }
 
@@ -252,10 +278,14 @@ struct HostsView: View {
 /// One hosts row, extracted into its own view so the List body stays
 /// trivial for the type checker (the inline row with two Bindings
 /// previously defeated ForEach overload resolution and type-checking).
+/// The delete button is explicit: this page is a ScrollView card now
+/// (v0.2.159), so the List swipe-to-delete the old version used no
+/// longer applies.
 private struct HostRowView: View {
     @Binding var hosts: [(host: String, ip: String)]
     let index: Int
     let onSubmit: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
         HStack {
@@ -276,6 +306,11 @@ private struct HostRowView: View {
             .font(.system(.body, design: .monospaced))
             .foregroundStyle(HostsView.isValidIP(hosts[index].ip) ? Color.primary : Color.red)
             .onSubmit { onSubmit() }
+            Button(action: onDelete) {
+                Image(systemName: "minus.circle")
+                    .foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
         }
     }
 }

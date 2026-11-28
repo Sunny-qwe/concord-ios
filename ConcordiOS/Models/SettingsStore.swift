@@ -1645,7 +1645,7 @@ final class SettingsStore: ObservableObject {
                 mitmStatusMessage = "CA 已就绪：\(info.subject)"
                 save()
             } else {
-                mitmStatusMessage = "核心尚未生成 CA 证书，请点「生成 CA 证书」"
+                mitmStatusMessage = "核心尚未生成 CA 证书，请点「生成证书」"
             }
         } catch {
             mitmStatusMessage = "读取 MITM 状态失败：\(error.localizedDescription)"

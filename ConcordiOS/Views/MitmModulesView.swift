@@ -94,8 +94,8 @@ struct MitmModulesView: View {
             restartTipSection
             if moduleStore.modules.isEmpty {
                 Text("暂无模块")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(.body)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
             ForEach(moduleStore.modules) { module in
                 moduleRow(for: module)
@@ -103,12 +103,12 @@ struct MitmModulesView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
-        .navigationTitle("模块")
-        .navigationBarTitleDisplayMode(.inline)
+        .upstreamNavBar(title: "模块")
+        .concordNavBarBackground()
         .toolbar {
             modulesToolbar
         }
@@ -153,15 +153,15 @@ struct MitmModulesView: View {
                 List {
                     Section {
                         Text("模块文本丢失，请重新导入。")
-                            .font(.caption2)
+                            .font(.footnote)
                             .foregroundStyle(.red)
                     }
                 }
+                .contentMargins(.top, 40)
                 .scrollContentBackground(.hidden)
-                .font(.footnote.weight(.semibold))
                 .background(ConcordTheme.pageBackground)
-                .navigationTitle(target.module.name)
-                .navigationBarTitleDisplayMode(.inline)
+                .upstreamNavBar(title: target.module.name)
+                .concordNavBarBackground()
             }
         }
         // Upstream mitm_modules.dart:160: URL import is an input
@@ -279,19 +279,19 @@ struct MitmModulesView: View {
             Section {
                 HStack {
                     Text("VPN 相关配置已改动，点击重启")
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.orange)
                     Spacer()
                     Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
                         Task { await restartVpn() }
                     }
-                    .font(.caption2)
+                    .font(.footnote)
                     .disabled(isRestartingVpn)
                     Button(action: { showRestartTip = false }) {
                         Image(systemName: "xmark")
                             .font(.system(size: 9, weight: .bold))
                     }
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
                     .buttonStyle(.plain)
                     .accessibilityLabel("不再提示")
                 }
@@ -397,12 +397,12 @@ struct MitmModulesView: View {
     private var modulesToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                Button("从链接导入") {
+                Button("新建模块") { showBlankEditorPage = true }
+                Button("通过URL导入") {
                     urlText = ""
                     showImportURLDialog = true
                 }
-                Button("从文件导入") { showImportFilePicker = true }
-                Button("新建空白模块") { showBlankEditorPage = true }
+                Button("通过文件导入") { showImportFilePicker = true }
             } label: {
                 Image(systemName: "plus.circle")
             }
@@ -599,13 +599,12 @@ private struct MitmModuleRow: View {
                 Button(action: toggleExpand) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(module.name)
-                            .font(.footnote)
-                            .fontWeight(.semibold)
+                            .font(.body)
                             .foregroundStyle(Color(.label))
                             .lineLimit(1)
                         Text(module.url != nil ? "远程" : "本地")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(.subheadline)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
                     }
                 }
                 .buttonStyle(.plain)
@@ -614,10 +613,13 @@ private struct MitmModuleRow: View {
                     get: { module.enabled },
                     set: { onToggle($0) }
                 ))
+                .toggleStyle(UpstreamToggleStyle())
                 .labelsHidden()
             }
             if isExpanded {
-                Divider()
+                Rectangle()
+                    .fill(Color(.label).opacity(0.14))
+                    .frame(height: 1 / UIScreen.main.scale)
                     .padding(.top, 8)
                 expandedDetail
                     .padding(.top, 8)
@@ -661,24 +663,24 @@ private struct MitmModuleRow: View {
                 // change.
                 Spacer()
                 Button(action: onMoveUp) {
-                    Image(systemName: "chevron.up").font(.footnote.weight(.semibold))
+                    Image(systemName: "chevron.up")
                 }
                 .disabled(moduleStore.modules.first?.id == module.id)
                 Button(action: onMoveDown) {
-                    Image(systemName: "chevron.down").font(.footnote.weight(.semibold))
+                    Image(systemName: "chevron.down")
                 }
                 .disabled(moduleStore.modules.last?.id == module.id)
             }
-            .foregroundStyle(.secondary)
+            .foregroundStyle(ConcordTheme.onSurfaceVariant)
             if !module.description.isEmpty {
                 Text(module.description)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
                     .lineLimit(2)
             }
             Text("更新于 \(ConcordRelativeTime.string(since: module.lastUpdateTime))")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.subheadline)
+                .foregroundStyle(ConcordTheme.onSurfaceVariant)
             statusArea
         }
     }
@@ -701,15 +703,15 @@ private struct MitmModuleRow: View {
                     .controlSize(.small)
             } else if let statusError {
                 Text("拉取状态失败：\(statusError)")
-                    .font(.caption2).foregroundStyle(.red)
+                    .font(.footnote).foregroundStyle(.red)
             } else {
                 Text("暂无状态")
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
             HStack(spacing: 16) {
                 Button("详情", action: onShowDetail)
             }
-            .font(.caption2)
+            .font(.footnote)
         }
     }
 
@@ -721,31 +723,31 @@ private struct MitmModuleRow: View {
             Text(status.enabled
                  ? (status.inForce ? "已启用 · 生效中" : "已启用 · 未生效")
                  : "未启用")
-                .font(.caption2)
-                .foregroundStyle(status.inForce ? Color.green : Color.secondary)
+                .font(.footnote)
+                .foregroundStyle(status.inForce ? Color.green : ConcordTheme.onSurfaceVariant)
             if let problem = status.problem {
                 Text(problemText(problem))
-                    .font(.caption2).foregroundStyle(.orange)
+                    .font(.footnote).foregroundStyle(.orange)
             }
             if let off = status.off {
                 Text(off.reason == "requirement"
                      ? "整体不生效：前置条件不满足"
                      : "整体不生效：前置条件无法读取")
-                    .font(.caption2).foregroundStyle(.orange)
+                    .font(.footnote).foregroundStyle(.orange)
             }
             if !status.resources.isEmpty {
                 Text("远程资源（\(status.resources.count)）")
-                    .font(.caption2).fontWeight(.semibold)
+                    .font(.footnote).fontWeight(.semibold)
                 ForEach(Array(status.resources.enumerated()), id: \.offset) { _, resource in
                     resourceRow(resource)
                 }
             }
             if !status.refusedRules.isEmpty {
                 Text("被拒绝的规则（\(status.refusedRules.count)）")
-                    .font(.caption2).fontWeight(.semibold)
+                    .font(.footnote).fontWeight(.semibold)
                 ForEach(Array(status.refusedRules.enumerated()), id: \.offset) { _, rule in
                     Text("第 \(rule.line) 行：\(rule.detail)")
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
             }
         }
@@ -769,26 +771,26 @@ private struct MitmModuleRow: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(resourceKindLabel(resource.kind))
-                    .font(.caption2).fontWeight(.semibold)
+                    .font(.footnote).fontWeight(.semibold)
                 Text(resourceStateLabel(resource.state))
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(resourceStateColor(resource.state))
                 if !resource.lines.isEmpty {
                     Text("行 \(resource.lines.map(String.init).joined(separator: "、"))")
-                        .font(.caption2).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
             }
             Text(resource.url)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 .lineLimit(2)
             if let file = resource.file, !file.isEmpty {
                 Text("已存为 \(file)")
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
             if let error = resource.error {
                 Text("拉取失败（\(error.reason)\(error.status.map { " \($0)" } ?? "")）：\(error.detail)")
-                    .font(.caption2).foregroundStyle(.orange)
+                    .font(.footnote).foregroundStyle(.orange)
             }
         }
     }
@@ -890,12 +892,12 @@ struct MitmModuleDetailView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
-        .navigationTitle(module?.name ?? "模块")
-        .navigationBarTitleDisplayMode(.inline)
+        .upstreamNavBar(title: module?.name ?? "模块")
+        .concordNavBarBackground()
         .task(id: moduleId) {
             coreContent = nil
             if let module, client.mode == .live, tunnelManager.isRunning {
@@ -924,15 +926,15 @@ struct MitmModuleDetailView: View {
                 List {
                     Section {
                         Text("模块文本丢失，请重新导入。")
-                            .font(.caption2)
+                            .font(.footnote)
                             .foregroundStyle(.red)
                     }
                 }
+                .contentMargins(.top, 40)
                 .scrollContentBackground(.hidden)
-                .font(.footnote.weight(.semibold))
                 .background(ConcordTheme.pageBackground)
-                .navigationTitle(module?.name ?? "模块")
-                .navigationBarTitleDisplayMode(.inline)
+                .upstreamNavBar(title: module?.name ?? "模块")
+                .concordNavBarBackground()
             }
         }
         .fileImporter(isPresented: $showAttachmentImporter, allowedContentTypes: [UTType.data]) { result in
@@ -1027,19 +1029,19 @@ struct MitmModuleDetailView: View {
             Section {
                 HStack {
                     Text("VPN 相关配置已改动，点击重启")
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.orange)
                     Spacer()
                     Button(isRestartingVpn ? "重启中…" : "重启 VPN") {
                         Task { await restartVpn() }
                     }
-                    .font(.caption2)
+                    .font(.footnote)
                     .disabled(isRestartingVpn)
                     Button(action: { showRestartTip = false }) {
                         Image(systemName: "xmark")
                             .font(.system(size: 9, weight: .bold))
                     }
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
                     .buttonStyle(.plain)
                     .accessibilityLabel("不再提示")
                 }
@@ -1053,15 +1055,36 @@ struct MitmModuleDetailView: View {
     @ViewBuilder
     private var detailInfoSection: some View {
         if let module {
+            // FlClash mitm_modules.dart detail build: the
+            // enabled toggle is the first section, its footer
+            // the about text (description + system tip).
+            // Upstream toggle title is `enabled` = 已开启.
             Section {
-                // FlClash mitm_modules.dart detail build: the
-                // enabled toggle is the first section.
-                Toggle("启用模块", isOn: Binding(
+                Toggle("已开启", isOn: Binding(
                     get: { module.enabled },
                     set: { on in toggleDetail(module, on: on) }
                 ))
-                Text(module.description.isEmpty ? "（无描述）" : module.description)
-                    .font(.footnote)
+                .toggleStyle(UpstreamToggleStyle())
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !module.description.isEmpty {
+                        Text(module.description)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    }
+                    if let tip = module.systemTip {
+                        Text(tip)
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                    }
+                    if let message = moduleStore.applyMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                    }
+                }
+            }
+            Section("来源") {
                 if let url = module.url {
                     // Upstream _sourceItems: the 来源 row opens the
                     // URL editor when the module is remote.
@@ -1078,12 +1101,6 @@ struct MitmModuleDetailView: View {
                     LabeledContent("来源", value: "本地")
                 }
                 LabeledContent("上次更新", value: ConcordRelativeTime.string(since: module.lastUpdateTime))
-                if let tip = module.systemTip {
-                    Text(tip).font(.caption2).foregroundStyle(.orange)
-                }
-                if let message = moduleStore.applyMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
-                }
             }
         }
     }
@@ -1120,18 +1137,21 @@ struct MitmModuleDetailView: View {
                             }
                         }
                     }
+                    .foregroundStyle(Color(.label))
                     .disabled(moduleStore.isBusy)
                 }
                 Button("编辑原文") { showEditorPage = true }
+                    .foregroundStyle(Color(.label))
                 if client.mode == .live && tunnelManager.isRunning {
                     Button("校验合并后的 MITM 配置") {
                         Task { await validate() }
                     }
+                    .foregroundStyle(Color(.label))
                     .disabled(isValidating)
                 }
                 if isValidating { ProgressView() }
                 if let message = validateMessage {
-                    Text(message).font(.caption2).foregroundStyle(.secondary)
+                    Text(message).font(.footnote).foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
                 validationIssuesSection
                 Button("删除模块", role: .destructive) { showDeleteConfirm = true }
@@ -1145,12 +1165,12 @@ struct MitmModuleDetailView: View {
     @ViewBuilder
     private var localAttachmentsSection: some View {
         if let module, module.url == nil {
-            Section("本地附件") {
+            Section("附件") {
                 let attachments = moduleStore.attachments(of: module)
                 if attachments.isEmpty {
                     Text("还没有本地附件。Map Local 行里 data=引用的文件可以先贴在这里，模块会用它。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
                 ForEach(attachments, id: \.self) { name in
                     HStack {
@@ -1169,11 +1189,12 @@ struct MitmModuleDetailView: View {
                     }
                 }
                 Button("添加本地文件") { showAttachmentImporter = true }
+                    .foregroundStyle(Color(.label))
                 Text("附件按内容命名存在核心资源目录；Map Local 行用 data=文件名引用它。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.footnote)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 if let error = moduleStore.lastError {
-                    Text(error).font(.caption2).foregroundStyle(.red)
+                    Text(error).font(.footnote).foregroundStyle(.red)
                 }
             }
         }
@@ -1188,28 +1209,9 @@ struct MitmModuleDetailView: View {
     private var parsedContentSection: some View {
         if let module {
             if let content = shownContent {
-                Section("解析出的内容") {
-                    if content.coreParsed {
-                        coreNote(content: content)
-                    }
-                    linesRow(title: "解密域名", key: "hostname", section: "mitm", lines: content.insertedHostname + content.hostname, content: content)
-                    linesRow(title: "URL 重写", key: "url-rewrite", section: "url rewrite", lines: content.urlRewrite, content: content)
-                    linesRow(title: "头重写", key: "header-rewrite", section: "header rewrite", lines: content.headerRewrite, content: content)
-                    linesRow(title: "正文重写", key: "body-rewrite", section: "body rewrite", lines: content.bodyRewrite, content: content)
-                    linesRow(title: "本地映射", key: "map-local", section: "map local", lines: content.mapLocal, content: content)
-                    linesRow(title: "请求体模拟", key: "request-body-mock", section: "request body mock", lines: content.requestBodyMock, content: content)
-                    linesRow(title: "跳过验证域名", key: nil, section: "mitm", lines: content.skipVerifyHostname, content: content)
-                    linesRow(title: "客户端来源", key: nil, section: "mitm", lines: content.clientSourceAddress, content: content)
-                    linesRow(title: "脚本", key: "script", section: "script", lines: content.script, content: content)
-                    linesRow(title: "规则", key: "rules", section: "rule", lines: content.rules, content: content, note: extendedMatchingNote(for: content))
-                    linesRow(title: "待下载资源", key: nil, section: "", lines: content.resourceUrls.sorted(), content: content)
-                    if !content.skipped.isEmpty {
-                        NavigationLink("跳过的行（\(content.skipped.count)）") {
-                            MitmModuleSkippedView(skipped: content.skipped).concordNavBarBackground()
-                        }
-                    }
-                }
-
+                // Upstream MitmModuleView order (mitm_modules.dart):
+                // 参数 / 资源 / 网络设置 / 规则 — arguments and
+                // network come before the rules lists.
                 if !content.arguments.isEmpty {
                     MitmModuleArgumentsSection(
                         module: module,
@@ -1229,10 +1231,10 @@ struct MitmModuleDetailView: View {
                         ForEach(Array(networkChanges(of: content.network).enumerated()), id: \.offset) { _, change in
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(change.title)
-                                    .font(.footnote.weight(.semibold))
+                                    .font(.body)
                                 Text(change.subtitle)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .font(.subheadline)
+                                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
                             }
                         }
                     } header: {
@@ -1240,8 +1242,34 @@ struct MitmModuleDetailView: View {
                     } footer: {
                         Text("启用时会覆盖下列网络设置。")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
                     }
+                }
+
+                Section("规则") {
+                    if content.coreParsed {
+                        coreNote(content: content)
+                    }
+                    linesRow(title: "主机名", key: "hostname", section: "mitm", lines: content.insertedHostname + content.hostname, content: content)
+                    linesRow(title: "URL 重写", key: "url-rewrite", section: "url rewrite", lines: content.urlRewrite, content: content)
+                    linesRow(title: "Header 重写", key: "header-rewrite", section: "header rewrite", lines: content.headerRewrite, content: content)
+                    linesRow(title: "Body 重写", key: "body-rewrite", section: "body rewrite", lines: content.bodyRewrite, content: content)
+                    linesRow(title: "本地映射", key: "map-local", section: "map local", lines: content.mapLocal, content: content)
+                    linesRow(title: "请求体替换", key: "request-body-mock", section: "request body mock", lines: content.requestBodyMock, content: content)
+                    linesRow(title: "不校验证书的主机", key: nil, section: "mitm", lines: content.skipVerifyHostname, content: content)
+                    linesRow(title: "客户端地址", key: nil, section: "mitm", lines: content.clientSourceAddress, content: content)
+                    linesRow(title: "脚本", key: "script", section: "script", lines: content.script, content: content)
+                    linesRow(title: "分流规则", key: "rules", section: "rule", lines: content.rules, content: content, note: extendedMatchingNote(for: content))
+                    linesRow(title: "待下载资源", key: nil, section: "", lines: content.resourceUrls.sorted(), content: content)
+                    if !content.skipped.isEmpty {
+                        NavigationLink("忽略的行（\(content.skipped.count)）") {
+                            MitmModuleSkippedView(skipped: content.skipped).concordNavBarBackground()
+                        }
+                    }
+                } footer: {
+                    Text("先于配置自身的规则匹配。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
 
                 // FlClash mitm_modules.dart:55-76: run one script
@@ -1253,11 +1281,11 @@ struct MitmModuleDetailView: View {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(name.isEmpty ? line : name)
-                                        .font(.footnote.weight(.semibold))
+                                        .font(.body)
                                         .lineLimit(1)
                                     Text(line)
                                         .font(.system(.caption, design: .monospaced))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                                         .lineLimit(2)
                                 }
                                 Spacer()
@@ -1273,13 +1301,13 @@ struct MitmModuleDetailView: View {
                         }
                         if !module.enabled || !settingsStore.mitmEnabled {
                             Text("先启用模块并打开 MITM，才能运行脚本。")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
                         }
                         if let runMessage {
                             Text(runMessage)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
                         }
                         if let runResult {
                             JSONValueView(value: runResult)
@@ -1290,7 +1318,7 @@ struct MitmModuleDetailView: View {
             } else {
                 Section {
                     Text("模块文本丢失，请重新导入。")
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.red)
                 }
             }
@@ -1388,10 +1416,10 @@ struct MitmModuleDetailView: View {
         if let issues = validateIssues, !issues.isEmpty {
             ForEach(issues.keys.sorted(), id: \.self) { list in
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(list).font(.caption2).fontWeight(.semibold)
+                    Text(list).font(.footnote).fontWeight(.semibold)
                     ForEach(issues[list] ?? [], id: \.index) { issue in
                         Text("第 \(issue.index + 1) 行：\(issue.message)")
-                            .font(.caption2)
+                            .font(.footnote)
                             .foregroundStyle(.red)
                     }
                 }
@@ -1533,7 +1561,8 @@ struct MitmModuleDetailView: View {
                             Text(note)
                         }
                     }
-                    .foregroundStyle(.secondary)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
                 }
             }
         }
@@ -1640,24 +1669,24 @@ struct MitmModuleDetailView: View {
     private func coreNote(content: MitmModuleContent) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("核心已解析（\(content.coreFormat ?? "?")）")
-                .font(.caption2).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(ConcordTheme.onSurfaceVariant)
             if let off = content.coreOffReason {
                 Text("该模块整体不生效：\(off == "requirement" ? "前置条件不满足" : "前置条件无法读取")")
-                    .font(.caption2).foregroundStyle(.orange)
+                    .font(.footnote).foregroundStyle(.orange)
             }
             if content.coreAsksConsent {
                 Text("该模块会改动 DNS / hosts / 路由等你未设置的项")
-                    .font(.caption2).foregroundStyle(.orange)
+                    .font(.footnote).foregroundStyle(.orange)
             }
             if content.coreIssueCount > 0 {
                 Text("核心有 \(content.coreIssueCount) 行无法读取（见下方校验）")
-                    .font(.caption2).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
             ForEach(Array(content.coreIgnored.prefix(10)), id: \.self) { line in
-                Text(line).font(.caption2).foregroundStyle(.secondary)
+                Text(line).font(.footnote).foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
             if content.coreIgnored.count > 10 {
-                Text("等 \(content.coreIgnored.count) 行").font(.caption2).foregroundStyle(.secondary)
+                Text("等 \(content.coreIgnored.count) 行").font(.footnote).foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
         }
     }
@@ -1698,10 +1727,9 @@ private struct MitmModuleArgumentsSection: View {
             ForEach(arguments, id: \.name) { argument in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(argument.title)
-                        .font(.footnote)
-                        .fontWeight(.semibold)
+                        .font(.body)
                     if let description = argument.description, !description.isEmpty {
-                        Text(description).font(.caption2).foregroundStyle(.secondary)
+                        Text(description).font(.subheadline).foregroundStyle(ConcordTheme.onSurfaceVariant)
                     }
                     switch argument.type {
                     case .input:
@@ -1721,6 +1749,7 @@ private struct MitmModuleArgumentsSection: View {
                             get: { (values[argument.name] ?? argument.defaultValue) == "true" },
                             set: { values[argument.name] = $0 ? "true" : "false" }
                         ))
+                        .toggleStyle(UpstreamToggleStyle())
                     }
                 }
             }
@@ -1729,11 +1758,11 @@ private struct MitmModuleArgumentsSection: View {
             // (toggle / select) save immediately; text input saves
             // on submit, so typing does not re-parse per keystroke.
             if let savedMessage {
-                Text(savedMessage).font(.caption2).foregroundStyle(.green)
+                Text(savedMessage).font(.footnote).foregroundStyle(.green)
             }
             Text("参数会填进模块的每一行（Surge 的 {{{参数}}}、Loon 的 ${参数}、Stash 的 ${args.参数}）。改参数后需要资源的行会重新下载。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.footnote)
+                .foregroundStyle(ConcordTheme.onSurfaceVariant)
         }
         .onAppear {
             var initial: [String: String] = [:]
@@ -1799,8 +1828,8 @@ struct MitmModuleLinesView: View {
         List {
             if lines.isEmpty {
                 Text("没有内容")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.footnote)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
                 VStack(alignment: .leading, spacing: 2) {
@@ -1822,7 +1851,7 @@ struct MitmModuleLinesView: View {
                     if let issueLines = issues[line] {
                         ForEach(issueLines, id: \.self) { issue in
                             Text(issue)
-                                .font(.caption2)
+                                .font(.subheadline)
                                 .foregroundStyle(.red)
                         }
                     }
@@ -1831,11 +1860,12 @@ struct MitmModuleLinesView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
-        .navigationTitle(title)
-        .navigationBarTitleDisplayMode(.inline)
+        .upstreamNavBar(title: title)
+        .concordNavBarBackground()
     }
 }
 
@@ -1848,8 +1878,8 @@ struct MitmModuleSkippedView: View {
         List {
             Section {
                 Text("这些行 FlClash 也带不过来：原因写在每行下面。改模块原文可以去掉它们。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(.footnote)
+                    .foregroundStyle(ConcordTheme.onSurfaceVariant)
             }
             ForEach(Array(skipped.enumerated()), id: \.offset) { _, skip in
                 VStack(alignment: .leading, spacing: 4) {
@@ -1857,18 +1887,19 @@ struct MitmModuleSkippedView: View {
                         .font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled)
                     Text("\(skip.section) · \(skip.reason.label)")
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.orange)
                 }
             }
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
         .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
-        .navigationTitle("跳过的行")
-        .navigationBarTitleDisplayMode(.inline)
+        .upstreamNavBar(title: "忽略的行")
+        .concordNavBarBackground()
     }
 }
 
@@ -1908,9 +1939,14 @@ struct MitmModuleTextEditorView: View {
     var body: some View {
         if pushed {
             editorContent
+                .contentMargins(.top, 40)
+                .upstreamNavBar(title: module?.name ?? "新建模块")
+                .concordNavBarBackground()
         } else {
             NavigationStack {
                 editorContent
+                    .navigationTitle(module?.name ?? "新建模块")
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button("取消") { dismiss() }
@@ -1930,11 +1966,11 @@ struct MitmModuleTextEditorView: View {
                         .autocapitalization(.none)
                         .autocorrectionDisabled()
                     Text("支持 Surge、Loon、Quantumult X 和 Stash 覆写语法。保存后会重新解析、重新下载资源；带新脚本的模块会先暂停。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
                     if module == nil {
                         Text("空白模板本身还不是一个模块：先加一行规则、重写或域名再保存。")
-                            .font(.caption2)
+                            .font(.footnote)
                             .foregroundStyle(.orange)
                     }
                 }
@@ -1953,17 +1989,15 @@ struct MitmModuleTextEditorView: View {
                             }
                         }
                     }
+                    .foregroundStyle(Color(.label))
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || moduleStore.isBusy)
                     if let error = moduleStore.lastError {
-                        Text(error).font(.caption2).foregroundStyle(.red)
+                        Text(error).font(.footnote).foregroundStyle(.red)
                     }
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
             .background(ConcordTheme.pageBackground)
-            .navigationTitle(module?.name ?? "新建模块")
-            .navigationBarTitleDisplayMode(.inline)
     }
 }

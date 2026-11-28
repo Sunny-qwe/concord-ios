@@ -16,10 +16,15 @@ import UniformTypeIdentifiers
 // After a successful restore the stores are reloaded here (profiles
 // / settings / MITM modules / theme) and the active profile is
 // re-applied live when the tunnel is running.
+//
+// v0.2.159: sections, order and wording follow upstream
+// backup_and_restore.dart (远程 / 本地 / 选项). Kept, restyled
+// only: the generate + share export (the iOS equivalent of
+// upstream's desktop save-file picker) and the inline WebDAV
+// fields (upstream uses a WebDAVForm sheet).
 
 struct BackupView: View {
     @EnvironmentObject private var profileStore: ProfileStore
-    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var mitmModuleStore: MitmModuleStore
     @EnvironmentObject private var themeStore: ThemeStore
@@ -79,154 +84,203 @@ struct BackupView: View {
     @State private var lastTestedWebDAVAccount: WebDAVAccount?
 
     var body: some View {
-        List {
-            Section("导出备份") {
-                Text("备份为 FlClash 格式（config.json + database.sqlite + 配置文件），文件名 FlClash_backup_YYYY-MM-DD.zip，可在 FlClash 里直接恢复。实时快照（流量、连接、日志）和地理数据库不备份，下次打开 App 时会自动重新生成。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Button {
-                    Task { await createBackup() }
-                } label: {
-                    Label("生成备份文件", systemImage: "archivebox")
-                }
-                .disabled(backupStore.isWorking)
-                if let backupURL {
-                    ShareLink(item: backupURL, preview: SharePreview("FlClash 备份", image: Image(systemName: "archivebox"))) {
-                        Label("分享备份文件", systemImage: "square.and.arrow.up")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                // 远程 (upstream first section): the WebDAV account
+                // inline (upstream: WebDAVForm sheet) + the remote
+                // backup / restore rows.
+                UpstreamCardSection(header: "远程") {
+                    HStack(spacing: 8) {
+                        // Upstream _DavConnectionIndicator next to the
+                        // "连接状态" label: a 12pt spinner while testing,
+                        // a green dot when connected, a red dot on failure.
+                        switch webdavState {
+                        case .unconfigured:
+                            Circle()
+                                .fill(Color.gray)
+                                .frame(width: 12, height: 12)
+                            Text("未配置")
+                                .font(.body)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        case .testing:
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("正在检测…")
+                                .font(.body)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        case .connected:
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 12, height: 12)
+                            Text("已连接")
+                                .font(.body)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        case .failed:
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 12, height: 12)
+                            Text("连接失败")
+                                .font(.body)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        }
+                        Spacer()
                     }
-                    Text("备份文件：\(backupURL.lastPathComponent)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section("导入备份") {
-                Text("支持 FlClash 格式和本站旧格式备份，自动识别，无需选择。导入前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text(backupStore.restoreStrategy == .compatible
-                     ? "兼容模式：备份里没有的订阅、设置和 MITM 模块保留原样。"
-                     : "覆盖模式：按备份内容完全替换恢复范围里的数据。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Picker("恢复策略", selection: $backupStore.restoreStrategy) {
-                    ForEach(BackupStore.RestoreStrategy.allCases) { strategy in
-                        Text(strategy.label).tag(strategy)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .frame(minHeight: 56)
+                    UpstreamDivider(leading: 16)
+                    TextField("WebDAV 地址，如 https://dav.example.com/backup/", text: $webdavURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .onChange(of: webdavURL) { _, _ in scheduleWebDAVTest() }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                    UpstreamDivider(leading: 16)
+                    TextField("用户名", text: $webdavUsername)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: webdavUsername) { _, _ in scheduleWebDAVTest() }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                    UpstreamDivider(leading: 16)
+                    SecureField("密码", text: $webdavPassword)
+                        .onChange(of: webdavPassword) { _, _ in scheduleWebDAVTest() }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                    UpstreamDivider(leading: 16)
+                    TextField("备份文件名", text: $webdavFileName)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .frame(minHeight: 56)
+                    UpstreamDivider(leading: 16)
+                    backupActionRow(icon: "square.and.arrow.up", title: "上传当前备份到 WebDAV") {
+                        Task { await uploadToWebDAV() }
+                    }
+                    .disabled(webdavURL.trimmingCharacters(in: .whitespaces).isEmpty || backupStore.isWorking)
+                    UpstreamDivider()
+                    backupActionRow(icon: "square.and.arrow.down", title: "从 WebDAV 下载并恢复") {
+                        Task { await downloadFromWebDAV() }
+                    }
+                    .disabled(webdavURL.trimmingCharacters(in: .whitespaces).isEmpty || backupStore.isWorking)
+                    if let webdavStatus {
+                        UpstreamDivider()
+                        Text(webdavStatus)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
                     }
                 }
-                .pickerStyle(.segmented)
-                Text(backupStore.restoreStrategy.detail)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Button {
-                    pendingAfterScope = .pickFile
-                    showScopeDialog = true
-                } label: {
-                    Label("选择备份文件…", systemImage: "square.and.arrow.down")
-                }
-                .disabled(backupStore.isWorking)
-            }
 
-            Section("WebDAV 远程备份") {
-                // Upstream _DavConnectionIndicator next to the
-                // "连接状态" label: a 12pt spinner while testing,
-                // a green dot when connected, a red dot on failure.
-                HStack {
-                    switch webdavState {
-                    case .unconfigured:
-                        Circle()
-                            .fill(Color.gray)
-                            .frame(width: 12, height: 12)
-                        Text("未配置")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    case .testing:
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("正在检测…")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    case .connected:
-                        Circle()
-                            .fill(Color.green)
-                            .frame(width: 12, height: 12)
-                        Text("已连接")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    case .failed:
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 12, height: 12)
-                        Text("连接失败")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                // 本地 (upstream second section): backup + restore.
+                VStack(alignment: .leading, spacing: 12) {
+                    UpstreamCardSection(header: "本地") {
+                        backupActionRow(icon: "archivebox", title: "生成备份文件") {
+                            Task { await createBackup() }
+                        }
+                        .disabled(backupStore.isWorking)
+                        if let backupURL {
+                            UpstreamDivider()
+                            ShareLink(item: backupURL, preview: SharePreview("FlClash 备份", image: Image(systemName: "archivebox"))) {
+                                HStack(spacing: 16) {
+                                    UpstreamRowIcon(systemName: "square.and.arrow.up")
+                                    Text("分享备份文件")
+                                        .font(.body)
+                                        .foregroundStyle(Color(.label))
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .frame(minHeight: 56)
+                                .contentShape(Rectangle())
+                            }
+                            UpstreamDivider()
+                            Text("备份文件：\(backupURL.lastPathComponent)")
+                                .font(.footnote)
+                                .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                        }
+                        UpstreamDivider(leading: 16)
+                        backupActionRow(icon: "square.and.arrow.down", title: "选择备份文件…") {
+                            pendingAfterScope = .pickFile
+                            showScopeDialog = true
+                        }
+                        .disabled(backupStore.isWorking)
                     }
-                    Spacer()
+                    Text("备份为 FlClash 格式（config.json + database.sqlite + 配置文件），文件名 FlClash_backup_YYYY-MM-DD.zip，可在 FlClash 里直接恢复。实时快照（流量、连接、日志）和地理数据库不备份，下次打开 App 时会自动重新生成。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
                 }
-                TextField("WebDAV 地址，如 https://dav.example.com/backup/", text: $webdavURL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                    .onChange(of: webdavURL) { _, _ in scheduleWebDAVTest() }
-                TextField("用户名", text: $webdavUsername)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .onChange(of: webdavUsername) { _, _ in scheduleWebDAVTest() }
-                SecureField("密码", text: $webdavPassword)
-                    .onChange(of: webdavPassword) { _, _ in scheduleWebDAVTest() }
-                TextField("备份文件名", text: $webdavFileName)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button("上传当前备份到 WebDAV") {
-                    Task { await uploadToWebDAV() }
-                }
-                .disabled(webdavURL.trimmingCharacters(in: .whitespaces).isEmpty || backupStore.isWorking)
-                Button("从 WebDAV 下载并恢复") {
-                    Task { await downloadFromWebDAV() }
-                }
-                .disabled(webdavURL.trimmingCharacters(in: .whitespaces).isEmpty || backupStore.isWorking)
-                if let webdavStatus {
-                    Text(webdavStatus)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
 
-            if backupStore.isWorking {
-                Section {
+                // 选项 (upstream third section): the restore strategy.
+                VStack(alignment: .leading, spacing: 12) {
+                    UpstreamCardSection(header: "选项") {
+                        Picker("恢复策略", selection: $backupStore.restoreStrategy) {
+                            ForEach(BackupStore.RestoreStrategy.allCases) { strategy in
+                                Text(strategy.label).tag(strategy)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .padding(16)
+                        UpstreamDivider(leading: 16)
+                        Text(backupStore.restoreStrategy == .compatible
+                             ? "兼容模式：备份里没有的订阅、设置和 MITM 模块保留原样。"
+                             : "覆盖模式：按备份内容完全替换恢复范围里的数据。")
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                        UpstreamDivider(leading: 16)
+                        Text(backupStore.restoreStrategy.detail)
+                            .font(.footnote)
+                            .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                    }
+                    Text("支持 FlClash 格式和本站旧格式备份，自动识别，无需选择。导入前会先完整校验备份文件，损坏的备份不会改动任何数据；恢复后各页面会自动重新加载，VPN 正在运行时建议重启一次 VPN。")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
+                }
+
+                if backupStore.isWorking {
                     ProgressView("正在处理…")
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
                 }
-            }
-            if let message {
-                Section {
+                if let message {
                     Text(message)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(.footnote)
+                        .foregroundStyle(ConcordTheme.onSurfaceVariant)
+                        .padding(.horizontal, 16)
                 }
-            }
-            if let errorMessage {
-                Section {
+                if let errorMessage {
                     Text(errorMessage)
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.red)
+                        .padding(.horizontal, 16)
                 }
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 40)
+            // v0.2.66: tab-bar clearance for pushed pages.
+            .padding(.bottom, ConcordTheme.tabBarClearance)
         }
-        // v0.2.66: tab-bar clearance for pushed pages.
-        .contentMargins(.bottom, ConcordTheme.tabBarClearance)
-        .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
         .background(ConcordTheme.pageBackground)
-        .navigationTitle("备份与恢复")
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(true)
-        .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button { dismiss() } label: {
-                    Image(systemName: "chevron.left")
-                }
-            }
-        }
+        .upstreamNavBar(title: "备份与恢复")
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.zip], allowsMultipleSelection: false) { result in
             switch result {
             case .success(let urls):
@@ -249,16 +303,16 @@ struct BackupView: View {
         // modules) and only keeps the current settings.
         .alert("恢复备份", isPresented: $showScopeDialog) {
             Button("取消", role: .cancel) { pendingAfterScope = nil }
-            Button("恢复全部数据") {
+            Button("恢复所有数据") {
                 restoreScope = .all
                 proceedAfterScope()
             }
-            Button("仅恢复配置") {
+            Button("仅恢复配置文件") {
                 restoreScope = .profilesOnly
                 proceedAfterScope()
             }
         } message: {
-            Text("恢复全部数据：备份里的配置与设置全部恢复。仅恢复配置：备份里的数据全部恢复，但保持当前设置不变。")
+            Text("恢复所有数据：备份里的配置与设置全部恢复。仅恢复配置文件：备份里的数据全部恢复，但保持当前设置不变。")
         }
         .task {
             // Live WebDAV indicator (FlClash shows the account state
@@ -270,6 +324,24 @@ struct BackupView: View {
                 await testWebDAV()
             }
         }
+    }
+
+    /// One action row: grey leading icon + 17pt title.
+    private func backupActionRow(icon: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 16) {
+                UpstreamRowIcon(systemName: icon)
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(Color(.label))
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 56)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     /// Runs after the scope dialog dismisses, so the file picker

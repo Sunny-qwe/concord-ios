@@ -46,12 +46,11 @@ struct ScriptsView: View {
         }
         // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
         .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+        .contentMargins(.top, 40)
         .scrollContentBackground(.hidden)
-        .font(.footnote.weight(.semibold))
-        .background(ConcordTheme.pageBackground)
         .listStyle(.insetGrouped)
-        .navigationTitle("脚本")
-        .navigationBarTitleDisplayMode(.inline)
+        .background(ConcordTheme.pageBackground)
+        .upstreamNavBar(title: "脚本")
         .toolbar {
             toolbarContent
         }
@@ -139,7 +138,7 @@ struct ScriptsView: View {
     /// own: the whole body as one expression timed out (v0.2.85
     /// CI runs #238–239).
     private var scriptsSection: some View {
-        Section("脚本（\(scriptStore.scripts.count)）") {
+        Section(header: Text("脚本（\(scriptStore.scripts.count)）").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
             if scriptStore.scripts.isEmpty {
                 Text("还没有脚本。点右上角 + 新建一个，或从链接、文件导入。")
                     .font(.caption2)
@@ -247,12 +246,11 @@ private struct ScriptRow: View {
             Button(action: onEdit) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(script.label)
-                        .font(.footnote)
-                        .fontWeight(.semibold)
+                        .font(.body)
                         .foregroundStyle(Color(.label))
                         .lineLimit(1)
                     Text(script.isRemote ? "远程" : "本地")
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -262,7 +260,7 @@ private struct ScriptRow: View {
                 ProgressView()
             } else {
                 Text(ConcordRelativeTime.string(since: script.lastUpdateTime))
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Menu {
@@ -339,7 +337,7 @@ private struct ScriptEditorView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
-                Section("脚本内容") {
+                Section(header: Text("脚本内容").font(.headline).foregroundStyle(ConcordTheme.onSurfaceVariant)) {
                     TextEditor(text: $text)
                         .frame(minHeight: 420)
                         .font(.system(.body, design: .monospaced))
@@ -361,25 +359,47 @@ private struct ScriptEditorView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
+            .contentMargins(.top, pushed ? 40 : 0)
             .background(ConcordTheme.pageBackground)
-            .navigationTitle(script?.label ?? "新建脚本")
+            .navigationTitle(pushed ? "" : (script?.label ?? "新建脚本"))
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarBackButtonHidden(pushed)
+            .navigationBarBackButtonHidden(true)
             .toolbar {
                 if pushed {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button {
-                            if isDirty {
-                                showUnsavedConfirm = true
-                            } else {
-                                dismiss()
+                    // v0.2.159: the upstream circular icon-only back
+                    // button (same custom-drawn "<" on a 44pt card
+                    // circle as UpstreamBackButton, no shadow), but
+                    // with this editor's unsaved-changes guard:
+                    // upstream _handleEditorPop asks before
+                    // discarding, so the plain dismiss in
+                    // UpstreamBackButton would lose the guard — the
+                    // button is restyled, not removed.
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        HStack(spacing: 16) {
+                            Button {
+                                if isDirty {
+                                    showUnsavedConfirm = true
+                                } else {
+                                    dismiss()
+                                }
+                            } label: {
+                                // Same custom-drawn "<" as
+                                // UpstreamBackButton (no shadow), with
+                                // this editor's unsaved-changes guard.
+                                Path { path in
+                                    path.move(to: CGPoint(x: 8, y: 0))
+                                    path.addLine(to: CGPoint(x: 0, y: 7.5))
+                                    path.addLine(to: CGPoint(x: 8, y: 15))
+                                }
+                                .stroke(Color(.label), style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+                                .frame(width: 8, height: 15)
+                                .frame(width: 44, height: 44)
+                                .background(ConcordTheme.cardBackground, in: Circle())
                             }
-                        } label: {
-                            HStack(spacing: 2) {
-                                Image(systemName: "chevron.left")
-                                Text("返回")
-                            }
+                            .buttonStyle(.plain)
+                            Text(script?.label ?? "新建脚本")
+                                .font(.headline)
+                                .foregroundStyle(Color(.label))
                         }
                     }
                 }

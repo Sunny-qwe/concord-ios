@@ -259,8 +259,8 @@ struct MitmExchangeAction: Codable {
     static func kindLabel(for kind: String) -> String {
         switch kind {
         case "url-rewrite": return "URL 重写"
-        case "header-rewrite": return "头重写"
-        case "body-rewrite": return "正文重写"
+        case "header-rewrite": return "Header 重写"
+        case "body-rewrite": return "Body 重写"
         case "map-local": return "本地映射"
         case "script": return "脚本"
         default: return kind

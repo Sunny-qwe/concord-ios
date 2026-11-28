@@ -498,16 +498,9 @@ struct DnsQueriesView: View {
                     pageList(proxy: proxy)
                         .background(ConcordTheme.pageBackground)
                         .listStyle(.insetGrouped)
-                        .navigationTitle("DNS 查询")
-                        .navigationBarTitleDisplayMode(.inline)
-                        .navigationBarBackButtonHidden(true)
+                        .upstreamNavBar(title: "DNS 查询")
                         .searchable(text: $dnsStore.searchText, prompt: "搜索域名或上游")
                         .toolbar {
-                            ToolbarItem(placement: .navigationBarLeading) {
-                                Button { dismiss() } label: {
-                                    Image(systemName: "chevron.left")
-                                }
-                            }
                             ToolbarItem(placement: .topBarTrailing) {
                                 // Filter menu (v0.2.139, C19-c1 —
                                 // upstream dns_queries.dart
@@ -698,6 +691,7 @@ struct DnsQueriesView: View {
             List {
                 Section("查询记录（dns.watch）") {
                     Toggle("跟随最新", isOn: $followEnd)
+                        .toggleStyle(UpstreamToggleStyle())
                         .onChange(of: followEnd) { _, on in
                             if on { scrollToNewest(proxy) }
                         }
@@ -721,41 +715,42 @@ struct DnsQueriesView: View {
                             Button {
                                 selectedEntry = entry
                             } label: {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack {
-                                        Text(entry.domain).font(.footnote)
-                                        Spacer()
-                                        Text(entry.type)
-                                            .font(.caption2)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(dnsCapsuleFill, in: Capsule())
+                                // Upstream DnsQueryRow (dns_queries.dart):
+                                // leading 40pt type well; title = domain,
+                                // subheadline 15; subtitle = initiator ·
+                                // summary (error / failure rcode / answers),
+                                // caption1 12 tabular, red when failed;
+                                // trailing = "N ms" footnote 13 + 缓存
+                                // caption2 11 when cached. No upstream /
+                                // timestamp / keyword chips in the row —
+                                // those live in the detail sheet (or the
+                                // search box), not the feed row.
+                                HStack(alignment: .top, spacing: 12) {
+                                    UpstreamLabelWell(label: entry.type)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(entry.domain)
+                                            .font(.subheadline)
+                                            .lineLimit(1)
+                                        Text(dnsQuerySubtitle(entry))
+                                            .font(.caption)
+                                            .foregroundStyle(DnsErrorRow.isFailed(entry) ? .red : .secondary)
+                                            .lineLimit(1)
                                     }
-                                    Text("上游 \(entry.upstream) · \(entry.delay) ms · \(entry.cached == true ? "缓存命中" : "实时查询")\(entry.initiator.isEmpty ? "" : " · 发起方 \(entry.initiator)")")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    Text("应答：\(entry.answers.joined(separator: ", "))")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    // Keyword chips (FlClash _DnsKeyword):
-                                    // tapping one filters the list by it.
-                                    HStack(spacing: 6) {
-                                        DnsKeywordChip(label: entry.type, isError: false) {
-                                            toggleSearch(entry.type)
+                                    Spacer(minLength: 8)
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text("\(entry.delay) ms")
+                                            .font(.footnote)
+                                            .foregroundStyle(.secondary)
+                                            .monospacedDigit()
+                                        if entry.cached == true {
+                                            Text("缓存")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
                                         }
-                                        if let rcode = entry.rcode, !rcode.isEmpty {
-                                            DnsKeywordChip(label: rcode, isError: DnsErrorRow.isFailed(entry)) {
-                                                toggleSearch(rcode)
-                                            }
-                                        }
                                     }
-                                    if let error = entry.error {
-                                        DnsErrorRow(error: error)
-                                    }
-                                    Text(ConcordFormat.time(entry.time))
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 2)
                             }
                             .buttonStyle(.plain)
                         }
@@ -764,34 +759,24 @@ struct DnsQueriesView: View {
             }
             // v0.2.66: bottom clearance for the floating tab bar on pushed pages.
             .contentMargins(.bottom, ConcordTheme.tabBarClearance)
+            .contentMargins(.top, 40)
             .scrollContentBackground(.hidden)
-            .font(.footnote.weight(.semibold))
         }
     }
 
-    /// Tapping a keyword chip filters by it; tapping it again clears.
-    private func toggleSearch(_ keyword: String) {
-        dnsStore.searchText = dnsStore.searchText == keyword ? "" : keyword
-    }
-}
-
-/// A tappable keyword chip (FlClash _DnsKeyword): type or rcode.
-/// Tapping filters the record list by that keyword.
-private struct DnsKeywordChip: View {
-    let label: String
-    let isError: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(label)
-                .font(.caption2.weight(.semibold))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(isError ? Color.red.opacity(0.12) : dnsCapsuleFill, in: Capsule())
-                .foregroundStyle(isError ? Color.red : Color.primary)
+    /// Upstream DnsQueryExt.summary (common.dart): the error, else the
+    /// failure rcode, else the answers; the row subtitle prefixes the
+    /// initiator when present.
+    private func dnsQuerySubtitle(_ entry: ConcordDnsEntry) -> String {
+        let summary: String
+        if let error = entry.error, !error.isEmpty {
+            summary = error
+        } else if let rcode = entry.rcode, !rcode.isEmpty, rcode != "NOERROR", rcode != "NoError" {
+            summary = rcode
+        } else {
+            summary = entry.answers.joined(separator: ", ")
         }
-        .buttonStyle(.plain)
+        return [entry.initiator, summary].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 }
 
@@ -883,7 +868,6 @@ private struct DnsEntryDetailView: View {
                     }
                 }
             }
-            .font(.footnote.weight(.semibold))
             .navigationTitle("DNS 详情")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

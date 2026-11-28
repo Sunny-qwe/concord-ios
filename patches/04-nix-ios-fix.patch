@@ -262,7 +262,7 @@ Subject: [PATCH 04/10] ios: vendor nix 0.31.3 with macOS-only utun gating
  create mode 100644 vendor/nix-0.31.3-ios/test/test_unistd.rs
 
 diff --git a/Cargo.toml b/Cargo.toml
-index 40e09fb..c1c6926 100644
+index 0443af2..a17e59b 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -32,7 +32,7 @@ members = [
@@ -286,14 +286,18 @@ index 40e09fb..c1c6926 100644
  
  rustls = { path = "vendor/rustls" }
 diff --git a/vendor/PATCHES.md b/vendor/PATCHES.md
-index 2fbed4a..3364128 100644
+index 79b89a3..e248cf1 100644
 --- a/vendor/PATCHES.md
 +++ b/vendor/PATCHES.md
-@@ -37,9 +37,10 @@ crate's directory, its `[patch.crates-io]` entry and its lines in `UPSTREAM.sha2
+@@ -37,13 +37,14 @@ crate's directory, its `[patch.crates-io]` entry and its lines in `UPSTREAM.sha2
  | gotatun | Deliver already-ready encrypted IP packets to the bounded UDP queue together | None yet | Propose the batch handoff to mullvad/gotatun |
  | h2 | Ignore DATA and HEADERS on forgotten client streams | None as of 0.4.20 | Issue and PR to hyperium/h2 with the delayed-DATA-after-reset transport test |
  | h2 | Opt-in split-I/O client direct DATA writes | None as of 0.4.20 | Propose split-transport client API to hyperium/h2 once framing and multi-stream contracts settle |
  | h2 | `SendStream::poll_drained` before a reset | None as of 0.4.20 | Propose to hyperium/h2 with the NaiveProxy tunnel-close transport test |
+ | h2 | Request priority through `ext::StreamPriority` | None | None planned: only the NaiveProxy outbound's fingerprint uses it |
+ | h2 | Huffman-code a string only when that is shorter | None as of 0.4.20 | PR to hyperium/h2 citing Go's hpack, Chromium's encoder and nghttp2, which all choose so |
+ | h2 | `client::Builder::index_pseudo_headers` | None | None planned: only the NaiveProxy outbound's fingerprint uses it |
+ | h2 | `SendStream::send_reset_padded` | None | None planned: only the NaiveProxy outbound's fingerprint uses it |
  | mio | High-resolution timed waits on Windows | None | PR to tokio-rs/mio, citing Go's default poller path |
  | mio | Nanosecond timed waits through `epoll_pwait2` on Linux | None | PR to tokio-rs/mio |
 +| nix | macOS-only gating of the utun/kern-control items | None | PR to nix-rust/nix gating KextControl/UtunIfname to macOS |
@@ -320,7 +324,7 @@ index 2fbed4a..3364128 100644
  
  - `src/endpoint.rs`, `src/endpoint/recv_buffer.rs`: receive scratch is leased from a thread-local cache only
 diff --git a/vendor/UPSTREAM.sha256 b/vendor/UPSTREAM.sha256
-index 740f5d2..6de8d54 100644
+index 62b6cbe..74ffe9c 100644
 --- a/vendor/UPSTREAM.sha256
 +++ b/vendor/UPSTREAM.sha256
 @@ -674,6 +674,132 @@ a45db000a52725c799b464fd73b70d6b4cb723a0da6c452ee975974f32ad2ba8  boring/test/rs

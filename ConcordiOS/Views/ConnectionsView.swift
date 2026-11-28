@@ -42,33 +42,21 @@ struct ConnectionsView: View {
     /// listDragGesture all gone; no dead mechanism left). The
     /// drag now comes from SheetListDragPan: a UIKit
     /// UIPanGestureRecognizer on the underlying UITableView,
-    /// attached by the zero-height bridge row at the top of each
-    /// List branch below. It latches only on a drag that starts
-    /// at the top, forwards translation + release velocity to
+    /// attached by the zero-height SheetListDragPan view at the
+    /// top of the sheet list below. It latches only on a drag
+    /// that starts at the top, forwards translation + release velocity to
     /// onSheetDragChanged/onSheetDragEnded, and recognises
     /// simultaneously with the table view's own pan recognizer —
     /// the list still scrolls a little while the sheet grows,
     /// and pull-to-refresh still works (no .scrollDisabled). It
     /// also works with zero rows, where a scroll-position-driven
-    /// approach could never fire. In page mode the callbacks are
-    /// nil and the bridge is a no-op.
-
-    /// The zero-height bridge row for the list-drag coordination
-    /// above (one per List branch — a List's rows cannot share a
-    /// single bridge view). SheetListDragPan mounts here and
-    /// attaches its UIKit pan recognizer to the underlying
-    /// UITableView (see SheetListDragPan.swift).
-    private var sheetListDragBridge: some View {
-        SheetListDragPan(
-            onChanged: { if let onSheetDragChanged { onSheetDragChanged($0) } },
-            onEnded: { translation, velocity in
-                if let onSheetDragEnded { onSheetDragEnded(translation, velocity) }
-            }
-        )
-        .frame(height: 0)
-        .listRowSeparator(.hidden)
-        .listRowInsets(EdgeInsets())
-    }
+    /// approach could never fire. v0.2.163: the page List carries
+    /// NO bridge — in page mode the callbacks are nil, and a
+    /// zero-height UIKit-backed row inside an insetGrouped List
+    /// renders at the default row height inside the section's
+    /// white card, leaving the blank card the user circled on
+    /// IMG_1412. The bridge lives only in the sheet's LazyVStack,
+    /// where zero height is truly zero.
 
     /// v0.2.66: tab-bar clearance for pushed pages. True only when
     /// pushed from Tools; the Dashboard sheet keeps the default false.
@@ -279,8 +267,15 @@ struct ConnectionsView: View {
                     }
                 }
             } else {
+                // v0.2.163: 4pt, not 40 — upstream's header sits
+                // `_headerTop` (4pt, requests.dart:832) below the
+                // search field, and the .searchable field already
+                // occupies the 40pt zone below the bar. The 40pt
+                // top padding (the 159 pushed-page rule) double-
+                // counted it and left the blank band the user
+                // circled on IMG_1412.
                 contentStack
-                    .padding(.top, 40)
+                    .padding(.top, 4)
                     .background(ConcordTheme.pageBackground)
                     .upstreamNavBar(title: "连接")
                     .searchable(text: $connectionStore.searchText, prompt: "搜索域名、规则、进程或 field:值")
@@ -951,7 +946,6 @@ struct ConnectionsView: View {
             // RecordMinuteList): after each minute's records, a
             // footnote row `HH:mm  N` (today) or `MM-DD HH:mm  N`.
             List {
-                sheetListDragBridge
                 ForEach(Array(connectionStore.minuteGroups(list).enumerated()), id: \.offset) { item in
                     ForEach(item.element.rows) { connection in
                         connectionRowButton(connection, isLive: connectionStore.isLive(connection.id))

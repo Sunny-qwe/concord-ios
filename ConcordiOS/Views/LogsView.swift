@@ -177,6 +177,10 @@ struct LogsView: View {
                             // FloatingScrollbar + hintBuilder).
                             if !logStore.filtered.isEmpty {
                                 LogsFloatingScrollbar(entries: logStore.filtered, proxy: proxy)
+                                    // v0.2.166: pin explicitly to the trailing edge —
+                                    // IMG_1421 showed the thumb at the LEFT edge
+                                    // although the ZStack alignment is .trailing.
+                                    .frame(maxWidth: .infinity, alignment: .trailing)
                             }
                         }
                     }

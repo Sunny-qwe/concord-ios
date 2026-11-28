@@ -332,8 +332,13 @@ struct UpstreamBackButton: View {
 }
 
 /// Upstream-style top-right bar button (v0.2.165, C): 44pt circle on
-/// the card surface, no shadow, 24pt SF Symbol glyph, plain style —
+/// the card surface, no shadow, 16pt SF Symbol glyph, plain style —
 /// the same treatment as UpstreamBackButton, for the trailing slot.
+/// v0.2.166: the glyph was 24pt and rendered ~30pt visual (IMG_1422:
+/// our + measured 30.3pt, MuYu's 19.7pt) — upstream's GlyphIcon at
+/// icon 24 has internal padding and renders ~20pt visual, so the SF
+/// font must be 16 to match. The 44pt circle is unchanged (it matches
+/// MuYu's measured 43.7pt exactly).
 /// Glyphs: `ellipsis` for ⋯ menus (never `ellipsis.circle`), `plus.circle`
 /// for ⊕ add, `square.and.pencil` for ✎ quick-edit.
 struct UpstreamBarButton: View {
@@ -352,7 +357,7 @@ struct UpstreamBarButton: View {
     var body: some View {
         Button(role: role, action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 24))
+                .font(.system(size: 16))
                 .foregroundStyle(Color(.label))
                 .frame(width: 44, height: 44)
                 .background(ConcordTheme.cardBackground, in: Circle())
@@ -374,7 +379,7 @@ struct UpstreamBarButtonMenu<Content: View>: View {
             content()
         } label: {
             Image(systemName: systemName)
-                .font(.system(size: 24))
+                .font(.system(size: 16))
                 .foregroundStyle(Color(.label))
                 .frame(width: 44, height: 44)
                 .background(ConcordTheme.cardBackground, in: Circle())
@@ -399,7 +404,7 @@ struct UpstreamBarButtonGroup: View {
         HStack(spacing: 0) {
             Button(action: firstAction) {
                 Image(systemName: firstSystemName)
-                    .font(.system(size: 24))
+                    .font(.system(size: 16))
                     .foregroundStyle(Color(.label))
                     .frame(width: 44, height: 44)
                     .accessibilityLabel(firstLabel)
@@ -407,7 +412,7 @@ struct UpstreamBarButtonGroup: View {
             .buttonStyle(.plain)
             Button(action: secondAction) {
                 Image(systemName: secondSystemName)
-                    .font(.system(size: 24))
+                    .font(.system(size: 16))
                     .foregroundStyle(Color(.label))
                     .frame(width: 44, height: 44)
                     .accessibilityLabel(secondLabel)

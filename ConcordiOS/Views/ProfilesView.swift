@@ -436,7 +436,17 @@ struct ProfilesView: View {
             Label("profiles.addMenu.scan".l10n, systemImage: "qrcode.viewfinder")
                 .font(.subheadline)
         }
-        Button { showFileImporter = true } label: {
+        Button {
+            // v0.2.166: present the picker only after the menu has
+            // fully dismissed — presenting .fileImporter straight out
+            // of the Menu action orphaned its delegate (user video
+            // cf/cfc04069: picker opened, taps on a file did nothing,
+            // picker never dismissed).
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(350))
+                showFileImporter = true
+            }
+        } label: {
             Label("profiles.addMenu.file".l10n, systemImage: "doc")
                 .font(.subheadline)
         }

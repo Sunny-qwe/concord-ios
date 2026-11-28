@@ -907,19 +907,21 @@ struct ConnectionsView: View {
     /// first (see ConnectionStore.displayedConnections).
     @ViewBuilder
     private func connectionList(_ list: [LiveConnection]) -> some View {
-        if sheetChrome {
-            // v0.2.128 item 1: the sheet's list was a SwiftUI List
-            // (.insetGrouped), whose section top inset left a large
-            // blank area between the filter pills and the first row
-            // (IMG_1356). The DNS sheet was converted to ScrollView
-            // + LazyVStack for exactly this class of List-in-sheet
-            // layout problem (v0.2.102) — this mirrors it: no top
-            // padding, one rounded card per row, the zero-height
-            // drag bridge first. Live rows lose swipe-to-disconnect
-            // here (a List feature); the detail header's close
-            // button keeps the function.
-            ScrollView {
-                LazyVStack(spacing: 12) {
+        // v0.2.128 item 1 (sheet) + v0.2.163 (page, IMG_1412):
+        // a SwiftUI List (.insetGrouped) leaves a large blank area
+        // between the filter pills and the first row — the first
+        // section's top inset plus the zero-height bridge row
+        // rendering at the default row height inside the section's
+        // white card. The DNS sheet was converted to ScrollView +
+        // LazyVStack for exactly this class of layout problem
+        // (v0.2.102); both branches use it now: no top padding, one
+        // rounded card per row, the zero-height drag bridge first
+        // in sheet mode only. Live rows lose swipe-to-disconnect
+        // (a List feature); the long-press menu's 断开连接 and the
+        // detail header's close button keep the function.
+        ScrollView {
+            LazyVStack(spacing: 12) {
+                if sheetChrome {
                     SheetListDragPan(
                         onChanged: { if let onSheetDragChanged { onSheetDragChanged($0) } },
                         onEnded: { translation, velocity in
@@ -927,64 +929,31 @@ struct ConnectionsView: View {
                         }
                     )
                     .frame(height: 0)
-                    // Flat list with per-minute separator rows
-                    // (upstream RecordMinuteList): after each
-                    // minute's records, a footnote row `HH:mm  N`
-                    // (today) or `MM-DD HH:mm  N`.
-                    ForEach(Array(connectionStore.minuteGroups(list).enumerated()), id: \.offset) { item in
-                        ForEach(item.element.rows) { connection in
-                            connectionCardButton(connection, isLive: connectionStore.isLive(connection.id))
-                        }
-                        minuteSeparatorRow(item.element)
-                    }
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 76)
-            }
-        } else {
-            // Flat list with per-minute separator rows (upstream
-            // RecordMinuteList): after each minute's records, a
-            // footnote row `HH:mm  N` (today) or `MM-DD HH:mm  N`.
-            List {
+                // Flat list with per-minute separator rows
+                // (upstream RecordMinuteList): after each
+                // minute's records, a footnote row `HH:mm  N`
+                // (today) or `MM-DD HH:mm  N`.
                 ForEach(Array(connectionStore.minuteGroups(list).enumerated()), id: \.offset) { item in
                     ForEach(item.element.rows) { connection in
-                        connectionRowButton(connection, isLive: connectionStore.isLive(connection.id))
+                        connectionCardButton(connection, isLive: connectionStore.isLive(connection.id))
                     }
                     minuteSeparatorRow(item.element)
                 }
             }
-            .listStyle(.insetGrouped)
-            .scrollContentBackground(.hidden)
+            .padding(.horizontal, 16)
             // v0.2.66: tab-bar clearance for pushed pages.
-            .contentMargins(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
+            .padding(.bottom, sheetChrome ? 76 : (applyTabBarClearance ? ConcordTheme.tabBarClearance : 0))
         }
     }
 
-    /// One row's Button: opens the detail sheet, swipe-to-
-    /// disconnect on live rows, context menu (upstream
-    /// trackerInfoMenuItems).
-    private func connectionRowButton(_ connection: LiveConnection, isLive: Bool) -> some View {
-        Button { openDetail(connection, isLive: isLive) } label: {
-            connectionRow(connection, isLive: isLive)
-        }
-        .buttonStyle(.plain)
-        .listRowBackground(ConcordTheme.cardBackground)
-        .contextMenu { rowContextMenu(connection, isLive: isLive) }
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            if isLive {
-                Button("断开", role: .destructive) {
-                    Task { await connectionStore.close(connection) }
-                }
-            }
-        }
-    }
-
-    /// One row as a rounded card (sheet mode, v0.2.128 item 1):
-    /// the same Button (tap → detail) as connectionRowButton,
-    /// but the row is a card (cardBackground, radius 16 — the DNS
-    /// sheet's row radius) and there are no swipe actions (a List
-    /// feature). The detail header's close button keeps the
-    /// disconnect function for live rows.
+    /// One row as a rounded card (sheet mode since v0.2.128 item 1,
+    /// page mode since v0.2.163): the same Button (tap → detail)
+    /// as the former List row, but the row is a card
+    /// (cardBackground, radius 16 — the DNS sheet's row radius)
+    /// and there are no swipe actions (a List feature). The
+    /// long-press menu's 断开连接 and the detail header's close
+    /// button keep the disconnect function for live rows.
     private func connectionCardButton(_ connection: LiveConnection, isLive: Bool) -> some View {
         Button { openDetail(connection, isLive: isLive) } label: {
             connectionRow(connection, isLive: isLive)

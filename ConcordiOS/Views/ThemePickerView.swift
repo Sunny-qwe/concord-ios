@@ -389,7 +389,7 @@ struct ThemePickerView: View {
     private func footerSection<Content: View>(
         header: String?,
         footer: String?,
-        @ViewBuilder content: () -> Content
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             UpstreamCardSection(header: header) {

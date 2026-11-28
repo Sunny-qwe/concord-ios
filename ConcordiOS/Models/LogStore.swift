@@ -86,7 +86,14 @@ final class LogStore: ObservableObject {
         // Main-thread watchdog (v0.2.102): stall lines recorded
         // when the main thread stops responding, so a freeze ships
         // its time + last user action in the export. Always present.
-        sections.append("== 主线程卡死诊断 ==\n" + (MainThreadWatchdog.lastDiagnosticText() ?? "暂无记录（尚未检测到主线程卡死）"))
+        var watchdogText = MainThreadWatchdog.lastDiagnosticText() ?? "暂无记录（尚未检测到主线程卡死）"
+        // v0.2.169: the stack sampled at the newest stall rides
+        // along with the stall lines, so the next freeze names the
+        // stuck call instead of only timing it.
+        if let stack = MainThreadWatchdog.lastStackText() {
+            watchdogText += "\n" + stack
+        }
+        sections.append("== 主线程卡死诊断 ==\n" + watchdogText)
         // Proxy group tap diagnostics (v0.2.119 FIX 2): one tap's
         // "button fired" + "toggled" lines, so an untappable group
         // card ships its proof in the export. Always present.
@@ -131,7 +138,7 @@ final class LogStore: ObservableObject {
         }
         let tunnel = TunnelManager.shared
         sections.append("== 系统 VPN 状态 ==\n状态码：\(tunnel.status.rawValue)\n启动错误：\(tunnel.lastError ?? "无")\n系统断开错误：\(tunnel.lastSystemDisconnectError ?? "暂未获取")")
-        sections.append("== VPN 启动诊断 ==\n" + (TunnelManager.shared.lastStartupDiagnostic() ?? "暂无最近的 VPN 启动诊断（扩展未写入或已超过 180 秒）"))
+        sections.append("== VPN 启动诊断 ==\n" + (TunnelManager.shared.lastStartupDiagnostic() ?? "暂无最近的 VPN 启动诊断（扩展未写入或已超过 1 小时）"))
         if let lastError {
             sections.append("== 日志拉取错误 ==\n\(lastError)")
         }
@@ -198,7 +205,7 @@ final class LogStore: ObservableObject {
         if let data = try? Data(contentsOf: container.appendingPathComponent("vpn-diagnostics.json")),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             var selected: [String: Any] = [:]
-            for key in ["stage", "pid", "startedAt", "updatedAt", "packetsIn", "packetsOut", "packetsDroppedFull", "lastCoreMessageAt"] {
+            for key in ["stage", "pid", "startedAt", "updatedAt", "packetsIn", "packetsOut", "packetsDroppedFull", "lastCoreMessageAt", "memoryMB", "peakMemoryMB"] {
                 if let value = json[key] { selected[key] = value }
             }
             let time = (json["updatedAt"] as? Int64) ?? (json["startedAt"] as? Int64) ?? Int64(Date().timeIntervalSince1970 * 1000)

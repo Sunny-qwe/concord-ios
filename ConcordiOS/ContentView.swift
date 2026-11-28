@@ -248,7 +248,12 @@ struct ContentView: View {
             // them makes the core run its own defaults (DNS
             // disabled) instead of the UI's. Only missing files
             // are written; existing ones are never overwritten.
-            settingsStore.ensureSharedFilesExist()
+            // v0.2.169: file writes on a background Task (see
+            // TunnelManager.startTunnel). A fresh store is created
+            // inside the detached Task so nothing non-Sendable
+            // crosses the boundary; at launch no in-memory change
+            // can exist yet, so the persisted values are current.
+            await Task.detached { SettingsStore().ensureSharedFilesExist() }.value
             // Load the first snapshot for every page once, like FlClash
             // does when the home page mounts.
             await proxyStore.refresh()

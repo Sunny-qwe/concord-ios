@@ -39,7 +39,35 @@ enum TunnelController {
     /// same value. Generated once (random) when the file is missing
     /// or holds no secret; the extension runs the same ensure step
     /// at tunnel start, so whichever side runs first creates it.
-    static func secret() -> String {
+    /// v0.2.169: async — the file read runs off the MainActor on a
+    /// private serial queue, not on the calling thread. Every
+    /// controller request used to do this sync read inline. The
+    /// secret never rotates (the file is the persistence, never
+    /// deleted), so it is also cached for the process lifetime
+    /// after the first read. The serial queue makes the
+    /// read-or-create atomic: two concurrent first calls cannot
+    /// generate two different secrets (the old code had that race;
+    /// the cache would have made a wrong value stick for the
+    /// whole process).
+    private static let secretQueue = DispatchQueue(label: "concord.tunnelControllerSecret")
+    private static var cachedSecret: String?
+    static func secret() async -> String {
+        await withCheckedContinuation { continuation in
+            secretQueue.async {
+                if let cached = cachedSecret {
+                    continuation.resume(returning: cached)
+                    return
+                }
+                let value = readOrCreateSecret()
+                cachedSecret = value
+                continuation.resume(returning: value)
+            }
+        }
+    }
+
+    /// The tunnel-controller.json read-or-create. Runs only on
+    /// secretQueue: pure file I/O, no other state.
+    private static func readOrCreateSecret() -> String {
         let file = sharedFileURL()
         if let data = try? Data(contentsOf: file),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -72,9 +100,9 @@ enum TunnelController {
         return URLSession(configuration: config)
     }
 
-    private static func authorizedRequest(url: URL, timeoutSeconds: TimeInterval) -> URLRequest {
+    private static func authorizedRequest(url: URL, timeoutSeconds: TimeInterval) async -> URLRequest {
         var request = URLRequest(url: url, timeoutInterval: timeoutSeconds)
-        let token = secret()
+        let token = await secret()
         if !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
@@ -88,7 +116,7 @@ enum TunnelController {
         guard let url = URL(string: "http://\(address)/version") else { return false }
         do {
             let (_, response) = try await makeSession(timeoutSeconds: 3)
-                .data(for: authorizedRequest(url: url, timeoutSeconds: 3))
+                .data(for: await authorizedRequest(url: url, timeoutSeconds: 3))
             return (response as? HTTPURLResponse)?.statusCode == 200
         } catch {
             return false
@@ -126,7 +154,7 @@ enum TunnelController {
         // the caller applies around every delay call.
         let requestTimeout = min(TimeInterval(timeoutMs) / 1000.0 + 10.0, 25.0)
         let (data, response) = try await makeSession(timeoutSeconds: requestTimeout)
-            .data(for: authorizedRequest(url: requestURL, timeoutSeconds: requestTimeout))
+            .data(for: await authorizedRequest(url: requestURL, timeoutSeconds: requestTimeout))
         guard let http = response as? HTTPURLResponse else {
             throw TunnelControllerError.badResponse
         }
@@ -173,7 +201,7 @@ enum TunnelController {
         }
         let requestTimeout: TimeInterval = 90
         let (data, response) = try await makeSession(timeoutSeconds: requestTimeout)
-            .data(for: authorizedRequest(url: requestURL, timeoutSeconds: requestTimeout))
+            .data(for: await authorizedRequest(url: requestURL, timeoutSeconds: requestTimeout))
         guard let http = response as? HTTPURLResponse else {
             throw TunnelControllerError.badResponse
         }
@@ -212,7 +240,7 @@ enum TunnelController {
         guard let requestURL = components.url else {
             throw TunnelControllerError.badURL
         }
-        var request = authorizedRequest(url: requestURL, timeoutSeconds: 10)
+        var request = await authorizedRequest(url: requestURL, timeoutSeconds: 10)
         if proxy.isEmpty {
             request.httpMethod = "DELETE"
         } else {
@@ -249,7 +277,7 @@ enum TunnelController {
         guard let url = URL(string: "http://\(address)/memory") else { return nil }
         do {
             let (bytes, response) = try await makeSession(timeoutSeconds: 5)
-                .bytes(for: authorizedRequest(url: url, timeoutSeconds: 5))
+                .bytes(for: await authorizedRequest(url: url, timeoutSeconds: 5))
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
             var frames = 0
             for try await line in bytes.lines {
@@ -274,7 +302,7 @@ enum TunnelController {
         guard let url = URL(string: "http://\(address)/configs") else { return nil }
         do {
             let (data, response) = try await makeSession(timeoutSeconds: 5)
-                .data(for: authorizedRequest(url: url, timeoutSeconds: 5))
+                .data(for: await authorizedRequest(url: url, timeoutSeconds: 5))
             guard (response as? HTTPURLResponse)?.statusCode == 200,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 return nil

@@ -221,7 +221,10 @@ final class TunnelManager: ObservableObject {
                 // coming up (or during a previous run) — re-read it
                 // on every connect so the Dashboard banner shows
                 // without waiting for a pull-refresh.
-                self.checkTunRestartNeeded()
+                // v0.2.169: fire-and-forget — the read runs on a
+                // background Task (see checkTunRestartNeeded), so
+                // this main-queue observer never parks on disk I/O.
+                Task { @MainActor [weak self] in await self?.checkTunRestartNeeded() }
                 // v0.2.101 (Issue 3): the tunnel is up — the
                 // in-app core must not keep running alongside the
                 // extension core (two Tokio runtimes = heat).
@@ -465,7 +468,16 @@ final class TunnelManager: ObservableObject {
         // instance, so a short-lived one loads the persisted
         // settings; ensureSharedFilesExist only writes files that
         // are missing, never overwrites existing ones.
-        SettingsStore().ensureSharedFilesExist()
+        // v0.2.169: the file writes run on a background Task, not
+        // the MainActor — startTunnel runs on the MainActor and a
+        // fresh install writes several shared files here. The
+        // short-lived store is created inside the detached Task,
+        // so nothing non-Sendable crosses the boundary; the await
+        // keeps the ordering (files exist before the core boots).
+        // A fresh instance reads the same persisted settings
+        // (every change autosaves to UserDefaults on the next
+        // main-actor turn, so by tap time the values are current).
+        await Task.detached { SettingsStore().ensureSharedFilesExist() }.value
         userInitiatedStop = false
         unexpectedDisconnect = false
         crashLoopActive = false
@@ -876,10 +888,13 @@ final class TunnelManager: ObservableObject {
     }
 
     /// The extension's startup stages (FlClash TunnelStartupDiagnostic):
-    /// vpn-startup.json in the App Group, fresh within 180 s AND
+    /// vpn-startup.json in the App Group, fresh within 1 h AND
     /// matching this run's startupID (the extension adopts the ID
     /// passed in startVPNTunnel(options:); FlClash requires
-    /// record.id == id as well as freshness). Returns a one-line
+    /// record.id == id as well as freshness). v0.2.169: the window
+    /// was 180 s — the 168 freeze's record was 9 minutes old at
+    /// export and was dropped. Records older than 180 s are
+    /// labelled with their age (see below). Returns a one-line
     /// "stage: detail" string, or nil when there is no recent
     /// startup record for this run — used by the Dashboard's
     /// unexpected-disconnect banner so an extension-side failure
@@ -906,15 +921,27 @@ final class TunnelManager: ObservableObject {
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
               let data = try? Data(contentsOf: container.appendingPathComponent("vpn-startup.json")),
               let record = try? JSONDecoder().decode(TunnelStartupDiagnosticRecord.self, from: data),
-              Date().timeIntervalSince(record.date) < 180,
+              // v0.2.169: the freshness window is 1 hour, not 180 s.
+              // The 168 VPN-start freeze's record was 9 minutes old
+              // when the user exported the log, so the 180 s window
+              // dropped the one record that mattered. The startupID
+              // correlation below is still the guard against another
+              // run's record; a record older than 180 s is shown
+              // with its age so the banner/export cannot mistake it
+              // for a fresh failure.
+              Date().timeIntervalSince(record.date) < 3600,
               // Correlate by ID when this run has one; a record from
               // an older run (different ID) is not this run's error.
               currentStartupID == nil || record.id == currentStartupID else { return nil }
-        let base: String
+        var base: String
         if let detail = record.detail, !detail.isEmpty {
             base = "VPN \(record.stage)：\(detail)"
         } else {
             base = "VPN 阶段：\(record.stage)"
+        }
+        let age = Date().timeIntervalSince(record.date)
+        if age > 180 {
+            base += "（\(Int(age / 60)) 分钟前的记录）"
         }
         // v0.2.96: append the extension's step trail when present,
         // so LogStore's "== VPN 启动诊断 ==" export shows it.
@@ -924,9 +951,13 @@ final class TunnelManager: ObservableObject {
         return base
     }
 
-    /// The extension's vpn-startup.json record, fresh within 180 s
-    /// (same freshness as lastStartupDiagnostic), or nil when there
-    /// is no recent record for this run.
+    /// The extension's vpn-startup.json record, fresh within 180 s,
+    /// or nil when there is no recent record for this run.
+    /// Deliberately NOT extended to the 1 h window of
+    /// lastStartupDiagnostic (v0.2.169): this record drives the
+    /// startupID re-sync, and adopting a stale ID would make every
+    /// IPC call throw notRunning. Only the display/export path
+    /// keeps old records.
     private func extensionStartupRecord() -> TunnelStartupDiagnosticRecord? {
         guard let container = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
@@ -1003,7 +1034,23 @@ final class TunnelManager: ObservableObject {
         let startupId: String?
     }
 
-    func readTunnelRun(notBefore: Date? = nil) -> TunnelRun? {
+    /// v0.2.169: async — the vpn-diagnostics.json read runs on a
+    /// background Task, not the MainActor. The old sync read ran
+    /// on the main thread from the Dashboard's 1 s loop
+    /// (correctUptimeFromFile, every tick) and from refresh/appear
+    /// — synchronous disk I/O in the post-connect path, the same
+    /// class of call the 168 freeze investigation moved off the
+    /// main thread. The 180 s freshness is UNCHANGED: the uptime
+    /// logic depends on it (a stale record must not resurrect a
+    /// previous run's uptime — v0.2.117).
+    func readTunnelRun(notBefore: Date? = nil) async -> TunnelRun? {
+        await Task.detached { TunnelManager.readTunnelRunSync(notBefore: notBefore) }.value
+    }
+
+    /// The vpn-diagnostics.json read itself, on whatever thread
+    /// calls it (the detached Task above). Pure file I/O, no
+    /// state — safe to run off the main thread.
+    private nonisolated static func readTunnelRunSync(notBefore: Date? = nil) -> TunnelRun? {
         guard let container = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
               let data = try? Data(contentsOf: container.appendingPathComponent("vpn-diagnostics.json")),
@@ -1016,8 +1063,8 @@ final class TunnelManager: ObservableObject {
         return TunnelRun(startedAt: started, startupId: json["startupId"] as? String)
     }
 
-    func readTunnelStartedAt(notBefore: Date? = nil) -> Date? {
-        readTunnelRun(notBefore: notBefore)?.startedAt
+    func readTunnelStartedAt(notBefore: Date? = nil) async -> Date? {
+        await readTunnelRun(notBefore: notBefore)?.startedAt
     }
 
     /// Reads the extension's tun-restart-needed.json (config B1):
@@ -1027,15 +1074,34 @@ final class TunnelManager: ObservableObject {
     /// the file's lifecycle is the deletion, so a present file
     /// means the running tunnel's data plane is down right now.
     /// Called by the Dashboard on appear / pull-refresh.
-    func checkTunRestartNeeded() {
+    /// v0.2.169: async — the file read runs on a background Task,
+    /// not the MainActor. The old sync read ran on the main queue
+    /// inside the NEVPNStatusDidChange observer at every
+    /// .connected, i.e. inside the ~1 s window where the 168
+    /// VPN-start freeze parked the main thread. A small file read
+    /// is normally microseconds, but it is still synchronous disk
+    /// I/O on the main thread, so it moves off.
+    func checkTunRestartNeeded() async {
+        let reason = await Task.detached { TunnelManager.readTunRestartNeededReason() }.value
+        await setTunRestartNeeded(reason)
+    }
+
+    /// The tun-restart-needed.json file read, on whatever thread
+    /// calls it (the detached Task above). Pure file I/O, no
+    /// state — safe to run off the main thread.
+    private nonisolated static func readTunRestartNeededReason() -> String? {
         guard let container = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: ConfigStore.appGroupID),
               let data = try? Data(contentsOf: container.appendingPathComponent("tun-restart-needed.json")),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let reason = json["reason"] as? String, !reason.isEmpty else {
-            tunRestartNeeded = nil
-            return
+            return nil
         }
+        return reason
+    }
+
+    /// The @Published write, always on the MainActor.
+    @MainActor private func setTunRestartNeeded(_ reason: String?) {
         tunRestartNeeded = reason
     }
 
@@ -1327,7 +1393,7 @@ final class TunnelManager: ObservableObject {
                         // Dashboard banner appears without waiting
                         // for a pull-refresh or a reconnect.
                         if method == "config.apply" || method == "config.patch" {
-                            Task { @MainActor [weak self] in self?.checkTunRestartNeeded() }
+                            Task { @MainActor [weak self] in await self?.checkTunRestartNeeded() }
                         }
                         continuation.resume(returning: reply)
                     } else {

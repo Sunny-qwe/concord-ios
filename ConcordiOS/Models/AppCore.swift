@@ -1211,12 +1211,24 @@ final class AppCore {
         if let timeout { params["timeout"] = timeout }
         if let concurrency { params["concurrency"] = concurrency }
         let start = try await sendRequest(method: "delay.run", params: params, resultType: DelayRunStart.self)
-        // Register the accumulator SYNCHRONOUSLY on coreQueue and
-        // replay any batches that arrived before registration (see
-        // delayRunStash): the old `coreQueue.async` assignment left
-        // a window in which fast-failing results and the done event
-        // were dropped, stalling the poll loop for the full 60 s.
-        coreQueue.sync {
+        // Register the accumulator on coreQueue and replay any
+        // batches that arrived before registration (see
+        // delayRunStash). v0.2.169: this used to be coreQueue.sync,
+        // which parks the calling thread behind coreQueue — the
+        // same mechanism that froze the main thread on v0.2.131
+        // (and these sync sites were the prime suspect for the
+        // 168 VPN-start freeze, though an experiment cleared
+        // them as a direct cause). Async is safe here BECAUSE of
+        // the stash: registration and event handling are
+        // serialized on coreQueue, so a batch that arrives before
+        // the registration block runs is stashed and replayed by
+        // it, and a batch that arrives after is accumulated
+        // directly — the fast-fail results and the done event can
+        // no longer be dropped, so the poll loop cannot stall
+        // for the full 60 s. All readers (delayRunPoll) also read
+        // on coreQueue, enqueued after this block, so they see
+        // the registered run.
+        coreQueue.async {
             self.delayRun = DelayRunAccumulator(sub: start.sub)
             let stashed = self.delayRunStash.filter { $0.sub == start.sub }
             self.delayRunStash.removeAll { $0.sub == start.sub }
@@ -1272,14 +1284,18 @@ final class AppCore {
         guard session != 0 else { return }
         if logSub != nil { return }
         let start = try await sendRequest(method: "log.watch", params: ["credit": 8], resultType: StreamSubscribeResult.self, timeoutSeconds: 60)
-        // Register the sub SYNCHRONOUSLY on coreQueue and replay
-        // any batches that arrived before registration (same race
-        // as delay.run — see delayRunStash). The nil-check inside
-        // the sync is the real guard: two concurrent subscribes
-        // (boot + a Logs-page refresh) both send the request, but
-        // only the first registration wins — the loser's sub is
-        // ignored, so its events never double-accumulate.
-        coreQueue.sync {
+        // Register the sub on coreQueue and replay any batches
+        // that arrived before registration (same race as
+        // delay.run — see delayRunStash). v0.2.169: this used to
+        // be coreQueue.sync; async is safe for the same reason
+        // as delayRunStart (the stash replays pre-registration
+        // batches, and all reads go through coreQueue after this
+        // block). The nil-check inside is still the real guard:
+        // two concurrent subscribes (boot + a Logs-page refresh)
+        // both send the request, but only the first registration
+        // wins — the loser's sub is ignored, so its events never
+        // double-accumulate.
+        coreQueue.async {
             guard self.logSub == nil else { return }
             self.logSub = start.sub
             let stashed = self.delayRunStash.filter { $0.sub == start.sub }
@@ -1319,13 +1335,14 @@ final class AppCore {
     /// session; best-effort — a failure just leaves the DNS page
     /// without live entries with the VPN off, it never fails the
     /// boot). Mirrors subscribeLogWatch exactly: same credit (8),
-    /// same synchronous registration + stash replay on coreQueue.
+    /// same asynchronous registration + stash replay on coreQueue
+    /// (v0.2.169 — was synchronous; see subscribeLogWatch).
     /// Called from ensureStarted next to the log.watch subscribes.
     func subscribeDnsWatch() async throws {
         guard session != 0 else { return }
         if dnsSub != nil { return }
         let start = try await sendRequest(method: "dns.watch", params: ["credit": 8], resultType: StreamSubscribeResult.self, timeoutSeconds: 60)
-        coreQueue.sync {
+        coreQueue.async {
             guard self.dnsSub == nil else { return }
             self.dnsSub = start.sub
             let stashed = self.delayRunStash.filter { $0.sub == start.sub }
@@ -1393,9 +1410,10 @@ final class AppCore {
     /// per session; best-effort — a failure just leaves the
     /// Dashboard / Connections page without live entries with the
     /// VPN off, it never fails the boot). Mirrors
-    /// subscribeDnsWatch exactly: same credit (8), same synchronous
-    /// registration + stash replay on coreQueue — plus the reply's
-    /// snapshot, which seeds the live table (connections already
+    /// subscribeDnsWatch exactly: same credit (8), same
+    /// asynchronous registration + stash replay on coreQueue
+    /// (v0.2.169 — was synchronous; see subscribeLogWatch) —
+    /// plus the reply's snapshot, which seeds the live table (connections already
     /// open before subscribing never emit an `opened` event, so
     /// without the snapshot they would never appear). Called from
     /// ensureStarted next to the log/dns subscribes, and lazily
@@ -1405,7 +1423,7 @@ final class AppCore {
         guard session != 0 else { return }
         if connectionSub != nil { return }
         let start = try await sendRequest(method: "connection.watch", params: ["counters": true, "credit": 8], resultType: ConnectionWatchStart.self, timeoutSeconds: 60)
-        coreQueue.sync {
+        coreQueue.async {
             guard self.connectionSub == nil else { return }
             self.connectionSub = start.sub
             // A fresh snapshot replaces the table (same as the
@@ -1482,8 +1500,10 @@ final class AppCore {
     /// session; best-effort — a failure just leaves the Dashboard /
     /// Events page without live events with the VPN off, it never
     /// fails the boot). Mirrors subscribeDnsWatch: same credit (8),
-    /// same synchronous registration + stash replay on coreQueue.
-    /// events.watch has NO snapshot, so there is nothing to seed —
+    /// same asynchronous registration + stash replay on coreQueue
+    /// (v0.2.169 — was synchronous; see subscribeLogWatch).
+    /// same asynchronous registration + stash replay on coreQueue
+    /// (v0.2.169 — was synchronous; see subscribeLogWatch).
     /// entries only arrive as events. The `delays` + `state`
     /// params are required (both default false in the schema; a
     /// bare {credit: 8} never delivers `delay` or `stateChanged`
@@ -1495,7 +1515,7 @@ final class AppCore {
         guard session != 0 else { return }
         if eventsSub != nil { return }
         let start = try await sendRequest(method: "events.watch", params: ["delays": true, "state": true, "credit": 8], resultType: StreamSubscribeResult.self, timeoutSeconds: 60)
-        coreQueue.sync {
+        coreQueue.async {
             guard self.eventsSub == nil else { return }
             self.eventsSub = start.sub
             let stashed = self.delayRunStash.filter { $0.sub == start.sub }

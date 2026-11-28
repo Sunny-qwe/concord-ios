@@ -662,7 +662,7 @@ struct DashboardView: View {
     }
 
     private func refreshAll() async {
-        tunnelManager.checkTunRestartNeeded()
+        await tunnelManager.checkTunRestartNeeded()
         // D4: correct the uptime from the extension's start time
         // when the tunnel is up (the local clock started when the
         // app observed .connected, which is later — and resets to
@@ -670,7 +670,7 @@ struct DashboardView: View {
         // v0.2.118 (Job 6): the read is gated to this run's record
         // (notBefore:), so a pull-to-refresh after a (re)start
         // cannot resurrect the previous run's startedAt.
-        if proxyStore.isRunning, let extStarted = tunnelManager.readTunnelStartedAt(notBefore: tunnelStartObservedAt) {
+        if proxyStore.isRunning, let extStarted = await tunnelManager.readTunnelStartedAt(notBefore: tunnelStartObservedAt) {
             tunnelStartedAt = extStarted
             // The traffic card's cumulative uptime counts this
             // session from the extension's start time.
@@ -2623,7 +2623,7 @@ private struct DashboardTrafficEffects: View {
                     // v0.2.118 (Job 6): gated to this run's record
                     // (notBefore:) — an ungated read here could pick
                     // up the previous run's startedAt.
-                    tunnelStartedAt = tunnelManager.readTunnelStartedAt(notBefore: tunnelStartObservedAt) ?? Date()
+                    tunnelStartedAt = await tunnelManager.readTunnelStartedAt(notBefore: tunnelStartObservedAt) ?? Date()
                 }
                 // v0.2.56: the traffic card's cumulative uptime counts
                 // the live session from its start (the extension's
@@ -2631,7 +2631,7 @@ private struct DashboardTrafficEffects: View {
                 if proxyStore.isRunning, let started = tunnelStartedAt {
                     await trafficStore.noteTunnelStarted(at: started)
                 }
-                tunnelManager.checkTunRestartNeeded()
+                await tunnelManager.checkTunRestartNeeded()
                 // v0.2.115: the stats row (实时连接/最近请求/DNS查询）
                 // refreshes CONCURRENTLY with the IP lookup, in its
                 // own Task — it used to run after fetchIPInfo (up to
@@ -2750,7 +2750,7 @@ private struct DashboardTrafficEffects: View {
                     // services — v0.2.132 runs them fire-and-forget
                     // for exactly that reason. Uptime must not wait
                     // on the refreshes.
-                    correctUptimeFromFile()
+                    await correctUptimeFromFile()
                     guard !Task.isCancelled else { break }
                     // v0.2.132: the refreshes run in their own tasks
                     // and this loop NEVER awaits them. v0.2.129 put
@@ -2908,9 +2908,12 @@ private struct DashboardTrafficEffects: View {
     /// from a DIFFERENT run is adopted outright (the tunnel
     /// genuinely restarted), while a same-run record is only
     /// adopted when earlier.
-    private func correctUptimeFromFile() {
+    /// v0.2.169: async — the diagnostics file read runs on a
+    /// background Task (see TunnelManager.readTunnelRun), so this
+    /// 1 s loop tick never parks on disk I/O.
+    private func correctUptimeFromFile() async {
         guard proxyStore.isRunning, let current = tunnelStartedAt else { return }
-        guard let run = tunnelManager.readTunnelRun(notBefore: tunnelStartObservedAt) else { return }
+        guard let run = await tunnelManager.readTunnelRun(notBefore: tunnelStartObservedAt) else { return }
         // A record from a DIFFERENT run (the extension restarted
         // without the app observing a transition): adopt it
         // outright — the tunnel genuinely restarted, so the uptime

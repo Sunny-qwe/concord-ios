@@ -450,12 +450,33 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// startup record from the tunnel diagnostics file; ours had
     /// none). Written at "running", refreshed on the watchdog tick
     /// (30 s) and at "stopped": stage, pid, start time, packet
-    /// counters and the last core-message time, so a crash loop is
+    /// counters, the last core-message time, and (v0.2.169) the
+    /// resident memory now + the peak this run, so a crash loop is
     /// diagnosable after the fact instead of invisible.
+    /// Peak resident memory of this extension process in bytes,
+    /// tracked across writeVPNDiagnostics calls (v0.2.169). Only
+    /// touched from writeVPNDiagnostics itself.
+    private var peakResidentBytes: UInt64 = 0
+
+    /// The extension process's current resident memory in bytes,
+    /// via Mach task_info (same idiom as
+    /// DashboardView.readAppMemoryBytes). Nil when the call fails.
+    private func residentMemoryBytes() -> UInt64? {
+        var info = task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<task_basic_info>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self(), task_flavor_t(TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        return UInt64(info.resident_size)
+    }
+
     private func writeVPNDiagnostics(stage: String) {
         guard let container = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: appGroupID) else { return }
-        let record: [String: Any] = [
+        var record: [String: Any] = [
             "stage": stage,
             "startupId": startupID,
             "pid": ProcessInfo.processInfo.processIdentifier,
@@ -466,6 +487,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             "packetsDroppedFull": packetsDroppedFull,
             "lastCoreMessageAt": lastCoreMessageAt.map { Int64($0.timeIntervalSince1970 * 1000) } as Any,
         ]
+        // v0.2.169: resident memory now + peak this run. The
+        // extension is killed by the system when it exceeds its
+        // memory limit, and the 168 freeze's tunnel died ~30 s
+        // after connecting with no cause recorded — the last
+        // diagnostics file (refreshed every 30 s) now carries the
+        // last memory sample before the death, so a jetsam is
+        // visible instead of invisible. Diagnostics only; no
+        // tunnel behaviour changes.
+        if let rss = residentMemoryBytes() {
+            peakResidentBytes = max(peakResidentBytes, rss)
+            record["memoryMB"] = Int(rss / 1_048_576)
+            record["peakMemoryMB"] = Int(peakResidentBytes / 1_048_576)
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: record) else { return }
         try? data.write(to: container.appendingPathComponent("vpn-diagnostics.json"), options: .atomic)
     }
